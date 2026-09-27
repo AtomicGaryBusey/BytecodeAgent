@@ -65,6 +65,56 @@ IR_RULES = (
 )
 
 
+# Round 2 adds the ABI facts its tasks depend on (round-1 prompts are unchanged).
+ABI_EXTRA = {
+    "x86_64": (
+        "More ABI facts: arguments beyond the sixth are passed on the stack; at entry the "
+        "return address is at [rsp], the 7th argument at [rsp+8], the 8th at [rsp+16]. A call "
+        "clobbers the caller-saved registers rax, rcx, rdx, rsi, rdi, r8-r11, all xmm "
+        "registers and the flags, so keep values that must survive a call in callee-saved "
+        "registers (saved/restored by you) or in your own stack frame. rsp must be 16-byte "
+        "aligned at every call instruction (at entry rsp is 8 mod 16, so an odd number of "
+        "8-byte pushes, or `sub rsp, 8` plus any multiple of 16, re-aligns it). Anything "
+        "below rsp may be overwritten by a callee. The direction flag must be clear at calls "
+        "and on return."
+    ),
+    "aarch64": (
+        "More ABI facts: arguments beyond the eighth are passed on the stack (the 9th at [sp] "
+        "at entry). A call (bl/blr) overwrites x30, so save x30 (e.g. stp x29, x30, [sp, "
+        "#-16]!) before calling and restore it before ret. A call clobbers the caller-saved "
+        "registers x0-x18, x30, v0-v7 and v16-v31 (and the upper halves of v8-v15) and the "
+        "flags, so keep values that must survive a call in callee-saved registers x19-x28 "
+        "(saved/restored by you) or in your own stack frame. sp must be 16-byte aligned at "
+        "every call (and whenever it is used as a base register). Anything below sp may be "
+        "overwritten by a callee."
+    ),
+}
+
+# Round-1 wording, replaced for round-2 tasks that call functions.
+_NO_CALLS = "no calls to other functions"
+_STREAM_CALLS = {
+    "self": {"x86_64": "calls only to your own entry label (`call {name}`) for the recursion",
+             "aarch64": "calls only to your own entry label (`bl {name}`) for the recursion"},
+    "callback": {"x86_64": "the only call is through the function-pointer argument (e.g. `call r12`)",
+                 "aarch64": "the only call is through the function-pointer argument (e.g. `blr x19`)"},
+}
+_IR_NO_CALLS = "No data definitions, no calls, no other functions."
+_IR_CALLS = {
+    "self": "No data definitions and no other functions; the only calls are to ${name} itself.",
+    "callback": "No data definitions and no other functions; the only calls are through the "
+                "function-pointer argument.",
+}
+_STRUCTURED_CALLS = {
+    "self": {"x86_64": 'The recursive call is {"op": "call", "target": "<entry label>"}; put a label '
+                       'as the first entry so the call can target it.',
+             "aarch64": 'The recursive call is {"op": "bl", "target": "<entry label>"}; put a label as '
+                        'the first entry so the call can target it.'},
+    "callback": {"x86_64": 'Call through a register by giving the 64-bit register name as the target: '
+                           '{"op": "call", "target": "r12"}.',
+                 "aarch64": 'Call through a register with {"op": "blr", "src": ["x19"]}.'},
+}
+
+
 def _structured_rules(isa: str) -> str:
     tool = tool_definitions(isa)[0]
     schema = json.dumps(input_schemas(isa)["program"], separators=(",", ":"))
@@ -81,19 +131,32 @@ def _structured_rules(isa: str) -> str:
 
 def rules(path: str, isa: str, task: Task) -> str:
     if path == "stream":
-        return STREAM_RULES[isa].replace("{name}", task.name)
+        text = STREAM_RULES[isa]
+        if task.calls:
+            text = text.replace(_NO_CALLS, _STREAM_CALLS[task.calls][isa])
+        return text.replace("{name}", task.name)
     if path == "structured":
-        return _structured_rules(isa)
+        text = _structured_rules(isa)
+        if task.calls:
+            text += "\n" + _STRUCTURED_CALLS[task.calls][isa]
+        return text
     if path == "ir":
-        return IR_RULES.replace("{name}", task.name)
+        text = IR_RULES
+        if task.calls:
+            text = text.replace(_IR_NO_CALLS, _IR_CALLS[task.calls])
+        if task.ir_hint:
+            text += " " + task.ir_hint
+        return text.replace("{name}", task.name)
     raise ValueError(path)
 
 
 def build_prompt(path: str, isa: str, task: Task, previous: tuple[str, str] | None = None) -> str:
     """The attempt prompt; `previous` = (code, failure description) for a repair round."""
+    if path in task.na_paths:
+        raise ValueError(f"{task.name} is not applicable on the {path} path: {task.na_paths[path]}")
     parts = [
         f"Implement the function `{task.signature}`.",
-        ABI[isa],
+        ABI[isa] + (" " + ABI_EXTRA[isa] if task.round >= 2 else ""),
         rules(path, isa, task),
         f"Specification: {task.spec}",
     ]

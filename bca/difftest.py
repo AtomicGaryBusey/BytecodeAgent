@@ -15,6 +15,12 @@ Exclude such inputs with a precondition — `differential(..., where=div_safe(0,
 Candidates run under `bca.emu.run_function`'s hostile defaults: garbage in every
 non-argument register, calling-convention checks on return, and (for buffers) canaries
 around the buffer that fail the case on any out-of-bounds write.
+
+Every `Mismatch` carries `kind` — "wrong_result" or the failing EmulationError's `category`
+(crash, abi, oob_write, oob_read, misaligned_call, misaligned_access, hang) — and `pc`, so
+callers classify failures without matching message text. `memory_differential` generalises
+the buffer check to any signature over a block of memory (`MemCase`: bytes, arguments that
+may be `Ptr(offset)`s into it, and the windows the code may write and read).
 """
 
 import ctypes
@@ -115,6 +121,18 @@ class Mismatch:
     expected: int | None
     actual: int | None
     error: str | None = None
+    # "wrong_result", or the EmulationError category (crash, abi, oob_write, oob_read,
+    # misaligned_call, misaligned_access, hang); None only from producers that predate it.
+    kind: str | None = None
+    pc: int | None = None  # an address within the faulting instruction, when known
+    expected_data: bytes | None = None  # memory after the call (buffer/memory checks)
+    actual_data: bytes | None = None
+    case: object = None  # the MemCase, for memory_differential
+
+
+def _error_mismatch(args, expected, exc: EmulationError, case=None) -> Mismatch:
+    return Mismatch(tuple(args), expected, None, str(exc), getattr(exc, "category", "crash"),
+                    getattr(exc, "pc", None), case=case)
 
 
 @dataclass
@@ -323,10 +341,10 @@ def differential(
                 seed=(seed * 0x9E3779B1 + cases) & MASK64, **run_kwargs,
             ).ret  # fmt: skip
         except EmulationError as exc:
-            mismatches.append(Mismatch(args, expected, None, str(exc)))
+            mismatches.append(_error_mismatch(args, expected, exc))
             continue
         if actual != expected:
-            mismatches.append(Mismatch(args, expected, actual))
+            mismatches.append(Mismatch(args, expected, actual, kind="wrong_result"))
     return DiffReport(cases, mismatches, skipped)
 
 
@@ -344,12 +362,15 @@ def buffer_differential(
     max_insns: int = 1_000_000,
     abi: bool = True,
     seed: int = 0,
+    read_guard: bool = False,
+    **run_kwargs,
 ) -> DiffReport:
     """For `int64_t f(int64_t *buf, int64_t n)`: compare return value and mutated buffer.
 
     The buffer sits at DATA_BASE + BUFFER_OFFSET surrounded by pseudo-random canaries; a
     write anywhere in the data region outside buf[0..n) fails the case (OutOfBoundsWrite),
-    and reads past either end see junk rather than zeros.
+    and reads past either end see junk rather than zeros (`read_guard=True`: fail them with
+    OutOfBoundsRead). Extra keyword arguments go to `run_function`.
     """
     ref = compile_c_reference(reference_source, name, 2)
     ref.argtypes = [ctypes.POINTER(ctypes.c_int64), ctypes.c_int64]
@@ -366,11 +387,93 @@ def buffer_differential(
             res = run_function(
                 isa, code, [DATA_BASE + BUFFER_OFFSET, len(values)], data=data,
                 data_offset=BUFFER_OFFSET, guard=(BUFFER_OFFSET, BUFFER_OFFSET + len(data)),
+                read_guard=(BUFFER_OFFSET, BUFFER_OFFSET + len(data)) if read_guard else None,
                 max_insns=max_insns, abi=abi, seed=(seed * 0x9E3779B1 + cases) & MASK64,
+                **run_kwargs,
             )  # fmt: skip
         except EmulationError as exc:
-            mismatches.append(Mismatch(tuple(values), expected, None, str(exc)))
+            mismatches.append(_error_mismatch(values, expected, exc))
             continue
         if res.ret != expected or res.data != exp_buf:
-            mismatches.append(Mismatch(tuple(values), expected, res.ret, "buffer differs"))
+            mismatches.append(Mismatch(tuple(values), expected, res.ret, "buffer differs",
+                                       "wrong_result", expected_data=exp_buf, actual_data=res.data))
     return DiffReport(cases, mismatches)
+
+
+# -- general memory-based signatures ----------------------------------------------------------
+
+
+@dataclass(frozen=True)
+class Ptr:
+    """A pointer argument: `offset` bytes into the case's memory block."""
+
+    offset: int
+
+
+@dataclass(frozen=True)
+class MemCase:
+    """One input for `memory_differential`.
+
+    mem:      the memory block (placed at DATA_BASE + BUFFER_OFFSET, canaries around it)
+    args:     int arguments or Ptr(offset) into `mem` (any count: extra ones go on the stack)
+    writable: byte windows [lo, hi) of `mem` the code may write (default: none)
+    readable: byte windows it may read; None disables the read guard
+    label:    human-readable description of the case for reports
+    """
+
+    mem: bytes
+    args: tuple
+    writable: tuple = ()
+    readable: tuple | None = None
+    label: str = ""
+
+
+def memory_differential(
+    isa: Isa,
+    code: bytes,
+    reference: Callable[..., int],
+    cases: Iterable[MemCase],
+    *,
+    max_insns: int = 1_000_000,
+    abi: bool = True,
+    seed: int = 0,
+    **run_kwargs,
+) -> DiffReport:
+    """Compare return value and the whole memory block after the call, for any signature.
+
+    `reference` is a host function taking every argument as int64 (see
+    compile_c_reference); a Ptr argument becomes the address of a host copy of `mem` plus
+    the offset, and the emulated code gets DATA_BASE + BUFFER_OFFSET + offset. Writes
+    outside `writable` and (if `readable` is not None) reads outside `readable` anywhere in
+    the data region fail the case. Extra keyword arguments go to `run_function` (e.g.
+    `segments` and `aligned_entries` for a callback argument)."""
+    mismatches, n = [], 0
+    for case in cases:
+        n += 1
+        mem = bytes(case.mem)
+        if BUFFER_OFFSET + len(mem) + 0x1000 > DATA_SIZE:
+            raise ValueError("memory block too large for the data region")
+        host = ctypes.create_string_buffer(mem, max(len(mem), 1))
+        base = ctypes.addressof(host)
+        ref_args = [base + a.offset if isinstance(a, Ptr) else a for a in case.args]
+        emu_args = [DATA_BASE + BUFFER_OFFSET + a.offset if isinstance(a, Ptr) else a for a in case.args]
+        expected = reference(*ref_args) & MASK64
+        exp_mem = host.raw[: len(mem)]
+        shift = lambda ws: [(BUFFER_OFFSET + lo, BUFFER_OFFSET + hi) for lo, hi in ws]  # noqa: E731
+        try:
+            res = run_function(
+                isa, code, emu_args, data=mem, data_offset=BUFFER_OFFSET,
+                guard=shift(case.writable) or (0, 0),
+                read_guard=None if case.readable is None else shift(case.readable),
+                max_insns=max_insns, abi=abi, seed=(seed * 0x9E3779B1 + n) & MASK64, **run_kwargs,
+            )  # fmt: skip
+        except EmulationError as exc:
+            m = _error_mismatch(case.args, expected, exc, case)
+            m.expected_data = exp_mem
+            mismatches.append(m)
+            continue
+        if res.ret != expected or res.data != exp_mem:
+            mismatches.append(Mismatch(tuple(case.args), expected, res.ret,
+                                       None if res.data == exp_mem else "memory differs", "wrong_result",
+                                       expected_data=exp_mem, actual_data=res.data, case=case))
+    return DiffReport(n, mismatches)

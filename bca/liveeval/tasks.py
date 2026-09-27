@@ -1,4 +1,5 @@
-"""The eight evaluation tasks: spec, signature, C reference, inputs and checker.
+"""The round-1 evaluation tasks (eight easy leaf kernels) and the `Task` type shared with
+round 2 (bca.liveeval.tasks2): spec, signature, C reference, inputs and checker.
 
 Every task is `int64_t name(...)` under the SysV x86-64 / AAPCS64 integer ABI. Scalar tasks
 are checked with `bca.difftest.differential`, buffer tasks (`int64_t *a, int64_t n`) with
@@ -23,7 +24,26 @@ class Task:
     c_ref: str  # reference semantics (host-compiled, -fwrapv)
     nargs: int
     buffer: bool = False
-    inputs: tuple = field(default=(), repr=False)  # tuples (scalar) or lists (buffer)
+    inputs: tuple = field(default=(), repr=False)  # tuples (scalar), lists (buffer), MemCases (mem)
+    # -- round-2 extensions (defaults keep round-1 behaviour and prompts unchanged) --
+    mem: bool = False  # inputs are difftest.MemCase: checked with memory_differential
+    ref_name: str = ""  # C reference entry point if not `name` (e.g. a wrapper)
+    requires: tuple[str, ...] = ()  # static requirements: "recursion", "simd"
+    calls: str = ""  # "" (leaf), "self" (recursion), "callback" (hostile f at CALLBACK_BASE)
+    ir_hint: str = ""  # extra QBE facts for this task
+    na: tuple[tuple[str, str], ...] = ()  # (path, reason) cells that are not applicable
+    max_insns: int = 2_000_000
+    round: int = 1
+    mem_elem: int = 8  # element size used to display memory in failure messages
+    mem_signed: bool = True
+
+    @property
+    def na_paths(self) -> dict[str, str]:
+        return dict(self.na)
+
+    @property
+    def reference_name(self) -> str:
+        return self.ref_name or self.name
 
 
 def _sum_inputs():

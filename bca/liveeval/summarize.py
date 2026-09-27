@@ -8,7 +8,7 @@ from collections import Counter, defaultdict
 from pathlib import Path
 
 from bca.liveeval.prompts import ISAS, PATHS
-from bca.liveeval.tasks import TASKS
+from bca.liveeval.tasks2 import ALL_TASKS
 
 
 def load(run_dir: Path) -> tuple[list[dict], list[dict]]:
@@ -27,8 +27,11 @@ def _rate(xs: list[bool]) -> str:
 
 
 def summarize(run_dir: Path) -> str:
+    """Markdown tables for a run directory (round 1, round 2 or mixed task sets)."""
     cells, atts = load(run_dir)
     by = {(c["task"], c["path"], c["isa"]): c for c in cells}
+    present = {c["task"] for c in cells}
+    TASKS = [t for t in ALL_TASKS if t.name in present]  # noqa: N806 - registry order
     out = []
     # Matrix
     hdr = "| task | " + " | ".join(f"{p} {i}" for p in PATHS for i in ISAS) + " |"
@@ -40,7 +43,7 @@ def summarize(run_dir: Path) -> str:
             for i in ISAS:
                 c = by.get((t.name, p, i))
                 if not c:
-                    row.append("n/a")
+                    row.append("N/A" if p in t.na_paths else "not run")
                     continue
                 mark = "✓" if c["pass_final"] else "✗"
                 row.append(f"{int(c['pass_at_1'])} / {mark} / {c['attempts']}")

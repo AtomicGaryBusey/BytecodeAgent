@@ -131,7 +131,8 @@ def run_matrix(subject: Subject, tasks, paths, isas, run_dir: Path, *, jobs: int
                progress=print) -> list[dict]:
     run_dir.mkdir(parents=True, exist_ok=True)
     lock = threading.Lock()
-    cells = [(t, p, i) for t in tasks for p in paths for i in isas]
+    # Cells a pipeline cannot express (Task.na, e.g. SIMD on QBE) are skipped, not failed.
+    cells = [(t, p, i) for t in tasks for p in paths for i in isas if p not in t.na_paths]
 
     def one(cell):
         t, p, i = cell

@@ -235,7 +235,10 @@ FAMILIES = [
     Family("setcc", SET_OPS, {"dst": F(REG, MEM)}, ("dst",), "dst (8-bit) = condition ? 1 : 0.",
            ({"op": "setl", "dst": "al"},)),
     Family("jump", ("jmp", "call") + JCC_OPS, {"target": F(LABEL)}, ("target",),
-           "Jump / conditional jump / call to a label.", ({"op": "jne", "target": "loop"},)),
+           "Jump / conditional jump / call to a label. jmp and call also accept a 64-bit register "
+           "name as target for an indirect jump/call through that register ({\"op\": \"call\", "
+           "\"target\": \"r12\"}); register names are therefore not usable as labels.",
+           ({"op": "jne", "target": "loop"},)),
     Family("push", ("push",), {"src": F(REG, IMM, MEM, many=True)}, ("src",), "Push a 64-bit value.",
            ({"op": "push", "src": ["rbx"]},)),
     Family("pop", ("pop",), {"dst": F(REG, MEM)}, ("dst",), "Pop a 64-bit value.", ({"op": "pop", "dst": "rbx"},)),
@@ -589,7 +592,17 @@ BUILDERS = {
 def build(insn: Insn, target_ip) -> Instruction:
     """Build the iced instruction; `target_ip(label, path)` supplies branch targets."""
     if insn.family.name == "jump":
-        return Instruction.create_branch(jump_code(insn.op), target_ip(insn.f["target"], "target"))
+        target = insn.f["target"]
+        if target in REGISTERS:
+            r = REGISTERS[target]
+            if insn.op not in ("jmp", "call"):
+                raise EncodeError(f"{insn.op} takes a label, not a register (only jmp/call can be "
+                                  "indirect)", "target")
+            if r.bits != 64:
+                raise EncodeError(f"an indirect {insn.op} needs a 64-bit register, got {target}", "target")
+            code = Code.CALL_RM64 if insn.op == "call" else Code.JMP_RM64
+            return Instruction.create_reg(code, r.reg)
+        return Instruction.create_branch(jump_code(insn.op), target_ip(target, "target"))
     ins = BUILDERS[insn.family.name](insn)
     try:
         _encode_one(ins)

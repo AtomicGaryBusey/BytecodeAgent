@@ -1961,7 +1961,12 @@ def _x86_operand(op: str, labels: dict[str, int], addr: int) -> _X86Op:
     base = index = None
     scale = 1
     for reg, coef in regs:
-        if coef == 1 and base is None:
+        # `[r + r*k]` / `[r + r]`: the linear form merged base and index of the same register
+        # into one coefficient; GNU as encodes base=r, index=r*k. Recover that from the text.
+        mentions = len(re.findall(rf"(?<![\w.$]){re.escape(reg)}(?![\w.$])", s, flags=re.I))
+        if mentions == 2 and coef - 1 in (1, 2, 4, 8) and base is None and index is None:
+            base, index, scale = reg, reg, coef - 1
+        elif coef == 1 and base is None:
             base = reg
         elif index is None and coef in (1, 2, 4, 8):
             index, scale = reg, coef
