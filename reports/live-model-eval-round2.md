@@ -221,3 +221,36 @@ cap without making calls, add `--dry-run`.
 - **The structured and IR paths cannot do SIMD** (N/A above). Adding NEON or SSE families to the structured
   encoders would be a separate project.
 - **Isolation** has the same caveats as round 1: the account email context item and a visible neutral cwd.
+
+## Full run results (2026-09-27)
+
+Run directory: `eval/runs/round2-20260927-150117/` (tables in `summary.md`). Subject:
+`claude-opus-5-5` via isolated `claude -p`; 64 calls of the 248-call cap; reported list cost $2.23.
+
+| path | cells | pass@1 | pass within 4 | mean attempts |
+|---|---|---|---|---|
+| stream | 22 | 22/22 | 22/22 | 1.00 |
+| structured | 20 | 20/20 | 20/20 | 1.00 |
+| ir (QBE) | 20 | 18/20 | 20/20 | 1.10 |
+| **total** | **62** | **60/62 (97%)** | **62/62 (100%)** | 1.03 |
+
+By ISA: x86-64 30/31 and AArch64 30/31 on the first attempt. Four cells (SIMD on structured and
+QBE) are N/A.
+
+**Failures.** Both first-attempt failures were the same QBE syntax mistake, `invalid class
+specifier` on line 3 (`sum8.ir.x86_64`, `memmove_i64.ir.aarch64`), each fixed by the first repair.
+
+**Safety net.** No live attempt triggered a misaligned call, callee-saved clobber, out-of-bounds
+read or write, hang, missing-requirement check, GNU as rejection or streaming early abort. The
+model aligned the stack for the hostile callback, kept state in callee-saved registers across it,
+recursed as required, used SIMD (`pmuldq`, `smlal`/`smlal2`), respected read/write bounds, handled
+the full 64-bit range in `isqrt`/`mulhi_u64`, and passed stack arguments correctly. Every check is
+verified to fire by the fake-subject suite (18 wrong solutions, one per category), and no check
+rejected correct model code in 64 live attempts.
+
+**Conclusion.** Across both rounds (110 cells, 116 calls) the subject passed 105/110 on the first
+attempt and 110/110 within four; every miss was a syntax or format error caught by the assembler or
+compiler, plus one uninitialised-register bug caught by the garbage-filled differential run (round
+1). At this task difficulty the pipelines' main measured value is fast, precise error feedback and
+guaranteeing that what passes is correct; distinguishing the paths or stressing the safety net
+needs harder, longer programs, weaker subjects, or adversarial prompts.
