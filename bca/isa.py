@@ -26,6 +26,16 @@ class Isa:
     trace_regs: tuple[tuple[str, int], ...]
 
     def assembler(self) -> keystone.Ks:
+        """The shared, resolver-free keystone handle for this ISA. Do not mutate it.
+
+        keystone 0.9.2 bug: once any handle that had `sym_resolver` set is freed, every
+        handle created *afterwards* parses plain decimals as hex (`1000` -> 0x1000).
+        Handles created earlier are unaffected, so these are built at import time.
+        """
+        return _PLAIN_KS[self.name]
+
+    def new_assembler(self) -> keystone.Ks:
+        """A fresh keystone handle. If you set `sym_resolver` on it, never free it."""
         return keystone.Ks(self.ks_arch, self.ks_mode)
 
     def disassembler(self) -> capstone.Cs:
@@ -78,3 +88,4 @@ AARCH64 = Isa(
 )
 
 ISAS = {isa.name: isa for isa in (X86_64, AARCH64)}
+_PLAIN_KS = {isa.name: isa.new_assembler() for isa in ISAS.values()}
