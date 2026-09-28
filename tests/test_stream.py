@@ -7,7 +7,7 @@ from pathlib import Path
 import pytest
 
 from bca.difftest import buffer_differential, compile_c_reference, differential, int_inputs
-from bca.emu import CODE_BASE, run_function
+from bca.emu import CODE_BASE, EmulationError, run_function
 import bca.stream as stream_mod
 from bca.isa import AARCH64, X86_64
 from bca.stream import (
@@ -1390,3 +1390,169 @@ def test_failed_gas_run_reaps_every_window(tmp_path, monkeypatch):
 def test_quotes_and_backslashes_are_refused(isa, text):
     errs = errors_of(isa, text + "\n")
     assert errs and "not supported" in errs[0]
+
+
+# -- x86 ISA level: what the emulator executes, what the stream refuses ---------------------
+# Probed against Unicorn: every "supported" program below runs and returns the value real
+# hardware would; every "unsupported" one either raises UC_ERR_INSN_INVALID in Unicorn (ADX,
+# AVX2, FMA, F16C, SHA, AVX-512, TBM, XOP, 3DNow!) or, for VEX-128 AVX, silently computes the
+# wrong value. The stream refuses the latter group; prompts.ISA_LEVEL states the split.
+
+_X, _Y = 0x123456789ABCDEF1, 0x0FEDCBA987654321
+_M64 = (1 << 64) - 1
+
+
+def _pdep(v, m):
+    r = k = 0
+    for i in range(64):
+        if m >> i & 1:
+            r |= (v >> k & 1) << i
+            k += 1
+    return r
+
+
+def _pext(v, m):
+    r = k = 0
+    for i in range(64):
+        if m >> i & 1:
+            r |= (v >> i & 1) << k
+            k += 1
+    return r
+
+
+def _crc32c(v):
+    crc = 0
+    for byte in v.to_bytes(8, "little"):
+        crc ^= byte
+        for _ in range(8):
+            crc = (crc >> 1) ^ 0x82F63B78 if crc & 1 else crc >> 1
+    return crc
+
+
+def _clmul(a, b):
+    r = 0
+    for i in range(64):
+        if b >> i & 1:
+            r ^= a << i
+    return r
+
+
+def _lanes32(f):
+    lo = f(_X & 0xFFFFFFFF, _Y & 0xFFFFFFFF) & 0xFFFFFFFF
+    hi = f(_X >> 32, _Y >> 32) & 0xFFFFFFFF
+    return lo | hi << 32
+
+
+# (extension, program with x in rdi and y in rsi, expected rax)
+X86_SUPPORTED = [
+    ("BMI2 mulx", "mov rdx, rdi\nmulx rcx, rax, rsi\nmov rax, rcx", (_X * _Y) >> 64),
+    ("BMI2 rorx", "rorx rax, rdi, 13", ((_X >> 13) | (_X << 51)) & _M64),
+    ("BMI2 shlx", "mov ecx, 70\nshlx rax, rdi, rcx", (_X << 6) & _M64),
+    ("BMI2 sarx", "mov ecx, 5\nsarx rax, rdi, rcx", _X >> 5),
+    ("BMI2 shrx", "mov ecx, 5\nshrx rax, rdi, rcx", _X >> 5),
+    ("BMI2 bzhi", "mov ecx, 12\nbzhi rax, rdi, rcx", _X & 0xFFF),
+    ("BMI2 pdep", "pdep rax, rdi, rsi", _pdep(_X, _Y)),
+    ("BMI2 pext", "pext rax, rdi, rsi", _pext(_X, _Y)),
+    ("BMI1 andn", "andn rax, rdi, rsi", ~_X & _Y & _M64),
+    ("BMI1 bextr", "mov ecx, 0x0804\nbextr rax, rdi, rcx", (_X >> 4) & 0xFF),
+    ("BMI1 blsr", "blsr rax, rdi", _X & (_X - 1)),
+    ("BMI1 blsi", "blsi rax, rdi", _X & -_X),
+    ("BMI1 tzcnt", "shl rdi, 8\ntzcnt rax, rdi", 8),
+    ("BMI1 tzcnt of 0", "xor edi, edi\ntzcnt rax, rdi", 64),
+    ("LZCNT", "mov edi, 0xff\nlzcnt rax, rdi", 56),
+    ("LZCNT of 0", "xor edi, edi\nlzcnt rax, rdi", 64),
+    ("POPCNT", "popcnt rax, rdi", bin(_X).count("1")),
+    ("MOVBE", "mov qword ptr [rsp - 8], rdi\nmovbe rax, qword ptr [rsp - 8]",
+     int.from_bytes(_X.to_bytes(8, "little"), "big")),
+    ("SSE4.2 crc32", "xor eax, eax\ncrc32 rax, rdi", _crc32c(_X)),
+    ("SSSE3 pshufb", "movq xmm0, rdi\npxor xmm1, xmm1\npshufb xmm0, xmm1\nmovq rax, xmm0",
+     (_X & 0xFF) * 0x0101010101010101),
+    ("SSE4.1 pmulld", "movq xmm0, rdi\nmovq xmm1, rsi\npmulld xmm0, xmm1\nmovq rax, xmm0",
+     _lanes32(lambda a, b: a * b)),
+    ("SSE4.1 ptest", "movq xmm0, rdi\npxor xmm1, xmm1\nptest xmm0, xmm1\nsetz al\nmovzx eax, al", 1),
+    ("SSE4.1 pextrq", "movq xmm0, rdi\npinsrq xmm0, rsi, 1\npextrq rax, xmm0, 1", _Y),
+    ("SSE4.2 pcmpgtq", "movq xmm0, rdi\nmovq xmm1, rsi\npcmpgtq xmm0, xmm1\nmovq rax, xmm0", _M64),
+    ("SSE2 paddd", "movq xmm0, rdi\nmovq xmm1, rsi\npaddd xmm0, xmm1\nmovq rax, xmm0",
+     _lanes32(lambda a, b: a + b)),
+    ("PCLMULQDQ", "movq xmm0, rdi\nmovq xmm1, rsi\npclmulqdq xmm0, xmm1, 0\nmovq rax, xmm0",
+     _clmul(_X, _Y) & _M64),
+    ("AES-NI aesenc", "movq xmm0, rdi\nmovq xmm1, rsi\naesenc xmm0, xmm1\nmovq rax, xmm0", None),
+]
+
+X86_UNSUPPORTED = [
+    ("adcx rax, rdi", "ADX instructions are not supported by the emulator; use adc"),
+    ("adox rax, rdi", "ADX instructions are not supported by the emulator; use adc"),
+    ("vpaddd xmm0, xmm1, xmm2", "VEX-encoded vector"),  # VEX-128 AVX: Unicorn miscomputes it
+    ("vpxor xmm0, xmm1, xmm2", "VEX-encoded vector"),
+    ("vpaddd ymm0, ymm1, ymm2", "VEX-encoded vector"),  # AVX2
+    ("vmovdqu ymm0, ymm1", "VEX-encoded vector"),
+    ("vfmadd231pd xmm0, xmm1, xmm2", "VEX-encoded vector"),  # FMA
+    ("vcvtph2ps xmm0, xmm1", "VEX-encoded vector"),  # F16C
+    ("vzeroupper", "VEX-encoded vector"),
+    ("vpaddd zmm0, zmm1, zmm2", "AVX-512 (EVEX)"),
+    ("sha256rnds2 xmm0, xmm1, xmm0", "SHA instructions"),
+    ("sha1rnds4 xmm0, xmm1, 0", "SHA instructions"),
+    ("blcfill rax, rdi", "TBM instructions"),
+    ("vprotd xmm0, xmm1, 3", "XOP instructions"),
+    ("pfadd mm0, mm1", "3DNow! instructions"),
+]
+
+
+@pytest.mark.parametrize("name,body,want", X86_SUPPORTED, ids=[s[0] for s in X86_SUPPORTED])
+def test_x86_isa_level_supported_instructions_assemble_and_execute(name, body, want):
+    prog = stream(X86_64, "f:\n" + body + "\nret\n")
+    got = run_function(X86_64, prog.code, [_X, _Y], abi=False).ret
+    if want is not None:
+        assert got == want, (name, hex(got), hex(want))
+
+
+@pytest.mark.parametrize("text,message", X86_UNSUPPORTED, ids=[u[0] for u in X86_UNSUPPORTED])
+def test_x86_isa_level_unsupported_instructions_are_refused(text, message):
+    # The emulator cannot run them (or runs them wrongly): check that keystone encodes them, then
+    # that the stream refuses the statement with the reason.
+    enc = keystone_whole(X86_64, text)
+    prog = assemble_stream(X86_64, ["f:\n", text + "\n", "ret\n"])
+    assert not prog.ok and message in prog.errors[0].message, [e.message for e in prog.errors]
+    assert "not supported by the emulator" in prog.errors[0].message
+    if text in _UNICORN_INVALID:  # and the emulator really cannot run them
+        with pytest.raises(EmulationError, match="UC_ERR_INSN_INVALID"):
+            run_function(X86_64, enc + b"\xc3", [], abi=False)
+
+
+_UNICORN_INVALID = {"adcx rax, rdi", "adox rax, rdi", "vpaddd ymm0, ymm1, ymm2", "vmovdqu ymm0, ymm1",
+                    "vfmadd231pd xmm0, xmm1, xmm2", "vcvtph2ps xmm0, xmm1", "sha256rnds2 xmm0, xmm1, xmm0",
+                    "sha1rnds4 xmm0, xmm1, 0", "vpaddd zmm0, zmm1, zmm2", "pfadd mm0, mm1"}
+
+
+def test_vex128_avx_is_silently_wrong_in_the_emulator():
+    """Why VEX-128 AVX is refused rather than left to crash: Unicorn runs it with a wrong result."""
+    enc = keystone_whole(X86_64, "movq xmm1, rdi\nmovq xmm2, rsi\nvpaddd xmm0, xmm1, xmm2\nmovq rax, xmm0\nret")
+    got = run_function(X86_64, enc, [_X, _Y], abi=False).ret
+    assert got != _lanes32(lambda a, b: a + b)
+
+
+def test_x86_isa_level_matches_the_prompt():
+    from bca.liveeval.prompts import ISA_LEVEL
+
+    text = ISA_LEVEL["x86_64"]
+    for name, _, _ in X86_SUPPORTED:
+        ext, _, mnemonic = name.partition(" ")
+        ext = {"SSE4.1": "SSE4.1", "SSE4.2": "SSE4.2", "SSE2": "SSE", "AES-NI": "AES-NI"}.get(ext, ext)
+        assert ext.split(".")[0] in text, name
+        if ext.startswith("BMI") and mnemonic and " of " not in mnemonic:
+            assert mnemonic in text, name
+    for ext in ("AVX, AVX2, AVX-512", "FMA", "F16C", "ADX (adcx/adox; use adc)", "SHA"):
+        assert ext in text.split("Not supported")[1], ext
+
+
+def test_x86_bmi_vex_forms_are_not_mistaken_for_avx():
+    stream(X86_64, "f:\nandn rax, rdi, rsi\nmulx rcx, rax, rdi\nrorx rax, rdi, 3\nblsmsk rax, rdi\nret\n")
+
+
+def test_structured_x86_cannot_express_adx_or_avx():
+    from bca.structured import x64
+
+    ops = {op for fam in x64.FAMILIES for op in fam.ops}
+    assert "adc" in ops
+    assert not ops & {"adcx", "adox", "mulx", "vpaddd", "vmovdqu", "vzeroupper"}
+    assert not any(op.startswith("v") for op in ops)

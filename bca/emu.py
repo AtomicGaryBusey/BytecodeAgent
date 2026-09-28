@@ -21,9 +21,10 @@ The harness is deliberately hostile to code that only works by accident:
   slots but nothing else of the caller's frame.
 * `aligned_entries=[addr, ...]` checks the call-site stack alignment whenever control enters
   one of those addresses (x86-64: rsp == 8 mod 16 and DF clear; AArch64: sp == 0 mod 16)
-  and raises `MisalignedCall` otherwise. `hostile_callback(isa)` is a ready-made callee for
-  function-pointer arguments: f(x) = 3x + 1 that clobbers every caller-saved register, the
-  flags and the stack below its sp (map it with `segments` at CALLBACK_BASE).
+  and raises `MisalignedCall` otherwise. `hostile_callback(isa, f)` is a ready-made callee for
+  function-pointer arguments: f(x) = 3x + 1 by default (see CALLBACK_FUNCTIONS for the others)
+  that clobbers every caller-saved register, the flags and the stack below its sp (map all of
+  them with `callback_segments(isa)` at CALLBACK_BASE; pass `callback_address(f)`).
 * `strict_sse_alignment=True` (x86-64) faults legacy-SSE 16-byte memory operands that are
   not 16-byte aligned (hardware raises #GP; Unicorn does not) with `MisalignedAccess`.
 
@@ -422,6 +423,7 @@ def run_function(
     code, data = bytes(code), bytes(data)
     segments = _parse_segments(segments)
     _check_layout(code_base, code, data, data_offset, segments)
+    aligned_entries = _with_callback_entries(aligned_entries)
     tracing = bool(trace or on_step)
     if garbage is None:
         garbage = not tracing
@@ -631,15 +633,67 @@ def run_function(
 # -- a hostile callee for function-pointer arguments -----------------------------------------
 
 CALLBACK_BASE = 0x600000  # where callers map hostile_callback() (free in the default layout)
+CALLBACK_SLOT = 0x400  # each callback function f lives at CALLBACK_BASE + k * CALLBACK_SLOT
 
-# f(x) = 3x + 1 (wrapping). Before returning it overwrites every caller-saved register with
-# values that change from call to call, sets the flags from them, and scribbles over the 128
-# bytes below its own stack pointer (legal for any callee; fatal to a caller that kept data
-# there across the call). It preserves exactly what the ABI requires and nothing more.
-_CALLBACK_SRC = {
+# The functions a hostile callee can compute, in slot order (slot 0 is the default and sits at
+# CALLBACK_BASE itself, so code written before there was a choice is unchanged):
+#   "3x+1": f(x) = 3x + 1 (wrapping); never a fixed point (3x + 1 == x has no solution mod 2^64).
+#   "fix3": f(x) = x if x % 3 == 0 (C signed remainder, i.e. x divisible by 3) else 3x + 1;
+#           has fixed points, so a caller comparing f(x) with x sees equality.
+CALLBACK_FUNCTIONS = ("3x+1", "fix3")
+
+
+def callback_model(f: str = "3x+1") -> Callable[[int], int]:
+    """The Python model of callback `f` on signed 64-bit values (returns a signed value)."""
+    def s64(v: int) -> int:
+        v &= MASK64
+        return v - (1 << 64) if v >> 63 else v
+
+    if f == "3x+1":
+        return lambda x: s64(3 * x + 1)
+    if f == "fix3":
+        return lambda x: s64(x) if s64(x) % 3 == 0 else s64(3 * x + 1)
+    raise ValueError(f"unknown callback function {f!r}; have {', '.join(CALLBACK_FUNCTIONS)}")
+
+
+def callback_address(f: str = "3x+1") -> int:
+    """The function-pointer value to pass for callback `f` (CALLBACK_BASE for the default)."""
+    if f not in CALLBACK_FUNCTIONS:
+        raise ValueError(f"unknown callback function {f!r}; have {', '.join(CALLBACK_FUNCTIONS)}")
+    return CALLBACK_BASE + CALLBACK_SLOT * CALLBACK_FUNCTIONS.index(f)
+
+
+def callback_entries() -> tuple[int, ...]:
+    return tuple(callback_address(f) for f in CALLBACK_FUNCTIONS)
+
+
+def _with_callback_entries(entries: Iterable[int]) -> list[int]:
+    """CALLBACK_BASE in `aligned_entries` stands for every callback function in the segment,
+    so a task may pass any callback_address() and keep the same misaligned-call trap."""
+    entries = list(entries)
+    if CALLBACK_BASE in entries:
+        entries += [e for e in callback_entries() if e not in entries]
+    return entries
+
+
+# Every callback computes its f(x) into the return register, then (identically for all f)
+# overwrites every caller-saved register with values that change from call to call, sets the
+# flags from them, and scribbles over the 128 bytes below its own stack pointer (legal for any
+# callee; fatal to a caller that kept data there across the call). It preserves exactly what
+# the ABI requires and nothing more.
+_CALLBACK_RESULT = {
+    ("x86_64", "3x+1"): ["lea rax, [rdi + rdi*2 + 1]"],
+    # rcx, rdx and flags are overwritten by the clobber sequence below; rdi still holds x.
+    ("x86_64", "fix3"): ["mov rax, rdi", "cqo", "mov ecx, 3", "idiv rcx",
+                         "lea rax, [rdi + rdi*2 + 1]", "test rdx, rdx", "cmovz rax, rdi"],
+    ("aarch64", "3x+1"): ["add x9, x0, x0, lsl #1", "add x0, x9, #1"],
+    # x9-x11 and the flags are overwritten by the clobber sequence below.
+    ("aarch64", "fix3"): ["add x9, x0, x0, lsl #1", "add x9, x9, #1", "mov x10, #3", "sdiv x11, x0, x10",
+                          "msub x11, x11, x10, x0", "cmp x11, #0", "csel x0, x0, x9, eq"],
+}  # fmt: skip
+_CALLBACK_CLOBBER = {
     "x86_64": "\n".join(
-        ["lea rax, [rdi + rdi*2 + 1]",
-         "mov rcx, 0x9e3779b97f4a7c15", "imul rcx, rdi", "xor rcx, 0x5bd1e995"]
+        ["mov rcx, 0x9e3779b97f4a7c15", "imul rcx, rdi", "xor rcx, 0x5bd1e995"]
         + [f"mov {d}, {s}\nrol {d}, 13\nxor {d}, 0x3c6ef372" for s, d in
            (("rcx", "rdx"), ("rdx", "rsi"), ("rsi", "rdi"), ("rdi", "r8"), ("r8", "r9"),
             ("r9", "r10"), ("r10", "r11"))]
@@ -649,8 +703,7 @@ _CALLBACK_SRC = {
            zip(range(1, 17), "rcx rdx rsi rdi r8 r9 r10 r11 rcx rdx rsi rdi r8 r9 r10 r11".split())]
         + ["add rcx, rdx", "ret"]),  # fmt: skip
     "aarch64": "\n".join(
-        ["add x9, x0, x0, lsl #1", "add x0, x9, #1",
-         "movz x9, #0x7c15", "movk x9, #0x7f4a, lsl #16", "movk x9, #0x79b9, lsl #32",
+        ["movz x9, #0x7c15", "movk x9, #0x7f4a, lsl #16", "movk x9, #0x79b9, lsl #32",
          "movk x9, #0x9e37, lsl #48", "mul x9, x9, x0", "eor x9, x9, #0xff00ff00ff00ff00"]
         + [f"eor x{d}, x{s}, x{s}, ror #13" for s, d in
            ((9, 1), (1, 2), (2, 3), (3, 4), (4, 5), (5, 6), (6, 7), (7, 8), (8, 10), (10, 11),
@@ -659,23 +712,34 @@ _CALLBACK_SRC = {
         + [f"stur x{1 + k}, [sp, #-{8 * (k + 1)}]" for k in range(16)]
         + ["cmn x9, x10", "ret"]),  # fmt: skip
 }
-_CALLBACK_CODE: dict[str, bytes] = {}
+_CALLBACK_CODE: dict[tuple[str, str], bytes] = {}
 
 
-def hostile_callback(isa: Isa) -> bytes:
-    """Machine code for the hostile callee f(x) = 3x + 1 (see _CALLBACK_SRC); position independent.
+def hostile_callback(isa: Isa, f: str = "3x+1") -> bytes:
+    """Machine code for the hostile callee computing `f` (CALLBACK_FUNCTIONS; default
+    f(x) = 3x + 1); position independent.
 
-    Map it with `segments=[(CALLBACK_BASE, hostile_callback(isa), "rx")]`, pass CALLBACK_BASE
-    as the function-pointer argument, and add it to `aligned_entries` so a call made with a
-    misaligned stack raises MisalignedCall."""
-    if isa.name not in _CALLBACK_CODE:
-        enc, _ = isa.assembler().asm(_CALLBACK_SRC[isa.name], 0)
-        _CALLBACK_CODE[isa.name] = bytes(enc)
-    return _CALLBACK_CODE[isa.name]
+    Map it with `segments=callback_segments(isa)`, pass callback_address(f) (CALLBACK_BASE for
+    the default) as the function-pointer argument, and add CALLBACK_BASE to `aligned_entries`
+    (which covers every callback function) so a call made with a misaligned stack raises
+    MisalignedCall."""
+    key = (isa.name, f)
+    if key not in _CALLBACK_CODE:
+        if key not in _CALLBACK_RESULT:
+            raise ValueError(f"unknown callback function {f!r}; have {', '.join(CALLBACK_FUNCTIONS)}")
+        src = "\n".join(_CALLBACK_RESULT[key]) + "\n" + _CALLBACK_CLOBBER[isa.name]
+        enc, _ = isa.assembler().asm(src, 0)
+        code = bytes(enc)
+        assert len(code) <= CALLBACK_SLOT, (key, len(code))
+        _CALLBACK_CODE[key] = code
+    return _CALLBACK_CODE[key]
 
 
 def callback_segments(isa: Isa) -> list[tuple[int, bytes, str]]:
-    return [(CALLBACK_BASE, hostile_callback(isa), "rx")]
+    """One segment at CALLBACK_BASE holding every callback function in its slot."""
+    pad = b"\xcc" if isa.name == "x86_64" else b"\x00"  # int3 / udf between the functions
+    blob = b"".join(hostile_callback(isa, f).ljust(CALLBACK_SLOT, pad) for f in CALLBACK_FUNCTIONS)
+    return [(CALLBACK_BASE, blob, "rx")]
 
 
 def _check_abi(isa: Isa, spec: _Abi, uc, entry_sp: int, saved: dict[str, int]) -> None:
@@ -703,6 +767,8 @@ def _check_abi(isa: Isa, spec: _Abi, uc, entry_sp: int, saved: dict[str, int]) -
 __all__ = [
     "ABIViolation",
     "CALLBACK_BASE",
+    "CALLBACK_FUNCTIONS",
+    "CALLBACK_SLOT",
     "CODE_BASE",
     "CODE_SIZE",
     "DATA_BASE",
@@ -720,6 +786,9 @@ __all__ = [
     "STACK_SIZE",
     "STACK_TOP",
     "Step",
+    "callback_address",
+    "callback_entries",
+    "callback_model",
     "callback_segments",
     "hostile_callback",
     "run_function",

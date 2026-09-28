@@ -1789,6 +1789,8 @@ _NEAR_BRANCH = (
     iced_x86.OpKind.NEAR_BRANCH64,
 )
 _X86_REGISTERS = {k.lower() for k in dir(iced_x86.Register) if k.isupper()} - {"none"}
+# iced names the low bytes of r8-r15 "r8l".."r15l"; assemblers (and models) write "r8b".."r15b".
+_X86_REGISTERS |= {f"r{i}b" for i in range(8, 16)}
 _X86_KEYWORDS = {"ptr", "byte", "word", "dword", "qword", "tbyte", "tword", "xword", "oword",
                  "fword", "mmword", "xmmword", "ymmword", "zmmword", "offset", "short", "near",
                  "far", "rel", "abs", "st", ".", "$"}  # fmt: skip
@@ -1983,7 +1985,46 @@ def _x86_decode(data: bytes, addr: int) -> iced_x86.Instruction:
     ins = iced_x86.Decoder(64, data, ip=addr).decode()
     if ins.code == iced_x86.Code.INVALID or ins.len != len(data):
         raise AsmError(f"encoding {data.hex()} does not decode as one instruction")
+    _x86_check_supported(ins)
     return ins
+
+
+# Instruction-set extensions the emulator (Unicorn) cannot run. They assemble and pass the GNU
+# as cross-check, but Unicorn raises UC_ERR_INSN_INVALID for them (ADX, AVX2/ymm, FMA, F16C,
+# SHA, AVX-512, TBM, XOP, 3DNow!), or, worse, silently miscomputes them (VEX-encoded 128-bit AVX
+# such as `vpaddd xmm0, xmm1, xmm2`). A correct program using them would be scored as a crash or a
+# wrong result, so they are refused up front. VEX-encoded BMI1/BMI2 (andn, bextr, blsi, blsr,
+# blsmsk, bzhi, mulx, pdep, pext, rorx, sarx, shlx, shrx) execute correctly and stay allowed.
+# The supported level is stated to the model in bca.liveeval.prompts.ISA_LEVEL.
+_CF = iced_x86.CpuidFeature
+_EK = iced_x86.EncodingKind
+_X86_VEX_OK = {_CF.BMI1, _CF.BMI2}
+_X86_NO_FEATURE = {
+    _CF.ADX: "ADX instructions are not supported by the emulator; use adc",
+    _CF.SHA: "SHA instructions are not supported by the emulator",
+    _CF.SHA512: "SHA instructions are not supported by the emulator",
+    _CF.SM3: "SM3 instructions are not supported by the emulator",
+    _CF.SM4: "SM4 instructions are not supported by the emulator",
+    _CF.TBM: "TBM instructions are not supported by the emulator",
+}
+_X86_NO_ENCODING = {
+    _EK.EVEX: "AVX-512 (EVEX) instructions are not supported by the emulator",
+    _EK.MVEX: "MVEX instructions are not supported by the emulator",
+    _EK.XOP: "XOP instructions are not supported by the emulator",
+    _EK.D3NOW: "3DNow! instructions are not supported by the emulator",
+}
+
+
+def _x86_check_supported(ins: iced_x86.Instruction) -> None:
+    what = _X86_FORMATTER.format_mnemonic(ins)
+    for feature in ins.cpuid_features():
+        if feature in _X86_NO_FEATURE:
+            raise AsmError(f"{what}: {_X86_NO_FEATURE[feature]}")
+    if ins.encoding in _X86_NO_ENCODING:
+        raise AsmError(f"{what}: {_X86_NO_ENCODING[ins.encoding]}; use SSE (up to SSE4.2)")
+    if ins.encoding == _EK.VEX and not set(ins.cpuid_features()) <= _X86_VEX_OK:
+        raise AsmError(f"{what}: AVX/AVX2/FMA (VEX-encoded vector) instructions are not supported by the "
+                       "emulator (it rejects or miscomputes them); use the SSE form (up to SSE4.2)")
 
 
 def _x86_check_length(data: bytes, addr: int) -> None:

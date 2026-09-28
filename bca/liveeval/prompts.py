@@ -53,6 +53,22 @@ STREAM_RULES = {
     ),
 }
 
+# The instruction-set level the emulator executes correctly (probed against Unicorn: see
+# tests/test_stream.py::test_x86_isa_level_matches_the_emulator). Appended to the stream rules
+# for round >= 3 tasks only, so round-1/round-2 prompts (and their committed results) are unchanged.
+ISA_LEVEL = {
+    "x86_64": (
+        "Instruction set: x86-64 with SSE up to SSE4.2 (including SSSE3, SSE4.1 and crc32), POPCNT, "
+        "LZCNT, BMI1/BMI2 (andn, bextr, blsi, blsr, tzcnt, bzhi, mulx, pdep, pext, rorx, sarx, shlx, "
+        "shrx), MOVBE, AES-NI and PCLMULQDQ. Not supported (rejected): AVX, AVX2, AVX-512, FMA, F16C "
+        "and every other VEX/EVEX vector instruction, ADX (adcx/adox; use adc) and SHA."
+    ),
+    "aarch64": (
+        "Instruction set: ARMv8.0-A with floating point and Advanced SIMD (NEON). Not supported "
+        "(rejected): CRC32, LSE atomics, dot product, half-precision, crypto (AES/SHA/PMULL) and SVE."
+    ),
+}
+
 IR_RULES = (
     "Output format: QBE intermediate language (the IL of the QBE compiler backend, "
     "c9x.me/compile). Write exactly one function, `export function l ${name}(...)`, taking "
@@ -134,6 +150,8 @@ def rules(path: str, isa: str, task: Task) -> str:
         text = STREAM_RULES[isa]
         if task.calls:
             text = text.replace(_NO_CALLS, _STREAM_CALLS[task.calls][isa])
+        if task.round >= 3:
+            text += " " + ISA_LEVEL[isa]
         return text.replace("{name}", task.name)
     if path == "structured":
         text = _structured_rules(isa)
