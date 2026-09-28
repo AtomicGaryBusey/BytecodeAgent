@@ -149,6 +149,8 @@ _LABEL_RE = re.compile(r"([A-Za-z_.$][\w.$]*)\s*:(?!:)")
 _MNEMONIC_RE = re.compile(r"[A-Za-z_][\w.]*(?: |$)")
 _WS_RE = re.compile(r"[ \t\r\f\v]+")
 _CTRL_RE = re.compile(r"[\x00-\x1f\x7f]")
+# A printable one-character literal, minus quote, backslash and the comment/separator characters.
+_CHAR_LIT_RE = re.compile(r"'([ !$-&(-\[\]-~])'")
 _IGNORED_DIRECTIVES = {".text", ".globl", ".global", ".type", ".size", ".file", ".intel_syntax"}
 _RESERVED_PREFIX = "__bca_"
 
@@ -563,8 +565,11 @@ class StreamAssembler:
 
         if not text.isascii():
             return error("non-ASCII characters")
+        # A one-character literal ('/', 'A') is a number to GNU as on both ISAs: pass its value on.
+        text = _CHAR_LIT_RE.sub(lambda m: str(ord(m[1])), text)
         if re.search(r"[\"'\\]", text):
-            return error("quotes and backslashes are not supported (character literals, strings)")
+            return error("strings, escapes and this character literal are not supported; write the "
+                         "character's numeric value instead (e.g. 47 for '/')")
         text = _WS_RE.sub(" ", text)
         if _CTRL_RE.search(text):
             return error("control characters")

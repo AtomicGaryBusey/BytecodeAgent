@@ -1385,11 +1385,28 @@ def test_failed_gas_run_reaps_every_window(tmp_path, monkeypatch):
 
 
 @pytest.mark.parametrize(
-    "isa,text", [(AARCH64, 'mov x0, "a'), (X86_64, "nop \\"), (AARCH64, "add x0, x0, #'a'")]
+    "isa,text", [(AARCH64, 'mov x0, "a'), (X86_64, "nop \\"), (X86_64, "mov al, '\\n'"), (X86_64, "mov al, 'ab'"),
+                 (AARCH64, "mov w0, #'''")]
 )
 def test_quotes_and_backslashes_are_refused(isa, text):
     errs = errors_of(isa, text + "\n")
     assert errs and "not supported" in errs[0]
+
+
+@pytest.mark.parametrize("isa,lit,num", [
+    (X86_64, "mov al, '/'", "mov al, 47"), (X86_64, "cmp dl, 'A'", "cmp dl, 65"),
+    (X86_64, "mov byte ptr [rdi + 3], '='", "mov byte ptr [rdi + 3], 61"),
+    (AARCH64, "mov w0, #'/'", "mov w0, #47"), (AARCH64, "cmp w1, #'z'", "cmp w1, #122"),
+    (AARCH64, "add x0, x0, #'a'", "add x0, x0, #97"),
+])
+def test_one_character_literals_are_their_value(isa, lit, num):
+    """GNU as reads 'c' as the character's value on both ISAs; so does the stream (cross-checked)."""
+    a, b = StreamAssembler(isa), StreamAssembler(isa)
+    a.feed(lit + "\nret\n")
+    b.feed(num + "\nret\n")
+    ra, rb = a.finish(), b.finish()
+    assert not [e for e in a.events if e.kind == "error"], [e.message for e in a.events]
+    assert bytes(ra.code) == bytes(rb.code)
 
 
 # -- x86 ISA level: what the emulator executes, what the stream refuses ---------------------
