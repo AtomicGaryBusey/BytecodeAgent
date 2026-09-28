@@ -1,0 +1,159 @@
+Implement the function `int64_t packbits_encode(const uint8_t *src, int64_t n, uint8_t *out, int64_t cap)`.
+
+Target: AArch64 (ARMv8-A), Linux AAPCS64. Integer/pointer arguments in x0-x7; 64-bit result in x0. Callee-saved: x19-x28, x29 (frame pointer) and d8-d15 (restore them if you use them); x9-x15 are free scratch registers. sp must stay 16-byte aligned and be back to its entry value when you return with ret (return address in x30). More ABI facts: arguments beyond the eighth are passed on the stack (the 9th at [sp] at entry). A call (bl/blr) overwrites x30, so save x30 (e.g. stp x29, x30, [sp, #-16]!) before calling and restore it before ret. A call clobbers the caller-saved registers x0-x18, x30, v0-v7 and v16-v31 (and the upper halves of v8-v15) and the flags, so keep values that must survive a call in callee-saved registers x19-x28 (saved/restored by you) or in your own stack frame. sp must be 16-byte aligned at every call (and whenever it is used as a base register). Anything below sp may be overwritten by a callee.
+
+Output format: QBE intermediate language (the IL of the QBE compiler backend, c9x.me/compile). Write exactly one function, `export function l $packbits_encode(...)`, taking every argument as `l` (64-bit; pointers are `l` too) and returning `l`. QBE will compile it for the target above, so you do not handle registers or the ABI yourself. Remember: every block starts with an `@label`; temporaries are `%name`; comparisons such as `csltl`/`ceql` produce a `w` value; `jnz` tests a `w`; loads/stores are `loadl`/`storel`. No data definitions, no calls, no other functions. Output only the QBE code: no Markdown fences, no prose. Load a byte zero-extended with `%b =w loadub %p`; store one with `storeb %c, %p`.
+
+Specification: Compress the n bytes at src (0 <= n <= 600) with PackBits run-length encoding into out, which has room for cap bytes (0 <= cap <= 1200), and return the number of bytes written. The output is a sequence of packets: a repeat packet is the header byte 257 - r (i.e. -(r-1) as a signed byte) followed by one byte b, meaning r copies of b (3 <= r <= 128); a literal packet is the header byte L - 1 followed by L bytes copied verbatim (1 <= L <= 128). Encode greedily, left to right, exactly as follows. Let run(j) be the number of consecutive bytes equal to src[j] starting at j, capped at 128. At position i: if run(i) >= 3, emit a repeat packet with r = run(i) and b = src[i], and advance i by r. Otherwise emit a literal packet of the bytes src[i..j-1], where j starts at i and advances while j < n, j - i < 128 and run(j) < 3; then set i = j. (So a pair of equal bytes stays inside a literal; a literal stops just before a run of 3 or more.) Example: "abcccd" -> 01 'a' 'b' FE 'c' 00 'd' (7 bytes). If a whole packet does not fit in the remaining room, write none of it and return -1 immediately (earlier packets stay written). Read only src[0..n-1] (never look past src[n-1] when measuring a run) and write only out[0..cap-1] (both are checked).
+
+Your previous attempt was:
+<previous>
+```qbe
+export function l $packbits_encode(l %src, l %n, l %out, l %cap) {
+@start
+    %i = copy 0
+    %out_pos = copy 0
+    jmp @loop
+
+@loop
+    %i_lt_n = csltl %i, %n
+    jnz %i_lt_n, @loop_body, @end
+
+@loop_body
+    %src_i = add %src, %i
+    %byte_i =w loadub %src_i
+
+    %run_len = copy 1
+    %run_j = add %i, 1
+
+@count_run
+    %run_j_lt_n = csltl %run_j, %n
+    %run_len_lt_128 = csltl %run_len, 128
+    %can_count_run = and %run_j_lt_n, %run_len_lt_128
+    jnz %can_count_run, @get_byte_run, @run_done
+
+@get_byte_run
+    %src_runj = add %src, %run_j
+    %byte_runj =w loadub %src_runj
+    %bytes_eq = ceql %byte_i, %byte_runj
+    jnz %bytes_eq, @inc_run, @run_done
+
+@inc_run
+    %run_len = add %run_len, 1
+    %run_j = add %run_j, 1
+    jmp @count_run
+
+@run_done
+    %run_ge_3 = csltl 2, %run_len
+    jnz %run_ge_3, @emit_repeat, @emit_literal_start
+
+@emit_repeat
+    %available = sub %cap, %out_pos
+    %need = copy 2
+    %fits = cslel %need, %available
+    jnz %fits, @write_repeat, @return_neg1
+
+@write_repeat
+    %header_val = sub 257, %run_len
+    %header =w trunc %header_val
+    %out_addr_h = add %out, %out_pos
+    storeb %header, %out_addr_h
+    %out_pos = add %out_pos, 1
+    %out_addr_d = add %out, %out_pos
+    storeb %byte_i, %out_addr_d
+    %out_pos = add %out_pos, 1
+    %i = add %i, %run_len
+    jmp @loop
+
+@emit_literal_start
+    %lit_start = copy %i
+    %lit_len = copy 0
+    %lit_j = copy %i
+    jmp @lit_loop
+
+@lit_loop
+    %lit_j_lt_n = csltl %lit_j, %n
+    %lit_len_lt_128 = csltl %lit_len, 128
+    %can_continue_lit = and %lit_j_lt_n, %lit_len_lt_128
+    jnz %can_continue_lit, @check_lit_run_len, @lit_done
+
+@check_lit_run_len
+    %src_litj = add %src, %lit_j
+    %byte_litj =w loadub %src_litj
+    %lit_run_len = copy 1
+    %lit_run_j = add %lit_j, 1
+    jmp @count_lit_run
+
+@count_lit_run
+    %lit_run_j_lt_n = csltl %lit_run_j, %n
+    %lit_run_len_lt_128 = csltl %lit_run_len, 128
+    %can_count_lit_run = and %lit_run_j_lt_n, %lit_run_len_lt_128
+    jnz %can_count_lit_run, @get_byte_lit_run, @lit_run_done
+
+@get_byte_lit_run
+    %src_lit_runj = add %src, %lit_run_j
+    %byte_lit_runj =w loadub %src_lit_runj
+    %lit_bytes_eq = ceql %byte_litj, %byte_lit_runj
+    jnz %lit_bytes_eq, @inc_lit_run, @lit_run_done
+
+@inc_lit_run
+    %lit_run_len = add %lit_run_len, 1
+    %lit_run_j = add %lit_run_j, 1
+    jmp @count_lit_run
+
+@lit_run_done
+    %lit_run_ge_3 = csltl 2, %lit_run_len
+    jnz %lit_run_ge_3, @lit_done, @add_to_literal
+
+@add_to_literal
+    %lit_len = add %lit_len, 1
+    %lit_j = add %lit_j, 1
+    jmp @lit_loop
+
+@lit_done
+    %need_lit = add 1, %lit_len
+    %avail_lit = sub %cap, %out_pos
+    %fits_lit = cslel %need_lit, %avail_lit
+    jnz %fits_lit, @write_literal, @return_neg1
+
+@write_literal
+    %header_lit_val = sub %lit_len, 1
+    %header_lit =w trunc %header_lit_val
+    %out_addr_hdr = add %out, %out_pos
+    storeb %header_lit, %out_addr_hdr
+    %out_pos = add %out_pos, 1
+    %copy_idx = copy 0
+    jmp @copy_loop
+
+@copy_loop
+    %can_copy = csltl %copy_idx, %lit_len
+    jnz %can_copy, @do_copy, @copy_done
+
+@do_copy
+    %offset = add %lit_start, %copy_idx
+    %src_addr = add %src, %offset
+    %byte_copy =w loadub %src_addr
+    %out_addr = add %out, %out_pos
+    storeb %byte_copy, %out_addr
+    %out_pos = add %out_pos, 1
+    %copy_idx = add %copy_idx, 1
+    jmp @copy_loop
+
+@copy_done
+    %i = add %lit_start, %lit_len
+    jmp @loop
+
+@return_neg1
+    ret -1
+
+@end
+    ret %out_pos
+}
+```
+</previous>
+It failed:
+<failure>
+Compilation failed at stage qbe:
+qbe:-:3: invalid class specifier
+</failure>
+Write a corrected, complete version. Same output format; output only the code.

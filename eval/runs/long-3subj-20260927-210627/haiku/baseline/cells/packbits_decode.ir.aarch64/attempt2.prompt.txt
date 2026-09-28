@@ -1,0 +1,138 @@
+Implement the function `int64_t packbits_decode(const uint8_t *src, int64_t n, uint8_t *out, int64_t cap)`.
+
+Target: AArch64 (ARMv8-A), Linux AAPCS64. Integer/pointer arguments in x0-x7; 64-bit result in x0. Callee-saved: x19-x28, x29 (frame pointer) and d8-d15 (restore them if you use them); x9-x15 are free scratch registers. sp must stay 16-byte aligned and be back to its entry value when you return with ret (return address in x30). More ABI facts: arguments beyond the eighth are passed on the stack (the 9th at [sp] at entry). A call (bl/blr) overwrites x30, so save x30 (e.g. stp x29, x30, [sp, #-16]!) before calling and restore it before ret. A call clobbers the caller-saved registers x0-x18, x30, v0-v7 and v16-v31 (and the upper halves of v8-v15) and the flags, so keep values that must survive a call in callee-saved registers x19-x28 (saved/restored by you) or in your own stack frame. sp must be 16-byte aligned at every call (and whenever it is used as a base register). Anything below sp may be overwritten by a callee.
+
+Output format: QBE intermediate language (the IL of the QBE compiler backend, c9x.me/compile). Write exactly one function, `export function l $packbits_decode(...)`, taking every argument as `l` (64-bit; pointers are `l` too) and returning `l`. QBE will compile it for the target above, so you do not handle registers or the ABI yourself. Remember: every block starts with an `@label`; temporaries are `%name`; comparisons such as `csltl`/`ceql` produce a `w` value; `jnz` tests a `w`; loads/stores are `loadl`/`storel`. No data definitions, no calls, no other functions. Output only the QBE code: no Markdown fences, no prose. Load a byte zero-extended with `%b =w loadub %p` or sign-extended with `%b =w loadsb %p`; store one with `storeb %c, %p`.
+
+Specification: Decompress PackBits data: src holds n bytes (0 <= n <= 600) of packets, decoded left to right into out, which has room for cap bytes (0 <= cap <= 1200). Each packet starts with a header byte h read as a signed byte: 0 <= h <= 127: a literal packet, the next h + 1 bytes are copied to the output; -127 <= h <= -1: a repeat packet, the next byte is written 1 - h times; h = -128: no operation (the packet is just that byte). Return the number of bytes written. Errors: if a packet needs more source bytes than remain in src[0..n-1] (checked when its header is read, before any of its output is written), return -2 (the output of earlier packets stays written). If the output would exceed cap bytes, write exactly the first cap bytes of the output (out[0..cap-1] completely filled) and return -1. Example: 01 'a' 'b' FE 'c' 00 'd' decodes to "abcccd" (returns 6); with cap = 4 it writes "abcc" and returns -1. Read only src[0..n-1] and write only out[0..cap-1] (both are checked: never write out[cap], even when cap is 0).
+
+Your previous attempt was:
+<previous>
+```qbe
+export function l $packbits_decode(l %src, l %n, l %out, l %cap) {
+@entry
+    jmp @packet_start
+    
+@packet_start
+    %src_pos =l phi @entry 0, @noop_end %src_pos_final, @repeat_end %src_pos_final, @literal_end %src_pos_final
+    %out_pos =l phi @entry 0, @noop_end %out_pos_final, @repeat_end %out_pos_final, @literal_end %out_pos_final
+    
+    %at_end =w ceql %src_pos, %n
+    jnz %at_end, @return_result
+    
+    %hdr_ptr =l add %src, %src_pos
+    %h =w loadsb %hdr_ptr
+    %src_pos_new =l add %src_pos, 1
+    
+    %is_noop =w ceql %h, -128
+    jnz %is_noop, @noop_end
+    
+    %is_literal =w csgel %h, 0
+    jnz %is_literal, @literal_start
+    
+    %has_byte =w csltl %src_pos_new, %n
+    jz %has_byte, @src_error
+    
+    %rbyte_ptr =l add %src, %src_pos_new
+    %rbyte =w loadub %rbyte_ptr
+    %h64 =l sext %h
+    %repeat_count_init =l sub 1, %h64
+    
+    jmp @repeat_init
+    
+@repeat_init
+    %rout_pos_init =l copy %out_pos
+    jmp @repeat_loop
+    
+@repeat_loop
+    %rout_pos =l phi @repeat_init %rout_pos_init, @repeat_continue %rout_pos_new
+    %rcount =l phi @repeat_init %repeat_count_init, @repeat_continue %rcount_new
+    
+    %r_done =w ceql %rcount, 0
+    jnz %r_done, @repeat_end
+    
+    %r_can_write =w csltl %rout_pos, %cap
+    jz %r_can_write, @repeat_continue
+    
+    %r_out_ptr =l add %out, %rout_pos
+    storeb %rbyte, %r_out_ptr
+    
+@repeat_continue
+    %rout_pos_new =l add %rout_pos, 1
+    %rcount_new =l sub %rcount, 1
+    jmp @repeat_loop
+    
+@repeat_end
+    %src_pos_final =l add %src_pos_new, 1
+    %out_pos_final =l copy %rout_pos
+    jmp @packet_start
+    
+@noop_end
+    %src_pos_final =l copy %src_pos_new
+    %out_pos_final =l copy %out_pos
+    jmp @packet_start
+    
+@literal_start
+    %h64_lit =l sext %h
+    %lit_count_init =l add %h64_lit, 1
+    
+    %lit_end =l add %src_pos_new, %lit_count_init
+    %no_data =w csgtl %lit_end, %n
+    jnz %no_data, @src_error
+    
+    jmp @literal_init
+    
+@literal_init
+    %lout_pos_init =l copy %out_pos
+    %lsrc_pos_init =l copy %src_pos_new
+    %lit_idx_init =l copy 0
+    jmp @literal_loop
+    
+@literal_loop
+    %lout_pos =l phi @literal_init %lout_pos_init, @literal_continue %lout_pos_new
+    %lsrc_pos =l phi @literal_init %lsrc_pos_init, @literal_continue %lsrc_pos_new
+    %lit_idx =l phi @literal_init %lit_idx_init, @literal_continue %lit_idx_new
+    
+    %l_done =w ceql %lit_idx, %lit_count_init
+    jnz %l_done, @literal_end
+    
+    %lbyte_ptr =l add %src, %lsrc_pos
+    %lbyte =w loadub %lbyte_ptr
+    %lsrc_pos_new =l add %lsrc_pos, 1
+    
+    %l_can_write =w csltl %lout_pos, %cap
+    jz %l_can_write, @literal_continue
+    
+    %l_out_ptr =l add %out, %lout_pos
+    storeb %lbyte, %l_out_ptr
+    
+@literal_continue
+    %lout_pos_new =l add %lout_pos, 1
+    %lit_idx_new =l add %lit_idx, 1
+    jmp @literal_loop
+    
+@literal_end
+    %src_pos_final =l copy %lsrc_pos
+    %out_pos_final =l copy %lout_pos
+    jmp @packet_start
+    
+@return_result
+    %overflow =w csgtl %out_pos, %cap
+    jnz %overflow, @overflow_error
+    
+    ret %out_pos
+    
+@overflow_error
+    ret -1
+    
+@src_error
+    ret -2
+}
+```
+</previous>
+It failed:
+<failure>
+Compilation failed at stage qbe:
+qbe:-:11: , expected, got newline instead
+</failure>
+Write a corrected, complete version. Same output format; output only the code.

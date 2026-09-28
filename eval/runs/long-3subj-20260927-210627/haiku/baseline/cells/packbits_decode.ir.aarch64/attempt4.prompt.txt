@@ -1,0 +1,119 @@
+Implement the function `int64_t packbits_decode(const uint8_t *src, int64_t n, uint8_t *out, int64_t cap)`.
+
+Target: AArch64 (ARMv8-A), Linux AAPCS64. Integer/pointer arguments in x0-x7; 64-bit result in x0. Callee-saved: x19-x28, x29 (frame pointer) and d8-d15 (restore them if you use them); x9-x15 are free scratch registers. sp must stay 16-byte aligned and be back to its entry value when you return with ret (return address in x30). More ABI facts: arguments beyond the eighth are passed on the stack (the 9th at [sp] at entry). A call (bl/blr) overwrites x30, so save x30 (e.g. stp x29, x30, [sp, #-16]!) before calling and restore it before ret. A call clobbers the caller-saved registers x0-x18, x30, v0-v7 and v16-v31 (and the upper halves of v8-v15) and the flags, so keep values that must survive a call in callee-saved registers x19-x28 (saved/restored by you) or in your own stack frame. sp must be 16-byte aligned at every call (and whenever it is used as a base register). Anything below sp may be overwritten by a callee.
+
+Output format: QBE intermediate language (the IL of the QBE compiler backend, c9x.me/compile). Write exactly one function, `export function l $packbits_decode(...)`, taking every argument as `l` (64-bit; pointers are `l` too) and returning `l`. QBE will compile it for the target above, so you do not handle registers or the ABI yourself. Remember: every block starts with an `@label`; temporaries are `%name`; comparisons such as `csltl`/`ceql` produce a `w` value; `jnz` tests a `w`; loads/stores are `loadl`/`storel`. No data definitions, no calls, no other functions. Output only the QBE code: no Markdown fences, no prose. Load a byte zero-extended with `%b =w loadub %p` or sign-extended with `%b =w loadsb %p`; store one with `storeb %c, %p`.
+
+Specification: Decompress PackBits data: src holds n bytes (0 <= n <= 600) of packets, decoded left to right into out, which has room for cap bytes (0 <= cap <= 1200). Each packet starts with a header byte h read as a signed byte: 0 <= h <= 127: a literal packet, the next h + 1 bytes are copied to the output; -127 <= h <= -1: a repeat packet, the next byte is written 1 - h times; h = -128: no operation (the packet is just that byte). Return the number of bytes written. Errors: if a packet needs more source bytes than remain in src[0..n-1] (checked when its header is read, before any of its output is written), return -2 (the output of earlier packets stays written). If the output would exceed cap bytes, write exactly the first cap bytes of the output (out[0..cap-1] completely filled) and return -1. Example: 01 'a' 'b' FE 'c' 00 'd' decodes to "abcccd" (returns 6); with cap = 4 it writes "abcc" and returns -1. Read only src[0..n-1] and write only out[0..cap-1] (both are checked: never write out[cap], even when cap is 0).
+
+Your previous attempt was:
+<previous>
+```qbe
+export function l $packbits_decode(l %src, l %n, l %out, l %cap) {
+@entry
+    jmp @packet_loop
+
+@packet_loop
+    %src_pos =l phi @entry 0, @next_packet %next_src_pos
+    %out_pos =l phi @entry 0, @next_packet %next_out_pos
+    %at_end =w ceql %src_pos, %n
+    jnz %at_end, @finish
+    %hdr_addr =l add %src, %src_pos
+    %h =w loadsb %hdr_addr
+    %is_noop =w ceql %h, -128
+    jnz %is_noop, @noop
+    %is_lit =w csgel %h, 0
+    jnz %is_lit, @literal
+    jmp @repeat
+
+@noop
+    %noop_src =l add %src_pos, 1
+    %noop_out =l add %out_pos, 0
+    jmp @next_packet
+
+@repeat
+    %rep_src_idx =l add %src_pos, 1
+    %has_rep =w csltl %rep_src_idx, %n
+    jz %has_rep, @error_src
+    %rep_addr =l add %src, %rep_src_idx
+    %rep_byte =w loadub %rep_addr
+    %h_long =l extsw %h
+    %rep_cnt =l sub 1, %h_long
+    jmp @rep_write_loop
+
+@rep_write_loop
+    %rep_i =l phi @repeat 0, @rep_write_loop %rep_i_next
+    %rep_out =l phi @repeat %out_pos, @rep_write_loop %rep_out_next
+    %rep_done =w ceql %rep_i, %rep_cnt
+    jnz %rep_done, @rep_end
+    %rep_can_w =w csltl %rep_out, %cap
+    jz %rep_can_w, @rep_skip_w
+    %rep_addr_w =l add %out, %rep_out
+    storeb %rep_byte, %rep_addr_w
+
+@rep_skip_w
+    %rep_out_next =l add %rep_out, 1
+    %rep_i_next =l add %rep_i, 1
+    jmp @rep_write_loop
+
+@rep_end
+    %rep_src_final =l add %src_pos, 2
+    %rep_out_final =l add %rep_out, 0
+    jmp @next_packet
+
+@literal
+    %h_long_l =l extsw %h
+    %lit_cnt =l add %h_long_l, 1
+    %lit_src_start =l add %src_pos, 1
+    %lit_check =l add %lit_src_start, %lit_cnt
+    %exceeds =w csgtl %lit_check, %n
+    jnz %exceeds, @error_src
+    jmp @lit_write_loop
+
+@lit_write_loop
+    %lit_i =l phi @literal 0, @lit_write_loop %lit_i_next
+    %lit_out =l phi @literal %out_pos, @lit_write_loop %lit_out_next
+    %lit_done =w ceql %lit_i, %lit_cnt
+    jnz %lit_done, @lit_end
+    %lit_src =l add %lit_src_start, %lit_i
+    %lit_addr =l add %src, %lit_src
+    %lit_byte =w loadub %lit_addr
+    %lit_can_w =w csltl %lit_out, %cap
+    jz %lit_can_w, @lit_skip_w
+    %lit_addr_w =l add %out, %lit_out
+    storeb %lit_byte, %lit_addr_w
+
+@lit_skip_w
+    %lit_out_next =l add %lit_out, 1
+    %lit_i_next =l add %lit_i, 1
+    jmp @lit_write_loop
+
+@lit_end
+    %lit_final_src =l add %lit_src_start, %lit_cnt
+    %lit_out_final =l add %lit_out, 0
+    jmp @next_packet
+
+@next_packet
+    %next_src_pos =l phi @noop %noop_src, @rep_end %rep_src_final, @lit_end %lit_final_src
+    %next_out_pos =l phi @noop %noop_out, @rep_end %rep_out_final, @lit_end %lit_out_final
+    jmp @packet_loop
+
+@finish
+    %chk_ovf =w csgtl %out_pos, %cap
+    jnz %chk_ovf, @error_ovf
+    ret %out_pos
+
+@error_ovf
+    ret -1
+
+@error_src
+    ret -2
+}
+```
+</previous>
+It failed:
+<failure>
+Compilation failed at stage qbe:
+qbe:-:10: , expected, got newline instead
+</failure>
+Write a corrected, complete version. Same output format; output only the code.
