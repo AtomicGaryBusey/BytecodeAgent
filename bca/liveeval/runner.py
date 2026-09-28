@@ -128,7 +128,12 @@ class RunLock:
 _FATAL_RE = re.compile(
     r"\b40[134]\b|authenticat|unauthori[sz]ed|forbidden|invalid[ _-]?api[ _-]?key|x-api-key|not logged in|"
     r"/login|oauth token|not_found_error|permission_error|invalid model|model[^\n]{0,40}not (?:found|exist|available|"
-    r"supported)|unknown model|no such model|credit balance",
+    r"supported)|unknown model|no such model|credit balance|"
+    # a subscription's usage window is spent: retrying in minutes cannot help; resume the run later
+    r"usage limit|hit your (?:weekly |daily )?limit|exceeded your current (?:token )?quota|exceeded_current_quota|"
+    r"quota (?:exhausted|exceeded)|insufficient balance|login_required|token_unauthorized|"
+    # the subject could use a tool (bca.liveeval.vendors): never score such an answer, stop the run
+    r"^isolation:",
     re.I,
 )
 

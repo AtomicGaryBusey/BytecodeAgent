@@ -19,7 +19,8 @@ from bca.liveeval.registry import (
     variant_max_attempts,
 )
 from bca.liveeval.runner import Budget, InfraGuard, RunDirBusy, RunLock, plan_cells, run_matrix, run_plan
-from bca.liveeval.subject import CLI_DEFAULT_EFFORT, EFFORTS, ClaudeSubject
+from bca.liveeval.subject import CLI_DEFAULT_EFFORT, EFFORTS
+from bca.liveeval.vendors import VENDORS, all_efforts, make_subject
 from bca.liveeval.summarize import compare, summarize
 
 
@@ -49,7 +50,8 @@ def main(argv=None, *, subject_factory=None) -> int:
                         "comma-separated, mixable")
     r.add_argument("--paths", default=",".join(PATHS))
     r.add_argument("--isas", default=",".join(ISAS))
-    r.add_argument("--model", help=f"one subject: an alias ({', '.join(MODEL_ALIASES)}) or a model id")
+    r.add_argument("--model", help=f"one subject: an alias ({', '.join(MODEL_ALIASES)}), a Claude model id, or "
+                                  f"<vendor>:<model> for another vendor's CLI ({', '.join(VENDORS)})")
     r.add_argument("--subjects", help="several subjects, comma-separated (run one after the other into "
                                       "<run-dir>/<subject>/<variant>/)")
     r.add_argument("--variant", default="baseline",
@@ -61,8 +63,10 @@ def main(argv=None, *, subject_factory=None) -> int:
     r.add_argument("--timeout", type=float, default=None,
                    help=f"per-call subject timeout in seconds for every battery (default: {DEFAULT_TIMEOUT:.0f}, "
                         + ", ".join(f"{b} {t:.0f}" for b, t in BATTERY_TIMEOUTS.items()) + ")")
-    r.add_argument("--effort", choices=EFFORTS,
-                   help="pass `--effort <level>` to claude (default: not passed; recorded as "
+    r.add_argument("--effort", choices=all_efforts(),
+                   help="reasoning effort for every subject (claude: " + "|".join(EFFORTS) + "; "
+                        + "; ".join(f"{k}: {'|'.join(v.efforts)}" for k, v in VENDORS.items())
+                        + ") (default: not passed; recorded as "
                         f"{CLI_DEFAULT_EFFORT!r}). Recommended for multi-subject runs.")
     r.add_argument("--max-attempts", type=int, default=4)
     r.add_argument("--max-infra-errors", type=int, default=5,
@@ -102,8 +106,8 @@ def _dispatch(args, subject_factory) -> int:
         if len(args.models) > 5:
             raise RegistryError("probe at most 5 models per invocation")
         for m in args.models:
-            subj = subject_factory(model_for(m)) if subject_factory else ClaudeSubject(model=model_for(m),
-                                                                                     timeout=args.timeout)
+            subj = subject_factory(model_for(m)) if subject_factory else make_subject(model_for(m),
+                                                                                    timeout=args.timeout)
             resp = subj.complete("Reply with the single word OK.")
             print(json.dumps({"model_arg": m, "ok": resp.ok, "model_reported": resp.model, "text": resp.text[:40],
                               "error": resp.error[:300], "cost_usd": resp.cost_usd}))
@@ -175,7 +179,7 @@ def _live(args, subject_factory, subjects, variants, selected, paths, isas, flat
     def make(model_arg):
         if subject_factory:
             return subject_factory(model_arg)
-        return ClaudeSubject(timeout=args.timeout or DEFAULT_TIMEOUT, model=model_arg, effort=args.effort)
+        return make_subject(model_arg, timeout=args.timeout or DEFAULT_TIMEOUT, effort=args.effort)
 
     if flat:
         subj = make(None)

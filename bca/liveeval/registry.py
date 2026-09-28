@@ -215,7 +215,11 @@ def model_for(subject: str) -> str:
 
 
 def expected_model(subject: str) -> str:
-    return MODEL_ALIASES.get(subject, subject)
+    """The model id a subject should report: a Claude alias resolved, or the <model> of <vendor>:<model>."""
+    from bca.liveeval.vendors import split_spec
+
+    vendor, model = split_spec(subject)
+    return model if vendor else MODEL_ALIASES.get(subject, subject)
 
 
 __all__ = [

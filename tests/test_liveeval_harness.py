@@ -401,9 +401,9 @@ def test_effort_recorded_and_multi_subject_warning(tmp_path, monkeypatch, capsys
             self.effort, self.cli_version = effort, "9.8.7"
             made[model] = self
 
-    import bca.liveeval.__main__ as m
+    import bca.liveeval.vendors as v
 
-    monkeypatch.setattr(m, "ClaudeSubject", Capture)
+    monkeypatch.setattr(v, "ClaudeSubject", Capture)  # make_subject builds Claude subjects
     argv = ["run", "--run-dir", str(tmp_path), "--max-calls", "5", "--tasks", "sum_to", "--paths", "stream",
             "--isas", "x86_64", "--subjects", "haiku,opus"]
     assert cli_main(argv + ["--effort", "xhigh"]) == 0
