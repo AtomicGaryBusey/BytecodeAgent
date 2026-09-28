@@ -23,9 +23,13 @@ from bca.liveeval.tasks import Task
 from bca.liveeval.tasks2 import ROUND2
 
 # alias -> the model id the stream reported when `claude -p --model <alias>` was probed.
+# Aliases move: on 2026-09-28 (CLI 2.1.284) "sonnet" answered as claude-sonnet-5-5 (it was
+# claude-sonnet-5 the day before), and both "fable" and "claude-fable-5-1" were answered by
+# claude-opus-4-8 (Fable not served to this account). Every cell records the model that actually
+# answered; probe before a run.
 MODEL_ALIASES = {
     "opus": "claude-opus-5-5",
-    "sonnet": "claude-sonnet-5",
+    "sonnet": "claude-sonnet-5-5",
     "haiku": "claude-haiku-4-5-20251001",
     "fable": "claude-fable-5-1",
 }

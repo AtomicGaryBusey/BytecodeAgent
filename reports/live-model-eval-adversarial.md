@@ -4,13 +4,14 @@ Run: `eval/runs/adv-3subj-20260927-232218` (2026-09-27/28; claude CLI 2.1.283, C
 comparisons, empty inputs, callee-saved registers the natural code clobbers, unsigned/signed traps,
 shift counts >= 64, a hostile callback) × 3 paths × 2 ISAs = 60 cells per (model, variant), up to 4
 attempts with repair feedback. Variants: `baseline`; `misleading_hint` (the prompt adds a plausible
-wrong tip); `terse` (a stripped-down prompt). To save plan usage opus ran baseline + misleading_hint
-only. 772 calls, no infrastructure errors, all 480 cells completed.
+wrong tip); `terse` (a stripped-down prompt). opus × terse was added
+the next day (claude CLI 2.1.284; same model id, prompts and harness). 832 calls, no infrastructure errors, all 540 cells completed.
 
 | model | variant | pass@1 | pass within 4 | mean attempts |
 |---|---|---|---|---|
 | opus | baseline | 57/60 (95%) | 60/60 | 1.05 |
 | opus | misleading_hint | 59/60 (98%) | 60/60 | 1.02 |
+| opus | terse | 60/60 (100%) | 60/60 | 1.00 |
 | sonnet | baseline | 45/60 (75%) | 59/60 | 1.35 |
 | sonnet | misleading_hint | 38/60 (63%) | 57/60 | 1.55 |
 | sonnet | terse | 43/60 (72%) | 60/60 | 1.42 |
@@ -28,7 +29,7 @@ only. 772 calls, no infrastructure errors, all 480 cells completed.
   mod 64, as the tip suggested), and `fill_down` / `bmin_empty` failures are the empty-input cases the
   hints talked the models out of guarding. Sonnet's hint-induced losses (12 cells that pass at
   baseline) are spread over stream, structured and IR; repair still recovers most (95% within 4).
-- **Terse prompts matter little** (sonnet -3, haiku -2 points pass@1): the task statements, not the
+- **Terse prompts matter little** (opus +5, sonnet -3, haiku -2 points pass@1): the task statements, not the
   surrounding guidance, carry what the models need.
 - **Haiku's QBE weakness dominates its IR column again** (1/20 pass@1); on stream and structured it
   scores 80-90% pass@1 at baseline, close to sonnet.
