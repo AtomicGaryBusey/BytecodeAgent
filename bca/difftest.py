@@ -419,6 +419,9 @@ class MemCase:
     writable: byte windows [lo, hi) of `mem` the code may write (default: none)
     readable: byte windows it may read; None disables the read guard
     label:    human-readable description of the case for reports
+    writable_names: optional names for the `writable` windows, index for index (e.g.
+              ("out", "tmp")), used in failure reports; "" or a missing entry means unnamed
+              (reports then derive a name from the pointer argument the window starts at)
     """
 
     mem: bytes
@@ -426,6 +429,7 @@ class MemCase:
     writable: tuple = ()
     readable: tuple | None = None
     label: str = ""
+    writable_names: tuple = ()
 
 
 def memory_differential(

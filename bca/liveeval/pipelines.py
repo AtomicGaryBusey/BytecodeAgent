@@ -27,6 +27,7 @@ assembly line; structured: the JSON instruction; ir: the disassembled instructio
 from __future__ import annotations
 
 import ctypes
+import inspect
 import json
 import re
 import time
@@ -186,16 +187,95 @@ def _buffer_detail(task: Task, m: Mismatch) -> str:
             f"got {_cut(_words(m.actual_data, 8, True))}")
 
 
+def _split_top(s: str) -> list[str]:
+    """Split on commas outside parentheses/brackets."""
+    out, depth, cur = [], 0, []
+    for ch in s:
+        if ch in "([":
+            depth += 1
+        elif ch in ")]":
+            depth -= 1
+        if ch == "," and depth == 0:
+            out.append("".join(cur))
+            cur = []
+        else:
+            cur.append(ch)
+    out.append("".join(cur))
+    return [x.strip() for x in out if x.strip()]
+
+
+_FNPTR_NAME = re.compile(r"\(\s*\*\s*(\w+)\s*\)")
+_LAST_IDENT = re.compile(r"(\w+)\s*(?:\[[^\]]*\]\s*)*$")
+
+
+def param_names(signature: str) -> list[str]:
+    """Parameter names of a C prototype: "int64_t f(const int64_t *a, int64_t n, int64_t (*g)(int64_t))"
+    -> ["a", "n", "g"]. Unnamed or unparsable parameters give ""."""
+    i = signature.find("(")
+    j = signature.rfind(")")
+    if i < 0 or j <= i:
+        return []
+    # the parameter list is the first top-level parenthesised group after the function name
+    depth, end = 0, j
+    for k in range(i, len(signature)):
+        depth += signature[k] == "("
+        depth -= signature[k] == ")"
+        if depth == 0:
+            end = k
+            break
+    params = _split_top(signature[i + 1 : end])
+    if params == ["void"]:
+        return []
+    names = []
+    for p in params:
+        m = _FNPTR_NAME.search(p)
+        if m:
+            names.append(m.group(1))
+            continue
+        m = _LAST_IDENT.search(p)
+        names.append(m.group(1) if m and len(p.replace("*", " * ").split()) > 1 else "")  # "int64_t" alone: unnamed
+    return names
+
+
+def window_name(task: Task, case, idx: int, lo: int, hi: int) -> str | None:
+    """A model-facing name for writable window `idx` = [lo, hi) of a MemCase: the case's explicit
+    `writable_names[idx]` if given, else the pointer argument (named from Task.signature) that the
+    window starts in, as `name[i..j)` in elements of task.mem_elem bytes (or bytes if unaligned)."""
+    names = tuple(getattr(case, "writable_names", ()) or ())
+    if idx < len(names) and names[idx]:
+        return names[idx]
+    pnames = param_names(task.signature)
+    best = None  # (offset, name) of the pointer argument with the largest offset <= lo
+    for k, arg in enumerate(getattr(case, "args", ()) or ()):
+        off = getattr(arg, "offset", None)
+        if off is None or not isinstance(off, int) or off > lo or k >= len(pnames) or not pnames[k]:
+            continue
+        if best is None or off > best[0]:
+            best = (off, pnames[k])
+    if best is None:
+        return None
+    off, name = best
+    el = max(1, task.mem_elem)
+    if (lo - off) % el == 0 and (hi - off) % el == 0:
+        return f"{name}[{(lo - off) // el}..{(hi - off) // el})"
+    return f"bytes {lo - off}..{hi - off} of {name}"
+
+
 def _mem_detail(task: Task, m: Mismatch) -> str:
-    """For memory tasks: the writable window(s) after the call, expected vs actual."""
+    """For memory tasks: the writable window(s) after the call, expected vs actual, each named after
+    the argument it belongs to when that is known (MemCase.writable_names or Task.signature)."""
     if m.expected_data is None or m.actual_data is None or m.expected_data == m.actual_data:
         return ""
     case = m.case
     parts = []
-    for lo, hi in (case.writable if case is not None and case.writable else [(0, len(m.expected_data))]):
+    windows = case.writable if case is not None and case.writable else [(0, len(m.expected_data))]
+    for idx, (lo, hi) in enumerate(windows):
         e, a = m.expected_data[lo:hi], m.actual_data[lo:hi]
         if e != a:
-            parts.append(f"memory [{lo}, {hi}) of the block after the call: expected "
+            name = window_name(task, case, idx, lo, hi) if case is not None and case.writable else None
+            where = (f"{name} (memory [{lo}, {hi}) of the block)" if name
+                     else f"memory [{lo}, {hi}) of the block")
+            parts.append(f"{where} after the call: expected "
                          f"{_cut(_words(e, task.mem_elem, task.mem_signed))}, got "
                          f"{_cut(_words(a, task.mem_elem, task.mem_signed))}")
     if not parts:
@@ -386,7 +466,25 @@ def disassemble(isa_name: str, code: bytes | None, base: int = 0x100000) -> str:
 # -- pipelines ------------------------------------------------------------------------------
 
 
-def _stream_attempt(subject: Subject, isa: str, task: Task, prompt: str, raw_path: str) -> Attempt:
+def _accepts_timeout(subject: Subject) -> bool:
+    """True if subject.complete takes a `timeout=` keyword (ClaudeSubject, FakeSubject; a subclass
+    that overrides complete() without it is called without it)."""
+    try:
+        params = inspect.signature(subject.complete).parameters
+    except (TypeError, ValueError):
+        return False
+    return "timeout" in params or any(p.kind is inspect.Parameter.VAR_KEYWORD for p in params.values())
+
+
+def _call(subject: Subject, prompt: str, on_text, raw_path: str, timeout: float | None) -> Response:
+    """subject.complete, with the per-call timeout for subjects that take one."""
+    if timeout is not None and _accepts_timeout(subject):
+        return subject.complete(prompt, on_text, raw_path=raw_path, timeout=timeout)
+    return subject.complete(prompt, on_text, raw_path=raw_path)
+
+
+def _stream_attempt(subject: Subject, isa: str, task: Task, prompt: str, raw_path: str,
+                    timeout: float | None = None) -> Attempt:
     sa = StreamAssembler(ISAS[isa])
     t0 = time.perf_counter()
     st: dict = {"first_insn_s": None, "abort": None, "chars_fed": 0, "insns_at_abort": None}
@@ -410,7 +508,7 @@ def _stream_attempt(subject: Subject, isa: str, task: Task, prompt: str, raw_pat
                 return False
         return True
 
-    resp = subject.complete(prompt, on_text, raw_path=raw_path)
+    resp = _call(subject, prompt, on_text, raw_path, timeout)
     wall = time.perf_counter() - t0
     a = Attempt("stream", isa, task.name, False, None, "", resp.text, response=resp, wall_s=wall, stream=st)
     if halted:
@@ -449,9 +547,10 @@ def _stream_category(msg: str, text: str, st: dict) -> str:
     return "syntax"
 
 
-def _structured_attempt(subject: Subject, isa: str, task: Task, prompt: str, raw_path: str) -> Attempt:
+def _structured_attempt(subject: Subject, isa: str, task: Task, prompt: str, raw_path: str,
+                        timeout: float | None = None) -> Attempt:
     t0 = time.perf_counter()
-    resp = subject.complete(prompt, None, raw_path=raw_path)
+    resp = _call(subject, prompt, None, raw_path, timeout)
     a = Attempt("structured", isa, task.name, False, None, "", resp.text, response=resp,
                 wall_s=time.perf_counter() - t0)
     if not resp.ok:
@@ -478,9 +577,10 @@ def _structured_attempt(subject: Subject, isa: str, task: Task, prompt: str, raw
     return a
 
 
-def _ir_attempt(subject: Subject, isa: str, task: Task, prompt: str, raw_path: str) -> Attempt:
+def _ir_attempt(subject: Subject, isa: str, task: Task, prompt: str, raw_path: str,
+                timeout: float | None = None) -> Attempt:
     t0 = time.perf_counter()
-    resp = subject.complete(prompt, None, raw_path=raw_path)
+    resp = _call(subject, prompt, None, raw_path, timeout)
     a = Attempt("ir", isa, task.name, False, None, "", resp.text, response=resp,
                 wall_s=time.perf_counter() - t0)
     if not resp.ok:
@@ -502,8 +602,11 @@ def _ir_attempt(subject: Subject, isa: str, task: Task, prompt: str, raw_path: s
 PIPELINES = {"stream": _stream_attempt, "structured": _structured_attempt, "ir": _ir_attempt}
 
 
-def attempt(subject: Subject, path: str, isa: str, task: Task, prompt: str, *, raw_path: str = "") -> Attempt:
-    a = PIPELINES[path](subject, isa, task, prompt, raw_path)
+def attempt(subject: Subject, path: str, isa: str, task: Task, prompt: str, *, raw_path: str = "",
+            timeout: float | None = None) -> Attempt:
+    """One call and its verdict. `timeout` (seconds) overrides the subject's own for this call when
+    the subject's complete() takes a `timeout` keyword."""
+    a = PIPELINES[path](subject, isa, task, prompt, raw_path, timeout)
     if a.code is not None and a.category is None:
         t0 = time.perf_counter()
         req = requirement_failure(task, isa, a.code)
