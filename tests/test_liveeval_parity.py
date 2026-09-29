@@ -251,13 +251,16 @@ def test_fresh_tokens_do_not_serialise(tmp_path):
     assert fcntl
 
 
-def test_grok_is_registered_and_its_plan_errors_are_fatal():
+def test_grok_is_registered_and_its_errors_are_classified():
     from bca.liveeval.vendors import VENDORS, GrokSubject, split_spec
 
     assert VENDORS["grok"] is GrokSubject and split_spec("grok:grok-4.7") == ("grok", "grok-4.7")
-    for err in ("You\u2019ve hit the rate limit for your plan. Upgrade your account or try again later.",
-                "--effort/--reasoning-effort: unknown effort level 'xhigh'; use one of: high, medium, low"):
+    for err in ("--effort/--reasoning-effort: unknown effort level 'xhigh'; use one of: high, medium, low",
+                "grok effort mismatch: requested low, served high (not supported by grok-4.7-a-very-long-model-name)"):
         assert runner.infra_kind(err) == "fatal", err
+    # grok's generic fallback for a bare 429 ("... try again later"): a throttle, retried
+    assert runner.infra_kind("You\u2019ve hit the rate limit for your plan. Upgrade your account or try again later.") \
+        == "transient"
     assert runner.infra_kind("Request failed (HTTP 429).") == "transient"
     assert runner.infra_kind("API error (status 500 Internal Server Error): upstream") == "transient"
 

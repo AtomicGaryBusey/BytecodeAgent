@@ -141,8 +141,9 @@ _FATAL_RE = re.compile(
     r"recharge your account|please recharge|in arrears|check your account balance|"
     # Codex (protocol/src/error.rs, login/src/auth/manager.rs)
     r"out of credits|spend cap|upgrade to plus|sign(?:ing)? in again|"
-    # Grok Build (plan-window rate limit; an effort the model does not offer)
-    r"hit the rate limit for your plan|unknown effort level|"
+    # Grok Build: an effort the model does not offer / served at another effort. (Its "hit the rate limit
+    # for your plan ... try again later" is grok's generic fallback for a bare 429: transient.)
+    r"unknown effort level|effort mismatch|model rerouted|"
     # the subject could use a tool (bca.liveeval.vendors): never score such an answer, stop the run
     r"^isolation:",
     re.I,
@@ -216,7 +217,8 @@ def _summary(a: Attempt, n: int) -> dict:
         "check_s": round(a.check_s, 3), "code_size": len(a.code) if a.code is not None else None,
         "cases": v.cases if v else None, "failed_cases": v.failed if v else None,
         "model": r.model if r else None, "model_source": r.model_source if r else None,
-        "refusal": (r.refusal or None) if r else None, "first_text_s": r.first_text_s if r else None,
+        "refusal": (r.refusal or None) if r else None, "notes": (getattr(r, "notes", None) or None) if r else None,
+        "first_text_s": r.first_text_s if r else None,
         "killed": r.killed if r else None, "response_chars": len(r.text) if r else None,
         "usage": r.usage if r else None, "cost_usd": r.cost_usd if r else None,
         "subject_error": r.error if r and r.error else None, "stream": a.stream or None,

@@ -24,17 +24,28 @@ fails CLOSED unless: the function tool list sent is `[]`; the system prompt is e
 prompt, grok's empty first-user-message prefix, the harness prompt verbatim, reasoning items and
 assistant messages without tool calls -- a hosted tool call (web_search_call, x_search, code
 interpreter) is recorded as a `backend_tool_call` item and fails the call; signals.json counts no tool
-call; no session update names a tool or plan. The stream itself is allowlisted (text, thought, usage,
-end, error, available_commands with an empty tool list); anything else fails closed.
+call; updates.jsonl and events.jsonl hold only allowlisted kinds (GROK_UPDATES, GROK_SESSION_EVENTS: one
+turn, one sampling loop, no tool / permission / MCP event or tool phase). Per call, the request is also
+bounded (A1): exactly one main-loop model call (end.num_turns, which counts main-loop calls only, and
+usage.json modelCalls), made by the served model only, and at most grok_input_bound(prompt) input tokens
+with at most GROK_SERVER_PREFIX (+slack) of them cached -- a hidden tool round, a second model or injected
+context fails closed. The stream itself is allowlisted (text, thought, usage, end, error,
+available_commands with an empty tool list); anything else fails closed.
 Gap (documented, not per-call): the hosted-tool declaration is not in grok's record. It was captured at
 the wire (a loopback recording proxy, 2026-09-28, grok-4.7): the /v1/responses body has no `tools` key
 and the response echoes `"tools": []`, `num_server_side_tools_used: 0`; per call only a hosted tool's
 use is detectable (backend_tool_call).
 
 Side requests. grok titles every new session with a second model call (grok-4.6, a `session_title`
-function tool, the prompt in `<user_query>`; session/summary.rs, no switch). GROK_SESSION_SUMMARY_MODEL
-points it at a model id that does not exist, so the proxy answers 404 before any inference (captured);
-the title falls back to the prompt's first words. Title refresh, recaps, turn summaries, prompt
+function tool, the prompt in `<user_query>`; session/summary.rs). There is no switch: SummaryGenerator runs
+on the first non-empty user chunk of every new session (it is skipped only for a resumed session that
+already has a title), and the summary model always resolves to some id (config/mod.rs: CLI > env >
+config.toml > remote settings > grok-4.6). GROK_SESSION_SUMMARY_MODEL (env beats remote settings) points
+it at a model id that does not exist, so the endpoint answers 404 before any inference (captured:
+`{"code":"not-found","error":"The model bca-disabled does not exist ..."}`); the prompt is still sent to
+xAI in that rejected request. grok then stores the prompt's first ten words as the title, which `finish`
+checks (summary.json generated_title == grok_title_fallback(prompt), else the side call was answered:
+fail closed); a failed side call is not counted in num_turns / modelUsage. Title refresh, recaps, turn summaries, prompt
 suggestions and workflow listings are switched off; config.toml ignores every skill path (grok installs
 bundled skills into its home and lists them in a `<system-reminder>`, which `discoverSkills: false`
 does not stop -- seen once live and failed closed).
@@ -52,8 +63,10 @@ fingerprint and the reasoning effort the server applied (`response.reasoning.eff
 model is "reported". Every model in the 1.0.41 catalog defaults to effort `high` (seen live: `high`
 served without --effort); `--effort` takes low / medium / high / xhigh (grok-4.5: no xhigh -- grok exits
 with "--effort/--reasoning-effort: unknown effort level 'xhigh'; use one of: high, medium, low"). grok
-soft-ignores an effort on a model without effort support, so a served effort other than the requested
-one is an error ("effort mismatch ... not supported", fatal).
+soft-ignores an effort on a model without effort support, so an explicit effort served at another level
+or not reported is an error ("grok effort mismatch: ...", fatal); without --effort the served effort is
+noted as the CLI default. The served id must be the requested one or its documented alias
+(GROK_SERVED_AS); anything else is "model rerouted: requested X, grok served Y" (fatal).
 
 Errors (A7). grok exits 1 with `Error: <message>` on stderr and a `{"type":"error"}` line. Verified
 with a fault-injecting proxy (no model call): free quota -> "You’ve reached your free Grok Build usage
@@ -63,15 +76,19 @@ or try again later." is grok's fallback for an OAuth rate limit); 401 -> grok re
 retries 3 times, then "Internal error: {"message": "Auth recovery succeeded but N authenticated inference
 requests were still rejected (401) ...", "http_status": 401}"; 403/400/500 -> "Internal error:
 {"message": "API error (status 403 Forbidden): ...", "http_status": 403}". Safety blocks: a refused
-turn ends with stopReason `refusal` (Parsed.refusal); a Responses `content_filter` stop is mapped to it.
+turn ends with stopReason `refusal` (Parsed.refusal); a Responses `content_filter` stop is mapped to it;
+and xAI's content-safety check answers HTTP 403 ("403 is content-safety, never auth", sampling/error.rs;
+e.g. "Content violates usage guidelines. Failed check: SAFETY_CHECK_TYPE_DATA_LEAKAGE"): a 403 whose body
+is not about the account (grok_safety_403: not a subscription / permission_denied / credits / ZDR /
+sign-in text) is a scored refusal; the account 403s stay errors.
 
 Credentials: auth.json maps "<issuer>::<client>" scopes to {key, refresh_token, expires_at (RFC 3339
 string, ~6 h)}; grok refreshes when fewer than 300 s remain (GROK_AUTH_EARLY_INVALIDATION_SECS) or after a
 401, rotating the refresh token, and rewrites auth.json: CredHome copies it back (cred_expiry).
 
 Side effect outside the private home: grok 1.0.41 creates an empty `/tmp/sessions/<session id>`
-directory (a hard-coded path, not TMPDIR; strace); `finish` removes it (and /tmp/sessions when empty and
-no other grok call of this process is running). It also runs `bash -lc` (reading /etc/profile and the
+directory (a hard-coded path, not TMPDIR; strace); `cleanup` (after every call, timeouts included)
+removes it (and /tmp/sessions when empty and no other grok call of this process is running). It also runs `bash -lc` (reading /etc/profile and the
 private HOME's absent .bashrc) to capture a shell environment, and `git branch` in the empty workdir.
 """
 
@@ -136,8 +153,67 @@ GROK_REFUSAL_STOPS = frozenset({"refusal", "content_filter"})
 # chat_history.jsonl item types a tool-less turn records; a tool / hosted tool adds others.
 GROK_ITEMS = frozenset({"system", "user", "reasoning", "assistant"})
 _ASSISTANT_KEYS = frozenset({"type", "content", "model_id", "model_fingerprint", "reasoning_effort"})
-_SUSPECT = re.compile(r"tool|plan|mcp|skill|hook|subagent|terminal", re.I)
+# updates.jsonl (method, sessionUpdate) pairs a tool-less turn writes (every live and fault-injected call, 1.0.41):
+# the prompt echo, answer and reasoning chunks, grok's retry notice and the turn end. Anything else
+# (tool_call, tool_call_update, plan, available_commands_update, ...) fails closed.
+GROK_UPDATES = frozenset({("session/update", "user_message_chunk"), ("session/update", "agent_message_chunk"),
+                          ("session/update", "agent_thought_chunk"), ("_x.ai/session/update", "turn_completed"),
+                          ("_x.ai/session/update", "retry_state")})
+# events.jsonl (xai-grok-session-events types.rs `Event`, tag "type") of a single sampling loop; tool_started /
+# tool_completed / permission_* / mcp_* / goal_* and the tool_execution / permission_prompt phases fail closed.
+GROK_SESSION_EVENTS = frozenset({"turn_started", "loop_started", "phase_changed", "first_token", "turn_ended"})
+GROK_PHASES = frozenset({"waiting_for_model", "streaming_reasoning", "streaming_text"})
+# The model the endpoint serves for a requested id (the Responses API `model`, recorded as model_id), seen live
+# 2026-09-28: `-m grok-4.7` -> grok-4.7-build, `-m grok-4.7-build-fast` -> grok-4.7-build-fast. Any other served
+# id is a substitution ("model rerouted", fatal). A model not listed here must be served under its own id.
+GROK_SERVED_AS = {"grok-4.7": "grok-4.7-build", "grok-4.7-build-fast": "grok-4.7-build-fast"}
+# Input-token guard (A1: a hidden tool / hosted-tool declaration / injected context would inflate the request).
+# Every grok-4.7 call billed 1152 cached input tokens (the endpoint's own server-side prefix), or 0 cached on a
+# cold cache, and never more -- also for an identical prompt sent twice (sum_to, 1266 chars: 488 + 1152 both
+# times). Total input (uncached + cached) is bounded like Codex's: 2/3 token per character of SYSTEM_PROMPT +
+# prompt (real prompts run ~0.3), plus 800, plus that prefix. Seen: 30-char prompt 1289 (bound 2062), sum_to
+# 1640 (bound 2886), the longest harness prompt so far (33862 chars) bounds at ~24.6k.
+GROK_SERVER_PREFIX = 1152
+GROK_CACHE_SLACK = 128
+_PERMISSION_403 = re.compile(  # a 403 about the account, not the content (xai-grok-shell sampling/error.rs)
+    r"subscription|permission[_ ]?denied|not signed in|sign in|log ?in|logout|auth(?:entic|ori[sz])|credential|"
+    r"api[ _-]?key|"
+    r"credits?\b|billing|spend|quota|usage limit|\bzdr\b|data retention|remote[ _-]?settings|\bteam\b|"
+    r"organi[sz]ation|region|country|suspend|banned|blocked user", re.I)
 SESSIONS_TMP = Path("/tmp/sessions")  # grok 1.0.41 creates /tmp/sessions/<id> (module docstring)
+
+
+def grok_safety_403(message: str) -> str:
+    """The xAI content-safety explanation if `message` (a grok error) is an HTTP 403 that is not about the
+    account, else "". grok 1.0.41 surfaces every 403 as `Internal error: {"message": "API error (status 403
+    Forbidden): <body>", "http_status": 403}`; xai-grok-shell sampling/error.rs: "403 is content-safety, never
+    auth" -- its example body is "Content violates usage guidelines. Failed check: SAFETY_CHECK_TYPE_DATA_LEAKAGE".
+    The account 403s (".. requires a Grok subscription", "permission_denied: ...", "run out of credits", ZDR /
+    remote-settings blocks) stay errors (fatal in the runner)."""
+    if not re.search(r'"http_status"\s*:\s*403\b|\(status 403\b', message or ""):
+        return ""
+    inner = message
+    m = re.search(r"\{.*\}", message, re.S)
+    if m:
+        try:
+            inner = str(json.loads(m.group(0)).get("message") or message)
+        except (ValueError, AttributeError):
+            pass
+    body = re.sub(r"^.*?\(status 403[^)]*\):\s*", "", inner, flags=re.S).strip()
+    if not body or _PERMISSION_403.search(body):
+        return ""
+    return body
+
+
+def grok_input_bound(prompt: str) -> int:
+    """Most input tokens (uncached + cached) a tool-less grok request for `prompt` may bill (GROK_SERVER_PREFIX)."""
+    return GROK_SERVER_PREFIX + (len(SYSTEM_PROMPT) + len(prompt)) * 2 // 3 + 800
+
+
+def grok_title_fallback(prompt: str) -> str:
+    """The title grok stores when its title side call fails: the prompt's first ten words (session_summary.rs
+    title_fallback_from_user_text; a harness prompt has no system-reminder or skill markup to strip)."""
+    return " ".join(prompt.split()[:10]) or "New session"
 
 
 def _rfc3339(s: str) -> float:
@@ -182,6 +258,8 @@ class GrokSubject(CliSubject):
             raise IsolationError(f"isolation: cannot set up the grok home {home}: {e}") from e
         self._call.home = home
         self._call.session = None
+        self._call.end = None
+        self._call.blocked = False  # an HTTP 403 content-safety block (grok_safety_403)
 
     def argv(self, prompt: str, home: Path) -> list[str]:
         if prompt.startswith("/"):
@@ -251,6 +329,7 @@ class GrokSubject(CliSubject):
         elif typ == "end":
             stop = ev.get("stopReason")
             self._call.session = ev.get("sessionId")
+            self._call.end = ev
             if stop in GROK_REFUSAL_STOPS:
                 self._refuse(p, f"refusal: grok stop reason {stop}")
             elif stop == "max_tokens":
@@ -267,7 +346,14 @@ class GrokSubject(CliSubject):
             if isinstance(ev.get("modelUsage"), dict):
                 p.usage["model_usage"] = sorted(ev["modelUsage"])
         elif typ == "error":
-            p.error = p.error or f"grok: {ev.get('message')}"
+            msg = str(ev.get("message"))
+            safety = grok_safety_403(msg)
+            if safety:  # a scored refusal, as for Claude; the neutral error keeps the 403 text out of _FATAL_RE
+                self._refuse(p, f"refusal: xAI content-safety block: {safety}")
+                self._call.blocked = True
+                p.error = p.error or "grok: the answer was blocked by xAI content safety (see refusal)"
+            else:
+                p.error = p.error or f"grok: {msg}"
         return None
 
     # -- after the call: grok's own record of the request -----------------------------------------
@@ -277,14 +363,14 @@ class GrokSubject(CliSubject):
             lines = [ln for ln in stderr.strip().splitlines() if ln.strip()]
             p.error = f"exit status {returncode}: " + ("\n".join(lines[-6:]) or "no stderr")[-500:]
         home = getattr(self._call, "home", None)
-        try:
-            if home is None:
-                p.violations.append("cannot verify the request: private home unknown")
-            else:  # every call, failed ones too: a request with tools is fatal whatever the outcome
-                self.audit_session(home, getattr(self._call, "prompt", ""), p,
-                                   required=(returncode in (0, None) and not p.error) or bool(p.refusal))
-        finally:
-            self._clean_tmp_sessions(home, p)
+        if home is None:
+            p.violations.append("cannot verify the request: private home unknown")
+        else:  # every call, failed ones too: a request with tools is fatal whatever the outcome
+            # a safety 403 answered nothing: its record is checked when present (grok 1.0.41 writes one before
+            # sending), but a missing one does not turn a content block into a run abort
+            self.audit_session(home, getattr(self._call, "prompt", ""), p,
+                               required=(returncode in (0, None) and not p.error)
+                               or (bool(p.refusal) and not getattr(self._call, "blocked", False)))
         if p.violations:
             p.refusal = ""  # an isolation failure is never scored, not even as a refusal
 
@@ -316,10 +402,17 @@ class GrokSubject(CliSubject):
         self._audit_context(d / "prompt_context.json", p)
         self._audit_signals(d / "signals.json", p)
         self._audit_updates(d / "updates.jsonl", p)
+        self._audit_events(d / "events.jsonl", p, required)
         summ = self._json(d / "summary.json", p)
         if isinstance(summ, dict) and summ.get("agent_name") not in (None, GROK_AGENT_NAME):
             bad(f"agent {summ.get('agent_name')!r} ran instead of {GROK_AGENT_NAME}")
-        self._audit_history(d / "chat_history.jsonl", prompt, p, required)
+        title = summ.get("generated_title") if isinstance(summ, dict) else None
+        if title is not None and title != grok_title_fallback(prompt):
+            # the title side call (GROK_SESSION_SUMMARY_MODEL=bca-disabled) must have failed (404): grok then
+            # stores the prompt's first ten words; any other title means a model answered it
+            bad(f"the session-title side call was answered (title {str(title)[:80]!r})")
+        last = self._audit_history(d / "chat_history.jsonl", prompt, p, required)
+        self._audit_usage(d / "usage.json", prompt, p, last, required)
 
     @staticmethod
     def _json(path: Path, p: Parsed):
@@ -363,12 +456,44 @@ class GrokSubject(CliSubject):
                 continue
             try:
                 r = json.loads(line)
-                kind = ((r.get("params") or {}).get("update") or {}).get("sessionUpdate")
+                kind = (r.get("method"), ((r.get("params") or {}).get("update") or {}).get("sessionUpdate"))
             except (ValueError, AttributeError):
                 p.violations.append(f"unparseable updates.jsonl:{n}: {line[:120]!r}")
                 continue
-            if _SUSPECT.search(str(kind)):
-                p.violations.append(f"session update {kind}")
+            if kind not in GROK_UPDATES:
+                p.violations.append(f"session update {kind[1]} ({kind[0]})")
+
+    def _audit_events(self, path: Path, p: Parsed, required: bool) -> None:
+        """events.jsonl: one turn, one sampling loop, no tool / permission / MCP / goal event (allowlist)."""
+        bad = p.violations.append
+        if not path.exists():
+            if required:
+                bad("no events.jsonl in the grok session record")
+            return
+        turns = loops = 0
+        for n, line in enumerate(path.read_text(errors="replace").splitlines(), 1):
+            if not line.strip():
+                continue
+            try:
+                ev = json.loads(line)
+                typ = ev.get("type")
+            except (ValueError, AttributeError):
+                bad(f"unparseable events.jsonl:{n}: {line[:120]!r}")
+                continue
+            if typ not in GROK_SESSION_EVENTS:
+                bad(f"session event {typ!r}: {line[:160]}")
+            elif typ == "turn_started":
+                turns += 1
+                if ev.get("session_relationship") != "primary" or ev.get("redirect_kind") is not None:
+                    bad(f"session event {line[:160]}")
+            elif typ == "loop_started":
+                loops += 1
+                if ev.get("loop_index") != 0:
+                    bad(f"sampling loop {ev.get('loop_index')!r} (a second model round)")
+            elif typ == "phase_changed" and ev.get("phase") not in GROK_PHASES:
+                bad(f"session phase {ev.get('phase')!r}")
+        if turns > 1 or loops > 1:
+            bad(f"{turns} turns / {loops} sampling loops recorded")
 
     def _audit_history(self, path: Path, prompt: str, p: Parsed, required: bool) -> None:
         bad = p.violations.append
@@ -420,23 +545,107 @@ class GrokSubject(CliSubject):
         if not assistants:
             if required and not p.refusal:
                 bad("the conversation records no assistant response")
-            return
+            return None
         answer = "\n".join(str(a.get("content") or "") for a in assistants)
         if answer != p.text:
             p.notes.append("recorded assistant text differs from the streamed text")
+        if len(assistants) > 1:
+            bad(f"{len(assistants)} assistant messages (one model call expected)")
         last = assistants[-1]
         served, effort = last.get("model_id"), last.get("reasoning_effort")
-        if isinstance(served, str) and served:
-            p.model, p.model_reported = served, True
-            if not served.startswith(self.model):
-                p.notes.append(f"grok served {served} for {self.model}")
         if isinstance(last.get("model_fingerprint"), str):
             p.usage["model_fingerprint"] = last["model_fingerprint"]
-        if isinstance(effort, str):
+        if isinstance(served, str) and served:
+            p.model, p.model_reported = served, True
+            if served != self.model:
+                p.notes.append(f"grok served {self.model} as {served}")
+            if served not in self._served_ids():
+                p.error = f"model rerouted: requested {self.model}, grok served {served}"
+                p.refusal = ""  # a substitute model's refusal is not the requested model's
+        else:
+            p.notes.append("grok recorded no served model id")
+        if isinstance(effort, str) and effort:
             p.usage["reasoning_effort"] = effort
-            if self.effort and effort != self.effort:
-                p.error = p.error or (f"effort mismatch: requested {self.effort}, grok served {effort} "
-                                      f"(model {self.model} not supported at this effort)")
+        if self.effort and effort != self.effort:
+            # grok soft-ignores an effort the model does not take: served at another effort (or none reported)
+            p.error = p.error or (f"grok effort mismatch: requested {self.effort}, grok served {effort or 'none'} "
+                                  f"(model {self.model} not supported at this effort)")
+            p.refusal = ""
+        elif not self.effort:
+            p.notes.append(f"served at effort {effort or 'unreported'} (CLI default)")
+        return last
+
+    def _served_ids(self) -> set[str]:
+        return {self.model, GROK_SERVED_AS.get(self.model, self.model)}
+
+    def _audit_usage(self, path: Path, prompt: str, p: Parsed, last: dict | None, required: bool) -> None:
+        """One model call, by the served model only, of a size a tool-less request can have (A1): the stream's
+        end record (num_turns = main-loop model calls; side calls are not counted) and usage.json."""
+        bad = p.violations.append
+        answered = last is not None
+        served = p.model if answered and p.model_reported else None
+        allowed = {served} if served else self._served_ids()
+        calls: list[int] = []
+        totals: list[int] = []
+        cached: list[int] = []
+
+        def check_models(where: str, mu) -> None:
+            if mu is None:
+                return
+            if not isinstance(mu, dict):
+                bad(f"malformed {where} modelUsage {json.dumps(mu)[:120]}")
+                return
+            if set(mu) - allowed:
+                bad(f"{where}: model calls by {sorted(set(mu) - allowed)} (only {sorted(allowed)} expected)")
+            if not all(isinstance(v, dict) and isinstance(v.get("modelCalls"), int) for v in mu.values()):
+                bad(f"{where}: modelUsage without modelCalls {json.dumps(mu)[:120]}")
+                return
+            calls.append(sum(v["modelCalls"] for v in mu.values()))
+
+        end = getattr(self._call, "end", None)
+        if isinstance(end, dict):
+            nt = end.get("num_turns")
+            if not isinstance(nt, int) or nt > 1 or (answered and nt != 1):
+                bad(f"end record: num_turns {nt!r} (one model call expected)")
+            check_models("end record", end.get("modelUsage"))
+            u = end.get("usage") if isinstance(end.get("usage"), dict) else {}
+            inp, cr = u.get("input_tokens"), u.get("cache_read_input_tokens") or 0
+            if isinstance(inp, int) and isinstance(cr, int):
+                totals.append(inp + cr)
+                cached.append(cr)
+        elif answered and required:
+            bad("no end record in the stream")
+        uj = self._json(path, p)
+        if uj is None:
+            if answered and required:
+                bad("no usage.json in the grok session record")
+        elif not isinstance(uj, dict) or not isinstance(uj.get("session"), dict):
+            bad(f"malformed usage.json {json.dumps(uj)[:120]}")
+        else:
+            sess = uj["session"]
+            mc = sess.get("modelCalls")
+            if not isinstance(mc, int):
+                bad(f"usage.json: modelCalls {mc!r}")
+            else:
+                calls.append(mc)
+            check_models("usage.json", sess.get("modelUsage"))
+            if isinstance(sess.get("inputTokens"), int):
+                totals.append(sess["inputTokens"])
+            if isinstance(sess.get("cachedReadTokens"), int):
+                cached.append(sess["cachedReadTokens"])
+            if len(uj.get("turns") or []) > 1:
+                bad(f"usage.json: {len(uj['turns'])} turns")
+        for n in calls:
+            if n > 1 or (answered and n != 1):
+                bad(f"{n} model calls recorded (one expected)")
+                break
+        bound = grok_input_bound(prompt)
+        if totals and max(totals) > bound:
+            bad(f"{max(totals)} input tokens billed, more than a tool-less request of this prompt can have ({bound})")
+        if cached and max(cached) > GROK_SERVER_PREFIX + GROK_CACHE_SLACK:
+            bad(f"{max(cached)} cached input tokens (the server prefix is {GROK_SERVER_PREFIX})")
+        if answered and required and not totals:
+            bad("no input-token count recorded")
 
     def _read_catalog(self, home: Path) -> None:
         """The model's catalog entry (default effort, efforts), from grok's models_cache.json."""
@@ -448,20 +657,18 @@ class GrokSubject(CliSubject):
             self._catalog = {"default_effort": entry.get("reasoning_effort"),
                              "efforts": [e.get("id") for e in entry.get("reasoning_efforts") or [] if isinstance(e, dict)]}
 
-    def _clean_tmp_sessions(self, home: Path | None, p: Parsed) -> None:
-        """Remove the empty /tmp/sessions/<id> grok made for this call (ids from the stream and the record)."""
-        sids = {getattr(self._call, "session", None)}
-        if home is not None:
-            sids |= {d.name for d in home.glob("sessions/*/*") if d.is_dir()}
+    def cleanup(self, home: Path) -> None:
+        """After every started call, timeouts included (vendor_base): remove the empty /tmp/sessions/<id> grok
+        made for this call (ids from the stream and from the private home's record; only safe names), and
+        /tmp/sessions itself when empty and no other grok call of this process is running."""
+        sids = {getattr(self._call, "session", None)} | {d.name for d in home.glob("sessions/*/*") if d.is_dir()}
         for sid in sids:
-            if not sid or not re.fullmatch(r"[0-9A-Za-z-]+", sid):
+            if not isinstance(sid, str) or not re.fullmatch(r"[0-9A-Za-z][0-9A-Za-z-]*", sid):
                 continue
             try:
                 (SESSIONS_TMP / sid).rmdir()  # only if empty: grok never wrote into it in a tool-less call
-            except FileNotFoundError:
-                pass
             except OSError:
-                p.notes.append(f"left {SESSIONS_TMP / sid} in place (not empty)")
+                pass  # absent, or not empty (then not ours to delete)
         with GrokSubject._inflight_lock:
             if GrokSubject._inflight <= 1:
                 try:

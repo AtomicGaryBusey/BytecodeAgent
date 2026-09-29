@@ -43,6 +43,11 @@ from pathlib import Path
 from bca.liveeval.subject import _VERSION_RE, CLI_DEFAULT_EFFORT, OnText, Response, Subject, child_env
 
 
+# Claude-specific variables child_env() keeps for `claude -p`; another vendor's CLI never needs them (grok,
+# for one, can read Claude config through CLAUDE_CONFIG_DIR).
+VENDOR_ENV_DROP = frozenset({"CLAUDE_CONFIG_DIR", "ANTHROPIC_API_KEY", "ANTHROPIC_AUTH_TOKEN", "ANTHROPIC_BASE_URL"})
+
+
 class IsolationError(RuntimeError):
     """The subject could use (or used) a tool, or its isolated home could not be set up: fatal."""
 
@@ -273,6 +278,10 @@ class CliSubject(Subject):
     def finish(self, p: Parsed, returncode: int | None, stderr: str) -> None:
         """Last look at the parse after the process exited (returncode None: killed by the harness)."""
 
+    def cleanup(self, home: Path) -> None:
+        """Called after EVERY started call, timeouts included, before the private home is deleted: remove
+        anything the CLI wrote outside it. Must not raise."""
+
     def cred_expiry(self, rel: str, data: bytes) -> float | None:
         """Access-token expiry (epoch seconds) of a credential file, or None if unknown."""
         return None
@@ -328,7 +337,8 @@ class CliSubject(Subject):
                 return self._fail(str(e), t0)
             except (SetupError, OSError, subprocess.SubprocessError) as e:  # transient: retried by the runner
                 return self._fail(f"setup: {type(e).__name__}: {e}", t0)
-            env = {**child_env(), **self.extra_env(home.path)}
+            env = {k: v for k, v in child_env().items() if k not in VENDOR_ENV_DROP}
+            env.update(self.extra_env(home.path))
             try:
                 proc = subprocess.Popen(argv, cwd=workdir, stdin=subprocess.DEVNULL, stdout=subprocess.PIPE,
                                         stderr=subprocess.PIPE, env=env, start_new_session=True)
@@ -405,6 +415,11 @@ class CliSubject(Subject):
         finally:
             if raw:
                 raw.close()
+            if proc is not None:
+                try:
+                    self.cleanup(home.path)
+                except Exception as e:  # noqa: BLE001 - cleanup must never mask the call's outcome
+                    p.notes.append(f"cleanup failed: {type(e).__name__}: {e}")
             try:
                 home.sync_back(call_ok)
             finally:
@@ -422,4 +437,5 @@ class CliSubject(Subject):
         return Response(p.text, ok=ok, killed=killed or stopped, timed_out=timed_out, error=error, model=p.model,
                         wall_s=time.perf_counter() - t0, first_text_s=first, deltas=deltas, usage=p.usage,
                         raw_path=raw_path, refusal="" if p.violations else p.refusal,  # a violation is never a refusal
+                        notes=list(p.notes),
                         model_source="reported" if p.model_reported else "requested")

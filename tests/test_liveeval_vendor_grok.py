@@ -41,9 +41,27 @@ if rec is not None:
     (d / "prompt_context.json").write_text(json.dumps(rec.get("context", {{"prompt_mode": "full",
         "prompt_body": spec["system_prompt"], "agents_md_files": [], "persona_summaries": [], "memory_enabled": False}})))
     (d / "signals.json").write_text(json.dumps(rec.get("signals", {{"toolCallCount": 0, "toolsUsed": []}})))
-    (d / "summary.json").write_text(json.dumps({{"agent_name": rec.get("agent", "bca-subject")}}))
-    (d / "updates.jsonl").write_text("".join(json.dumps({{"method": "session/update", "params": {{"update":
-        {{"sessionUpdate": u}}}}}}) + "\n" for u in rec.get("updates", ["user_message_chunk", "agent_message_chunk"])))
+    summ = {{"agent_name": rec.get("agent", "bca-subject")}}
+    if "title" in rec:
+        summ["generated_title"] = rec["title"]
+    (d / "summary.json").write_text(json.dumps(summ))
+    ups = rec.get("updates", ["user_message_chunk", "agent_thought_chunk", "agent_message_chunk",
+                              ["_x.ai/session/update", "turn_completed"]])
+    ups = [u if isinstance(u, list) else ["session/update", u] for u in ups]
+    (d / "updates.jsonl").write_text("".join(json.dumps({{"method": m, "params": {{"update":
+        {{"sessionUpdate": u}}}}}}) + "\n" for m, u in ups))
+    evs = rec.get("session_events", [{{"type": "turn_started", "turn_number": 0, "model_id": "grok-4.7",
+        "session_relationship": "primary"}}, {{"type": "loop_started", "loop_index": 0}},
+        {{"type": "phase_changed", "phase": "waiting_for_model"}}, {{"type": "first_token"}},
+        {{"type": "phase_changed", "phase": "streaming_reasoning"}}, {{"type": "phase_changed", "phase": "streaming_text"}},
+        {{"type": "turn_ended", "outcome": "completed"}}])
+    (d / "events.jsonl").write_text("".join(json.dumps(e) + "\n" for e in evs))
+    calls = 1 if rec.get("assistant", True) else 0
+    served = rec.get("served", "grok-4.7-build")
+    uj = rec.get("usage_json", {{"session": {{"inputTokens": 1402 * calls, "cachedReadTokens": 0, "modelCalls": calls,
+        **({{"modelUsage": {{served: {{"inputTokens": 1402, "modelCalls": 1}}}}}} if calls else {{}})}}, "turns": [{{}}]}})
+    if uj is not None:
+        (d / "usage.json").write_text(json.dumps(uj))
     user = rec.get("user", prompt.strip())
     items = rec.get("items") or [
         {{"type": "system", "content": spec["system_prompt"]}},
@@ -77,9 +95,9 @@ USAGE = {"input_tokens": 1402, "cache_read_input_tokens": 0, "cache_creation_inp
          "reasoning_tokens": 127, "total_tokens": 1530}
 
 
-def end(stop="end_turn"):
-    return {"type": "end", "stopReason": stop, "sessionId": SID, "requestId": "r1", "usage": USAGE, "num_turns": 1,
-            "total_cost_usd": 0.0012, "modelUsage": {"grok-4.7-build": {"inputTokens": 1402}}}
+def end(stop="end_turn", served="grok-4.7-build", usage=USAGE):
+    return {"type": "end", "stopReason": stop, "sessionId": SID, "requestId": "r1", "usage": usage, "num_turns": 1,
+            "total_cost_usd": 0.0012, "modelUsage": {served: {"inputTokens": 1402, "modelCalls": 1}}}
 
 
 OK_EVENTS = [AVAIL, {"type": "thought", "data": "The user"}, {"type": "text", "data": "mov x0, "},
@@ -194,9 +212,12 @@ def test_effort_flag_and_catalog_default(tmp_path, real_home):
     assert GrokSubject("grok-4.7", binary=str(tmp_path / "grok")).describe()["cli_default_effort"] == "high (1.0.41 catalog)"
 
 
-def test_an_effort_the_model_ignores_is_a_fatal_error(tmp_path, real_home):
-    r = subject(real_home, fake_grok(tmp_path, record={"effort": "high"}), model="grok-4.7", effort="xhigh").complete("p")
-    assert not r.ok and "effort mismatch" in r.error and runner.infra_kind(r.error) == "fatal"
+@pytest.mark.parametrize("served", ["high", None, ""])
+def test_an_effort_the_model_ignores_is_a_fatal_error(tmp_path, real_home, served):
+    # attack D: requested low, the record reports another effort or none at all
+    r = subject(real_home, fake_grok(tmp_path, record={"effort": served}), model="grok-4.7", effort="low").complete("p")
+    assert not r.ok and r.error.startswith("grok effort mismatch: requested low, grok served "), r.error
+    assert runner.infra_kind(r.error) == "fatal" and r.refusal == ""
 
 
 def test_prompt_is_passed_as_one_argument_and_trimmed_whitespace_is_accepted(tmp_path, real_home):
@@ -208,14 +229,52 @@ def test_prompt_is_passed_as_one_argument_and_trimmed_whitespace_is_accepted(tmp
     assert r.ok, r.error
 
 
-def test_served_model_other_than_requested_is_noted_and_reported(tmp_path, real_home):
-    r = subject(real_home, fake_grok(tmp_path, record={"served": "grok-4.6-build"})).complete("p")
-    assert r.ok and r.model == "grok-4.6-build" and r.model_source == "reported"
+def test_served_alias_is_accepted_and_noted(tmp_path, real_home):
+    r = subject(real_home, fake_grok(tmp_path)).complete("p")  # -m grok-4.7 is served as grok-4.7-build
+    assert r.ok and r.model == "grok-4.7-build" and "grok served grok-4.7 as grok-4.7-build" in r.notes
+    assert "served at effort high (CLI default)" in r.notes
+    fast = "grok-4.7-build-fast"
+    r = subject(real_home, fake_grok(tmp_path, events=[*OK_EVENTS[:-1], end(served=fast)], record={"served": fast}),
+                model=fast).complete("p")
+    assert r.ok and r.model == fast and r.model_source == "reported"
+
+
+@pytest.mark.parametrize("model,served", [("grok-4.7", "grok-4.7-build-fast"), ("grok-4.7", "grok-4.6-build"),
+                                          ("grok-4.7-build-fast", "grok-4.7-build"), ("grok-4.5", "grok-4.5-build")])
+def test_a_rerouted_model_is_a_fatal_error(tmp_path, real_home, model, served):
+    # attack C: a substitute model was scored as the requested one
+    r = subject(real_home, fake_grok(tmp_path, events=[*OK_EVENTS[:-1], end(served=served)], record={"served": served}),
+                model=model).complete("p")
+    assert not r.ok and r.error == f"model rerouted: requested {model}, grok served {served}", r.error
+    assert r.model == served and r.model_source == "reported" and not r.error.startswith("isolation:")
+
+
+def test_a_rerouted_refusal_is_not_scored(tmp_path, real_home):
+    s = "grok-4.6-build"
+    r = subject(real_home, fake_grok(tmp_path, events=[AVAIL, end("refusal", served=s)],
+                                     record={"served": s, "answer": "no"})).complete("p")
+    assert r.refusal == "" and r.error.startswith("model rerouted")
 
 
 def test_the_tmp_sessions_directory_grok_leaves_is_removed(tmp_path, real_home, tmp_sessions):
     r = subject(real_home, fake_grok(tmp_path, tmp_sessions=tmp_sessions)).complete("p")
     assert r.ok and not tmp_sessions.exists()
+
+
+def test_tmp_sessions_is_cleaned_after_a_timeout(tmp_path, real_home, tmp_sessions):
+    # attack B: finish() is skipped on a timeout; the cleanup hook is not
+    r = subject(real_home, fake_grok(tmp_path, sleep=5, tmp_sessions=tmp_sessions), timeout=1.5).complete("p")
+    assert r.timed_out and not tmp_sessions.exists()
+
+
+def test_cleanup_leaves_other_directories_alone(tmp_path, real_home, tmp_sessions):
+    other = tmp_sessions / "someone-elses-session"
+    other.mkdir(parents=True)
+    ours = tmp_sessions / SID
+    ours.mkdir()
+    (ours / "file").write_text("x")  # not empty: not ours to delete
+    r = subject(real_home, fake_grok(tmp_path)).complete("p")
+    assert r.ok and other.is_dir() and (ours / "file").exists()
 
 
 def test_tmp_sessions_is_cleaned_even_when_the_stream_names_no_session(tmp_path, real_home, tmp_sessions):
@@ -254,6 +313,29 @@ def test_unaudited_version_aborts(tmp_path, real_home):
     ({"assistant_extra": {"tool_calls": [{"id": "1", "name": "bash", "arguments": "{}"}]}}, "assistant item with"),
     ({"signals": {"toolCallCount": 1, "toolsUsed": ["bash"]}}, "grok counted tool calls"),
     ({"updates": ["user_message_chunk", "tool_call"]}, "session update tool_call"),
+    # attack F: updates.jsonl is an allowlist, not a denylist
+    ({"updates": ["user_message_chunk", "web_search_results", "agent_message_chunk"]}, "session update web_search_results"),
+    ({"updates": ["user_message_chunk", ["session/update", "turn_completed"]]}, "session update turn_completed"),
+    ({"updates": [["x.ai/other", "user_message_chunk"]]}, "session update user_message_chunk (x.ai/other)"),
+    ({"session_events": [{"type": "turn_started", "session_relationship": "primary"}, {"type": "loop_started", "loop_index": 0},
+                         {"type": "tool_started", "tool_name": "web_search"}]}, "session event 'tool_started'"),
+    ({"session_events": [{"type": "phase_changed", "phase": "tool_execution"}]}, "session phase 'tool_execution'"),
+    ({"session_events": [{"type": "loop_started", "loop_index": 0}, {"type": "loop_started", "loop_index": 1}]},
+     "sampling loop 1"),
+    ({"session_events": [{"type": "turn_started", "session_relationship": "subagent"}]}, "session event"),
+    ({"session_events": [{"type": "mcp_server_starting"}]}, "session event 'mcp_server_starting'"),
+    ({"extra_items": [{"type": "assistant", "content": "x", "model_id": "grok-4.7-build"}]}, "2 assistant messages"),
+    ({"usage_json": {"session": {"inputTokens": 1402, "modelCalls": 2,
+                                 "modelUsage": {"grok-4.7-build": {"modelCalls": 2}}}}}, "2 model calls recorded"),
+    ({"usage_json": {"session": {"inputTokens": 1402, "modelCalls": 1,
+                                 "modelUsage": {"grok-4.7-build": {"modelCalls": 1}, "grok-4.6": {"modelCalls": 1}}}}},
+     "model calls by ['grok-4.6']"),
+    ({"usage_json": {"session": {"inputTokens": 9000, "modelCalls": 1,
+                                 "modelUsage": {"grok-4.7-build": {"modelCalls": 1}}}}}, "9000 input tokens billed"),
+    ({"usage_json": {"session": {"inputTokens": 1402, "cachedReadTokens": 1400, "modelCalls": 1,
+                                 "modelUsage": {"grok-4.7-build": {"modelCalls": 1}}}}}, "1400 cached input tokens"),
+    ({"usage_json": None}, "no usage.json"),
+    ({"title": "Sum integers in x86 assembly"}, "the session-title side call was answered"),
     ({"agent": "grok-build"}, "ran instead of bca-subject"),
     ({"assistant": False}, "records no assistant response"),
     ({"garbage": True}, "unparseable chat_history.jsonl"),
@@ -267,6 +349,66 @@ def test_record_violations_fail_closed(tmp_path, real_home, record, needle):
 def test_missing_record_on_success_fails_closed(tmp_path, real_home):
     r = subject(real_home, fake_grok(tmp_path, record=False)).complete("p")
     assert r.error.startswith("isolation:") and "0 grok session records" in r.error
+
+
+def test_missing_events_record_on_success_fails_closed(tmp_path, real_home, monkeypatch):
+    s = subject(real_home, fake_grok(tmp_path))
+    orig = s.audit_session
+
+    def drop(home, prompt, p, required=True):
+        for f in home.glob("sessions/*/*/events.jsonl"):
+            f.unlink()
+        orig(home, prompt, p, required=required)
+
+    s.audit_session = drop
+    r = s.complete("p")
+    assert r.error.startswith("isolation:") and "no events.jsonl" in r.error
+
+
+@pytest.mark.parametrize("end_patch,needle", [
+    # attack E: three model calls and a side model in one "tool-less" turn
+    ({"num_turns": 3, "modelUsage": {"grok-4.7-build": {"modelCalls": 3}, "grok-4.6": {"modelCalls": 1}}}, "num_turns 3"),
+    ({"modelUsage": {"grok-4.7-build": {"modelCalls": 1}, "grok-4.6": {"modelCalls": 1}}}, "model calls by ['grok-4.6']"),
+    ({"modelUsage": {"grok-4.7-build": {"modelCalls": 2}}}, "2 model calls recorded"),
+    ({"modelUsage": {"grok-4.7-build": {"inputTokens": 1}}}, "modelUsage without modelCalls"),
+    ({"num_turns": None}, "num_turns None"),
+    ({"usage": {**USAGE, "input_tokens": 5000}}, "5000 input tokens billed"),
+    ({"usage": {**USAGE, "cache_read_input_tokens": 2000}}, "2000 cached input tokens"),
+])
+def test_more_than_one_model_call_or_an_oversized_request_fails_closed(tmp_path, real_home, end_patch, needle):
+    r = subject(real_home, fake_grok(tmp_path, events=[*OK_EVENTS[:-1], {**end(), **end_patch}])).complete("p")
+    assert not r.ok and r.error.startswith("isolation:") and needle in r.error, r.error
+    assert runner.infra_kind(r.error) == "fatal"
+
+
+def test_the_input_bound_fits_every_recorded_harness_prompt_and_the_live_calls():
+    # live grok-4.7 totals (uncached + 1152 cached): 30-char prompt 1289, sum_to (1266 chars) 1640
+    assert vendor_grok.grok_input_bound("x" * 30) >= 1289 + 700
+    assert vendor_grok.grok_input_bound("x" * 1266) >= 1640 + 700
+    runs = Path(__file__).resolve().parents[1] / "eval" / "runs"
+    longest = max((len(f.read_text(errors="replace")) for f in runs.glob("**/attempt*.prompt.txt")), default=33862)
+    # even at a (pessimistic) 0.5 token per character the longest prompt so far fits
+    assert vendor_grok.grok_input_bound("x" * longest) > 1152 + 800 + (len(SYSTEM_PROMPT) + longest) // 2
+
+
+def test_a_long_real_prompt_is_accepted(tmp_path, real_home):
+    from bca.liveeval.prompts import build_prompt
+    prompt = build_prompt("stream", "x86_64", SUM) * 20  # ~25k chars
+    usage = {**USAGE, "input_tokens": (len(SYSTEM_PROMPT) + len(prompt)) // 3, "cache_read_input_tokens": 1152}
+    r = subject(real_home, fake_grok(tmp_path, events=[*OK_EVENTS[:-1], end(usage=usage)],
+                                     record={"usage_json": None, "title": vendor_grok.grok_title_fallback(prompt)})
+                ).complete(prompt)
+    assert "no usage.json" in r.error  # the record is required ...
+    r = subject(real_home, fake_grok(tmp_path, events=[*OK_EVENTS[:-1], end(usage=usage)],
+                                     record={"title": vendor_grok.grok_title_fallback(prompt)})).complete(prompt)
+    assert r.ok, r.error  # ... and a long prompt is inside the bound
+
+
+def test_the_fallback_title_is_accepted():
+    assert vendor_grok.grok_title_fallback("Implement the function `int64_t sum_to(int64_t n)`.\n\nTarget: x86-64, Linux "
+                                           "System V ABI. Integer") == \
+        "Implement the function `int64_t sum_to(int64_t n)`. Target: x86-64, Linux System"
+    assert vendor_grok.grok_title_fallback("  ") == "New session"
 
 
 @pytest.mark.parametrize("ev,needle", [
@@ -328,6 +470,55 @@ def test_errors_are_classified(tmp_path, real_home, message, kind):
                                      record={"assistant": False})).complete("p")
     assert not r.ok and r.error == f"grok: {message}" and r.refusal == ""
     assert runner.infra_kind(r.error) == kind
+
+
+SAFETY_403 = ('Internal error: {\n  "message": "API error (status 403 Forbidden): Content violates usage guidelines. '
+              'Failed check: SAFETY_CHECK_TYPE_DATA_LEAKAGE",\n  "http_status": 403\n}')
+
+
+@pytest.mark.parametrize("message,safety", [
+    (SAFETY_403, "Content violates usage guidelines. Failed check: SAFETY_CHECK_TYPE_DATA_LEAKAGE"),
+    ('Internal error: {"message": "API error (status 403 Forbidden): content blocked by safety policy", "http_status": 403}',
+     "content blocked by safety policy"),
+    (E403, ""),  # permission_denied: ... requires a Grok subscription
+    ('Internal error: {"message": "API error (status 403 Forbidden): The model \'grok-build\' requires a Grok subscription.", '
+     '"http_status": 403}', ""),
+    ('Internal error: {"message": "API error (status 403 Forbidden): You have run out of credits.", "http_status": 403}', ""),
+    ('Internal error: {"message": "API error (status 403 Forbidden): This operation is not available for ZDR teams", '
+     '"http_status": 403}', ""),
+    ('Internal error: {"message": "API error (status 403 Forbidden): ", "http_status": 403}', ""),
+    (E500, ""), (E401, ""), (FREE, ""), ("Request failed (HTTP 429).", ""),
+])
+def test_safety_403_is_told_from_account_403(message, safety):
+    assert vendor_grok.grok_safety_403(message) == safety
+
+
+def test_a_content_safety_403_is_a_scored_refusal(tmp_path, real_home):
+    # attack A: xAI's content-safety 403 aborted the whole run as an auth failure
+    events = [AVAIL, {"type": "error", "message": SAFETY_403}]
+    s = subject(real_home, fake_grok(tmp_path, events=events, exit_code=1, stderr=f"Error: {SAFETY_403}\n",
+                                     record={"assistant": False,
+                                             "updates": ["user_message_chunk", ["_x.ai/session/update", "retry_state"],
+                                                         ["_x.ai/session/update", "turn_completed"]]}))
+    r = s.complete("p")
+    assert r.refusal == "refusal: xAI content-safety block: Content violates usage guidelines. Failed check: " \
+                        "SAFETY_CHECK_TYPE_DATA_LEAKAGE", r.error
+    assert not r.ok and runner.infra_kind(r.error) == "transient" and "403" not in r.error
+    a = attempt(s, "stream", "x86_64", SUM, "p")
+    assert a.category == "refusal" and not runner.is_infra_error(a)
+
+
+def test_a_content_safety_403_without_a_record_is_still_a_refusal(tmp_path, real_home):
+    events = [AVAIL, {"type": "error", "message": SAFETY_403}]
+    r = subject(real_home, fake_grok(tmp_path, events=events, exit_code=1, record=False)).complete("p")
+    assert r.refusal.startswith("refusal: xAI content-safety block") and runner.infra_kind(r.error) == "transient"
+
+
+def test_a_content_safety_403_still_needs_a_clean_request(tmp_path, real_home):
+    events = [AVAIL, {"type": "error", "message": SAFETY_403}]
+    r = subject(real_home, fake_grok(tmp_path, events=events, exit_code=1,
+                                     record={"assistant": False, "tools": [{"name": "bash"}]})).complete("p")
+    assert r.refusal == "" and r.error.startswith("isolation:")
 
 
 def test_failed_call_without_record_is_an_error_not_an_isolation_failure(tmp_path, real_home):

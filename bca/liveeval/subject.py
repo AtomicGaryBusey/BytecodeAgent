@@ -87,6 +87,7 @@ class Response:
     raw_path: str = ""  # where the raw event stream was saved (live subject)
     refusal: str = ""  # the model (or its safety classifier) refused: "<category>: <explanation>"
     model_source: str = "reported"  # "requested": the CLI never said which model served the call
+    notes: list = field(default_factory=list)  # adapter diagnostics worth keeping (reroutes, truncation, ...)
 
     def to_dict(self) -> dict:
         return asdict(self)
