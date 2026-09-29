@@ -55,20 +55,27 @@ ISAs, with up to four attempts and repair feedback.
 Runs are resumable (re-run the same command), capped by `--max-calls`, and stop a subject cleanly when
 its plan quota is spent.
 
-### Results so far (baseline prompts, pass on the first attempt)
+### Results (baseline prompts, 224 cells per model)
 
-| Model | Round 1 | Round 2 | Long | Adversarial | All 224 cells |
-|---|---|---|---|---|---|
-| Claude Opus 5.5 | 45/48 | 60/62 | 53/54 | 57/60 | **96%** |
-| Claude Sonnet 5.5 | 47/48 | 56/62 | 45/54 | 53/60 | **90%** |
-| Codex `gpt-daybreak-blue-latest` | 45/48 | 55/62 | 42/54 | 58/60 | **89%** |
-| Claude Sonnet 5 | 40/48 | 49/62 | 41/54 | 45/60 | **78%** |
-| Claude Haiku 4.5 | 30/48 | 34/62 | 17/54 | 35/60 | **52%** |
+| Model | Round 1 (48) | Round 2 (62) | Long (54) | Adversarial (60) | Pass@1 | Within 4 | Mean attempts |
+|---|---|---|---|---|---|---|---|
+| Claude Opus 5.5 | 45 | 60 | 53 | 57 | **215/224 (96%)** | 224/224 (100%) | 1.04 |
+| Claude Fable 5.1 | 44 | 62 | 52 | 54 | **212/224 (95%)** | 223/224 (100%) | 1.08 |
+| Grok 4.7 | 48 | 59 | 48 | 56 | **211/224 (94%)** | 220/224 (98%) | 1.10 |
+| Kimi K3 | 45 | 58 | 45 | 56 | **204/224 (91%)** | 224/224 (100%) | 1.11 |
+| Codex Daybreak Blue | 45 | 55 | 42 | 59 | **201/224 (90%)** | 224/224 (100%) | 1.12 |
+| Claude Sonnet 5.5 | 47 | 56 | 45 | 53 | **201/224 (90%)** | 223/224 (100%) | 1.12 |
+| Claude Sonnet 5 | 40 | 49 | 41 | 45 | **175/224 (78%)** | 222/224 (99%) | 1.30 |
+| Codex GPT-6 Luna | 33 | 41 | 10 | 46 | **130/224 (58%)** | 209/224 (93%) | 1.71 |
+| Claude Haiku 4.5 | 30 | 34 | 17 | 35 | **116/224 (52%)** | 158/224 (71%) | 2.19 |
+| Gemini 3.8 Flash High (Antigravity) | 46 | 21/21† | — | — | **67/69 (97%)** | 69/69 (100%) | 1.03 |
 
-Fable 5.1, Codex `gpt-6-luna`, Kimi K3, Gemini 3.8 Flash and Grok 4.7 runs are in progress. Every model
-reaches 96-100% within four attempts except Haiku (71%). The Claude account is enrolled in Anthropic's
-Cyber Verification Program and the ChatGPT account in OpenAI's Daybreak (Blue), so treat those rows as
-upper bounds for ordinary accounts. Per-run write-ups are in [`reports/`](reports/).
+† Antigravity is paced by its plan's weekly quota and still in progress. Raw assembly is easy for nearly
+every model; the QBE IR path separates them most. The Claude account is enrolled in Anthropic's Cyber
+Verification Program and the ChatGPT account in OpenAI's Daybreak (Blue), so treat those rows as upper
+bounds for ordinary accounts. Full comparison, per-path results and the false-reject review:
+[`reports/live-model-eval-cross-vendor.md`](reports/live-model-eval-cross-vendor.md); per-run write-ups in
+[`reports/`](reports/).
 
 ## Setup
 

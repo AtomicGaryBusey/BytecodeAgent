@@ -320,6 +320,7 @@ class CliSubject(Subject):
                             expiry=self.cred_expiry, horizon=limit + self.refresh_margin_s)
         except IsolationError as e:
             return self._fail(str(e), t0)
+        t0 = time.perf_counter()  # the call starts once the credential lock is held (no queueing in wall_s)
         token = object()
         with _LIVE_LOCK:
             _LIVE[id(token)] = (None, home.path)
