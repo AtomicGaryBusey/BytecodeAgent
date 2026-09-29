@@ -457,6 +457,9 @@ class StreamAssembler:
 
     def _reset_state(self) -> None:
         self._code = bytearray()
+        # (line, keystone hex, GNU as hex, keystone text, GNU as text) for each statement whose
+        # same-size GNU as encoding replaced keystone's (see _run_crosscheck)
+        self.substitutions: list[tuple[int, str, str, str | None, str | None]] = []
         self._insns: list[Instruction] = []
         self._by_addr: dict[int, int] = {}
         self._labels: dict[str, int] = {}
@@ -931,11 +934,22 @@ class StreamAssembler:
             if theirs != insn.data:
                 a = self._disasm_text(insn.data, insn.address)
                 b = self._disasm_text(theirs, insn.address)
-                if a is None or a != b:
-                    return number, (
-                        f"keystone encoded {insn.data.hex()} ({a}) but GNU as encodes "
-                        f"{theirs.hex()} ({b})"
-                    )
+                if a is not None and a == b:
+                    continue
+                if len(theirs) == len(insn.data):
+                    # Same size, different encoding (e.g. AArch64 `uxtw x0, w2`: keystone ubfx,
+                    # GNU as `mov w0, w2`). GNU as is the reference and assembled this statement at
+                    # its final address with the final label values: use its bytes. Nothing after
+                    # it moves, and a silent keystone miscoding is corrected rather than scored.
+                    off = insn.address - self.base
+                    self._code[off : off + len(theirs)] = theirs
+                    self._insns[index] = replace(insn, data=theirs)
+                    self.substitutions.append((insn.line, insn.data.hex(), theirs.hex(), a, b))
+                    continue
+                return number, (
+                    f"keystone encoded {insn.data.hex()} ({a}) but GNU as encodes "
+                    f"{theirs.hex()} ({b}), a different size"
+                )
         if len(results) < len(items):
             return items[len(results)][0], "internal error: statement left unverified"
         return None

@@ -1307,9 +1307,13 @@ def test_gnu_as_catches_a_wrong_keystone_encoding(monkeypatch):
         return real(isa, text, addr, placeholder)
 
     monkeypatch.setattr(stream_mod._KEYSTONE, "call", lying)
-    events = StreamAssembler(X86_64).feed("nop\nsub rdx, 0x77\n")
-    assert [e.kind for e in events] == ["insn", "error"]
-    assert "GNU as encodes" in events[-1].message
+    sa = StreamAssembler(X86_64)
+    events = sa.feed("nop\nsub rdx, 0x77\n")
+    # same size: the reference (GNU as) encoding replaces keystone's wrong one; the model is not blamed
+    assert "error" not in [e.kind for e in events]  # keystone's wrong bytes may still draw a mnemonic warning
+    prog = sa.finish()
+    assert prog.ok and sa.substitutions and "sub" in (sa.substitutions[0][4] or "")
+    assert run_function(X86_64, prog.code + b"\xc3", [0, 0, 0x100]).ret is not None
 
 
 @needs_gas
@@ -1573,3 +1577,15 @@ def test_structured_x86_cannot_express_adx_or_avx():
     assert "adc" in ops
     assert not ops & {"adcx", "adox", "mulx", "vpaddd", "vmovdqu", "vzeroupper"}
     assert not any(op.startswith("v") for op in ops)
+
+
+def test_same_size_encoding_disagreement_adopts_gnu_as():
+    """AArch64 `uxtw x0, w2`: keystone emits ubfx (d3407c40), GNU as `mov w0, w2` (2a0203e0) -- the same
+    zero-extension. It was the only cross-check reject in all recorded runs (a false reject); the
+    reference encoding is now used instead."""
+    sa = StreamAssembler(AARCH64)
+    sa.feed("uxtw x0, w2\nret\n")
+    prog = sa.finish()
+    assert not [e for e in sa.events if e.kind == "error"], [e.message for e in sa.events]
+    assert bytes(prog.code)[:4] == bytes.fromhex("e003022a")  # 2a0203e0 little-endian
+    assert sa.substitutions and sa.substitutions[0][2] == "e003022a"
