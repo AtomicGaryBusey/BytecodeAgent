@@ -166,7 +166,9 @@ GROK_PHASES = frozenset({"waiting_for_model", "streaming_reasoning", "streaming_
 # The model the endpoint serves for a requested id (the Responses API `model`, recorded as model_id), seen live
 # 2026-09-28: `-m grok-4.7` -> grok-4.7-build, `-m grok-4.7-build-fast` -> grok-4.7-build-fast. Any other served
 # id is a substitution ("model rerouted", fatal). A model not listed here must be served under its own id.
-GROK_SERVED_AS = {"grok-4.7": "grok-4.7-build", "grok-4.7-build-fast": "grok-4.7-build-fast"}
+GROK_SERVED_AS = {"grok-4.7": "grok-4.7-build", "grok-4.7-build-fast": "grok-4.7-build-fast",
+                  # seen live 2026-09-29 (one probe each): the same "-build" serving id pattern
+                  "grok-4.6": "grok-4.6-build", "grok-4.5": "grok-4.5-build"}
 # Input-token guard (A1: a hidden tool / hosted-tool declaration / injected context would inflate the request).
 # Probe calls billed 1152 cached input tokens (the endpoint's own server-side prefix) or 0 on a cold cache; under
 # sustained load prompt caching also covers shared prompt text (1408 = 1152 + 256 seen in the full run). Total input (uncached + cached) is bounded like Codex's: 2/3 token per character of SYSTEM_PROMPT +

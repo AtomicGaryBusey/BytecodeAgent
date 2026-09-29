@@ -240,7 +240,7 @@ def test_served_alias_is_accepted_and_noted(tmp_path, real_home):
 
 
 @pytest.mark.parametrize("model,served", [("grok-4.7", "grok-4.7-build-fast"), ("grok-4.7", "grok-4.6-build"),
-                                          ("grok-4.7-build-fast", "grok-4.7-build"), ("grok-4.5", "grok-4.5-build")])
+                                          ("grok-4.7-build-fast", "grok-4.7-build"), ("grok-4.5", "grok-4.7-build")])
 def test_a_rerouted_model_is_a_fatal_error(tmp_path, real_home, model, served):
     # attack C: a substitute model was scored as the requested one
     r = subject(real_home, fake_grok(tmp_path, events=[*OK_EVENTS[:-1], end(served=served)], record={"served": served}),
@@ -614,3 +614,11 @@ def test_a_repeated_stream_chunk_is_not_scored_the_session_record_is(tmp_path, r
     r = subject(real_home, fake_grok(tmp_path, events=events)).complete("write sum_to\n", got.append)
     assert r.ok and r.text == "mov x0, #1\nret\n" and got == ["mov x0, #1\nret\n"]
     assert any("recorded text is scored" in n for n in r.notes)
+
+
+def test_previous_generations_are_served_as_their_build_ids():
+    """Seen live: grok-4.6 -> grok-4.6-build, grok-4.5 -> grok-4.5-build; anything else stays a reroute."""
+    from bca.liveeval.vendor_grok import GROK_SERVED_AS
+
+    assert GROK_SERVED_AS["grok-4.6"] == "grok-4.6-build" and GROK_SERVED_AS["grok-4.5"] == "grok-4.5-build"
+    assert GROK_SERVED_AS.get("grok-4.6") != "grok-4.7-build"
