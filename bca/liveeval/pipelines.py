@@ -16,6 +16,7 @@ differential verdict. Failure categories:
   oob_read      OutOfBoundsRead (read outside the readable windows; round-2 memory tasks)
   hang          did not return within the instruction budget
   crash         emulation fault (bad memory access, invalid instruction, misaligned SSE, ...)
+  refusal       the model (or its safety classifier) refused to answer: a scored attempt
   subject_timeout / subject_error   the model process timed out / failed
 
 Categories come from `Mismatch.kind` (the EmulationError's `category`), not from message
@@ -511,6 +512,9 @@ def _stream_attempt(subject: Subject, isa: str, task: Task, prompt: str, raw_pat
     resp = _call(subject, prompt, on_text, raw_path, timeout)
     wall = time.perf_counter() - t0
     a = Attempt("stream", isa, task.name, False, None, "", resp.text, response=resp, wall_s=wall, stream=st)
+    if resp.refusal:  # before anything else: text streamed before a refusal is not an answer
+        a.category, a.failure = "refusal", f"the model refused to answer ({resp.refusal})"
+        return a
     if halted:
         kind, msg, line, text = halted[0]
         st["killed"] = resp.killed
@@ -518,6 +522,10 @@ def _stream_attempt(subject: Subject, isa: str, task: Task, prompt: str, raw_pat
             a.category, a.failure = "crash", msg
             return a
         a.category = _stream_category(msg, text, st)
+        # The answer through the rejected line: the same whether the text arrived in deltas (and was
+        # cut off at the abort) or in one piece (vendor CLIs), so repair prompts do not depend on it.
+        if line:  # lines as the stream assembler counts them: "\n" only
+            a.code_text = "".join(re.split(r"(?<=\n)", resp.text)[:line])
         a.failure = (
             f"The assembler rejected line {line} (`{text.strip()}`): {msg}\n"
             f"Generation was stopped at that line; the {st['abort']['insns_committed']} "
@@ -526,6 +534,7 @@ def _stream_attempt(subject: Subject, isa: str, task: Task, prompt: str, raw_pat
         return a
     if not resp.ok:
         a.category = "subject_timeout" if resp.timed_out else "subject_error"
+        a.code_text = ""  # partial text exists only for streaming subjects: never shown, for parity
         a.failure = f"the model call failed: {resp.error}"
         return a
     prog = sa.finish()
@@ -553,8 +562,12 @@ def _structured_attempt(subject: Subject, isa: str, task: Task, prompt: str, raw
     resp = _call(subject, prompt, None, raw_path, timeout)
     a = Attempt("structured", isa, task.name, False, None, "", resp.text, response=resp,
                 wall_s=time.perf_counter() - t0)
+    if resp.refusal:  # before anything else: text streamed before a refusal is not an answer
+        a.category, a.failure = "refusal", f"the model refused to answer ({resp.refusal})"
+        return a
     if not resp.ok:
         a.category = "subject_timeout" if resp.timed_out else "subject_error"
+        a.code_text = ""  # partial text exists only for streaming subjects: never shown, for parity
         a.failure = f"the model call failed: {resp.error}"
         return a
     try:
@@ -583,8 +596,12 @@ def _ir_attempt(subject: Subject, isa: str, task: Task, prompt: str, raw_path: s
     resp = _call(subject, prompt, None, raw_path, timeout)
     a = Attempt("ir", isa, task.name, False, None, "", resp.text, response=resp,
                 wall_s=time.perf_counter() - t0)
+    if resp.refusal:  # before anything else: text streamed before a refusal is not an answer
+        a.category, a.failure = "refusal", f"the model refused to answer ({resp.refusal})"
+        return a
     if not resp.ok:
         a.category = "subject_timeout" if resp.timed_out else "subject_error"
+        a.code_text = ""  # partial text exists only for streaming subjects: never shown, for parity
         a.failure = f"the model call failed: {resp.error}"
         return a
     src = strip_fences(resp.text)

@@ -162,7 +162,8 @@ def _run(args, subject_factory) -> int:
         rows = estimate(args.run_dir if args.run_dir.exists() else None, [safe_name(x) for x in subjects],
                         [safe_name(v) for v in variants], cells, max_attempts=args.max_attempts,
                         rates=Rates.from_dirs(args.estimate_from), flat=flat,
-                        variant_names={safe_name(v): v for v in variants})
+                        variant_names={safe_name(v): v for v in variants},
+                        subject_specs={safe_name(x): x for x in subjects})
         print()
         print(render(rows, max_calls=args.max_calls, used=used))
         return 0

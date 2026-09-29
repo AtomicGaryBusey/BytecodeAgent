@@ -24,9 +24,11 @@ from bca.liveeval.tasks2 import ROUND2
 
 # alias -> the model id the stream reported when `claude -p --model <alias>` was probed.
 # Aliases move: on 2026-09-28 (CLI 2.1.284) "sonnet" answered as claude-sonnet-5-5 (it was
-# claude-sonnet-5 the day before), and both "fable" and "claude-fable-5-1" were answered by
-# claude-opus-4-8 (Fable not served to this account). Every cell records the model that actually
-# answered; probe before a run.
+# claude-sonnet-5 the day before). "fable" / "claude-fable-5-1" looked like claude-opus-4-8: Fable's
+# cyber classifier refused a bare "reply OK" probe under this harness's system prompt and Claude Code
+# silently re-ran it on opus-4-8 (switchModelsOnFlag). CLAUDE_FLAGS now turns that fallback off, so a
+# refusal is scored as a refusal; on real task prompts Fable 5.1 answers as itself. Every cell records
+# the model that actually answered; probe before a run.
 MODEL_ALIASES = {
     "opus": "claude-opus-5-5",
     "sonnet": "claude-sonnet-5-5",

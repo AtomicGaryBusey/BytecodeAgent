@@ -126,12 +126,19 @@ class RunLock:
 
 # Not worth retrying: the next call fails the same way (credentials, an unknown model id).
 _FATAL_RE = re.compile(
-    r"\b40[134]\b|authenticat|unauthori[sz]ed|forbidden|invalid[ _-]?api[ _-]?key|x-api-key|not logged in|"
+    r"(?:status|error|code|http)[\"':= ]{0,4}40[134]\b|\b40[134] (?:unauthorized|forbidden)|authenticat|unauthori[sz]ed|forbidden|invalid[ _-]?api[ _-]?key|x-api-key|not logged in|"
     r"/login|oauth token|not_found_error|permission_error|invalid model|model[^\n]{0,40}not (?:found|exist|available|"
     r"supported)|unknown model|no such model|credit balance|"
     # a subscription's usage window is spent: retrying in minutes cannot help; resume the run later
     r"usage limit|hit your (?:weekly |daily )?limit|exceeded your current (?:token )?quota|exceeded_current_quota|"
     r"quota (?:exhausted|exceeded)|insufficient balance|login_required|token_unauthorized|"
+    r"exhausted your quota|"  # Antigravity quota (its capacity / per-minute 429s stay transient)
+    r"not signed in|no authentication methods available|please sign in|"
+    # Kimi Code (verified with dummy credentials; quota wording from its source)
+    r"authorization grant is invalid|invalid_grant|no credential configured|provider\.auth_error|"
+    r"recharge your account|please recharge|in arrears|check your account balance|"
+    # Codex (protocol/src/error.rs, login/src/auth/manager.rs)
+    r"out of credits|spend cap|upgrade to plus|sign(?:ing)? in again|"
     # the subject could use a tool (bca.liveeval.vendors): never score such an answer, stop the run
     r"^isolation:",
     re.I,
@@ -151,7 +158,7 @@ def is_infra_error(a: Attempt) -> bool:
 
 
 def _is_budget_refusal(a: Attempt) -> bool:
-    return a.category == "subject_error" and a.response is not None and "budget" in a.response.error
+    return a.category == "subject_error" and a.response is not None and a.response.error == "call budget exhausted"
 
 
 class InfraGuard:
@@ -204,7 +211,8 @@ def _summary(a: Attempt, n: int) -> dict:
         "attempt": n, "ok": a.ok, "category": a.category, "wall_s": round(a.wall_s, 3),
         "check_s": round(a.check_s, 3), "code_size": len(a.code) if a.code is not None else None,
         "cases": v.cases if v else None, "failed_cases": v.failed if v else None,
-        "model": r.model if r else None, "first_text_s": r.first_text_s if r else None,
+        "model": r.model if r else None, "model_source": r.model_source if r else None,
+        "refusal": (r.refusal or None) if r else None, "first_text_s": r.first_text_s if r else None,
         "killed": r.killed if r else None, "response_chars": len(r.text) if r else None,
         "usage": r.usage if r else None, "cost_usd": r.cost_usd if r else None,
         "subject_error": r.error if r and r.error else None, "stream": a.stream or None,

@@ -160,11 +160,26 @@ def summarize_group(run_dir: Path) -> str:
             out.append(f"| {a['cell']} | {a['attempt']} | {a['category']} | {ab['line']} | {ab['chars_received']} | "
                        f"{ab['insns_committed']} | {ab['s']:.1f} | `{txt}` |")
         out.append("")
-    models = Counter(a.get("model") for a in atts)
-    cost = sum(a.get("cost_usd") or 0 for a in atts)
-    out += [f"Models reported by the stream: {dict(models)}; reported cost (list price) ${cost:.2f}", ""]
+    models = Counter(_model_label(a) for a in atts)
+    out += [f"Models reported by the stream: {dict(models)}; reported cost (list price) {_cost_text(_cost(atts))}", ""]
     return "\n".join(out)
 
+
+
+def _model_label(a: dict) -> str | None:
+    """A model id as recorded; marked when the CLI never reported it (the id is the requested one)."""
+    m = a.get("model")
+    return f"{m} (requested; not reported)" if m and a.get("model_source") == "requested" else m
+
+
+def _cost(atts: list[dict]) -> float | None:
+    """Summed list-price cost, or None when no attempt reported one (vendor CLIs report none)."""
+    costs = [a["cost_usd"] for a in atts if a.get("cost_usd") is not None]
+    return sum(costs) if costs else None
+
+
+def _cost_text(cost: float | None) -> str:
+    return "n/a" if cost is None else f"${cost:.2f}"
 
 
 # -- subject / variant / battery dimensions -------------------------------------------------------
@@ -312,15 +327,15 @@ def summarize_matrix(run_dir: Path, groups=None) -> str:
             if not cs:
                 continue
             aa = [a for a in atts if a["subject"] == s_ and a["variant"] == v]
-            models = ", ".join(sorted({a["model"] for a in aa if a.get("model")})) or "-"
-            cost = sum(a.get("cost_usd") or 0 for a in aa)
+            models = ", ".join(sorted({_model_label(a) for a in aa if a.get("model")})) or "-"
+            cost = _cost(aa)
             g = next((g for g, gs, gv in groups if gs == s_ and gv == v), None)
             infra = len(load_infra(g)) if g is not None else 0
             planned = plan.get(f"{s_}/{v}")
             efforts = ", ".join(sorted({str(c.get("effort", "?")) for c in cs}))
             clis = ", ".join(sorted({str(c.get("cli_version", "?")) for c in cs}))
             out.append(f"| {s_} | {models} | {lab(v)} | {len(planned) if planned is not None else '?'} | "
-                       + " | ".join(_stats(cs)) + f" | {len(aa) + infra} | {infra} | {efforts} | {clis} | ${cost:.2f} |")
+                       + " | ".join(_stats(cs)) + f" | {len(aa) + infra} | {infra} | {efforts} | {clis} | {_cost_text(cost)} |")
     out += ["", "calls = scored attempts + infrastructure errors (retried calls that are not attempts); "
             "planned = cells the run was asked for (plan.json), cells = cells completed.", ""]
     probes = [v for v in variants if _vlabel(v) != v]

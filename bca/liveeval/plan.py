@@ -60,12 +60,13 @@ class Rates:
 
 
 def estimate(run_dir: Path | None, subjects: list[str], variants: list[str], cells, *, max_attempts: int,
-             rates: Rates, flat: bool = False, variant_names: dict[str, str] | None = None) -> list[dict]:
+             rates: Rates, flat: bool = False, variant_names: dict[str, str] | None = None,
+             subject_specs: dict[str, str] | None = None) -> list[dict]:
     """One row per (subject, variant, battery): cells, done (resumable), worst, expected calls.
     `variant_names` maps a (directory-safe) variant to its registry name for VARIANT_INFO."""
     rows: dict[tuple, dict] = {}
     for s in subjects:
-        model = expected_model(s)
+        model = expected_model((subject_specs or {}).get(s, s))  # the spec, not its directory-safe name
         for v in variants:
             vname = (variant_names or {}).get(v, v)
             vmax = variant_max_attempts(vname, max_attempts)

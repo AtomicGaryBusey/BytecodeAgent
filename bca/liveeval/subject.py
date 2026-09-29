@@ -31,6 +31,10 @@ CLAUDE_FLAGS = (
     "-p", "--output-format", "stream-json", "--include-partial-messages", "--verbose",
     "--tools", "", "--strict-mcp-config", "--disable-slash-commands",
     "--no-session-persistence", "--setting-sources", "", "--safe-mode",
+    # The requested model answers or refuses: never a silent stand-in. By default Claude Code re-runs a
+    # call that a model's safety classifier stops on another model (2026-09-28: claude-fable-5-1 ->
+    # claude-opus-4-8, category "cyber", on this harness's own system prompt).
+    "--settings", '{"switchModelsOnFlag": false}',
     "--system-prompt", SYSTEM_PROMPT,
 )  # fmt: skip
 
@@ -81,12 +85,20 @@ class Response:
     usage: dict = field(default_factory=dict)
     cost_usd: float | None = None
     raw_path: str = ""  # where the raw event stream was saved (live subject)
+    refusal: str = ""  # the model (or its safety classifier) refused: "<category>: <explanation>"
+    model_source: str = "reported"  # "requested": the CLI never said which model served the call
 
     def to_dict(self) -> dict:
         return asdict(self)
 
 
 OnText = Callable[[str], bool]
+
+
+def _refusal_text(details: dict) -> str:
+    cat = details.get("category") or "unspecified"
+    expl = (details.get("explanation") or "").strip()
+    return f"{cat}: {expl[:200]}" if expl else cat
 
 
 class Subject:
@@ -224,7 +236,7 @@ class ClaudeSubject(Subject):
 
         timer = threading.Timer(self.timeout if timeout is None else timeout, on_timeout)
         timer.start()
-        text, model, usage, cost, error = [], "", {}, None, ""
+        text, model, usage, cost, error, refusal = [], "", {}, None, "", ""
         first, deltas, killed, result_text = None, 0, False, None
         raw = open(raw_path, "w") if raw_path else None
         try:
@@ -241,7 +253,10 @@ class ClaudeSubject(Subject):
                 elif typ == "stream_event":
                     ev = msg.get("event", {})
                     if ev.get("type") == "message_start":
-                        model = ev.get("message", {}).get("model", model)
+                        m = ev.get("message", {}).get("model")
+                        model = m if m and m != "<synthetic>" else model
+                    elif ev.get("type") == "message_delta" and (ev.get("delta") or {}).get("stop_reason") == "refusal":
+                        refusal = refusal or _refusal_text((ev["delta"].get("stop_details") or {}))
                     elif ev.get("type") == "content_block_delta" and ev.get("delta", {}).get("type") == "text_delta":
                         delta = ev["delta"].get("text", "")
                         if not delta:
@@ -254,8 +269,17 @@ class ClaudeSubject(Subject):
                             killed = True
                             kill()
                             break
+                elif typ == "system" and msg.get("subtype") in ("model_refusal_fallback", "model_refusal_no_fallback"):
+                    refusal = refusal or _refusal_text({"category": msg.get("api_refusal_category"),
+                                                        "explanation": msg.get("api_refusal_explanation")})
+                    if msg.get("fallback_model"):  # switchModelsOnFlag is off; should never happen
+                        refusal += f" (answered by fallback model {msg['fallback_model']})"
                 elif typ == "result":
                     usage = msg.get("usage", {}) or {}
+                    for it in usage.get("iterations") or []:  # a server-side substitution (fallback_message)
+                        if isinstance(it, dict) and it.get("type") not in (None, "message") and it.get("model"):
+                            refusal = refusal or f"served by fallback model {it['model']} ({it.get('type')})"
+                            model = it["model"]
                     cost = msg.get("total_cost_usd")
                     result_text = msg.get("result")
                     if msg.get("is_error"):
@@ -283,5 +307,5 @@ class ClaudeSubject(Subject):
         return Response(
             body, ok=ok, killed=killed, timed_out=timed_out, error=error, model=model,
             wall_s=time.perf_counter() - t0, first_text_s=first, deltas=deltas, usage=usage,
-            cost_usd=cost, raw_path=raw_path,
+            cost_usd=cost, raw_path=raw_path, refusal=refusal,
         )  # fmt: skip
