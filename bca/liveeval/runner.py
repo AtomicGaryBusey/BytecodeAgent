@@ -132,13 +132,17 @@ _FATAL_RE = re.compile(
     # a subscription's usage window is spent: retrying in minutes cannot help; resume the run later
     r"usage limit|hit your (?:weekly |daily )?limit|exceeded your current (?:token )?quota|exceeded_current_quota|"
     r"quota (?:exhausted|exceeded)|insufficient balance|login_required|token_unauthorized|"
-    r"exhausted your quota|"  # Antigravity quota (its capacity / per-minute 429s stay transient)
+    r"exhausted your quota|individual quota reached|upgrade your subscription to increase your limits|"
+    # ^ Antigravity plan quota (seen live: "Individual quota reached. ... Resets in 166h"); capacity and
+    #   per-minute 429s stay transient
     r"not signed in|no authentication methods available|please sign in|"
     # Kimi Code (verified with dummy credentials; quota wording from its source)
     r"authorization grant is invalid|invalid_grant|no credential configured|provider\.auth_error|"
     r"recharge your account|please recharge|in arrears|check your account balance|"
     # Codex (protocol/src/error.rs, login/src/auth/manager.rs)
     r"out of credits|spend cap|upgrade to plus|sign(?:ing)? in again|"
+    # Grok Build (plan-window rate limit; an effort the model does not offer)
+    r"hit the rate limit for your plan|unknown effort level|"
     # the subject could use a tool (bca.liveeval.vendors): never score such an answer, stop the run
     r"^isolation:",
     re.I,
@@ -481,17 +485,27 @@ def run_plan(subjects: dict[str, Subject], variants: dict[str, Variant], tasks, 
             groups.append((sname, subj, vname, vfn, gdir, desc, vmax))
     write_plan(run_dir, {f"{g[0]}/{g[2]}": [cell_id(t, p, i) for t, _b, p, i in cells] for g in groups})
     work = interleave(groups, cells)
+    # One guard per subject: a subject whose plan quota is spent (or whose CLI keeps failing) stops its
+    # own cells only; the other subjects of the run go on. `guard` then reports the union.
+    guards = {sname: InfraGuard(guard.max_consecutive, guard.base_delay, guard.max_delay, guard.sleep)
+              for sname in subjects} if guard is not None else {}
 
     def one(w):
         (sname, subj, vname, vfn, gdir, desc, vmax), (t, b, p, i) = w
         rec = run_cell(subj, t, p, i, gdir, budget=budget, max_attempts=vmax, lock=lock, variant=vfn,
                        meta={"subject": sname, "variant": vname, "battery": b, **desc},
-                       label=f"{sname}/{vname}/", timeout=timeout_for(b) if timeout_for else None, guard=guard)
+                       label=f"{sname}/{vname}/", timeout=timeout_for(b) if timeout_for else None,
+                       guard=guards.get(sname))
         progress(_progress_line(f"{sname}/{vname}/", rec))
         return rec
 
     with ThreadPoolExecutor(max_workers=max(1, jobs)) as ex:
         recs = list(ex.map(one, work))
+    if guard is not None:
+        guard.total += sum(g.total for g in guards.values())
+        stopped = [f"{s}: {g.aborted}" for s, g in guards.items() if g.aborted]
+        if stopped:
+            guard.aborted = "; ".join(stopped)
     # subject-major, as planned
     gi = {(g[0], g[2]): n for n, g in enumerate(groups)}
     ci = {cell_id(t, p, i): n for n, (t, _b, p, i) in enumerate(cells)}

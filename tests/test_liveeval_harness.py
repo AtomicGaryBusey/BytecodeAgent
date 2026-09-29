@@ -120,7 +120,7 @@ def test_outage_aborts_run_leaves_cells_incomplete_and_resumes(tmp_path, capsys)
             "--isas", "x86_64", "--model", "opus", "--jobs", "1", "--infra-backoff", "0", "--max-infra-errors", "3"]
     assert cli_main(argv, subject_factory=lambda m: down) == 3
     err = capsys.readouterr().err
-    assert "run aborted: 3 consecutive infrastructure errors" in err and "529 Overloaded" in err
+    assert "run aborted: opus: 3 consecutive infrastructure errors" in err and "529 Overloaded" in err
     assert down.calls == 3
     g = rd / "opus" / "baseline"
     assert not list(g.glob("cells/*/cell.json"))  # nothing marked complete

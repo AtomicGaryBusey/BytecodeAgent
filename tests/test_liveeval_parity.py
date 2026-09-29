@@ -249,3 +249,37 @@ def test_fresh_tokens_do_not_serialise(tmp_path):
         h.sync_back(True)
         h.cleanup()
     assert fcntl
+
+
+def test_grok_is_registered_and_its_plan_errors_are_fatal():
+    from bca.liveeval.vendors import VENDORS, GrokSubject, split_spec
+
+    assert VENDORS["grok"] is GrokSubject and split_spec("grok:grok-4.7") == ("grok", "grok-4.7")
+    for err in ("You\u2019ve hit the rate limit for your plan. Upgrade your account or try again later.",
+                "--effort/--reasoning-effort: unknown effort level 'xhigh'; use one of: high, medium, low"):
+        assert runner.infra_kind(err) == "fatal", err
+    assert runner.infra_kind("Request failed (HTTP 429).") == "transient"
+    assert runner.infra_kind("API error (status 500 Internal Server Error): upstream") == "transient"
+
+
+def test_antigravity_weekly_quota_is_fatal():
+    err = ('exit status 3: AGY_ERROR {"short_error":"RESOURCE_EXHAUSTED (code 429): Individual quota reached. '
+           'Please upgrade your subscription to increase your limits. Resets in 166h5m5s.","retryable":true}')
+    assert runner.infra_kind(err) == "fatal"
+
+
+def test_one_subjects_quota_stops_only_that_subject(tmp_path):
+    """A plan quota spent on one vendor must not abort the other subjects of the run."""
+    from bca.liveeval.registry import baseline
+    from bca.liveeval.runner import InfraGuard, run_plan
+
+    quota = {"error": "exit status 3: AGY_ERROR Individual quota reached. Resets in 166h"}
+    bad = FakeSubject([quota] * 10)
+    good_ans = "sum_to:\n    xor eax, eax\n.l: test rdi, rdi\n    jle .d\n    add rax, rdi\n    dec rdi\n    jmp .l\n.d: ret\n"
+    good = FakeSubject([good_ans] * 10)
+    guard = InfraGuard(max_consecutive=5, base_delay=0, sleep=lambda s: None)
+    recs = run_plan({"bad": bad, "good": good}, {"baseline": baseline}, [SUM], ["stream"], ["x86_64"], tmp_path,
+                    jobs=1, guard=guard, progress=lambda m: None)
+    by = {r["subject"]: r for r in recs}
+    assert by["good"]["pass_final"] and not by["good"].get("incomplete")
+    assert by["bad"].get("incomplete") and guard.aborted.startswith("bad: fatal")

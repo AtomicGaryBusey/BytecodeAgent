@@ -23,9 +23,10 @@ from bca.liveeval.subject import EFFORTS, ClaudeSubject, Subject
 from bca.liveeval.vendor_base import CliSubject, CredHome, IsolationError, Parsed
 from bca.liveeval.vendor_agy import AgySubject
 from bca.liveeval.vendor_codex import CodexSubject
+from bca.liveeval.vendor_grok import GrokSubject
 from bca.liveeval.vendor_kimi import KimiSubject
 
-VENDORS: dict[str, type[CliSubject]] = {"codex": CodexSubject, "kimi": KimiSubject, "agy": AgySubject}
+VENDORS: dict[str, type[CliSubject]] = {"codex": CodexSubject, "kimi": KimiSubject, "agy": AgySubject, "grok": GrokSubject}
 
 
 def split_spec(spec: str) -> tuple[str | None, str]:
@@ -49,5 +50,5 @@ def make_subject(spec: str | None, *, timeout: float, effort: str | None = None)
     return VENDORS[vendor](model, timeout=timeout, effort=effort)
 
 
-__all__ = ["AgySubject", "CliSubject", "CodexSubject", "CredHome", "IsolationError", "KimiSubject", "Parsed", "VENDORS",
+__all__ = ["AgySubject", "CliSubject", "CodexSubject", "GrokSubject", "CredHome", "IsolationError", "KimiSubject", "Parsed", "VENDORS",
            "all_efforts", "make_subject", "split_spec"]
