@@ -1,7 +1,7 @@
 """Subjects from other vendors' coding-agent CLIs, run as tool-less one-shot answerers.
 
-A subject spec is `<vendor>:<model>` (`codex:gpt-6-luna`, `kimi:kimi-code/k3`, `agy:gemini-3.8-flash-high`);
-anything without a known vendor prefix is a `claude -p` model (ClaudeSubject). Every vendor subject gets
+A subject spec is `<vendor>:<model>` (`codex:gpt-6-luna`, `kimi:kimi-code/k3`, `agy:gemini-3.8-flash-high`,
+`grok:grok-4.7`); anything without a known vendor prefix is a `claude -p` model (ClaudeSubject). Every vendor subject gets
 the same isolation contract as ClaudeSubject:
 
 - an empty temporary working directory outside the repository;
@@ -18,8 +18,8 @@ the same isolation contract as ClaudeSubject:
   aborts the run until it is re-audited, so results stay comparable;
 - a vendor safety block is a scored refusal, as for Claude (`Parsed.refusal`).
 
-Codex and Kimi deliver the answer as one message; Antigravity streams deltas but writes its request
-record only at the end of the turn. None of them is killed on an early abort (`streams_text = False`):
+Codex and Kimi deliver the answer as one message; Antigravity and Grok stream deltas but write their
+request records only at the end of the turn. None of them is killed on an early abort (`streams_text = False`):
 the scorer stops reading, the CLI finishes, and its request is verified. A CLI that sets `streams_text`
 is killed on an early abort and must be verifiable afterwards (finish() gets returncode None).
 """

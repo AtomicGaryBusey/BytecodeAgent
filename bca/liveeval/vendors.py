@@ -1,20 +1,13 @@
-"""Subjects from other vendors' coding-agent CLIs, run as tool-less one-shot answerers.
+"""Subject registry: `<vendor>:<model>` picks a vendor CLI adapter, anything else is a Claude model.
 
-A subject spec is `<vendor>:<model>` (`codex:gpt-6-luna`, `kimi:kimi-code/k3`); anything without
-a known vendor prefix is a `claude -p` model (ClaudeSubject). Every vendor subject gets the same
-isolation contract as ClaudeSubject:
+    codex:<model>  OpenAI Codex CLI           (vendor_codex.CodexSubject)
+    kimi:<model>   Moonshot Kimi Code CLI     (vendor_kimi.KimiSubject)
+    agy:<model>    Google Antigravity CLI     (vendor_agy.AgySubject)
+    grok:<model>   xAI Grok Build CLI         (vendor_grok.GrokSubject)
+    <other>        `claude -p --model <other>` (subject.ClaudeSubject)
 
-- an empty temporary working directory outside the repository;
-- the child environment from `child_env()` (an allowlist) plus the vendor's own switches;
-- a private temporary config home holding only copies of the credential files (no user config,
-  instruction files, memories, skills, plugins or MCP servers can reach the subject), deleted after
-  the call. A token the CLI refreshed during the call is copied back to the real home (CredHome);
-- no tools: each adapter switches every tool off it can, and fails CLOSED -- any tool call or tool
-  result in the event stream makes the call an `isolation:` error, which aborts the run (see
-  runner._FATAL_RE) instead of scoring an answer produced with help.
-
-The CLIs below do not stream text deltas in their JSON modes: the answer arrives as one message,
-which is handed to `on_text` in one piece (the early-abort check still runs on it).
+The isolation contract every vendor adapter meets is described in vendor_base; the method and its
+known limits in reports/cross-vendor-methodology.md.
 """
 
 from __future__ import annotations

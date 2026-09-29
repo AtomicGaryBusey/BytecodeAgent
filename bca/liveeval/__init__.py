@@ -10,6 +10,12 @@
     python -m bca.liveeval compare eval/runs/<a> eval/runs/<b> ...
     python -m bca.liveeval probe opus sonnet haiku          # one tiny call each
 
+Subjects are Claude models (`claude -p`: an alias such as opus/sonnet/haiku/fable or a model id) or
+another vendor's coding CLI as `<vendor>:<model>`: codex:gpt-6-luna, kimi:kimi-code/k3,
+agy:gemini-3.8-flash-high, grok:grok-4.7 (bca.liveeval.vendors). Every subject runs tool-less with the
+same prompts; see reports/cross-vendor-methodology.md. A subject whose plan quota is spent stops its
+own cells only; the rest of the run continues.
+
 Without --model/--subjects and with only the baseline variant a run dir has the flat round-1
 layout; otherwise it is <run-dir>/<subject>/<variant>/ (runner.run_plan). --max-calls is one cap
 for the whole run dir (calls.log at its top), across subjects and variants and across processes;

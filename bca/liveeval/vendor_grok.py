@@ -54,8 +54,8 @@ Extras the model sees (A2), from the captured request: [system SYSTEM_PROMPT, us
 The empty user message is grok's first-user-message prefix, rendered empty by the agent's
 `userMessageTemplate` instead of the default `<user_info>` block (OS, shell, cwd, date, rules); grok
 trims the prompt's surrounding whitespace (the harness prompt's final newline). Unremovable: the xAI
-endpoint prepends its own server-side context, 1152 cached input tokens on every grok-4.7 call
-(a 40-token request is billed ~1320-1400 input tokens), not visible to the client.
+endpoint prepends its own server-side context (1152 cached input tokens on probe calls; a 40-token
+request is billed ~1320-1400 input tokens), not visible to the client.
 
 Model and effort (A5, A6). The assistant record carries the Responses API response's `model`
 (`grok-4.7-build` for `-m grok-4.7`, `grok-4.7-build-fast` for grok-4.7-build-fast), its system
@@ -168,13 +168,11 @@ GROK_PHASES = frozenset({"waiting_for_model", "streaming_reasoning", "streaming_
 # id is a substitution ("model rerouted", fatal). A model not listed here must be served under its own id.
 GROK_SERVED_AS = {"grok-4.7": "grok-4.7-build", "grok-4.7-build-fast": "grok-4.7-build-fast"}
 # Input-token guard (A1: a hidden tool / hosted-tool declaration / injected context would inflate the request).
-# Every grok-4.7 call billed 1152 cached input tokens (the endpoint's own server-side prefix), or 0 cached on a
-# cold cache, and never more -- also for an identical prompt sent twice (sum_to, 1266 chars: 488 + 1152 both
-# times). Total input (uncached + cached) is bounded like Codex's: 2/3 token per character of SYSTEM_PROMPT +
+# Probe calls billed 1152 cached input tokens (the endpoint's own server-side prefix) or 0 on a cold cache; under
+# sustained load prompt caching also covers shared prompt text (1408 = 1152 + 256 seen in the full run). Total input (uncached + cached) is bounded like Codex's: 2/3 token per character of SYSTEM_PROMPT +
 # prompt (real prompts run ~0.3), plus 800, plus that prefix. Seen: 30-char prompt 1289 (bound 2062), sum_to
 # 1640 (bound 2886), the longest harness prompt so far (33862 chars) bounds at ~24.6k.
 GROK_SERVER_PREFIX = 1152
-GROK_CACHE_SLACK = 128
 _PERMISSION_403 = re.compile(  # a 403 about the account, not the content (xai-grok-shell sampling/error.rs)
     r"subscription|permission[_ ]?denied|not signed in|sign in|log ?in|logout|auth(?:entic|ori[sz])|credential|"
     r"api[ _-]?key|"
@@ -642,8 +640,9 @@ class GrokSubject(CliSubject):
         bound = grok_input_bound(prompt)
         if totals and max(totals) > bound:
             bad(f"{max(totals)} input tokens billed, more than a tool-less request of this prompt can have ({bound})")
-        if cached and max(cached) > GROK_SERVER_PREFIX + GROK_CACHE_SLACK:
-            bad(f"{max(cached)} cached input tokens (the server prefix is {GROK_SERVER_PREFIX})")
+        # No separate cap on cached tokens: xAI prompt caching also covers the shared system prompt and prompt
+        # template in 256-token blocks (seen live: 1408 = 1152 + 256 in the full run), and cached tokens are
+        # part of the total bounded above, so hidden tools / injected context still cannot hide there.
         if answered and required and not totals:
             bad("no input-token count recorded")
 

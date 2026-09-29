@@ -1,11 +1,12 @@
 # Cross-vendor live eval: how the subjects are made comparable
 
-> **Account caveat (Claude results).** Every Claude run in this repository used a Claude Max subscription enrolled in Anthropic's **Cyber Verification Program** (relaxed cyber safeguards for verified security researchers; confirmed active 2026-09-28). Claude's safety classifiers are less restrictive on this account than on one without CVP, so refusal rates here are likely lower, and pass rates likely higher, than a non-CVP org or subscription would see on this machine-code work. Treat Claude numbers as an upper bound for non-CVP accounts. The ChatGPT account used for Codex is enrolled in OpenAI's equivalent **Daybreak** program at the **Blue** tier only (no Daybreak Red / `*-cyber` models); whether Daybreak relaxes anything for the non-Daybreak models evaluated here (e.g. `gpt-6-luna`) is unknown. The Kimi and Google accounts have no known equivalent enrolment.
+> **Account caveat (Claude results).** Every Claude run in this repository used a Claude Max subscription enrolled in Anthropic's **Cyber Verification Program** (relaxed cyber safeguards for verified security researchers; confirmed active 2026-09-28). Claude's safety classifiers are less restrictive on this account than on one without CVP, so refusal rates here are likely lower, and pass rates likely higher, than a non-CVP org or subscription would see on this machine-code work. Treat Claude numbers as an upper bound for non-CVP accounts. The ChatGPT account used for Codex is enrolled in OpenAI's equivalent **Daybreak** program at the **Blue** tier only (no Daybreak Red / `*-cyber` models); whether Daybreak relaxes anything for the non-Daybreak models evaluated here (e.g. `gpt-6-luna`) is unknown. The Kimi, Google and xAI accounts have no known equivalent enrolment.
 
 Adapters: `bca/liveeval/vendor_base.py` (shared), `vendor_codex.py`, `vendor_kimi.py`, `vendor_agy.py`,
-registry `vendors.py`. A subject is `<vendor>:<model>` (`codex:gpt-6-luna`, `kimi:kimi-code/k3`,
-`agy:gemini-3.8-flash-high`) or a Claude model (`opus`, `claude-sonnet-5-5`, `claude-fable-5-1`, ...).
-Built and verified 2026-09-28 against claude 2.1.284, codex 0.157.1, kimi 2.1.1, agy 1.2.12.
+`vendor_grok.py`, registry `vendors.py`. A subject is `<vendor>:<model>` (`codex:gpt-6-luna`,
+`kimi:kimi-code/k3`, `agy:gemini-3.8-flash-high`, `grok:grok-4.7`) or a Claude model (`opus`,
+`claude-sonnet-5-5`, `claude-fable-5-1`, ...). Built and verified 2026-09-28 against claude 2.1.284,
+codex 0.157.1, kimi 2.1.1, agy 1.2.12 and grok 1.0.41 (Grok Build; pinned binary, see below).
 
 ## The contract every subject meets
 
@@ -21,15 +22,15 @@ Built and verified 2026-09-28 against claude 2.1.284, codex 0.157.1, kimi 2.1.1,
 
 ## Per vendor
 
-| | Claude Code (`claude -p`) | Codex (`codex exec`) | Kimi Code (`kimi -p`) | Antigravity (`agy -p`) |
-|---|---|---|---|---|
-| tools off by | `--tools ""`, no MCP/settings/plugins | a stripped copy of the model's catalog entry (`model_catalog_json`) + config switches; feature flags alone left 9 tools in | agent file `tools: []`, `subagents: []` | custom agent excluding default components; `manage_task` cannot be removed (agy bug #1015), calling it aborts the run |
-| request evidence | CLI debug log: `tools: []`; system/message contents not visible | request captured at a local recorder: `tools: []`, only SYSTEM_PROMPT + prompt, 48-58 input tokens for a one-line prompt (was ~4000); every call also guarded by an input-token bound | kimi's session record (`wire.jsonl`): tools hash of `[]`, system prompt hash = SYSTEM_PROMPT, message count checked | agy's conversation record (protobuf `gen_metadata`) |
-| extra context the model sees | ~350 tokens added by Claude Code (content not visible to us) | none found | a date reminder (227 chars) and an "auto permission mode" note (508 chars) | `<System Prompt>` / `<USER_REQUEST>` wrappers, a local-time line, a "model setting changed" note |
-| served model reported | yes (per message; fallbacks flagged) | no, except a cyber reroute (scored as refusal) | no (the id sent is recorded) | no (the request echoes the id) |
-| default effort (runs use CLI defaults, as the Claude runs did) | CLI default | catalog default (luna/sol: medium) | high | encoded in the model id (`-high`, `-low`) |
-| refusal signal | `stop_reason: refusal`; fallback turned off (`switchModelsOnFlag: false`) | cyber/bio policy errors, content_filter, cyber reroute | `provider.filtered` ("Provider safety policy blocked the response.") | content-filter / safety finish reasons |
-| text delivery | streamed, killed on an early abort | one message | one message | streamed, but not killed on an early abort (its request record is written at the end of the turn) |
+| | Claude Code (`claude -p`) | Codex (`codex exec`) | Kimi Code (`kimi -p`) | Antigravity (`agy -p`) | Grok Build (`grok --single`) |
+|---|---|---|---|---|---|
+| tools off by | `--tools ""`, no MCP/settings/plugins | a stripped copy of the model's catalog entry (`model_catalog_json`) + config switches; feature flags alone left 9 tools in | agent file `tools: []`, `subagents: []` | custom agent excluding default components; `manage_task` cannot be removed (agy bug #1015), calling it aborts the run | custom agent (`promptMode: full`, no default tools), hosted web/X search disabled; a private `HOME` too, since grok otherwise reads `~/.claude` and `~/.cursor` config |
+| request evidence | CLI debug log: `tools: []`; system/message contents not visible | request captured at a local recorder: `tools: []`, only SYSTEM_PROMPT + prompt, 48-58 input tokens for a one-line prompt (was ~4000); every call also guarded by an input-token bound | kimi's session record (`wire.jsonl`): tools hash of `[]`, system prompt hash = SYSTEM_PROMPT, message count checked | agy's conversation record (protobuf `gen_metadata`) | request captured at a local recorder (no `tools` key; server echoes `tools: []`), then grok's per-call session record: empty tool definitions, system prompt = SYSTEM_PROMPT, one model call, input tokens bounded |
+| extra context the model sees | ~350 tokens added by Claude Code (content not visible to us) | none found | a date reminder (227 chars) and an "auto permission mode" note (508 chars) | `<System Prompt>` / `<USER_REQUEST>` wrappers, a local-time line, a "model setting changed" note | an empty first user message; ~1152 tokens of server-side context xAI adds itself (not visible); the prompt's final newline is trimmed |
+| served model reported | yes (per message; fallbacks flagged) | no, except a cyber reroute (scored as refusal) | no (the id sent is recorded) | no (the request echoes the id) | yes, from the response (`grok-4.7` is served as `grok-4.7-build`); any other model is a fatal reroute |
+| default effort (runs use CLI defaults, as the Claude runs did) | CLI default | catalog default (luna/sol: medium) | high | encoded in the model id (`-high`, `-low`) | high (served effort recorded; a mismatch is fatal) |
+| refusal signal | `stop_reason: refusal`; fallback turned off (`switchModelsOnFlag: false`) | cyber/bio policy errors, content_filter, cyber reroute | `provider.filtered` ("Provider safety policy blocked the response.") | content-filter / safety finish reasons | HTTP 403 content-safety blocks (account 403s stay errors), `stopReason: refusal` |
+| text delivery | streamed, killed on an early abort | one message | one message | streamed, but not killed on an early abort (its request record is written at the end of the turn) | streamed, not killed early (session record written at the end of the turn) |
 
 ## Known limits
 
@@ -43,6 +44,25 @@ Built and verified 2026-09-28 against claude 2.1.284, codex 0.157.1, kimi 2.1.1,
   the catalog lists `gpt-daybreak-blue-latest`, and whether enrolment affects `gpt-6-luna` is unknown); Kimi and
   Google have no known equivalent. Refusal rates are therefore not directly comparable.
 - Plan limits differ per vendor: ChatGPT Plus makes `gpt-6-luna` the practical Codex model for full batteries.
+- Grok Build sends the prompt to xAI a second time in a session-title side request (there is no switch to
+  turn it off in 1.0.41); the adapter points that request at a non-existent model so it is rejected before any
+  inference, and checks per call that it was. Hosted server-side tools are disabled and cannot be declared
+  per call by the client, but their declaration is not recorded either; the input-token bound and the
+  one-model-call check are what guard it.
+
+## Plan quotas and interruptions
+
+Each subject has its own infrastructure-error guard: a vendor whose plan quota is spent stops its own cells
+only, and the others keep running; the same command resumes it later. Seen so far:
+
+- **Antigravity (Google AI Plus):** the quota is per account, not per model, about 75 calls a week
+  ("Individual quota reached ... Resets in 166h"). Antigravity is therefore run slowly, resuming after each
+  weekly reset, and reported as partial until complete. The user's second Google account is not used, so
+  the subject stays one account.
+- **Antigravity** also reports a failed model request as a bare `error_message` step; it is a retried
+  infrastructure error, not an isolation failure.
+- **Grok:** xAI prompt caching covers shared prompt text in 256-token blocks beyond its 1152-token server
+  prefix, so the adapter bounds total input tokens rather than the cached part.
 
 ## Changes to the harness that touch the committed Claude runs
 

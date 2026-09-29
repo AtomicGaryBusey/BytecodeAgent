@@ -332,8 +332,6 @@ def test_unaudited_version_aborts(tmp_path, real_home):
      "model calls by ['grok-4.6']"),
     ({"usage_json": {"session": {"inputTokens": 9000, "modelCalls": 1,
                                  "modelUsage": {"grok-4.7-build": {"modelCalls": 1}}}}}, "9000 input tokens billed"),
-    ({"usage_json": {"session": {"inputTokens": 1402, "cachedReadTokens": 1400, "modelCalls": 1,
-                                 "modelUsage": {"grok-4.7-build": {"modelCalls": 1}}}}}, "1400 cached input tokens"),
     ({"usage_json": None}, "no usage.json"),
     ({"title": "Sum integers in x86 assembly"}, "the session-title side call was answered"),
     ({"agent": "grok-build"}, "ran instead of bca-subject"),
@@ -373,7 +371,7 @@ def test_missing_events_record_on_success_fails_closed(tmp_path, real_home, monk
     ({"modelUsage": {"grok-4.7-build": {"inputTokens": 1}}}, "modelUsage without modelCalls"),
     ({"num_turns": None}, "num_turns None"),
     ({"usage": {**USAGE, "input_tokens": 5000}}, "5000 input tokens billed"),
-    ({"usage": {**USAGE, "cache_read_input_tokens": 2000}}, "2000 cached input tokens"),
+    ({"usage": {**USAGE, "cache_read_input_tokens": 2000}}, "input tokens billed"),  # cached count toward the total
 ])
 def test_more_than_one_model_call_or_an_oversized_request_fails_closed(tmp_path, real_home, end_patch, needle):
     r = subject(real_home, fake_grok(tmp_path, events=[*OK_EVENTS[:-1], {**end(), **end_patch}])).complete("p")
@@ -595,3 +593,10 @@ def test_default_home_follows_grok_home(monkeypatch, tmp_path):
     assert GrokSubject("grok-4.7").home_real == tmp_path / "gh"
     monkeypatch.delenv("GROK_HOME")
     assert GrokSubject("grok-4.7").home_real == Path(os.path.expanduser("~/.grok"))
+
+
+def test_prompt_caching_beyond_the_server_prefix_is_accepted(tmp_path, real_home):
+    """Seen live in the full run: 1408 cached tokens (1152 prefix + one 256-token block of shared prompt text)."""
+    usage = {**USAGE, "input_tokens": 200, "cache_read_input_tokens": 1408}
+    r = subject(real_home, fake_grok(tmp_path, events=[*OK_EVENTS[:-1], {**end(), "usage": usage}])).complete("p")
+    assert r.ok and not r.error, r.error
