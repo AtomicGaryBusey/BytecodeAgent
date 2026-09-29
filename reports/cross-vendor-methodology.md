@@ -1,6 +1,6 @@
 # Cross-vendor live eval: how the subjects are made comparable
 
-> **Account caveat (Claude results).** Every Claude run in this repository used a Claude Max subscription enrolled in Anthropic's **Cyber Verification Program** (relaxed cyber safeguards for verified security researchers; confirmed active 2026-09-28). Claude's safety classifiers are less restrictive on this account than on one without CVP, so refusal rates here are likely lower, and pass rates likely higher, than a non-CVP org or subscription would see on this machine-code work. Treat Claude numbers as an upper bound for non-CVP accounts. Whether the other vendors' accounts carry comparable programs is unknown.
+> **Account caveat (Claude results).** Every Claude run in this repository used a Claude Max subscription enrolled in Anthropic's **Cyber Verification Program** (relaxed cyber safeguards for verified security researchers; confirmed active 2026-09-28). Claude's safety classifiers are less restrictive on this account than on one without CVP, so refusal rates here are likely lower, and pass rates likely higher, than a non-CVP org or subscription would see on this machine-code work. Treat Claude numbers as an upper bound for non-CVP accounts. The ChatGPT account used for Codex is enrolled in OpenAI's equivalent **Daybreak** program at the **Blue** tier only (no Daybreak Red / `*-cyber` models); whether Daybreak relaxes anything for the non-Daybreak models evaluated here (e.g. `gpt-6-luna`) is unknown. The Kimi and Google accounts have no known equivalent enrolment.
 
 Adapters: `bca/liveeval/vendor_base.py` (shared), `vendor_codex.py`, `vendor_kimi.py`, `vendor_agy.py`,
 registry `vendors.py`. A subject is `<vendor>:<model>` (`codex:gpt-6-luna`, `kimi:kimi-code/k3`,
@@ -38,9 +38,10 @@ Built and verified 2026-09-28 against claude 2.1.284, codex 0.157.1, kimi 2.1.1,
 - Request evidence for Kimi and Antigravity comes from each CLI's own per-call record, not a network
   capture (a local capture proxy was refused by this machine's permission policy).
 - Latency figures are not comparable across vendors (whole-message CLIs report time to the full answer).
-- Safety-program enrolment differs per account: the Claude account is in Anthropic's Cyber Verification
-  Program (relaxed cyber safeguards); the ChatGPT, Kimi and Google accounts' equivalents are unknown (Codex's
-  model catalog exposes a cyber access-program field). Refusal rates are therefore not directly comparable.
+- Safety-program enrolment differs per account: Claude is in Anthropic's Cyber Verification Program (account-wide
+  relaxed cyber safeguards); ChatGPT is in OpenAI's Daybreak program, Blue tier only (no Red / `*-cyber` models;
+  the catalog lists `gpt-daybreak-blue-latest`, and whether enrolment affects `gpt-6-luna` is unknown); Kimi and
+  Google have no known equivalent. Refusal rates are therefore not directly comparable.
 - Plan limits differ per vendor: ChatGPT Plus makes `gpt-6-luna` the practical Codex model for full batteries.
 
 ## Changes to the harness that touch the committed Claude runs
