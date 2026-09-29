@@ -363,3 +363,16 @@ def test_pb_fields_rejects_garbage_and_reads_requests(tmp_path):
         read_requests(db)
     assert os.path.exists(db)
 
+
+
+def test_error_message_step_is_a_transient_failure_not_isolation(tmp_path, real_home):
+    """agy reports a failed model request as a bare `error_message` step (seen live): retried, never scored."""
+    from bca.liveeval.vendor_base import Parsed
+    from bca.liveeval import runner
+
+    ev = {"event": "step_update", "step_update": {"conversation_id": "c", "step_index": 1, "state": "DONE",
+                                                 "step_type": "error_message", "duration_seconds": 0}}
+    p = Parsed()
+    s = subject(tmp_path, real_home, binary=fake_agy(tmp_path))
+    assert s.on_event(ev, p) is None and not p.violations
+    assert p.error.startswith("agy error_message step") and runner.infra_kind(p.error) == "transient"

@@ -268,6 +268,16 @@ class AgySubject(CliSubject):
             p.notes.append(f"init: {len(tools or [])} build tools advertised")
         elif typ == "step_update":
             st = body.get("step_type")
+            if st == "error_message":
+                # agy's record of a failed model request (seen live 2026-09-28 with no detail at all: no
+                # text, no result event, empty stderr). Not a tool: a transient failure, retried by the
+                # runner; nothing from this call is scored.
+                detail = {k: v for k, v in body.items() if k not in ("conversation_id", "step_index", "state",
+                                                                       "step_type", "duration_seconds")}
+                p.error = p.error or ("agy error_message step (model request failed)"
+                                      + (f": {json.dumps(detail)[:300]}" if detail else ""))
+                self._safety(body, p, "step error_message")
+                return None
             if st not in AGY_STEP_TYPES:
                 p.violations.append(f"step {st!r}: {json.dumps(body)[:200]}")
                 return None
