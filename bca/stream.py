@@ -24,7 +24,8 @@ Statement rules (both ISAs):
 
 Numbers and expressions follow GNU as (the reference assembler), on both ISAs:
   * `123` decimal, `0x7b` hex, `0b1111011` binary, a leading zero means octal (`010` == 8;
-    `09` is an error). The Intel `7bh` suffix and character literals are not supported.
+    `09` is an error). The Intel `7bh` suffix is not supported. A one-character literal (`'/'`, `'A'`) is
+    its value, as in GNU as; strings, escapes and multi-character literals are refused.
   * 64-bit two's complement: `/` and `%` are signed and truncate toward zero on the 64-bit
     value (0xffffffffffffffff / 6 == 0, as in GNU as), `>>` is a logical shift, `& | ^ ~`
     act on the 64-bit pattern. Precedence, tightest first: unary `- ~ +`;

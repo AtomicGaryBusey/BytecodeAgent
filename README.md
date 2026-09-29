@@ -1,0 +1,98 @@
+# BytecodeAgent
+
+Can a language model write **machine code** directly, without a human-facing toolchain in the loop?
+This project builds three non-standard ways for a model to emit x86-64 and AArch64 code, a
+differential harness that proves the result correct, and a live evaluation that puts models from
+five vendors through the same tasks under the same rules.
+
+## The three emission paths
+
+| Path | What the model writes | What turns it into bytes |
+|---|---|---|
+| **Stream** (`bca.stream`) | Assembly text, token by token | `StreamAssembler` encodes each instruction the moment its line is complete (keystone), cross-checked against GNU as, so generation can stop at the first bad line |
+| **Structured** (`bca.structured`) | One JSON object per instruction (e.g. a tool call) | A deterministic encoder: AArch64 bit by bit, x86-64 via iced-x86; no assembly text at all |
+| **IR** (`bca.ir`) | A small portable language: QBE IL, freestanding C, or WebAssembly text | An existing compiler (QBE, clang/tcc, Cranelift via wasmtime) lowers it; the function's bytes are pulled out of the ELF object |
+
+```python
+from bca.structured import assemble
+prog = assemble("aarch64", [{"op": "add", "dst": "x0", "src": ["x0", "x1"]}, {"op": "ret"}])
+prog.code  # b'\x00\x00\x01\x8b\xc0\x03_\xd6'
+```
+
+## Proving the code correct
+
+Every path ends in the same checker (`bca.emu`, `bca.difftest`): the bytes run under Unicorn against a
+C reference compiled with `-fwrapv`, on edge-case-heavy inputs. The emulator plays adversary: registers
+start as garbage, callee-saved registers and the stack are checked after return, out-of-bounds reads
+and writes fault, and callbacks into the harness are hostile. Failures come back as precise categories
+(`wrong_result`, `abi`, `oob`, `crash`, `hang`, ...) with the faulting source line, which the live eval
+feeds back to the model for repair.
+
+## Live evaluation (`bca.liveeval`)
+
+Real models, called through their vendors' own coding CLIs, write code through all three paths on both
+ISAs, with up to four attempts and repair feedback.
+
+- **Batteries:** `round1` (8 tasks), `round2` (11: recursion, SIMD, memory), `long` (9 programs of
+  ~60-250 instructions: a bytecode VM, Base64, XXH64, PackBits, multi-precision multiply, ...) and
+  `adversarial` (10 bait tasks, with prompt variants such as `misleading_hint` and `terse`).
+  224 cells per model at baseline.
+- **Subjects:** Claude models via `claude -p`; `codex:<model>` (OpenAI Codex CLI), `kimi:<model>`
+  (Kimi Code), `agy:<model>` (Google Antigravity) and `grok:<model>` (xAI Grok Build).
+- **Fair comparison:** every subject runs with zero tools, the same system and task prompts, a private
+  home per call, and a pinned CLI version; each call is verified against the CLI's own record of the
+  request, and anything unexpected aborts the run instead of being scored. Method and known limits:
+  [`reports/cross-vendor-methodology.md`](reports/cross-vendor-methodology.md).
+
+```sh
+.venv/bin/python -m bca.liveeval probe opus codex:gpt-6-luna          # one tiny call each
+.venv/bin/python -m bca.liveeval run --run-dir eval/runs/my-run --tasks round1,round2 \
+    --subjects claude-sonnet-5-5,kimi:kimi-code/k3 --max-calls 300 --dry-run   # plan and estimate
+.venv/bin/python -m bca.liveeval summarize eval/runs/my-run
+.venv/bin/python -m bca.liveeval compare eval/runs/a eval/runs/b
+```
+
+Runs are resumable (re-run the same command), capped by `--max-calls`, and stop a subject cleanly when
+its plan quota is spent.
+
+### Results so far (baseline prompts, pass on the first attempt)
+
+| Model | Round 1 | Round 2 | Long | Adversarial | All 224 cells |
+|---|---|---|---|---|---|
+| Claude Opus 5.5 | 45/48 | 60/62 | 53/54 | 57/60 | **96%** |
+| Claude Sonnet 5.5 | 47/48 | 56/62 | 45/54 | 53/60 | **90%** |
+| Codex `gpt-daybreak-blue-latest` | 45/48 | 55/62 | 42/54 | 58/60 | **89%** |
+| Claude Sonnet 5 | 40/48 | 49/62 | 41/54 | 45/60 | **78%** |
+| Claude Haiku 4.5 | 30/48 | 34/62 | 17/54 | 35/60 | **52%** |
+
+Fable 5.1, Codex `gpt-6-luna`, Kimi K3, Gemini 3.8 Flash and Grok 4.7 runs are in progress. Every model
+reaches 96-100% within four attempts except Haiku (71%). The Claude account is enrolled in Anthropic's
+Cyber Verification Program and the ChatGPT account in OpenAI's Daybreak (Blue), so treat those rows as
+upper bounds for ordinary accounts. Per-run write-ups are in [`reports/`](reports/).
+
+## Setup
+
+Python 3.12 with `keystone-engine`, `unicorn`, `iced-x86`, `capstone`, `wasmtime` and `pytest`, plus
+these tools on `PATH`: `qbe`, `clang` and/or `tcc`, `x86_64-linux-gnu-as` and `aarch64-linux-gnu-as`
+(the GNU as cross-check), and `wasmtime`. Developed on an NVIDIA DGX Spark (aarch64, Ubuntu 24.04).
+
+```sh
+python3 -m venv .venv && .venv/bin/pip install keystone-engine unicorn iced-x86 capstone wasmtime pytest
+.venv/bin/python -m pytest -q          # ~1300 tests, no network or model calls
+```
+
+The live eval additionally needs each vendor's CLI installed and logged in (`claude`, `codex`, `kimi`,
+`agy`, `grok`); the adapters refuse to run on CLI versions they were not audited against.
+
+## Layout
+
+```
+bca/isa.py, emu.py, difftest.py   ISA table, Unicorn runner, differential tests
+bca/stream.py                     streaming assembler with the GNU as oracle
+bca/structured/                   JSON instruction encoders, schemas, tool definitions
+bca/ir/                           QBE / C / WAT lowering and a minimal ELF extractor
+bca/liveeval/                     live-model eval: tasks, prompts, pipelines, runner, vendor adapters
+eval/runs/                        recorded runs (prompts, responses, raw streams, verdicts)
+reports/                          research report and eval write-ups
+examples/stream_demo.py           the stream path end to end
+```
