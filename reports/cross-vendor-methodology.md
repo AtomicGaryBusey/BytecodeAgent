@@ -8,6 +8,23 @@ Adapters: `bca/liveeval/vendor_base.py` (shared), `vendor_codex.py`, `vendor_kim
 `claude-sonnet-5-5`, `claude-fable-5-1`, ...). Built and verified 2026-09-28 against claude 2.1.284,
 codex 0.157.1, kimi 2.1.1, agy 1.2.12 and grok 1.0.41 (Grok Build; pinned binary, see below).
 
+## Accounts and plans
+
+Every subject ran on one consumer subscription per vendor, logged in through that vendor's own CLI. No API
+keys, and no second account for any vendor.
+
+| Vendor / CLI | Plan | Safety program | Limits seen in these runs |
+|---|---|---|---|
+| Anthropic / Claude Code | **Claude Max 20x** | Cyber Verification Program (relaxed cyber safeguards) | none hit |
+| OpenAI / Codex CLI | **ChatGPT Plus** | Daybreak, Blue tier (no Red / `*-cyber` models) | none hit (per-model 5-hour allowances, e.g. GPT-6 Astra ~5-45 calls) |
+| Moonshot / Kimi Code | **Kimi Allegretto** | none known | a 5-hour window (~125-160 calls) and a 7-day window on Code usage; monthly credits |
+| Google / Antigravity | **Google AI Plus (2 TB)** | none known | ~75 calls per week, per account (not per model) |
+| xAI / Grok Build | **SuperGrok** | none known | none hit |
+
+Plan tier matters: it decides which models are available (e.g. Kimi's high-speed model needs a higher tier)
+and how quickly a full battery can run, and the safety programs change refusal behaviour. Results describe
+these accounts, not every account on each service.
+
 ## The contract every subject meets
 
 | | how | verified by |

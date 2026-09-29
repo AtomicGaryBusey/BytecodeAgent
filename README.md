@@ -73,7 +73,8 @@ its plan quota is spent.
 † Antigravity is paced by its plan's weekly quota and still in progress. Raw assembly is easy for nearly
 every model; the QBE IR path separates them most. The Claude account is enrolled in Anthropic's Cyber
 Verification Program and the ChatGPT account in OpenAI's Daybreak (Blue), so treat those rows as upper
-bounds for ordinary accounts. Full comparison, per-path results and the false-reject review:
+bounds for ordinary accounts. Accounts used: Claude Max 20x, ChatGPT Plus, Kimi Allegretto, Google AI Plus (2 TB),
+SuperGrok (details in the methodology report). Full comparison, per-path results and the false-reject review:
 [`reports/live-model-eval-cross-vendor.md`](reports/live-model-eval-cross-vendor.md); per-run write-ups in
 [`reports/`](reports/).
 

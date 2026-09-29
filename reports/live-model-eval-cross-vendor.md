@@ -3,7 +3,8 @@
 > **Account caveat.** The Claude account is enrolled in Anthropic's **Cyber Verification Program** and the
 > ChatGPT account in OpenAI's **Daybreak** (Blue tier; no Red / `*-cyber` models); both relax cyber safeguards,
 > so treat those rows as upper bounds for ordinary accounts. The Kimi, Google and xAI accounts have no known
-> equivalent. Method, fairness contract and known limits: [cross-vendor-methodology.md](cross-vendor-methodology.md).
+> equivalent. Plans: Claude Max 20x, ChatGPT Plus, Kimi Allegretto, Google AI Plus (2 TB), SuperGrok.
+> Method, fairness contract and known limits: [cross-vendor-methodology.md](cross-vendor-methodology.md).
 
 Every model got the same 224 cells: rounds 1 + 2, the long-program battery and the adversarial battery
 (baseline prompts), across the stream, structured-JSON and QBE-IR paths on x86-64 and AArch64, with up to
