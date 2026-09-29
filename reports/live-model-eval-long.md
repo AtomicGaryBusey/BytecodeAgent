@@ -1,5 +1,7 @@
 # Live-model eval: the long-program battery (haiku, sonnet, opus)
 
+> **Account caveat (Claude results).** Every Claude run in this repository used a Claude Max subscription enrolled in Anthropic's **Cyber Verification Program** (relaxed cyber safeguards for verified security researchers; confirmed active 2026-09-28). Claude's safety classifiers are less restrictive on this account than on one without CVP, so refusal rates here are likely lower, and pass rates likely higher, than a non-CVP org or subscription would see on this machine-code work. Treat Claude numbers as an upper bound for non-CVP accounts. Whether the other vendors' accounts carry comparable programs is unknown.
+
 Run: `eval/runs/long-3subj-20260927-210627` (2026-09-27; claude CLI 2.1.283, CLI-default effort). 9 programs of roughly 60-250
 instructions (bytecode VM, pair quicksort, Base64, XXH64, PackBits encode/decode, 4x4 matrix power,
 LCS, multi-precision multiply) × stream / structured / IR × x86-64 / AArch64 = 54 cells per model, up to

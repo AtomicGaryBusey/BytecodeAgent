@@ -1,5 +1,7 @@
 # Live-model eval: claude-sonnet-5-5 on every battery
 
+> **Account caveat (Claude results).** Every Claude run in this repository used a Claude Max subscription enrolled in Anthropic's **Cyber Verification Program** (relaxed cyber safeguards for verified security researchers; confirmed active 2026-09-28). Claude's safety classifiers are less restrictive on this account than on one without CVP, so refusal rates here are likely lower, and pass rates likely higher, than a non-CVP org or subscription would see on this machine-code work. Treat Claude numbers as an upper bound for non-CVP accounts. Whether the other vendors' accounts carry comparable programs is unknown.
+
 Run: `eval/runs/sonnet55-all-20260928-182447` (2026-09-28; claude CLI 2.1.284, CLI-default effort, model pinned by its explicit id, and
 every cell reported claude-sonnet-5-5). Rounds 1 + 2, the long battery and the adversarial battery
 (baseline prompts): 224 cells, up to 4 attempts with repair feedback. 250 calls, no infrastructure errors.

@@ -1,5 +1,7 @@
 # Live-model end-to-end evaluation (first real run)
 
+> **Account caveat (Claude results).** Every Claude run in this repository used a Claude Max subscription enrolled in Anthropic's **Cyber Verification Program** (relaxed cyber safeguards for verified security researchers; confirmed active 2026-09-28). Claude's safety classifiers are less restrictive on this account than on one without CVP, so refusal rates here are likely lower, and pass rates likely higher, than a non-CVP org or subscription would see on this machine-code work. Treat Claude numbers as an upper bound for non-CVP accounts. Whether the other vendors' accounts carry comparable programs is unknown.
+
 **Run:** `eval/runs/20260927-130149/`, 2026-09-27. **Subject:** `claude-opus-5-5`. The model id comes from the
 `system/init` and `message_start` events of all 52 streams. Claude Code CLI 2.1.283, invoked as `claude -p`.
 **Harness:** `bca/liveeval/` (new). **Tests:** `tests/test_liveeval.py` (29 tests, fake subject, no quota).
