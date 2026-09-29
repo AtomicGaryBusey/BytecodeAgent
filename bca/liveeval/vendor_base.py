@@ -238,6 +238,8 @@ class CliSubject(Subject):
     efforts: tuple[str, ...] = ()
     audited_versions: tuple[str, ...] = ()  # empty: no version pin (tests)
     streams_text = False
+    deliver_at_end = False  # True: on_event returns no text; the final answer (p.text, possibly replaced by
+    # finish() with the CLI's own record of it) is handed to on_text once, after finish()
     home_files: tuple[str, ...] = ()
     home_required: tuple[str, ...] = ()
     home_sync: tuple[str, ...] = ()
@@ -411,6 +413,12 @@ class CliSubject(Subject):
                     self.finish(p, None if killed else proc.returncode, stderr)
                 except Exception as e:  # noqa: BLE001 - an unverifiable call is not scored
                     p.violations.append(f"{self.vendor} request verification failed ({type(e).__name__}: {e})")
+            if self.deliver_at_end and not timer_fired.is_set() and not p.violations and p.text:
+                if first is None:
+                    first = time.perf_counter() - t0
+                deltas += 1
+                if on_text is not None and on_text(p.text) is False:
+                    stopped = True
             call_ok = (not timer_fired.is_set() and not p.violations and not p.error
                        and (killed or proc.returncode == 0))
         finally:

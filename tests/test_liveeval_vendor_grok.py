@@ -158,7 +158,7 @@ def test_answer_model_usage_and_isolation(tmp_path, real_home, monkeypatch):
     s = subject(real_home, fake_grok(tmp_path))
     r = s.complete("write sum_to\n", got.append)
     assert r.ok, r.error
-    assert r.text == "mov x0, #1\nret\n" and got == ["mov x0, ", "#1\nret\n"] and r.deltas == 2
+    assert r.text == "mov x0, #1\nret\n" and got == ["mov x0, #1\nret\n"] and r.deltas == 1  # once, from the record
     assert r.model == "grok-4.7-build" and r.model_source == "reported"  # the response's own model id
     assert r.usage["reasoning_effort"] == "high" and r.usage["model_fingerprint"] == "fp_1"
     assert r.usage["input_tokens"] == 1402 and r.usage["output_tokens"] == 128 and r.usage["model_usage"] == ["grok-4.7-build"]
@@ -600,3 +600,17 @@ def test_prompt_caching_beyond_the_server_prefix_is_accepted(tmp_path, real_home
     usage = {**USAGE, "input_tokens": 200, "cache_read_input_tokens": 1408}
     r = subject(real_home, fake_grok(tmp_path, events=[*OK_EVENTS[:-1], {**end(), "usage": usage}])).complete("p")
     assert r.ok and not r.error, r.error
+
+
+def test_a_repeated_stream_chunk_is_not_scored_the_session_record_is(tmp_path, real_home):
+    """grok 1.0.41 sometimes emits a text chunk twice (seen live: answers starting `{"{"instructions"`, 3 of
+    243 grok-4.7-build-fast answers scored as format failures). The session record holds the model's real
+    answer; that is what the scorer gets."""
+    events = [e for e in OK_EVENTS if e.get("type") != "text"]
+    i = next(k for k, e in enumerate(events) if e.get("type") in ("usage", "end"))
+    events[i:i] = [{"type": "text", "data": "mov x0, "}, {"type": "text", "data": "mov x0, "},
+                   {"type": "text", "data": "#1\nret\n"}]
+    got = []
+    r = subject(real_home, fake_grok(tmp_path, events=events)).complete("write sum_to\n", got.append)
+    assert r.ok and r.text == "mov x0, #1\nret\n" and got == ["mov x0, #1\nret\n"]
+    assert any("recorded text is scored" in n for n in r.notes)

@@ -231,6 +231,7 @@ class GrokSubject(CliSubject):
     audited_versions = ("1.0.41",)
     # Not killed on an early abort: the assistant turn (and any hosted tool call) is recorded only when the
     # response completes, so a killed call could not be verified. The scorer stops reading; grok finishes.
+    deliver_at_end = True  # the session record, not the stream, is the answer (see finish)
     streams_text = False
     home_files = ("auth.json",)
     home_required = ("auth.json",)
@@ -319,8 +320,8 @@ class GrokSubject(CliSubject):
                 p.violations.append(f"malformed {typ} event {json.dumps(ev)[:160]}")
                 return None
             if typ == "text" and data:
-                p.text += data
-                return data
+                p.text += data  # delivered once at the end, after the session record is read (deliver_at_end)
+                return None
         elif typ == "usage":
             if ev.get("stopReason") in GROK_REFUSAL_STOPS:
                 self._refuse(p, f"refusal: grok stop reason {ev['stopReason']}")
@@ -546,7 +547,11 @@ class GrokSubject(CliSubject):
             return None
         answer = "\n".join(str(a.get("content") or "") for a in assistants)
         if answer != p.text:
-            p.notes.append("recorded assistant text differs from the streamed text")
+            # grok 1.0.41's streaming-json occasionally repeats a text chunk (seen: a doubled leading `{"` in 4
+            # of 243 build-fast answers); the session record is the model's actual answer: score that.
+            p.notes.append(f"recorded assistant text differs from the streamed text ({len(p.text)} vs {len(answer)} "
+                           "chars); the recorded text is scored")
+            p.text = answer
         if len(assistants) > 1:
             bad(f"{len(assistants)} assistant messages (one model call expected)")
         last = assistants[-1]
