@@ -1,0 +1,178 @@
+Implement the function `int64_t base64_encode(const uint8_t *src, int64_t n, char *out)`.
+
+Target: x86-64, Linux System V ABI. Integer/pointer arguments in rdi, rsi, rdx, rcx, r8, r9; 64-bit result in rax. Callee-saved: rbx, rbp, r12, r13, r14, r15 (restore them if you use them); all other registers may be clobbered. rsp is 16-byte aligned before the call, so it is 8 mod 16 at entry; it must be back to its entry value when you return with ret. Never write to the caller's frame (at or above the return address). More ABI facts: arguments beyond the sixth are passed on the stack; at entry the return address is at [rsp], the 7th argument at [rsp+8], the 8th at [rsp+16]. A call clobbers the caller-saved registers rax, rcx, rdx, rsi, rdi, r8-r11, all xmm registers and the flags, so keep values that must survive a call in callee-saved registers (saved/restored by you) or in your own stack frame. rsp must be 16-byte aligned at every call instruction (at entry rsp is 8 mod 16, so an odd number of 8-byte pushes, or `sub rsp, 8` plus any multiple of 16, re-aligns it). Anything below rsp may be overwritten by a callee. The direction flag must be clear at calls and on return.
+
+Output format: QBE intermediate language (the IL of the QBE compiler backend, c9x.me/compile). Write exactly one function, `export function l $base64_encode(...)`, taking every argument as `l` (64-bit; pointers are `l` too) and returning `l`. QBE will compile it for the target above, so you do not handle registers or the ABI yourself. Remember: every block starts with an `@label`; temporaries are `%name`; comparisons such as `csltl`/`ceql` produce a `w` value; `jnz` tests a `w`; loads/stores are `loadl`/`storel`. No data definitions, no calls, no other functions. Output only the QBE code: no Markdown fences, no prose. Load a byte zero-extended with `%b =l loadub %p`; store one with `storeb %c, %p`.
+
+Specification: Encode the n bytes at src (0 <= n <= 200) as standard Base64 (RFC 4648, with '=' padding) into out and return the number of characters written, 4 * ceil(n / 3). Each group of 3 input bytes b0 b1 b2 forms the 24-bit value (b0 << 16) | (b1 << 8) | b2, emitted as four 6-bit indices from the most significant; index v maps to 'A'+v for v < 26, 'a'+(v-26) for v < 52, '0'+(v-52) for v < 62, '+' for 62 and '/' for 63. A final group of 1 byte gives 2 characters then "=="; of 2 bytes, 3 characters then "=". Example: "foobar" -> "Zm9vYmFy", "fo" -> "Zm8=". Do not write a terminating NUL. There is no data section: compute the alphabet mapping with arithmetic/compares. Read only src[0..n-1] (reads are checked: never load past src[n-1], even for a partial final group) and write only out[0..4*ceil(n/3)-1].
+
+Your previous attempt was:
+<previous>
+export function l $base64_encode(l %src, l %n, l %out) {
+@entry
+	%zero =l copy 0
+	%three =l copy 3
+	%four =l copy 4
+	%groups =l add %n, 2
+	%groups =l div %groups, %three
+	%length =l mul %groups, %four
+	%offsetslot =l alloc8 8
+	%availSlot =l alloc8 8
+	%packedSlot =l alloc8 8
+	%validSlot =l alloc8 8
+	%stageslot =l alloc8 8
+	%idxslot =l alloc8 8
+	%outidxslot =l alloc8 8
+	%chslot =l alloc8 8
+	storel %zero, %offsetslot
+	jmp @group
+
+@group
+	%offset =l loadl %offsetslot
+	%more =w csltl %offset, %n
+	jnz %more, @readfirst, @done
+
+@readfirst
+	%sp =l add %src, %offset
+	%a =l loadub %sp
+	%avail =l sub %n, %offset
+	storel %avail, %availSlot
+	%hasb =w csltl 1, %avail
+	jnz %hasb, @readsecond, @nob
+
+@readsecond
+	%sp1 =l add %sp, 1
+	%b =l loadub %sp1
+	jmp @aftersecond
+
+@nob
+	%b =l copy 0
+	jmp @aftersecond
+
+@aftersecond
+	%hasc =w csltl 2, %avail
+	jnz %hasc, @readthird, @noc
+
+@readthird
+	%sp2 =l add %sp, 2
+	%c =l loadub %sp2
+	jmp @afterthird
+
+@noc
+	%c =l copy 0
+	jmp @afterthird
+
+@afterthird
+	%a16 =l shl %a, 16
+	%b8 =l shl %b, 8
+	%ab =l or %a16, %b8
+	%packed =l or %ab, %c
+	storel %packed, %packedSlot
+	%valid2 =w ceql %avail, 1
+	jnz %valid2, @twochars, @checktwo
+
+@twochars
+	storel 2, %validSlot
+	jmp @startmap
+
+@checktwo
+	%valid3 =w ceql %avail, 2
+	jnz %valid3, @threechars, @fourchars
+
+@threechars
+	storel 3, %validSlot
+	jmp @startmap
+
+@fourchars
+	storel 4, %validSlot
+	jmp @startmap
+
+@startmap
+	storel %zero, %stageslot
+	jmp @map
+
+@map
+	%stage =l loadl %stageslot
+	%valid =l loadl %validSlot
+	%notpad =w csltl %stage, %valid
+	jnz %notpad, @mapchar, @padding
+
+@padding
+	%ch =l copy 61
+	jmp @emit
+
+@mapchar
+	%packedv =l loadl %packedSlot
+	%twostage =l mul %stage, 2
+	%shift =l sub 18, %twostage
+	%vshift =l shr %packedv, %shift
+	%idx =l and %vshift, 63
+	storel %idx, %idxslot
+	%lt26 =w csltl %idx, 26
+	jnz %lt26, @upper, @test52
+
+@upper
+	%ch =l add %idx, 65
+	jmp @emit
+
+@test52
+	%lt52 =w csltl %idx, 52
+	jnz %lt52, @lower, @test62
+
+@lower
+	%u =l sub %idx, 26
+	%ch =l add %u, 97
+	jmp @emit
+
+@test62
+	%lt62 =w csltl %idx, 62
+	jnz %lt62, @digit, @special
+
+@digit
+	%u2 =l sub %idx, 52
+	%ch =l add %u2, 48
+	jmp @emit
+
+@special
+	%is62 =w ceql %idx, 62
+	jnz %is62, @plus, @slash
+
+@plus
+	%ch =l copy 43
+	jmp @emit
+
+@slash
+	%ch =l copy 47
+	jmp @emit
+
+@emit
+	%offset =l loadl %offsetslot
+	%groupnum =l div %offset, %three
+	%baseout =l mul %groupnum, %four
+	%stage =l loadl %stageslot
+	%outidx =l add %baseout, %stage
+	%dst =l add %out, %outidx
+	storeb %ch, %dst
+	%nextstage =l add %stage, 1
+	storel %nextstage, %stageslot
+	%finished =w ceql %nextstage, 4
+	jnz %finished, @nextgroup, @map
+
+@nextgroup
+	%offset =l loadl %offsetslot
+	%nextoffset =l add %offset, 3
+	storel %nextoffset, %offsetslot
+	jmp @group
+
+@done
+	ret %length
+}
+</previous>
+It failed:
+<failure>
+38 of 42 test cases failed. First failures:
+  base64_encode(src=bytes.fromhex('66'), n=1, out) [src = 'f']: expected 4, got 4; out[0..4) (memory [37, 41) of the block) after the call: expected [90, 103, 61, 61], got [90, 109, 61, 61]
+  base64_encode(src=bytes.fromhex('666f'), n=2, out) [src = 'fo']: expected 4, got 4; out[0..4) (memory [50, 54) of the block) after the call: expected [90, 109, 56, 61], got [90, 109, 90, 61]
+  base64_encode(src=bytes.fromhex('666f6f'), n=3, out) [src = 'foo']: expected 4, got 4; out[0..4) (memory [32, 36) of the block) after the call: expected [90, 109, 57, 118], got [90, 109, 90, 109]
+</failure>
+Write a corrected, complete version. Same output format; output only the code.

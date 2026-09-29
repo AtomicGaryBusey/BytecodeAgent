@@ -1,0 +1,168 @@
+Implement the function `int64_t packbits_decode(const uint8_t *src, int64_t n, uint8_t *out, int64_t cap)`.
+
+Target: AArch64 (ARMv8-A), Linux AAPCS64. Integer/pointer arguments in x0-x7; 64-bit result in x0. Callee-saved: x19-x28, x29 (frame pointer) and d8-d15 (restore them if you use them); x9-x15 are free scratch registers. sp must stay 16-byte aligned and be back to its entry value when you return with ret (return address in x30). More ABI facts: arguments beyond the eighth are passed on the stack (the 9th at [sp] at entry). A call (bl/blr) overwrites x30, so save x30 (e.g. stp x29, x30, [sp, #-16]!) before calling and restore it before ret. A call clobbers the caller-saved registers x0-x18, x30, v0-v7 and v16-v31 (and the upper halves of v8-v15) and the flags, so keep values that must survive a call in callee-saved registers x19-x28 (saved/restored by you) or in your own stack frame. sp must be 16-byte aligned at every call (and whenever it is used as a base register). Anything below sp may be overwritten by a callee.
+
+Output format: QBE intermediate language (the IL of the QBE compiler backend, c9x.me/compile). Write exactly one function, `export function l $packbits_decode(...)`, taking every argument as `l` (64-bit; pointers are `l` too) and returning `l`. QBE will compile it for the target above, so you do not handle registers or the ABI yourself. Remember: every block starts with an `@label`; temporaries are `%name`; comparisons such as `csltl`/`ceql` produce a `w` value; `jnz` tests a `w`; loads/stores are `loadl`/`storel`. No data definitions, no calls, no other functions. Output only the QBE code: no Markdown fences, no prose. Load a byte zero-extended with `%b =w loadub %p` or sign-extended with `%b =w loadsb %p`; store one with `storeb %c, %p`.
+
+Specification: Decompress PackBits data: src holds n bytes (0 <= n <= 600) of packets, decoded left to right into out, which has room for cap bytes (0 <= cap <= 1200). Each packet starts with a header byte h read as a signed byte: 0 <= h <= 127: a literal packet, the next h + 1 bytes are copied to the output; -127 <= h <= -1: a repeat packet, the next byte is written 1 - h times; h = -128: no operation (the packet is just that byte). Return the number of bytes written. Errors: if a packet needs more source bytes than remain in src[0..n-1] (checked when its header is read, before any of its output is written), return -2 (the output of earlier packets stays written). If the output would exceed cap bytes, write exactly the first cap bytes of the output (out[0..cap-1] completely filled) and return -1. Example: 01 'a' 'b' FE 'c' 00 'd' decodes to "abcccd" (returns 6); with cap = 4 it writes "abcc" and returns -1. Read only src[0..n-1] and write only out[0..cap-1] (both are checked: never write out[cap], even when cap is 0).
+
+Your previous attempt was:
+<previous>
+export function l $packbits_decode(l %src, l %n, l %out, l %cap) {
+@start
+	%ip =l alloc8 8
+	%op =l alloc8 8
+	%leftp =l alloc8 8
+	%sp =l alloc8 8
+	%valp =l alloc8 8
+	%modep =l alloc8 8
+	%zerol =l copy 0
+	storel %zerol, %ip
+	storel %zerol, %op
+	jmp @packet
+
+@packet
+	%pi =l loadl %ip
+	%more =w csltl %pi, %n
+	jnz %more, @header, @done
+
+@header
+	%hp =l add %src, %pi
+	%hw =w loadsb %hp
+	%hl =l extsw %hw
+	%isnoop =w ceqw %hw, -128
+	jnz %isnoop, @noop, @classify
+
+@noop
+	%ni =l add %pi, 1
+	storel %ni, %ip
+	jmp @packet
+
+@classify
+	%lit =w csgel %hl, 0
+	jnz %lit, @literal, @repeat
+
+@literal
+	%count =l add %hl, 1
+	%start =l add %pi, 1
+	%end =l add %start, %count
+	%valid =w cslel %end, %n
+	jnz %valid, @lit_valid, @bad
+
+@lit_valid
+	storel %end, %ip
+	storel %start, %sp
+	storel %count, %leftp
+	storel 0, %modep
+	jmp @prepare
+
+@repeat
+	%count2 =l sub 1, %hl
+	%end2 =l add %pi, 2
+	%valid2 =w cslel %end2, %n
+	jnz %valid2, @rep_valid, @bad
+
+@rep_valid
+	%vp =l add %src, %pi
+	%vaddr =l add %vp, 1
+	%byte =w loadub %vaddr
+	%byte64 =l extuw %byte
+	%ni2 =l add %pi, 2
+	storel %ni2, %ip
+	storel %byte64, %valp
+	storel %count2, %leftp
+	storel 1, %modep
+	jmp @prepare
+
+@prepare
+	%oi =l loadl %op
+	%room =l sub %cap, %oi
+	%plen =l loadl %leftp
+	%overflow =w csgtl %plen, %room
+	jnz %overflow, @truncate, @full_count
+
+@full_count
+	storel %plen, %leftp
+	jmp @emit_init
+
+@truncate
+	storel %room, %leftp
+	jmp @emit_init
+
+@emit_init
+	%srcpos =l loadl %sp
+	storel %srcpos, %sp
+	jmp @emit
+
+@emit
+	%left =l loadl %leftp
+	%continue =w csgtl %left, 0
+	jnz %continue, @emit_one, @packet_result
+
+@emit_one
+	%mode =l loadl %modep
+	%isrep =w cnel %mode, 0
+	jnz %isrep, @emit_repeat, @emit_literal
+
+@emit_repeat
+	%value =l loadl %valp
+	%oi2 =l loadl %op
+	%dst =l add %out, %oi2
+	storeb %value, %dst
+	%oi3 =l add %oi2, 1
+	storel %oi3, %op
+	%left2 =l loadl %leftp
+	%left3 =l sub %left2, 1
+	storel %left3, %leftp
+	jmp @emit
+
+@emit_literal
+	%pos =l loadl %sp
+	%from =l add %src, %pos
+	%b =w loadub %from
+	%oi4 =l loadl %op
+	%to =l add %out, %oi4
+	storeb %b, %to
+	%oi5 =l add %oi4, 1
+	storel %oi5, %op
+	%pos2 =l add %pos, 1
+	storel %pos2, %sp
+	%left4 =l loadl %leftp
+	%left5 =l sub %left4, 1
+	storel %left5, %leftp
+	jmp @emit
+
+@packet_result
+	%oi6 =l loadl %op
+	%pi6 =l loadl %ip
+	%used =l sub %oi6, %pi6
+	%unused =l copy %used
+	%origcount =l copy %unused
+	%room2 =l sub %cap, %oi6
+	%isfull =w ceql %room2, 0
+	jnz %isfull, @check_trunc, @packet
+
+@check_trunc
+	%prior =l loadl %op
+	%atcap =w ceql %prior, %cap
+	jnz %atcap, @truncated_return, @packet
+
+@truncated_return
+	ret -1
+
+@bad
+	ret -2
+
+@done
+	%result =l loadl %op
+	ret %result
+}
+</previous>
+It failed:
+<failure>
+18 of 46 test cases failed. First failures:
+  packbits_decode(src=bytes.fromhex('0061'), n=2, out, cap=1) [decoded length 1]: expected 1, got -1
+  packbits_decode(src=bytes.fromhex('fe61'), n=2, out, cap=3) [decoded length 3]: expected 3, got -1
+  packbits_decode(src=bytes.fromhex('8080007a'), n=4, out, cap=1) [decoded length 1]: expected 1, got -1
+</failure>
+Write a corrected, complete version. Same output format; output only the code.

@@ -1,0 +1,183 @@
+Implement the function `int64_t packbits_encode(const uint8_t *src, int64_t n, uint8_t *out, int64_t cap)`.
+
+Target: x86-64, Linux System V ABI. Integer/pointer arguments in rdi, rsi, rdx, rcx, r8, r9; 64-bit result in rax. Callee-saved: rbx, rbp, r12, r13, r14, r15 (restore them if you use them); all other registers may be clobbered. rsp is 16-byte aligned before the call, so it is 8 mod 16 at entry; it must be back to its entry value when you return with ret. Never write to the caller's frame (at or above the return address). More ABI facts: arguments beyond the sixth are passed on the stack; at entry the return address is at [rsp], the 7th argument at [rsp+8], the 8th at [rsp+16]. A call clobbers the caller-saved registers rax, rcx, rdx, rsi, rdi, r8-r11, all xmm registers and the flags, so keep values that must survive a call in callee-saved registers (saved/restored by you) or in your own stack frame. rsp must be 16-byte aligned at every call instruction (at entry rsp is 8 mod 16, so an odd number of 8-byte pushes, or `sub rsp, 8` plus any multiple of 16, re-aligns it). Anything below rsp may be overwritten by a callee. The direction flag must be clear at calls and on return.
+
+Output format: QBE intermediate language (the IL of the QBE compiler backend, c9x.me/compile). Write exactly one function, `export function l $packbits_encode(...)`, taking every argument as `l` (64-bit; pointers are `l` too) and returning `l`. QBE will compile it for the target above, so you do not handle registers or the ABI yourself. Remember: every block starts with an `@label`; temporaries are `%name`; comparisons such as `csltl`/`ceql` produce a `w` value; `jnz` tests a `w`; loads/stores are `loadl`/`storel`. No data definitions, no calls, no other functions. Output only the QBE code: no Markdown fences, no prose. Load a byte zero-extended with `%b =w loadub %p`; store one with `storeb %c, %p`.
+
+Specification: Compress the n bytes at src (0 <= n <= 600) with PackBits run-length encoding into out, which has room for cap bytes (0 <= cap <= 1200), and return the number of bytes written. The output is a sequence of packets: a repeat packet is the header byte 257 - r (i.e. -(r-1) as a signed byte) followed by one byte b, meaning r copies of b (3 <= r <= 128); a literal packet is the header byte L - 1 followed by L bytes copied verbatim (1 <= L <= 128). Encode greedily, left to right, exactly as follows. Let run(j) be the number of consecutive bytes equal to src[j] starting at j, capped at 128. At position i: if run(i) >= 3, emit a repeat packet with r = run(i) and b = src[i], and advance i by r. Otherwise emit a literal packet of the bytes src[i..j-1], where j starts at i and advances while j < n, j - i < 128 and run(j) < 3; then set i = j. (So a pair of equal bytes stays inside a literal; a literal stops just before a run of 3 or more.) Example: "abcccd" -> 01 'a' 'b' FE 'c' 00 'd' (7 bytes). If a whole packet does not fit in the remaining room, write none of it and return -1 immediately (earlier packets stay written). Read only src[0..n-1] (never look past src[n-1] when measuring a run) and write only out[0..cap-1] (both are checked).
+
+Your previous attempt was:
+<previous>
+export function l $packbits_encode(l %src, l %n, l %out, l %cap) {
+@start
+    %islot =l alloc8 8
+    %kslot =l alloc8 8
+    %jslot =l alloc8 8
+    %qslot =l alloc8 8
+    %oslot =l alloc8 8
+    %fslot =l alloc8 8
+    %bslot =l alloc8 8
+    storel 0, %islot
+    storel 0, %oslot
+    jmp @outer
+
+@outer
+    %i =l loadl %islot
+    %done =w csge %i, %n
+    jnz %done, @finish, @runstart
+
+@runstart
+    %ip =l add %src, %i
+    %first =w loadub %ip
+    storel %first, %fslot
+    storel %i, %kslot
+    jmp @runscan
+
+@runscan
+    %k =l loadl %kslot
+    %diff =l sub %k, %i
+    %atend =w csge %k, %n
+    %full =w csge %diff, 128
+    %stop =w or %atend, %full
+    jnz %stop, @rundone, @runcheck
+
+@runcheck
+    %kp =l add %src, %k
+    %cur =w loadub %kp
+    %f =w loadl %fslot
+    %same =w ceq %cur, %f
+    jnz %same, @runadvance, @rundone
+
+@runadvance
+    %knext =l add %k, 1
+    storel %knext, %kslot
+    jmp @runscan
+
+@rundone
+    %kdone =l loadl %kslot
+    %r =l sub %kdone, %i
+    %isrun =w csge %r, 3
+    jnz %isrun, @repeat, @literalstart
+
+@repeat
+    %opos =l loadl %oslot
+    %outend =l add %opos, 2
+    %no_room =w cslt %cap, %outend
+    jnz %no_room, @fail, @repeatwrite
+
+@repeatwrite
+    %oposr =l loadl %oslot
+    %hval =l sub 257, %r
+    %header =w copy %hval
+    %hp =l add %out, %oposr
+    storeb %header, %hp
+    %bp =l add %hp, 1
+    %fval =w loadl %fslot
+    storeb %fval, %bp
+    %opos2 =l add %oposr, 2
+    storel %opos2, %oslot
+    storel %kdone, %islot
+    jmp @outer
+
+@literalstart
+    storel %i, %jslot
+    jmp @litloop
+
+@litloop
+    %j =l loadl %jslot
+    %length =l sub %j, %i
+    %litfull =w csge %length, 128
+    %litend =w csge %j, %n
+    %litstop =w or %litfull, %litend
+    jnz %litstop, @litdone, @probe
+
+@probe
+    %jp =l add %src, %j
+    %jbyte =w loadub %jp
+    storel %jbyte, %bslot
+    %q =l add %j, 1
+    storel %q, %qslot
+    jmp @probe_scan
+
+@probe_scan
+    %qscan =l loadl %qslot
+    %atend2 =w csge %qscan, %n
+    %count =l sub %qscan, %j
+    %three =w csge %count, 3
+    %halt =w or %atend2, %three
+    jnz %halt, @probe_done, @probe_check
+
+@probe_check
+    %qp =l add %src, %qscan
+    %qbyte =w loadub %qp
+    %byte =w loadl %bslot
+    %equal =w ceq %qbyte, %byte
+    jnz %equal, @probe_inc, @probe_done
+
+@probe_inc
+    %qnext =l add %qscan, 1
+    storel %qnext, %qslot
+    jmp @probe_scan
+
+@probe_done
+    %countdone =l sub %qscan, %j
+    %isrun2 =w csge %countdone, 3
+    jnz %isrun2, @litdone, @litadvance
+
+@litadvance
+    %jnext =l add %j, 1
+    storel %jnext, %jslot
+    jmp @litloop
+
+@litdone
+    %jdone =l loadl %jslot
+    %llen =l sub %jdone, %i
+    %litneed =l add %llen, 1
+    %oposl =l loadl %oslot
+    %litendout =l add %oposl, %litneed
+    %lit_no_room =w cslt %cap, %litendout
+    jnz %lit_no_room, @fail, @litwrite
+
+@litwrite
+    %lhval =l sub %llen, 1
+    %lh =w copy %lhval
+    %lp =l add %out, %oposl
+    storeb %lh, %lp
+    storel %i, %kslot
+    jmp @copy
+
+@copy
+    %c =l loadl %kslot
+    %copydone =w csge %c, %jdone
+    jnz %copydone, @copydone, @copybyte
+
+@copybyte
+    %sp =l add %src, %c
+    %v =w loadub %sp
+    %offset =l sub %c, %i
+    %dp0 =l add %lp, 1
+    %dp =l add %dp0, %offset
+    storeb %v, %dp
+    %cnext =l add %c, 1
+    storel %cnext, %kslot
+    jmp @copy
+
+@copydone
+    storel %litendout, %oslot
+    storel %jdone, %islot
+    jmp @outer
+
+@fail
+    ret -1
+
+@finish
+    %result =l loadl %oslot
+    ret %result
+}
+</previous>
+It failed:
+<failure>
+Compilation failed at stage qbe:
+qbe:-:16: unknown keyword csge
+</failure>
+Write a corrected, complete version. Same output format; output only the code.

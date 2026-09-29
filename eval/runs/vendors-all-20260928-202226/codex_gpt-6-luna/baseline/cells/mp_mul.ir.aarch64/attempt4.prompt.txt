@@ -1,0 +1,161 @@
+Implement the function `int64_t mp_mul(const uint64_t *a, int64_t na, const uint64_t *b, int64_t nb, uint64_t *r)`.
+
+Target: AArch64 (ARMv8-A), Linux AAPCS64. Integer/pointer arguments in x0-x7; 64-bit result in x0. Callee-saved: x19-x28, x29 (frame pointer) and d8-d15 (restore them if you use them); x9-x15 are free scratch registers. sp must stay 16-byte aligned and be back to its entry value when you return with ret (return address in x30). More ABI facts: arguments beyond the eighth are passed on the stack (the 9th at [sp] at entry). A call (bl/blr) overwrites x30, so save x30 (e.g. stp x29, x30, [sp, #-16]!) before calling and restore it before ret. A call clobbers the caller-saved registers x0-x18, x30, v0-v7 and v16-v31 (and the upper halves of v8-v15) and the flags, so keep values that must survive a call in callee-saved registers x19-x28 (saved/restored by you) or in your own stack frame. sp must be 16-byte aligned at every call (and whenever it is used as a base register). Anything below sp may be overwritten by a callee.
+
+Output format: QBE intermediate language (the IL of the QBE compiler backend, c9x.me/compile). Write exactly one function, `export function l $mp_mul(...)`, taking every argument as `l` (64-bit; pointers are `l` too) and returning `l`. QBE will compile it for the target above, so you do not handle registers or the ABI yourself. Remember: every block starts with an `@label`; temporaries are `%name`; comparisons such as `csltl`/`ceql` produce a `w` value; `jnz` tests a `w`; loads/stores are `loadl`/`storel`. No data definitions, no calls, no other functions. Output only the QBE code: no Markdown fences, no prose. QBE has no high-multiply instruction: build the 128-bit product of two limbs from 32-bit halves (`and`, `shr` (logical), `mul`, `add`) with explicit carries; an unsigned carry out of `%s =l add %x, %y` is `%c =w cultl %s, %x`.
+
+Specification: Multi-precision multiplication. a holds na and b holds nb 64-bit limbs (0 <= na, nb <= 8), each an unsigned number in little-endian limb order: A = a[0] + a[1]*2^64 + ... . Write the full product A*B to r[0..na+nb-1] (little-endian limbs, every one of the na+nb limbs written, including high zero limbs; r starts out as garbage and does not overlap a or b) and return the number of significant limbs: the smallest k such that r[k..na+nb-1] are all 0 (so 0 when the product is 0, e.g. when na or nb is 0). Limbs are full unsigned 64-bit values (up to 2^64 - 1): the schoolbook method needs the full 128-bit product of two limbs and carries that propagate. Example: a = {2^64-1}, b = {2^64-1} gives r = {1, 2^64-2} and returns 2. Read only a[0..na-1], b[0..nb-1] and r[0..na+nb-1]; write only r[0..na+nb-1] (all checked).
+
+Your previous attempt was:
+<previous>
+export function l $mp_mul(l %a, l %na, l %b, l %nb, l %r) {
+@entry
+	%zeroa =w ceql %na, 0
+	%zerob =w ceql %nb, 0
+	%empty =w or %zeroa, %zerob
+	jnz %empty, @empty, @init
+
+@empty
+	ret 0
+
+@init
+	%total =l add %na, %nb
+	jmp @initloop
+
+@initloop
+	%i =l phi @init 0, @initnext %inext
+	%done =w cslel %total, %i
+	jnz %done, @outerstart, @initbody
+
+@initbody
+	%addr =l add %r, %i
+	storel 0, %addr
+	%inext =l add %i, 1
+	jmp @initnext
+
+@initnext
+	jmp @initloop
+
+@outerstart
+	jmp @outer
+
+@outer
+	%oi =l phi @outerstart 0, @outerdone %oinext
+	%odone =w cslel %na, %oi
+	jnz %odone, @findstart, @innerstart
+
+@innerstart
+	jmp @inner
+
+@inner
+	%ji =l phi @innerstart 0, @innerdone %jnext
+	%jdone =w cslel %nb, %ji
+	jnz %jdone, @outerdone, @calc
+
+@calc
+	%ap =l add %a, %oi
+	%bp =l add %b, %ji
+	%av =l loadl %ap
+	%bv =l loadl %bp
+	%mask =l and %av, 4294967295
+	%ah =l shr %av, 32
+	%bmask =l and %bv, 4294967295
+	%bh =l shr %bv, 32
+	%p0 =l mul %mask, %bmask
+	%p1 =l mul %mask, %bh
+	%p2 =l mul %ah, %bmask
+	%p3 =l mul %ah, %bh
+	%mid0 =l shr %p0, 32
+	%p1lo =l and %p1, 4294967295
+	%mid1 =l add %mid0, %p1lo
+	%p2lo =l and %p2, 4294967295
+	%mid2 =l add %mid1, %p2lo
+	%midhi =l shr %mid2, 32
+	%plo =l and %p0, 4294967295
+	%midlo =l shl %mid2, 32
+	%lo =l or %plo, %midlo
+	%p1hi =l shr %p1, 32
+	%p2hi =l shr %p2, 32
+	%h0 =l add %p3, %p1hi
+	%h1 =l add %h0, %p2hi
+	%hi =l add %h1, %midhi
+	%k =l add %oi, %ji
+	%rp =l add %r, %k
+	%old =l loadl %rp
+	%s0 =l add %old, %lo
+	%c0 =w cultl %s0, %old
+	storel %s0, %rp
+	%kp1 =l add %k, 1
+	%rp1 =l add %r, %kp1
+	%old1 =l loadl %rp1
+	%carry =l extuw %c0
+	%s1a =l add %old1, %hi
+	%c1a =w cultl %s1a, %old1
+	%s1 =l add %s1a, %carry
+	%c1b =w cultl %s1, %s1a
+	%carryout =w or %c1a, %c1b
+	storel %s1, %rp1
+	%kp2 =l add %k, 2
+	jmp @prop
+
+@prop
+	%pi =l phi @calc %kp2, @propbody %pinext
+	%pc =w phi @calc %carryout, @propbody %pcnext
+	%pd =w ceqw %pc, 0
+	%past =w cslel %total, %pi
+	%stop =w or %pd, %past
+	jnz %stop, @innerdone, @propbody
+
+@propbody
+	%rpi =l add %r, %pi
+	%pv =l loadl %rpi
+	%pvs =l add %pv, 1
+	%pco =w cultl %pvs, %pv
+	storel %pvs, %rpi
+	%pinext =l add %pi, 1
+	%pcnext =w copy %pco
+	jmp @prop
+
+@innerdone
+	%jnext =l add %ji, 1
+	jmp @inner
+
+@outerdone
+	%oinext =l add %oi, 1
+	jmp @outer
+
+@findstart
+	%last0 =l sub %total, 1
+	jmp @find
+
+@find
+	%fi =l phi @findstart %last0, @findstep %fprev
+	%fzero =w csltl %fi, 0
+	jnz %fzero, @retzero, @check
+
+@check
+	%fp =l add %r, %fi
+	%fv =l loadl %fp
+	%iszero =w ceql %fv, 0
+	jnz %iszero, @findstep, @retcount
+
+@findstep
+	%fprev =l sub %fi, 1
+	jmp @find
+
+@retcount
+	%result =l add %fi, 1
+	ret %result
+
+@retzero
+	ret 0
+}
+</previous>
+It failed:
+<failure>
+44 of 45 test cases failed. First failures:
+  mp_mul(a=[], na=0, b=[0x5], nb=1, r): expected 0, got 0; r[0..1) (memory [48, 56) of the block) after the call: expected [0], got [8466728950379372875]
+  mp_mul(a=[0x5], na=1, b=[], nb=0, r): expected 0, got 0; r[0..1) (memory [64, 72) of the block) after the call: expected [0], got [10793833783818521439]
+  mp_mul(a=[0x0], na=1, b=[0x0], nb=1, r): expected 0, got 0; r[0..2) (memory [72, 88) of the block) after the call: expected [0, 0], got [0, 9294615432574811648]
+</failure>
+Write a corrected, complete version. Same output format; output only the code.
