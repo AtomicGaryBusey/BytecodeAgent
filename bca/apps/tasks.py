@@ -677,7 +677,8 @@ Examples: `[1, 2]` ok; empty input `error at 0`; `[1,]` `error at 3`; `{{"a" 1}}
 `tru` `error at 3`; `trux` `error at 3`; `[1] x` `error at 4`; `"a<TAB>b"` (a raw tab byte) `error at 2`;
 `-` `error at 1`; `1.e5` `error at 2`.
 
-Limits: the input is at most {JSON_MAX} bytes; arrays and objects are nested at most {JSON_DEPTH} deep.
+Limits: the input is at most {JSON_MAX} bytes; arrays and objects are nested at most {JSON_DEPTH} deep. These limits
+describe the inputs you will be given; you do not need to detect or report inputs that exceed them.
 """
 )
 
