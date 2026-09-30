@@ -34,6 +34,7 @@ system and task prompts, and its CLI's default effort (as the Claude runs did). 
 | Claude Opus 4.8 | 35 | 48 | 49 | 43 | **175/224 (78%)** | 222/224 (99%) | 1.27 |
 | Codex GPT-6 Luna | 33 | 41 | 10 | 46 | **130/224 (58%)** | 209/224 (93%) | 1.71 |
 | Claude Haiku 4.5 | 30 | 34 | 17 | 35 | **116/224 (52%)** | 158/224 (71%) | 2.19 |
+| Microsoft MAI-Code 1.1 Flash (Copilot) | 26 | 34 | 12 | 35 | **107/224 (48%)** | 151/224 (67%) | 2.29 |
 
 Codex Daybreak Blue includes one reviewed harness false reject counted as a pass, Grok 4.7 build-fast
 three and GPT-6 Luna via Copilot one (see the false-reject review below). Still running (added when complete and reviewed): Kimi K2.8 (kimi-for-coding) and Gemini 3.8 Flash on Antigravity (quota-paced).
@@ -60,6 +61,7 @@ three and GPT-6 Luna via Copilot one (see the false-reject review below). Still 
 | Claude Opus 4.8 | 63/76 (83%) | 66/74 (89%) | 46/74 (62%) |
 | Codex GPT-6 Luna | 60/76 (79%) | 45/74 (61%) | 25/74 (34%) |
 | Claude Haiku 4.5 | 61/76 (80%) | 54/74 (73%) | 1/74 (1%) |
+| Microsoft MAI-Code 1.1 Flash (Copilot) | 59/76 (78%) | 44/74 (59%) | 4/74 (5%) |
 
 ## Findings
 
@@ -90,6 +92,13 @@ three and GPT-6 Luna via Copilot one (see the false-reject review below). Still 
   30); Codex's catalog defaults (low verbosity, priority tier) or the two services' budgets for "medium" differ.
   Both are each CLI's own defaults, as the fairness contract requires: an effort label does not carry across
   front ends.
+- **Microsoft MAI-Code 1.1 Flash** (Microsoft's own model, reached through GitHub Copilot Pro, the only
+  Copilot-exclusive model) scores 48% first attempt (107/224) and 67% within four attempts, between Haiku 4.5 and
+  Luna via Codex. Raw assembly is its strength (stream 78%); QBE is almost entirely beyond it (4/74: 261 compile
+  failures, mostly `%x = copy 0` without a result class, and invented opcodes such as `addl`), and its structured
+  answers are often malformed JSON. On the app battery (whole programs) it managed 23/96 first attempt and 64/96
+  within four (pending the re-run of two cells after a stream fix): the only model tested so far that does not
+  eventually write every program.
 - **Fable 5.1's** one final failure is a refusal: Anthropic's cyber classifier blocked
   `fill_down.ir.x86_64` on all four attempts, even on the CVP account.
 
@@ -122,7 +131,7 @@ above (details in that run's `ADJUSTMENTS.md`); the adapter now scores grok's se
 GPT-6 Luna via Copilot: one, `mat_pow.stream.aarch64` attempt 1, rejected at `mov x17, x20, lsl #3`, which keystone
 refuses outright but GNU as accepts (an alias of `orr x17, xzr, x20, lsl #3`); rescored with the recorded answer it
 passes, and it counts as a pass above (the stream path is being changed to take GNU as's bytes when keystone refuses).
-Kimi K3, Grok 4.7, Grok 4.6, Grok 4.5, Codex Astra, Sol and GPT-5.5, Claude Sonnet 4.5 and Opus 4.8: none
+Kimi K3, Grok 4.7, Grok 4.6, Grok 4.5, Codex Astra, Sol and GPT-5.5, Claude Sonnet 4.5, Opus 4.8 and MAI-Code: none
 (Astra's 227 attempts were all rescored and reproduced; 181 failed attempts reviewed across the last six).
 
 Latency figures are not comparable across vendors (whole-message CLIs; and Kimi's recorded durations in
