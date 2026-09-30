@@ -33,6 +33,7 @@ PAGE = 0x1000
 SEGMENT_LIMIT = 1 << 26  # text / rodata / data each at most 64 MiB
 ASM_TIMEOUT = 20.0
 ASM_OBJECT_LIMIT = 1 << 26
+ASM_MEMORY_LIMIT = 1 << 30  # GNU as address space
 
 SHF_WRITE = 0x1
 SHT_NOTE = 7
@@ -88,10 +89,51 @@ def _page_up(n: int) -> int:
 # -- assembling ------------------------------------------------------------------------------
 
 _GAS_DIAG_RE = re.compile(r"^\{standard input\}:(\d+): (Error|Warning|Fatal error): (.*)$", re.M)
-# Directives that read host files, and ways of building a directive name GNU as would only
-# see after macro expansion. Rejected before GNU as runs: the program must not see the host.
-_FORBIDDEN_RE = re.compile(r"\.(incbin|include|altmacro)\b", re.I)
-_PASTED_RE = re.compile(r"(?:^|;)\s*(?:[\w.$]+:\s*)*\.?\\", re.M)
+# The prompt's "Not allowed" list, the same set the stream path refuses (bca.stream), is rejected
+# before GNU as runs, wherever the name appears outside a string or comment. Refusing macros and
+# repetition blocks also closes name building (`.inc\()bin` inside a `.macro`): with no macro
+# expansion, GNU as reads every directive name as written, so a program cannot reach the host
+# (`.incbin` / `.include`). Backslashes outside strings, character literals and comments are
+# refused too.
+# Strings, character literals and comments, scanned left to right as GNU as does (x86-64: `#` to
+# the end of the line; AArch64: `//`, or `#` first on a line; both: `/* */`). Masked before the
+# check, so a comment or string may mention a refused name.
+_LITERAL = r'"(?:\\.|[^"\\\n])*"|\'\\?.|/\*.*?(?:\*/|\Z)'
+_MASK_RE = {"x86_64": re.compile(_LITERAL + r"|#[^\n]*", re.S),
+            "aarch64": re.compile(_LITERAL + r"|//[^\n]*|^[ \t]*#[^\n]*", re.S | re.M)}
+_DIRECTIVE_RE = re.compile(r"(?<![\w.$])\.[A-Za-z_][\w.$]*")
+_ASM_ONLY_REFUSED = {".incbin", ".include", ".altmacro", ".noaltmacro"}
+
+
+def _refused_directive(name: str) -> str | None:
+    from bca.stream import _REFUSED_DIRECTIVES
+
+    name = name.lower()
+    if name == ".rodata":  # `.section .rodata` is allowed; GNU as rejects a bare `.rodata` itself
+        return None
+    if name in _REFUSED_DIRECTIVES:
+        return _REFUSED_DIRECTIVES[name]
+    if name in _ASM_ONLY_REFUSED:
+        return f"`{name}` is not allowed"
+    if name.startswith(".cfi_"):
+        return "`.cfi_*` directives are not supported"
+    if name.startswith(".if"):
+        return "conditional assembly is not supported"
+    return None
+
+
+def _check_source(source: str, isa_name: str) -> None:
+    masked = _MASK_RE[isa_name].sub(lambda m: re.sub(r"[^\n]", " ", m.group(0)), source)
+    for m in _DIRECTIVE_RE.finditer(masked):
+        why = _refused_directive(m.group(0))
+        if why:
+            line = source.count("\n", 0, m.start()) + 1
+            raise AsmError(f"line {line}: {why}", line)
+    bs = masked.find("\\")
+    if bs >= 0:
+        line = source.count("\n", 0, bs) + 1
+        raise AsmError(f"line {line}: a backslash outside a string or character literal is not "
+                       "allowed", line)
 
 
 def _gas(isa_name: str) -> str:
@@ -106,6 +148,7 @@ def _gas(isa_name: str) -> str:
 
 def _limits() -> None:  # runs in the GNU as child
     resource.setrlimit(resource.RLIMIT_FSIZE, (ASM_OBJECT_LIMIT, ASM_OBJECT_LIMIT))
+    resource.setrlimit(resource.RLIMIT_AS, (ASM_MEMORY_LIMIT, ASM_MEMORY_LIMIT))
     cpu = int(ASM_TIMEOUT) + 1
     resource.setrlimit(resource.RLIMIT_CPU, (cpu, cpu))
 
@@ -117,11 +160,7 @@ def assemble_program(source: str, isa_name: str) -> bytes:
     """
     if isa_name not in MACHINES:
         raise ValueError(f"unknown ISA {isa_name!r}")
-    m = _FORBIDDEN_RE.search(source) or _PASTED_RE.search(source)
-    if m:
-        line = source.count("\n", 0, m.start()) + 1
-        raise AsmError(f"line {line}: {m.group(0).strip()!r} is not allowed (file inclusion and "
-                       "macro-built directive names are disabled)", line)
+    _check_source(source, isa_name)
     header = [".intel_syntax noprefix"] if isa_name == "x86_64" else []
     text = "\n".join(header + [source]) + "\n"
     with tempfile.TemporaryDirectory(prefix="bca-prog-") as tmp:
@@ -146,7 +185,8 @@ def assemble_program(source: str, isa_name: str) -> bytes:
                 reason = (f"killed by signal {-proc.returncode}" if proc.returncode < 0
                           else f"exit status {proc.returncode}")
                 tail = diag.strip().splitlines()[-3:]
-                errors = [f"GNU as failed ({reason}; object size limit {ASM_OBJECT_LIMIT >> 20} MiB)"
+                errors = [f"GNU as failed ({reason}; limits: object {ASM_OBJECT_LIMIT >> 20} MiB, "
+                          f"memory {ASM_MEMORY_LIMIT >> 20} MiB)"
                           + (": " + " / ".join(tail) if tail else "")]
             shown = errors[:20] + ([f"(+{len(errors) - 20} more errors)"] if len(errors) > 20 else [])
             raise AsmError("\n".join(shown), first_line)

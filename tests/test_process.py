@@ -409,10 +409,40 @@ def test_asm_error_line_numbers(isa):
 @both
 @pytest.mark.parametrize("bad", ['.incbin "/etc/passwd"', '.include "/etc/hostname"',
                                  '.INCBIN "/etc/passwd"', '.macro m a\n.\\a "/etc/passwd"\n.endm\nm incbin',
-                                 '.irp d, incbin\n.\\d "/etc/passwd"\n.endr', '.altmacro'])
+                                 '.irp d, incbin\n.\\d "/etc/passwd"\n.endr', '.altmacro',
+                                 # the review's repros: an empty paste `\\()` builds the name
+                                 '.macro G\n.inc\\()bin "/etc/passwd"\n.endm\nG',
+                                 '.irpc c, X\n.inc\\()bin "/etc/passwd"\n.endr',
+                                 'nop; .macro G', 'x:.rept 1\n.endr', 'nop \\() nop'])
 def test_host_file_access_is_refused(isa, bad):
-    with pytest.raises(AsmError, match="not allowed"):
+    with pytest.raises(AsmError, match="not allowed|not supported"):
         assemble_program(".globl _start\n_start:\n" + bad + "\n", isa)
+
+
+@both
+@pytest.mark.parametrize("bad", [".fill 8, 1, 0", ".org 32", ".comm buf, 64", ".lcomm buf, 64",
+                                 ".inst 0", ".cfi_startproc", ".if 1\n.endif", ".pushsection .data",
+                                 ".eqv x, 1", ".rept 2\nnop\n.endr"])
+def test_asm_refuses_what_the_stream_path_refuses(isa, bad):
+    # Same prompt, same acceptance: the prompt's "Not allowed" list holds on both paths.
+    with pytest.raises(AsmError, match="line 3:"):
+        assemble_program(".globl _start\n_start:\n" + bad + "\n", isa)
+
+
+@both
+def test_refused_names_inside_strings_and_escapes_are_fine(isa):
+    src = ('.globl _start\n.section .rodata\nm: .ascii "use .macro and .incbin \\\\ \\n\\""\n'
+           ".byte '\\n', 'a\n.text\n_start: nop\n/* no .macro here,\n or .incbin \\ */ nop\n")
+    src += "nop # .rept\n" if isa == "x86_64" else "nop // .rept \\\n  # .irp\n"
+    assemble_program(src, isa)
+
+
+def test_comment_rules_follow_gnu_as():
+    # x86-64 `//` is division, not a comment; AArch64 `#` mid-line is an immediate, not a comment.
+    with pytest.raises(AsmError, match="macros"):
+        assemble_program("_start: nop // .macro m\n", "x86_64")
+    with pytest.raises(AsmError, match="macros"):
+        assemble_program("_start: mov x0, #1; .macro m\n", "aarch64")
 
 
 def test_no_files_left_behind():

@@ -1,4 +1,4 @@
-# exit 0 iff all 64 KiB of .bss (and the .comm block) are zero and .data holds its initial values
+# exit 0 iff all 64 KiB of .bss (and the aligned block) are zero and .data holds its initial values
     .globl _start
     .text
 _start:
@@ -36,4 +36,5 @@ magic:
     .p2align 4
 zeros:
     .zero 65536
-    .comm cblock, 256, 32
+    .balign 32
+cblock: .zero 256
