@@ -1,0 +1,412 @@
+.text
+.globl _start
+
+.equ SYS_READ, 63
+.equ SYS_WRITE, 64
+.equ SYS_EXIT, 93
+.equ INPUT_SIZE, 65536
+
+_start:
+  adrp x19, input_buf
+  add x19, x19, :lo12:input_buf
+  mov x20, #0
+
+read_loop:
+  cmp x20, #INPUT_SIZE
+  b.hs read_done
+  mov x8, #SYS_READ
+  mov x0, #0
+  add x1, x19, x20
+  mov x2, #INPUT_SIZE
+  sub x2, x2, x20
+  svc #0
+  cmp x0, #0
+  b.lt read_error
+  b.eq read_done
+  add x20, x20, x0
+  b read_loop
+
+read_error:
+  mov x8, #SYS_EXIT
+  mov x0, #1
+  svc #0
+
+read_done:
+  mov x21, x19
+  add x22, x19, x20
+
+parse_lines:
+  cmp x21, x22
+  b.hs exit_ok
+  mov x23, x21
+
+find_nl:
+  cmp x23, x22
+  b.hs final_line
+  ldrb w9, [x23]
+  cmp w9, #0x0A
+  b.eq newline_found
+  add x23, x23, #1
+  b find_nl
+
+newline_found:
+  mov x0, x21
+  sub x1, x23, x21
+  bl process_line
+  add x21, x23, #1
+  b parse_lines
+
+final_line:
+  cmp x21, x22
+  b.hs exit_ok
+  mov x0, x21
+  sub x1, x22, x21
+  bl process_line
+  b exit_ok
+
+exit_ok:
+  mov x8, #SYS_EXIT
+  mov x0, #0
+  svc #0
+
+process_line:
+  stp x29, x30, [sp, #-16]!
+  mov x2, x0
+  mov x3, x0
+  add x3, x3, x1
+  adrp x4, stack_base
+  add x4, x4, :lo12:stack_base
+  mov x5, #0
+
+line_loop:
+  cmp x2, x3
+  b.hs line_end
+
+skip_space:
+  cmp x2, x3
+  b.hs line_end
+  ldrb w7, [x2]
+  cmp w7, #0x20
+  b.eq skip_inc
+  cmp w7, #0x09
+  b.eq skip_inc
+  b token_start
+
+skip_inc:
+  add x2, x2, #1
+  b skip_space
+
+token_start:
+  mov x6, x2
+
+scan_token:
+  cmp x2, x3
+  b.hs token_done
+  ldrb w7, [x2]
+  cmp w7, #0x20
+  b.eq token_done
+  cmp w7, #0x09
+  b.eq token_done
+  add x2, x2, #1
+  b scan_token
+
+token_done:
+  sub x7, x2, x6
+
+  cmp x7, #1
+  b.ne parse_literal
+
+  ldrb w8, [x6]
+  cmp w8, #0x2B
+  b.eq do_operator
+  cmp w8, #0x2D
+  b.eq do_operator
+  cmp w8, #0x2A
+  b.eq do_operator
+  cmp w8, #0x2F
+  b.eq do_operator
+  cmp w8, #0x25
+  b.eq do_operator
+  b parse_literal
+
+do_operator:
+  cmp x5, #2
+  b.lt invalid_line
+
+  sub x5, x5, #1
+  add x10, x4, x5, lsl #3
+  ldr x14, [x10]
+
+  sub x5, x5, #1
+  add x10, x4, x5, lsl #3
+  ldr x15, [x10]
+
+  cmp w8, #0x2B
+  b.eq op_plus
+  cmp w8, #0x2D
+  b.eq op_minus
+  cmp w8, #0x2A
+  b.eq op_mul
+  cmp w8, #0x2F
+  b.eq op_div
+  cmp w8, #0x25
+  b.eq op_mod
+
+  b invalid_line
+
+op_plus:
+  add x16, x15, x14
+  b push_result
+
+op_minus:
+  sub x16, x15, x14
+  b push_result
+
+op_mul:
+  mul x16, x15, x14
+  b push_result
+
+op_div:
+  cmp x14, #0
+  b.eq invalid_line
+  mov x10, #0x8000
+  lsl x10, x10, #48
+  cmp x15, x10
+  b.ne div_ok
+  cmp x14, #-1
+  b.eq invalid_line
+div_ok:
+  sdiv x16, x15, x14
+  b push_result
+
+op_mod:
+  cmp x14, #0
+  b.eq invalid_line
+  mov x10, #0x8000
+  lsl x10, x10, #48
+  cmp x15, x10
+  b.ne mod_ok
+  cmp x14, #-1
+  b.eq invalid_line
+mod_ok:
+  sdiv x10, x15, x14
+  msub x16, x10, x14, x15
+  b push_result
+
+push_result:
+  add x10, x4, x5, lsl #3
+  str x16, [x10]
+  add x5, x5, #1
+  b line_loop
+
+line_end:
+  cmp x5, #1
+  b.ne invalid_line
+  ldr x0, [x4]
+  bl print_number
+  ldp x29, x30, [sp], #16
+  ret
+
+parse_literal:
+  mov x8, x6
+  mov x9, x7
+  mov x10, #0
+  ldrb w11, [x8]
+  cmp w11, #0x2D
+  b.ne not_minus
+  mov x10, #1
+  add x8, x8, #1
+  sub x9, x9, #1
+  cmp x9, #0
+  b.eq invalid_line
+  b digit_check
+
+not_minus:
+  cmp w11, #0x2B
+  b.eq invalid_line
+
+digit_check:
+  cmp x9, #19
+  b.hi invalid_line
+
+  mov x12, #0
+  adrp x13, max_div10
+  add x13, x13, :lo12:max_div10
+  ldr x13, [x13]
+
+  cmp x10, #0
+  b.eq set_pos_mod
+  adrp x15, neg_mod10
+  add x15, x15, :lo12:neg_mod10
+  b digit_loop
+set_pos_mod:
+  adrp x15, pos_mod10
+  add x15, x15, :lo12:pos_mod10
+
+digit_loop:
+  cmp x9, #0
+  b.eq digit_done
+  ldrb w14, [x8], #1
+  sub w14, w14, #48
+  cmp w14, #0
+  b.lt invalid_line
+  cmp w14, #9
+  b.gt invalid_line
+  cmp x12, x13
+  b.hi invalid_line
+  b.ne not_limit
+  ldrb w16, [x15]
+  cmp w14, w16
+  b.hi invalid_line
+not_limit:
+  mov x16, #10
+  madd x12, x12, x16, x14
+  sub x9, x9, #1
+  b digit_loop
+
+digit_done:
+  cmp x10, #0
+  b.eq push_value
+  neg x12, x12
+
+push_value:
+  add x10, x4, x5, lsl #3
+  str x12, [x10]
+  add x5, x5, #1
+  b line_loop
+
+invalid_line:
+  bl print_error
+  ldp x29, x30, [sp], #16
+  ret
+
+print_error:
+  stp x29, x30, [sp, #-16]!
+  adrp x1, err_msg
+  add x1, x1, :lo12:err_msg
+  mov x2, #6
+  mov x0, #1
+  mov x8, #SYS_WRITE
+  svc #0
+  ldp x29, x30, [sp], #16
+  ret
+
+print_number:
+  stp x29, x30, [sp, #-16]!
+  mov x9, x0
+
+  mov x10, #0x8000
+  lsl x10, x10, #48
+  cmp x9, x10
+  b.eq print_min_int64
+
+  cmp x9, #0
+  b.ge positive_or_zero
+  mov x10, #1
+  neg x9, x9
+  b prepare_digits
+
+positive_or_zero:
+  mov x10, #0
+
+prepare_digits:
+  sub sp, sp, #64
+  mov x11, sp
+  add x11, x11, #63
+  mov x12, x9
+  mov x13, #0
+
+  cmp x12, #0
+  b.ne digits_loop
+  mov w14, #48
+  strb w14, [x11]
+  sub x11, x11, #1
+  mov x13, #1
+  b after_digits
+
+digits_loop:
+  mov x16, #10
+  udiv x15, x12, x16
+  msub x14, x15, x16, x12
+  add w14, w14, #48
+  strb w14, [x11], #-1
+  mov x12, x15
+  add x13, x13, #1
+  cmp x12, #0
+  b.ne digits_loop
+
+after_digits:
+  cmp x10, #0
+  b.eq no_sign
+  sub x11, x11, #1
+  mov w14, #45
+  strb w14, [x11]
+  add x13, x13, #1
+
+no_sign:
+  mov x0, #1
+  cmp x10, #0
+  b.eq positive_ptr
+  mov x1, x11
+  b write_num
+positive_ptr:
+  add x1, x11, #1
+
+write_num:
+  mov x2, x13
+  mov x8, #SYS_WRITE
+  svc #0
+  bl write_newline
+  add sp, sp, #64
+  ldp x29, x30, [sp], #16
+  ret
+
+print_min_int64:
+  adrp x1, min_int64_str
+  add x1, x1, :lo12:min_int64_str
+  mov x2, #20
+  mov x0, #1
+  mov x8, #SYS_WRITE
+  svc #0
+  bl write_newline
+  ldp x29, x30, [sp], #16
+  ret
+
+write_newline:
+  stp x29, x30, [sp, #-16]!
+  adrp x1, newline
+  add x1, x1, :lo12:newline
+  mov x2, #1
+  mov x0, #1
+  mov x8, #SYS_WRITE
+  svc #0
+  ldp x29, x30, [sp], #16
+  ret
+
+.section .rodata
+err_msg:
+  .ascii "error\n"
+
+newline:
+  .ascii "\n"
+
+min_int64_str:
+  .ascii "-9223372036854775808"
+
+max_div10:
+  .quad 922337203685477580
+
+pos_mod10:
+  .byte 7
+
+neg_mod10:
+  .byte 8
+
+.section .bss
+.align 8
+input_buf:
+  .space INPUT_SIZE
+
+.align 8
+stack_base:
+  .space 16384
