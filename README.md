@@ -3,7 +3,7 @@
 Can a language model write **machine code** directly, without a human-facing toolchain in the loop?
 This project builds three non-standard ways for a model to emit x86-64 and AArch64 code, a
 differential harness that proves the result correct, and a live evaluation that puts models from
-five vendors through the same tasks under the same rules.
+six vendors through the same tasks under the same rules.
 
 ## The three emission paths
 
@@ -38,7 +38,9 @@ ISAs, with up to four attempts and repair feedback.
   `adversarial` (10 bait tasks, with prompt variants such as `misleading_hint` and `terse`).
   224 cells per model at baseline.
 - **Subjects:** Claude models via `claude -p`; `codex:<model>` (OpenAI Codex CLI), `kimi:<model>`
-  (Kimi Code), `agy:<model>` (Google Antigravity) and `grok:<model>` (xAI Grok Build).
+  (Kimi Code), `agy:<model>` (Google Antigravity), `grok:<model>` (xAI Grok Build) and `copilot:<model>`
+  (GitHub Copilot CLI through the Copilot SDK: Microsoft's MAI-Code, plus other vendors' models served by
+  GitHub for harness comparisons).
 - **Fair comparison:** every subject runs with zero tools, the same system and task prompts, a private
   home per call, and a pinned CLI version; each call is verified against the CLI's own record of the
   request, and anything unexpected aborts the run instead of being scored. Method and known limits:
@@ -81,7 +83,7 @@ Still running (added when complete and reviewed): Kimi K2.8 (kimi-for-coding) an
 every model; the QBE IR path separates them most. The Claude account is enrolled in Anthropic's Cyber
 Verification Program and the ChatGPT account in OpenAI's Daybreak (Blue), so treat those rows as upper
 bounds for ordinary accounts. Accounts used: Claude Max 20x, ChatGPT Plus, Kimi Allegretto, Google AI Plus (2 TB),
-SuperGrok (details in the methodology report). Full comparison, per-path results and the false-reject review:
+SuperGrok, GitHub Copilot Pro (details in the methodology report). Full comparison, per-path results and the false-reject review:
 [`reports/live-model-eval-cross-vendor.md`](reports/live-model-eval-cross-vendor.md); per-run write-ups in
 [`reports/`](reports/).
 
@@ -97,7 +99,10 @@ python3 -m venv .venv && .venv/bin/pip install keystone-engine unicorn iced-x86 
 ```
 
 The live eval additionally needs each vendor's CLI installed and logged in (`claude`, `codex`, `kimi`,
-`agy`, `grok`); the adapters refuse to run on CLI versions they were not audited against.
+`agy`, `grok`); the adapters refuse to run on CLI versions they were not audited against. The Copilot
+subject needs Node.js, `@github/copilot` 1.0.89 and `@github/copilot-sdk` 1.0.15 (installed under
+`~/.local/opt/copilot/`, or set `BCA_COPILOT_CLI` / `BCA_COPILOT_SDK`) and a logged-in `gh` (its headless
+runtime authenticates through the GitHub CLI).
 
 ## Layout
 

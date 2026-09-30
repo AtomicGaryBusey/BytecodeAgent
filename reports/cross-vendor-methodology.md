@@ -3,10 +3,11 @@
 > **Account caveat (Claude results).** Every Claude run in this repository used a Claude Max subscription enrolled in Anthropic's **Cyber Verification Program** (relaxed cyber safeguards for verified security researchers; confirmed active 2026-09-28). Claude's safety classifiers are less restrictive on this account than on one without CVP, so refusal rates here are likely lower, and pass rates likely higher, than a non-CVP org or subscription would see on this machine-code work. Treat Claude numbers as an upper bound for non-CVP accounts. The ChatGPT account used for Codex is enrolled in OpenAI's equivalent **Daybreak** program at the **Blue** tier only (no Daybreak Red / `*-cyber` models); whether Daybreak relaxes anything for the non-Daybreak models evaluated here (e.g. `gpt-6-luna`) is unknown. The Kimi, Google and xAI accounts have no known equivalent enrolment.
 
 Adapters: `bca/liveeval/vendor_base.py` (shared), `vendor_codex.py`, `vendor_kimi.py`, `vendor_agy.py`,
-`vendor_grok.py`, registry `vendors.py`. A subject is `<vendor>:<model>` (`codex:gpt-6-luna`,
-`kimi:kimi-code/k3`, `agy:gemini-3.8-flash-high`, `grok:grok-4.7`) or a Claude model (`opus`,
-`claude-sonnet-5-5`, `claude-fable-5-1`, ...). Built and verified 2026-09-28 against claude 2.1.284,
-codex 0.157.1, kimi 2.1.1, agy 1.2.12 and grok 1.0.41 (Grok Build; pinned binary, see below).
+`vendor_grok.py`, `vendor_copilot.py` (+ `copilot_driver.mjs`), registry `vendors.py`. A subject is
+`<vendor>:<model>` (`codex:gpt-6-luna`, `kimi:kimi-code/k3`, `agy:gemini-3.8-flash-high`, `grok:grok-4.7`,
+`copilot:mai-code-1.1-flash`) or a Claude model (`opus`, `claude-sonnet-5-5`, `claude-fable-5-1`, ...). Built and
+verified 2026-09-28 against claude 2.1.284, codex 0.157.1, kimi 2.1.1, agy 1.2.12 and grok 1.0.41 (Grok Build;
+pinned binary, see below); GitHub Copilot added 2026-09-30 (CLI 1.0.89 driven through the Copilot SDK 1.0.15).
 
 ## Accounts and plans
 
@@ -20,6 +21,7 @@ keys, and no second account for any vendor.
 | Moonshot / Kimi Code | **Kimi Allegretto** | none known | a 5-hour window (~125-160 calls) and a 7-day window on Code usage; monthly credits |
 | Google / Antigravity | **Google AI Plus (2 TB)** | none known | ~75 calls per week, per account (not per model) |
 | xAI / Grok Build | **SuperGrok** | none known | none hit |
+| GitHub / Copilot CLI | **GitHub Copilot Pro** (1,500 AI credits a month, billed per token) | none known | none hit |
 
 Plan tier matters: it decides which models are available (e.g. Kimi's high-speed model needs a higher tier)
 and how quickly a full battery can run, and the safety programs change refusal behaviour. Results describe
@@ -39,15 +41,15 @@ these accounts, not every account on each service.
 
 ## Per vendor
 
-| | Claude Code (`claude -p`) | Codex (`codex exec`) | Kimi Code (`kimi -p`) | Antigravity (`agy -p`) | Grok Build (`grok --single`) |
-|---|---|---|---|---|---|
-| tools off by | `--tools ""`, no MCP/settings/plugins | a stripped copy of the model's catalog entry (`model_catalog_json`) + config switches; feature flags alone left 9 tools in | agent file `tools: []`, `subagents: []` | custom agent excluding default components; `manage_task` cannot be removed (agy bug #1015), calling it aborts the run | custom agent (`promptMode: full`, no default tools), hosted web/X search disabled; a private `HOME` too, since grok otherwise reads `~/.claude` and `~/.cursor` config |
-| request evidence | CLI debug log: `tools: []`; system/message contents not visible | request captured at a local recorder: `tools: []`, only SYSTEM_PROMPT + prompt, 48-58 input tokens for a one-line prompt (was ~4000); every call also guarded by an input-token bound | kimi's session record (`wire.jsonl`): tools hash of `[]`, system prompt hash = SYSTEM_PROMPT, message count checked | agy's conversation record (protobuf `gen_metadata`) | request captured at a local recorder (no `tools` key; server echoes `tools: []`), then grok's per-call session record: empty tool definitions, system prompt = SYSTEM_PROMPT, one model call, input tokens bounded |
-| extra context the model sees | ~350 tokens added by Claude Code (content not visible to us) | none found | a date reminder (227 chars) and an "auto permission mode" note (508 chars) | `<System Prompt>` / `<USER_REQUEST>` wrappers, a local-time line, a "model setting changed" note | an empty first user message; ~1152 tokens of server-side context xAI adds itself (not visible); the prompt's final newline is trimmed |
-| served model reported | yes (per message; fallbacks flagged) | no, except a cyber reroute (scored as refusal) | no (the id sent is recorded) | no (the request echoes the id) | yes, from the response (`grok-4.7` is served as `grok-4.7-build`); any other model is a fatal reroute |
-| default effort (runs use CLI defaults, as the Claude runs did) | CLI default | catalog default (luna/sol: medium) | high | encoded in the model id (`-high`, `-low`) | high (served effort recorded; a mismatch is fatal) |
-| refusal signal | `stop_reason: refusal`; fallback turned off (`switchModelsOnFlag: false`) | cyber/bio policy errors, content_filter, cyber reroute | `provider.filtered` ("Provider safety policy blocked the response.") | content-filter / safety finish reasons | HTTP 403 content-safety blocks (account 403s stay errors), `stopReason: refusal` |
-| text delivery | streamed, killed on an early abort | one message | one message | streamed, but not killed on an early abort (its request record is written at the end of the turn) | streamed, not killed early (session record written at the end of the turn) |
+| | Claude Code (`claude -p`) | Codex (`codex exec`) | Kimi Code (`kimi -p`) | Antigravity (`agy -p`) | Grok Build (`grok --single`) | GitHub Copilot (SDK → `copilot --headless`) |
+|---|---|---|---|---|---|---|
+| tools off by | `--tools ""`, no MCP/settings/plugins | a stripped copy of the model's catalog entry (`model_catalog_json`) + config switches; feature flags alone left 9 tools in | agent file `tools: []`, `subagents: []` | custom agent excluding default components; `manage_task` cannot be removed (agy bug #1015), calling it aborts the run | custom agent (`promptMode: full`, no default tools), hosted web/X search disabled; a private `HOME` too, since grok otherwise reads `~/.claude` and `~/.cursor` config | a Copilot SDK session: system message replaced, `availableTools: []`, every tool source excluded, built-in GitHub MCP server disabled, every permission rejected. `copilot -p` could not do it: it always sends Copilot's own 17-28k-char system prompt, `--available-tools=` restricted nothing (18 tools sent), a custom agent's `tools: []` left `skill` and `sql` |
+| request evidence | CLI debug log: `tools: []`; system/message contents not visible | request captured at a local recorder: `tools: []`, only SYSTEM_PROMPT + prompt, 48-58 input tokens for a one-line prompt (was ~4000); every call also guarded by an input-token bound | kimi's session record (`wire.jsonl`): tools hash of `[]`, system prompt hash = SYSTEM_PROMPT, message count checked | agy's conversation record (protobuf `gen_metadata`) | request captured at a local recorder (no `tools` key; server echoes `tools: []`), then grok's per-call session record: empty tool definitions, system prompt = SYSTEM_PROMPT, one model call, input tokens bounded | the runtime's own debug log of the wire request, per call: system prompt = SYSTEM_PROMPT, the prompt verbatim, no `tools` key, empty tool fingerprint, `tool_count` 0; plus the stream's request capture (0 tools, one system segment `agent_replacement`); one model call; input tokens bounded |
+| extra context the model sees | ~350 tokens added by Claude Code (content not visible to us) | none found | a date reminder (227 chars) and an "auto permission mode" note (508 chars) | `<System Prompt>` / `<USER_REQUEST>` wrappers, a local-time line, a "model setting changed" note | an empty first user message; ~1152 tokens of server-side context xAI adds itself (not visible); the prompt's final newline is trimmed | none in the request (the runtime's `<current_datetime>` prompt prefix is removed by a hook); the Anthropic path trims the prompt's final newline; Grok models add ~1500 tokens of server-side context (not visible) |
+| served model reported | yes (per message; fallbacks flagged) | no, except a cyber reroute (scored as refusal) | no (the id sent is recorded) | no (the request echoes the id) | yes, from the response (`grok-4.7` is served as `grok-4.7-build`); any other model is a fatal reroute | yes, per call (model.call_start / usage / message); a model switch (rate-limit auto switch, "refusal fallback") is a fatal reroute |
+| default effort (runs use CLI defaults, as the Claude runs did) | CLI default | catalog default (luna/sol: medium) | high | encoded in the model id (`-high`, `-low`) | high (served effort recorded; a mismatch is fatal) | per model (medium seen for GPT, MAI and Claude; high for Kimi K3 and Grok 4.7); served effort recorded, a requested effort must be served (fatal otherwise) |
+| refusal signal | `stop_reason: refusal`; fallback turned off (`switchModelsOnFlag: false`) | cyber/bio policy errors, content_filter, cyber reroute | `provider.filtered` ("Provider safety policy blocked the response.") | content-filter / safety finish reasons | HTTP 403 content-safety blocks (account 403s stay errors), `stopReason: refusal` | `finishReason: content_filter` (Anthropic `refusal` is normalised to it), `contentFilterTriggered`, an OpenAI-style `refusal` field |
+| text delivery | streamed, killed on an early abort | one message | one message | streamed, but not killed on an early abort (its request record is written at the end of the turn) | streamed, not killed early (session record written at the end of the turn) | one message, handed over after the call is verified |
 
 ## Known limits
 
@@ -66,6 +68,14 @@ these accounts, not every account on each service.
   inference, and checks per call that it was. Hosted server-side tools are disabled and cannot be declared
   per call by the client, but their declaration is not recorded either; the input-token bound and the
   one-model-call check are what guard it.
+
+- GitHub Copilot's headless runtime does not use the Copilot CLI's own keyring login; it authenticates through
+  the GitHub CLI (`gh auth token`, the user's gh login), so the runtime holds a token with that account's scopes.
+  The model has no tools to use it; the harness never reads it. Most of Copilot's selectable models are other
+  vendors' models (Claude, GPT, Gemini-class, Grok, Kimi) served through GitHub: running one there is a harness
+  comparison against the same model on its own vendor's CLI, not a new model. MAI-Code (`mai-code-1.1-flash`,
+  Microsoft) is the one model only Copilot serves. On Copilot Pro, Opus, Fable, GPT-6 Astra / Sol and GPT-5.5
+  are not selectable (Pro+ and up).
 
 ## Plan quotas and interruptions
 

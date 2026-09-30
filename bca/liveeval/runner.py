@@ -130,6 +130,7 @@ _FATAL_RE = re.compile(
     r"(?:status|error|code|http)[\"':= ]{0,4}40[134]\b|\b40[134] (?:unauthorized|forbidden)|authenticat|unauthori[sz]ed|forbidden|invalid[ _-]?api[ _-]?key|x-api-key|not logged in|"
     r"/login|oauth token|not_found_error|permission_error|invalid model|model[^\n]{0,40}not (?:found|exist|available|"
     r"supported)|unknown model|no such model|credit balance|"
+    r"local server unreachable|not an audited version|"  # vendor_local: the Ollama server is down or changed
     # a subscription's usage window is spent: retrying in minutes cannot help; resume the run later
     r"usage limit|hit your (?:weekly |daily )?limit|exceeded your current (?:token )?quota|exceeded_current_quota|"
     r"quota (?:exhausted|exceeded)|insufficient balance|login_required|token_unauthorized|"
@@ -145,6 +146,9 @@ _FATAL_RE = re.compile(
     # Grok Build: an effort the model does not offer / served at another effort. (Its "hit the rate limit
     # for your plan ... try again later" is grok's generic fallback for a bare 429: transient.)
     r"unknown effort level|effort mismatch|model rerouted|"
+    # GitHub Copilot (vendor_copilot: "copilot <errorType>[/<errorCode>] ..."): account and plan errors; its
+    # other rate limits (rate_limited, user_model_rate_limited, ...) stay transient
+    r"copilot (?:authentication|authorization|quota)\b|user_weekly_rate_limited|billing_not_configured|"
     # the subject could use a tool (bca.liveeval.vendors): never score such an answer, stop the run
     r"^isolation:",
     re.I,

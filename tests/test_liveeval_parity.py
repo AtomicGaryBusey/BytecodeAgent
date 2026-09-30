@@ -265,6 +265,25 @@ def test_grok_is_registered_and_its_errors_are_classified():
     assert runner.infra_kind("API error (status 500 Internal Server Error): upstream") == "transient"
 
 
+def test_copilot_is_registered_and_its_errors_are_classified():
+    from bca.liveeval.vendors import VENDORS, CopilotSubject, split_spec
+
+    assert VENDORS["copilot"] is CopilotSubject and split_spec("copilot:mai-code-1.1-flash") == ("copilot", "mai-code-1.1-flash")
+    for err in ("copilot quota/quota_exceeded (HTTP 402): You have used all of your AI credits.",
+                "copilot quota/billing_not_configured (HTTP 402): Billing is not configured",
+                "copilot authentication: not authenticated (Not authenticated); run `gh auth login`",
+                "copilot authorization (HTTP 403): Copilot is not enabled for this account",
+                "copilot rate_limit/user_weekly_rate_limited (HTTP 429): weekly limit",
+                'Error: Model "mai-code-1.1-flash" from --model flag is not available.',
+                "copilot effort mismatch: requested high, served medium (model gpt-6-luna)",
+                "model rerouted: requested gpt-6-luna, copilot served gpt-5.6-luna"):
+        assert runner.infra_kind(err) == "fatal", err
+    for err in ("copilot rate_limit/rate_limited (HTTP 429): Please retry shortly.",
+                "copilot rate_limit/user_model_rate_limited (HTTP 429): slow down",
+                "copilot query (HTTP 500): upstream error"):
+        assert runner.infra_kind(err) == "transient", err
+
+
 def test_antigravity_weekly_quota_is_fatal():
     err = ('exit status 3: AGY_ERROR {"short_error":"RESOURCE_EXHAUSTED (code 429): Individual quota reached. '
            'Please upgrade your subscription to increase your limits. Resets in 166h5m5s.","retryable":true}')

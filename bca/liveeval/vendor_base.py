@@ -1,7 +1,7 @@
 """Subjects from other vendors' coding-agent CLIs, run as tool-less one-shot answerers.
 
 A subject spec is `<vendor>:<model>` (`codex:gpt-6-luna`, `kimi:kimi-code/k3`, `agy:gemini-3.8-flash-high`,
-`grok:grok-4.7`); anything without a known vendor prefix is a `claude -p` model (ClaudeSubject). Every vendor subject gets
+`grok:grok-4.7`, `copilot:mai-code-1.1-flash`); anything without a known vendor prefix is a `claude -p` model (ClaudeSubject). Every vendor subject gets
 the same isolation contract as ClaudeSubject:
 
 - an empty temporary working directory outside the repository;

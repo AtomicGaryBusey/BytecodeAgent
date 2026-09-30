@@ -9,7 +9,7 @@ for f in sorted(glob.glob("eval/runs/*/**/results.jsonl", recursive=True) + glob
         r = json.loads(l)
         if r.get("variant", "baseline") != "baseline": continue
         subj = r.get("subject") or "opus"
-        if subj.startswith(("codex_", "kimi_", "agy_", "grok_")):
+        if subj.startswith(("codex_", "kimi_", "agy_", "grok_", "copilot_")):
             label = subj.replace("_", ":", 1).replace("kimi-code_", "kimi-code/")
         elif subj.startswith("claude-"): label = subj
         else: label = r.get("model") or subj
