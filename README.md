@@ -40,7 +40,8 @@ ISAs, with up to four attempts and repair feedback.
 - **Subjects:** Claude models via `claude -p`; `codex:<model>` (OpenAI Codex CLI), `kimi:<model>`
   (Kimi Code), `agy:<model>` (Google Antigravity), `grok:<model>` (xAI Grok Build) and `copilot:<model>`
   (GitHub Copilot CLI through the Copilot SDK: Microsoft's MAI-Code, plus other vendors' models served by
-  GitHub for harness comparisons).
+  GitHub for harness comparisons), and `local:<model>` (open-weight models served by Ollama on this
+  machine, called through its API directly).
 - **Fair comparison:** every subject runs with zero tools, the same system and task prompts, a private
   home per call, and a pinned CLI version; each call is verified against the CLI's own record of the
   request, and anything unexpected aborts the run instead of being scored. Method and known limits:

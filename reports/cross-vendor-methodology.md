@@ -51,6 +51,30 @@ these accounts, not every account on each service.
 | refusal signal | `stop_reason: refusal`; fallback turned off (`switchModelsOnFlag: false`) | cyber/bio policy errors, content_filter, cyber reroute | `provider.filtered` ("Provider safety policy blocked the response.") | content-filter / safety finish reasons | HTTP 403 content-safety blocks (account 403s stay errors), `stopReason: refusal` | `finishReason: content_filter` (Anthropic `refusal` is normalised to it), `contentFilterTriggered`, an OpenAI-style `refusal` field |
 | text delivery | streamed, killed on an early abort | one message | one message | streamed, but not killed on an early abort (its request record is written at the end of the turn) | streamed, not killed early (session record written at the end of the turn) | one message, handed over after the call is verified |
 
+## Local models (`local:<model>`)
+
+Open-weight models run on this machine, an NVIDIA DGX Spark (GB10, 128 GB unified memory), through Ollama
+0.30.10 in its own container (`bca-ollama`, bound to 127.0.0.1:11435; `OLLAMA_NO_CLOUD=1`, so no request
+can be forwarded to ollama.com; `OLLAMA_NUM_PARALLEL=1`). The weights come from an existing Ollama model
+volume mounted read-only. No plan quota applies.
+
+| | Local (`vendor_local`, Ollama `/api/chat`) |
+|---|---|
+| tools off by | construction: the harness sends the request itself; no `tools`, no `format` |
+| request | `[system: SYSTEM_PROMPT, user: prompt]`, `stream: true`, options = `{num_ctx}` only |
+| context | set explicitly to min(native, 65536): Ollama's default would truncate silently. A call whose prompt plus answer reached the window fails closed |
+| sampling | each model's own Modelfile defaults, recorded per run (the analogue of a CLI's default settings); no effort knob |
+| served model | the stream's model name, and after each call `/api/ps` must show the requested model under the digest recorded at setup with our context length; anything else is fatal |
+| reasoning | a `thinking` field or a leading `<think>` block is recorded in notes, never scored |
+| timing | calls are serialised per server (file lock); the per-call clock starts once the lock is held and the model is resident (weights are warmed up outside the timed call). Run with `--jobs 1`: a cell's recorded wall time otherwise includes waiting for the lock (timeouts are unaffected) |
+| version | the server version must be an audited one (0.30.10) |
+
+Models: `qwen3:30b-a3b-instruct-2507-q8_0` (Qwen3 30B-A3B Instruct 2507, mixture of experts, 3B active,
+Q8_0, context 65536 of a native 262144; Modelfile sampling temperature 0.7, top_p 0.8, top_k 20) and
+`qwen2.5:14b` (Q4_K_M, native context 32768; Ollama's default sampling). These are quantised open-weight
+models on a single desktop-class machine: their results say what such a setup can do, not what the same
+models do at full precision on a provider's servers.
+
 ## Known limits
 
 - The vendors' extra context differs (table above); none of it is removable through the CLIs, all of it is
