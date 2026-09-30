@@ -78,6 +78,14 @@ only, and the others keep running; the same command resumes it later. Seen so fa
   the subject stays one account.
 - **Antigravity** also reports a failed model request as a bare `error_message` step; it is a retried
   infrastructure error, not an isolation failure.
+- **Grok CLI stream bug:** grok 1.0.41's `streaming-json` occasionally repeats a text chunk (apparently when
+  it restarts generation after the first chunk was sent). Three answers were scored on corrupted text; the adapter
+  now delivers grok's session-record answer once at the end (`CliSubject.deliver_at_end`), and the affected run
+  documents the correction in `ADJUSTMENTS.md`.
+- **Antigravity's quota came back early:** its error said "Resets in 166h", but a probe the next afternoon
+  answered, matching Google's usage page (weekly usage 0%). Probing beats the error's reset estimate.
+- **Claude Code is not version-pinned** like the other CLIs; it auto-updated from 2.1.284 to 2.1.285 during
+  the runs. Each result records its CLI version, and the no-fallback setting was re-verified on 2.1.285.
 - **Grok:** xAI prompt caching covers shared prompt text in 256-token blocks beyond its 1152-token server
   prefix, so the adapter bounds total input tokens rather than the cached part.
 

@@ -59,7 +59,9 @@ its plan quota is spent.
 
 | Model | Round 1 (48) | Round 2 (62) | Long (54) | Adversarial (60) | Pass@1 | Within 4 | Mean attempts |
 |---|---|---|---|---|---|---|---|
+| Codex GPT-6 Astra | 46 | 61 | 54 | 60 | **221/224 (99%)** | 224/224 (100%) | 1.01 |
 | Claude Opus 5.5 | 45 | 60 | 53 | 57 | **215/224 (96%)** | 224/224 (100%) | 1.04 |
+| Grok 4.7 build-fast | 47 | 60 | 49 | 57 | **213/224 (95%)** | 223/224 (100%) | 1.08 |
 | Claude Fable 5.1 | 44 | 62 | 52 | 54 | **212/224 (95%)** | 223/224 (100%) | 1.08 |
 | Grok 4.7 | 48 | 59 | 48 | 56 | **211/224 (94%)** | 220/224 (98%) | 1.10 |
 | Kimi K3 | 45 | 58 | 45 | 56 | **204/224 (91%)** | 224/224 (100%) | 1.11 |
@@ -68,9 +70,8 @@ its plan quota is spent.
 | Claude Sonnet 5 | 40 | 49 | 41 | 45 | **175/224 (78%)** | 222/224 (99%) | 1.30 |
 | Codex GPT-6 Luna | 33 | 41 | 10 | 46 | **130/224 (58%)** | 209/224 (93%) | 1.71 |
 | Claude Haiku 4.5 | 30 | 34 | 17 | 35 | **116/224 (52%)** | 158/224 (71%) | 2.19 |
-| Gemini 3.8 Flash High (Antigravity) | 46 | 21/21† | — | — | **67/69 (97%)** | 69/69 (100%) | 1.03 |
 
-† Antigravity is paced by its plan's weekly quota and still in progress. Raw assembly is easy for nearly
+Still running (added when complete and reviewed): Claude Opus 4.8, Claude Sonnet 4.5 (retiring 2026-09-29), Codex GPT-6 Sol and GPT-5.5, Grok 4.6 and 4.5, Kimi K2.8 (kimi-for-coding), and Gemini 3.8 Flash on Antigravity (quota-paced). Raw assembly is easy for nearly
 every model; the QBE IR path separates them most. The Claude account is enrolled in Anthropic's Cyber
 Verification Program and the ChatGPT account in OpenAI's Daybreak (Blue), so treat those rows as upper
 bounds for ordinary accounts. Accounts used: Claude Max 20x, ChatGPT Plus, Kimi Allegretto, Google AI Plus (2 TB),

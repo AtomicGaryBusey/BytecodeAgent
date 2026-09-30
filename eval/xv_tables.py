@@ -1,0 +1,53 @@
+"""Cross-vendor tables from every recorded baseline run in eval/runs (skips smokes), with the reviewed
+false-reject corrections (ADJ) applied. Run from the repo root: .venv/bin/python eval/xv_tables.py"""
+import json, glob, collections
+recs = {}
+for f in sorted(glob.glob("eval/runs/*/**/results.jsonl", recursive=True) + glob.glob("eval/runs/*/results.jsonl")):
+    if "smoke" in f: continue
+    rd = f.split("/")[2]
+    for l in open(f):
+        r = json.loads(l)
+        if r.get("variant", "baseline") != "baseline": continue
+        subj = r.get("subject") or "opus"
+        if subj.startswith(("codex_", "kimi_", "agy_", "grok_")):
+            label = subj.replace("_", ":", 1).replace("kimi-code_", "kimi-code/")
+        elif subj.startswith("claude-"): label = subj
+        else: label = r.get("model") or subj
+        bat = r.get("battery") or ("round2" if "round2" in rd else "round1")
+        recs[(label, bat, r["cell"])] = r
+names = {"claude-opus-5-5": "Claude Opus 5.5", "claude-fable-5-1": "Claude Fable 5.1", "grok:grok-4.7": "Grok 4.7",
+ "grok:grok-4.7-build-fast": "Grok 4.7 build-fast", "kimi:kimi-code/k3": "Kimi K3", "kimi:kimi-code/kimi-for-coding": "Kimi K2.8 (for-coding)",
+ "claude-sonnet-5-5": "Claude Sonnet 5.5", "codex:gpt-daybreak-blue-latest": "Codex Daybreak Blue", "codex:gpt-6-astra": "Codex GPT-6 Astra",
+ "codex:gpt-6-sol": "Codex GPT-6 Sol", "codex:gpt-5.5": "Codex GPT-5.5", "grok:grok-4.6": "Grok 4.6", "grok:grok-4.5": "Grok 4.5",
+ "claude-sonnet-5": "Claude Sonnet 5", "codex:gpt-6-luna": "Codex GPT-6 Luna", "claude-haiku-4-5-20251001": "Claude Haiku 4.5",
+ "claude-opus-4-8": "Claude Opus 4.8", "claude-sonnet-4-5-20250929": "Claude Sonnet 4.5",
+ "agy:gemini-3.8-flash-high": "Gemini 3.8 Flash High (Antigravity)"}
+# reviewed harness false rejects counted as first-attempt passes: label -> [(battery, path, n)]
+ADJ = {"codex:gpt-daybreak-blue-latest": [("adversarial", "stream", 1)],
+       "grok:grok-4.7-build-fast": [("long", "structured", 3)]}
+bats = ["round1", "round2", "long", "adversarial"]; tot = {"round1": 48, "round2": 62, "long": 54, "adversarial": 60}
+agg = collections.defaultdict(lambda: collections.defaultdict(lambda: [0, 0, 0, 0.0]))
+pth = collections.defaultdict(lambda: collections.defaultdict(lambda: [0, 0]))
+for (label, bat, cell), r in recs.items():
+    a = agg[label][bat]; a[0] += bool(r["pass_at_1"]); a[1] += bool(r["pass_final"]); a[2] += 1; a[3] += r["attempts"]
+    p = cell.split(".")[1]; pth[label][p][0] += bool(r["pass_at_1"]); pth[label][p][1] += 1
+for label, adj in ADJ.items():
+    for b, p, n in adj:
+        agg[label][b][0] += n; pth[label][p][0] += n
+rows = []
+for m, d in agg.items():
+    P = sum(v[0] for v in d.values()); F = sum(v[1] for v in d.values()); N = sum(v[2] for v in d.values())
+    rows.append((N == 224, P / N, m, d, P, F, N, sum(v[3] for v in d.values()) / N))
+rows.sort(key=lambda x: (-x[0], -x[1]))
+print("| Model | Round 1 (48) | Round 2 (62) | Long (54) | Adversarial (60) | Pass@1 | Within 4 | Mean attempts |")
+print("|---|---|---|---|---|---|---|---|")
+for full, _, m, d, P, F, N, A in rows:
+    cells = " | ".join(str(d[b][0]) if d[b][2] == tot[b] else (f"{d[b][0]}/{d[b][2]}" if d[b][2] else "—") for b in bats)
+    tag = "" if full else " †"
+    print(f"| {names.get(m, m)}{tag} | {cells} | **{P}/{N} ({100*P/N:.0f}%)** | {F}/{N} ({100*F/N:.0f}%) | {A:.2f} |")
+print()
+print("| Model | Stream | Structured | IR (QBE) |"); print("|---|---|---|---|")
+for full, _, m, d, *_ in rows:
+    if not full: continue
+    q = pth[m]
+    print(f"| {names.get(m, m)} | " + " | ".join(f"{q[k][0]}/{q[k][1]} ({100*q[k][0]/q[k][1]:.0f}%)" for k in ("stream", "structured", "ir")) + " |")
