@@ -1,0 +1,300 @@
+.globl _start
+
+.text
+
+_start:
+  lea rbx, [rip + input_buf]
+  xor r12d, r12d
+
+read_loop:
+  mov rdx, 65536
+  sub rdx, r12
+  jz read_done
+  xor eax, eax
+  xor edi, edi
+  lea rsi, [rbx + r12]
+  syscall
+  test rax, rax
+  jle read_done
+  add r12, rax
+  jmp read_loop
+
+read_done:
+  xor r13d, r13d
+
+line_loop:
+  cmp r13, r12
+  jae do_exit
+  mov r14, r13
+
+find_nl:
+  cmp r14, r12
+  jae line_eof
+  cmp byte ptr [rbx + r14], 0x0A
+  je line_nl
+  inc r14
+  jmp find_nl
+
+line_nl:
+  mov rax, r14
+  inc rax
+  mov qword ptr [rip + next_pos], rax
+  jmp eval_line
+
+line_eof:
+  mov qword ptr [rip + next_pos], r12
+
+eval_line:
+  lea r15, [rip + rpn_stack]
+  mov rsi, r13
+
+token_loop:
+  cmp rsi, r14
+  jae finish_line
+  mov al, byte ptr [rbx + rsi]
+  cmp al, 0x20
+  je skip_sep
+  cmp al, 0x09
+  je skip_sep
+  jmp token_start
+
+skip_sep:
+  inc rsi
+  jmp token_loop
+
+token_start:
+  mov rdi, rsi
+
+scan_token:
+  inc rsi
+  cmp rsi, r14
+  jae have_token
+  mov al, byte ptr [rbx + rsi]
+  cmp al, 0x20
+  je have_token
+  cmp al, 0x09
+  je have_token
+  jmp scan_token
+
+have_token:
+  mov rcx, rsi
+  sub rcx, rdi
+  cmp rcx, 1
+  jne parse_num
+  mov al, byte ptr [rbx + rdi]
+  cmp al, 0x2B
+  je op_add
+  cmp al, 0x2D
+  je op_sub
+  cmp al, 0x2A
+  je op_mul
+  cmp al, 0x2F
+  je op_div
+  cmp al, 0x25
+  je op_mod
+
+parse_num:
+  mov r8, rdi
+  xor r9d, r9d
+  cmp byte ptr [rbx + r8], 0x2D
+  jne no_sign
+  mov r9d, 1
+  inc r8
+
+no_sign:
+  mov r10, rsi
+  sub r10, r8
+  cmp r10, 1
+  jb got_error
+  cmp r10, 18
+  ja got_error
+  xor eax, eax
+
+digit_loop:
+  movzx edx, byte ptr [rbx + r8]
+  sub edx, 0x30
+  cmp edx, 9
+  ja got_error
+  imul rax, rax, 10
+  add rax, rdx
+  inc r8
+  cmp r8, rsi
+  jb digit_loop
+  test r9d, r9d
+  jz do_push
+  neg rax
+
+do_push:
+  lea rdx, [rip + rpn_stack_end]
+  cmp r15, rdx
+  jae got_error
+  mov qword ptr [r15], rax
+  add r15, 8
+  jmp token_loop
+
+op_add:
+  lea r8, [rip + rpn_stack]
+  add r8, 16
+  cmp r15, r8
+  jb got_error
+  mov rax, qword ptr [r15 - 16]
+  add rax, qword ptr [r15 - 8]
+  sub r15, 8
+  mov qword ptr [r15 - 8], rax
+  jmp token_loop
+
+op_sub:
+  lea r8, [rip + rpn_stack]
+  add r8, 16
+  cmp r15, r8
+  jb got_error
+  mov rax, qword ptr [r15 - 16]
+  sub rax, qword ptr [r15 - 8]
+  sub r15, 8
+  mov qword ptr [r15 - 8], rax
+  jmp token_loop
+
+op_mul:
+  lea r8, [rip + rpn_stack]
+  add r8, 16
+  cmp r15, r8
+  jb got_error
+  mov rax, qword ptr [r15 - 16]
+  imul rax, qword ptr [r15 - 8]
+  sub r15, 8
+  mov qword ptr [r15 - 8], rax
+  jmp token_loop
+
+op_div:
+  xor r11d, r11d
+  jmp divmod
+
+op_mod:
+  mov r11d, 1
+
+divmod:
+  lea r8, [rip + rpn_stack]
+  add r8, 16
+  cmp r15, r8
+  jb got_error
+  mov rax, qword ptr [r15 - 16]
+  mov rcx, qword ptr [r15 - 8]
+  test rcx, rcx
+  jz got_error
+  cmp rcx, -1
+  jne divmod_do
+  mov r8, 1
+  shl r8, 63
+  cmp rax, r8
+  je got_error
+
+divmod_do:
+  mov rdx, rax
+  sar rdx, 63
+  idiv rcx
+  sub r15, 8
+  test r11d, r11d
+  jnz divmod_rem
+  mov qword ptr [r15 - 8], rax
+  jmp token_loop
+
+divmod_rem:
+  mov qword ptr [r15 - 8], rdx
+  jmp token_loop
+
+finish_line:
+  lea rax, [rip + rpn_stack]
+  add rax, 8
+  cmp r15, rax
+  jne got_error
+  mov rax, qword ptr [r15 - 8]
+
+print_number:
+  xor r9d, r9d
+  test rax, rax
+  jns pn_conv
+  mov rcx, 1
+  shl rcx, 63
+  cmp rax, rcx
+  je print_min
+  neg rax
+  mov r9d, 1
+
+pn_conv:
+  lea r10, [rip + outbuf + 40]
+  mov byte ptr [r10 - 1], 0x0A
+  lea rsi, [r10 - 1]
+  mov ecx, 10
+
+pn_loop:
+  xor edx, edx
+  div rcx
+  add dl, 0x30
+  dec rsi
+  mov byte ptr [rsi], dl
+  test rax, rax
+  jnz pn_loop
+  test r9d, r9d
+  jz pn_write
+  dec rsi
+  mov byte ptr [rsi], 0x2D
+
+pn_write:
+  mov rdx, r10
+  sub rdx, rsi
+  mov eax, 1
+  mov edi, 1
+  syscall
+  jmp after_line
+
+print_min:
+  lea rsi, [rip + min_msg]
+  mov edx, 21
+  mov eax, 1
+  mov edi, 1
+  syscall
+  jmp after_line
+
+got_error:
+  lea rsi, [rip + err_msg]
+  mov edx, 6
+  mov eax, 1
+  mov edi, 1
+  syscall
+
+after_line:
+  mov r13, qword ptr [rip + next_pos]
+  jmp line_loop
+
+do_exit:
+  mov eax, 60
+  xor edi, edi
+  syscall
+  jmp do_exit
+
+.section .rodata
+
+err_msg:
+  .ascii "error"
+  .byte 0x0A
+
+min_msg:
+  .ascii "-9223372036854775808"
+  .byte 0x0A
+
+.bss
+.balign 8
+
+input_buf:
+  .zero 65536
+
+next_pos:
+  .zero 8
+
+rpn_stack:
+  .zero 16384
+
+rpn_stack_end:
+
+outbuf:
+  .zero 40

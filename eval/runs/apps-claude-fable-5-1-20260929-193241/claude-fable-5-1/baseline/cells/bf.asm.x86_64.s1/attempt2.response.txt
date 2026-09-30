@@ -1,0 +1,218 @@
+.text
+.globl _start
+_start:
+        # ---- read all of standard input into inbuf ----
+        xor     ebx, ebx                        # bytes read so far
+.Lread:
+        mov     edx, 65536+16
+        sub     edx, ebx
+        jle     .Lread_done
+        xor     eax, eax                        # read
+        xor     edi, edi                        # fd 0
+        lea     rsi, [rip + inbuf]
+        add     rsi, rbx
+        syscall
+        test    rax, rax
+        jle     .Lread_done
+        add     rbx, rax
+        jmp     .Lread
+.Lread_done:
+
+        # ---- locate first '!' ----
+        lea     rdi, [rip + inbuf]
+        xor     ecx, ecx
+.Lscan:
+        cmp     rcx, rbx
+        jae     .Lnobang
+        cmp     byte ptr [rdi + rcx], 0x21
+        je      .Lbang
+        inc     rcx
+        jmp     .Lscan
+.Lnobang:
+        mov     r13, rbx                        # input start index (empty)
+        mov     rdx, rbx                        # program length
+        jmp     .Lsplit_done
+.Lbang:
+        lea     r13, [rcx + 1]
+        mov     rdx, rcx
+.Lsplit_done:
+        lea     r14, [rdi + rbx]                # input end pointer
+        add     r13, rdi                        # input start pointer
+
+        # ---- compile: strip comments, build jump table, check brackets ----
+        lea     r8, [rip + progbuf]
+        xor     r9d, r9d                        # output index
+        lea     r10, [rip + bstack]
+        xor     r11d, r11d                      # bracket stack depth
+        lea     rsi, [rip + cmdtab]
+        lea     rbp, [rip + jt]
+        xor     ecx, ecx
+.Lcomp:
+        cmp     rcx, rdx
+        jae     .Lcomp_done
+        movzx   eax, byte ptr [rdi + rcx]
+        inc     rcx
+        cmp     byte ptr [rsi + rax], 0
+        je      .Lcomp
+        cmp     al, 0x5b                        # '['
+        je      .Lopen
+        cmp     al, 0x5d                        # ']'
+        je      .Lclose
+.Lstore:
+        mov     byte ptr [r8 + r9], al
+        inc     r9d
+        jmp     .Lcomp
+.Lopen:
+        mov     dword ptr [r10 + r11*4], r9d
+        inc     r11d
+        jmp     .Lstore
+.Lclose:
+        test    r11d, r11d
+        jz      .Lfail
+        dec     r11d
+        mov     eax, dword ptr [r10 + r11*4]    # index of matching '['
+        lea     r12d, [r9 + 1]
+        mov     dword ptr [rbp + rax*4], r12d   # '[' -> just after ']'
+        lea     r12d, [rax + 1]
+        mov     dword ptr [rbp + r9*4], r12d    # ']' -> just after '['
+        mov     al, 0x5d
+        jmp     .Lstore
+.Lcomp_done:
+        test    r11d, r11d
+        jnz     .Lfail
+
+        # ---- execute ----
+        mov     rbx, r8                         # rbx = pc
+        lea     rbp, [r8 + r9]                  # rbp = end of program
+        mov     r9, r8                          # r9 = program base
+        lea     r12, [rip + tape]
+        lea     r15, [rip + outbuf]
+        lea     r8, [rip + jt]
+
+.Lloop:
+        cmp     rbx, rbp
+        jae     .Ldone
+        movzx   eax, byte ptr [rbx]
+        inc     rbx
+        cmp     al, 0x2b                        # '+'
+        je      .Lplus
+        cmp     al, 0x2d                        # '-'
+        je      .Lminus
+        cmp     al, 0x3e                        # '>'
+        je      .Lright
+        cmp     al, 0x3c                        # '<'
+        je      .Lleft
+        cmp     al, 0x5d                        # ']'
+        je      .Lrbr
+        cmp     al, 0x5b                        # '['
+        je      .Llbr
+        cmp     al, 0x2e                        # '.'
+        je      .Lout
+        # ','
+        cmp     r13, r14
+        jae     .Lin_zero
+        mov     al, byte ptr [r13]
+        inc     r13
+        mov     byte ptr [r12], al
+        jmp     .Lloop
+.Lin_zero:
+        mov     byte ptr [r12], 0
+        jmp     .Lloop
+.Lplus:
+        inc     byte ptr [r12]
+        jmp     .Lloop
+.Lminus:
+        dec     byte ptr [r12]
+        jmp     .Lloop
+.Lright:
+        inc     r12
+        jmp     .Lloop
+.Lleft:
+        dec     r12
+        jmp     .Lloop
+.Lrbr:
+        cmp     byte ptr [r12], 0
+        je      .Lloop
+        lea     rax, [rbx - 1]
+        sub     rax, r9
+        mov     eax, dword ptr [r8 + rax*4]
+        lea     rbx, [r9 + rax]
+        jmp     .Lloop
+.Llbr:
+        cmp     byte ptr [r12], 0
+        jne     .Lloop
+        lea     rax, [rbx - 1]
+        sub     rax, r9
+        mov     eax, dword ptr [r8 + rax*4]
+        lea     rbx, [r9 + rax]
+        jmp     .Lloop
+.Lout:
+        mov     al, byte ptr [r12]
+        mov     byte ptr [r15], al
+        inc     r15
+        lea     rax, [rip + outbuf + 65536]
+        cmp     r15, rax
+        jb      .Lloop
+        call    .Lflush
+        jmp     .Lloop
+
+.Ldone:
+        call    .Lflush
+        mov     eax, 231
+        xor     edi, edi
+        syscall
+.Lfail:
+        mov     eax, 231
+        mov     edi, 1
+        syscall
+
+        # flush outbuf[0 .. r15) to stdout; resets r15
+.Lflush:
+        lea     rsi, [rip + outbuf]
+.Lflush_loop:
+        mov     rdx, r15
+        sub     rdx, rsi
+        jle     .Lflush_done
+        mov     eax, 1
+        mov     edi, 1
+        syscall
+        test    rax, rax
+        jle     .Lflush_done
+        add     rsi, rax
+        jmp     .Lflush_loop
+.Lflush_done:
+        lea     r15, [rip + outbuf]
+        ret
+
+.section .rodata
+cmdtab:
+        .zero   0x2b
+        .byte   1                       # '+' 0x2b
+        .byte   1                       # ',' 0x2c
+        .byte   1                       # '-' 0x2d
+        .byte   1                       # '.' 0x2e
+        .zero   0x3c-0x2f
+        .byte   1                       # '<' 0x3c
+        .byte   0                       # '='
+        .byte   1                       # '>' 0x3e
+        .zero   0x5b-0x3f
+        .byte   1                       # '[' 0x5b
+        .byte   0
+        .byte   1                       # ']' 0x5d
+        .zero   256-0x5e
+
+.bss
+        .balign 16
+inbuf:
+        .zero   65536+16
+progbuf:
+        .zero   65536+16
+        .balign 16
+jt:
+        .zero   (65536+16)*4
+bstack:
+        .zero   4096*4
+outbuf:
+        .zero   65536+16
+tape:
+        .zero   30000+64

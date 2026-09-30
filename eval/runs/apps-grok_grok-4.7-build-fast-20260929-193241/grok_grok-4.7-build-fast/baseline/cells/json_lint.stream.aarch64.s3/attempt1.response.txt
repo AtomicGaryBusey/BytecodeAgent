@@ -1,0 +1,514 @@
+.globl _start
+
+.equ SYS_read, 63
+.equ SYS_write, 64
+.equ SYS_exit, 93
+.equ STDIN, 0
+.equ STDOUT, 1
+
+.equ CH_TAB, 0x09
+.equ CH_LF, 0x0A
+.equ CH_CR, 0x0D
+.equ CH_SP, 0x20
+.equ CH_QUOTE, 0x22
+.equ CH_PLUS, 0x2B
+.equ CH_COMMA, 0x2C
+.equ CH_MINUS, 0x2D
+.equ CH_DOT, 0x2E
+.equ CH_SLASH, 0x2F
+.equ CH_0, 0x30
+.equ CH_9, 0x39
+.equ CH_COLON, 0x3A
+.equ CH_A, 0x41
+.equ CH_E, 0x45
+.equ CH_F, 0x46
+.equ CH_LBRACK, 0x5B
+.equ CH_BACKSLASH, 0x5C
+.equ CH_RBRACK, 0x5D
+.equ CH_a, 0x61
+.equ CH_b, 0x62
+.equ CH_e, 0x65
+.equ CH_f, 0x66
+.equ CH_n, 0x6E
+.equ CH_r, 0x72
+.equ CH_t, 0x74
+.equ CH_u, 0x75
+.equ CH_LBRACE, 0x7B
+.equ CH_RBRACE, 0x7D
+
+.text
+
+_start:
+    mov x19, xzr
+read_loop:
+    movz x2, #1, lsl #16
+    sub x2, x2, x19
+    cbz x2, read_done
+    mov x8, #SYS_read
+    mov x0, #STDIN
+    adrp x1, buf
+    add x1, x1, :lo12:buf
+    add x1, x1, x19
+    svc #0
+    cmp x0, #0
+    b.le read_done
+    add x19, x19, x0
+    b read_loop
+read_done:
+    adrp x9, in_len
+    add x9, x9, :lo12:in_len
+    str x19, [x9]
+    adrp x9, pos
+    add x9, x9, :lo12:pos
+    str xzr, [x9]
+    bl parse_document
+    adrp x1, ok_msg
+    add x1, x1, :lo12:ok_msg
+    mov x0, #STDOUT
+    mov x2, #3
+    mov x8, #SYS_write
+    svc #0
+    mov x0, xzr
+    b sys_exit
+
+// w0 = next byte, or -1 at end. Does not advance.
+peek:
+    adrp x9, pos
+    add x9, x9, :lo12:pos
+    ldr x10, [x9]
+    adrp x9, in_len
+    add x9, x9, :lo12:in_len
+    ldr x11, [x9]
+    cmp x10, x11
+    b.hs pk_eof
+    adrp x9, buf
+    add x9, x9, :lo12:buf
+    ldrb w0, [x9, x10]
+    ret
+pk_eof:
+    mov w0, #-1
+    ret
+
+// advance one byte
+bump:
+    adrp x9, pos
+    add x9, x9, :lo12:pos
+    ldr x10, [x9]
+    add x10, x10, #1
+    str x10, [x9]
+    ret
+
+skip_ws:
+    stp x29, x30, [sp, #-16]!
+sw_loop:
+    bl peek
+    cmp w0, #CH_SP
+    b.eq sw_yes
+    cmp w0, #CH_TAB
+    b.eq sw_yes
+    cmp w0, #CH_LF
+    b.eq sw_yes
+    cmp w0, #CH_CR
+    b.eq sw_yes
+    b sw_done
+sw_yes:
+    bl bump
+    b sw_loop
+sw_done:
+    ldp x29, x30, [sp], #16
+    ret
+
+parse_document:
+    stp x29, x30, [sp, #-16]!
+    bl skip_ws
+    bl parse_value
+    bl skip_ws
+    bl peek
+    tbnz w0, #31, pd_ok
+    b error
+pd_ok:
+    ldp x29, x30, [sp], #16
+    ret
+
+parse_value:
+    stp x29, x30, [sp, #-16]!
+    bl peek
+    cmp w0, #CH_LBRACE
+    b.eq pv_obj
+    cmp w0, #CH_LBRACK
+    b.eq pv_arr
+    cmp w0, #CH_QUOTE
+    b.eq pv_str
+    cmp w0, #CH_t
+    b.eq pv_true
+    cmp w0, #CH_f
+    b.eq pv_false
+    cmp w0, #CH_n
+    b.eq pv_null
+    cmp w0, #CH_MINUS
+    b.eq pv_num
+    cmp w0, #CH_0
+    b.lo pv_bad
+    cmp w0, #CH_9
+    b.hi pv_bad
+    b pv_num
+pv_obj:
+    bl parse_object
+    b pv_done
+pv_arr:
+    bl parse_array
+    b pv_done
+pv_str:
+    bl parse_string
+    b pv_done
+pv_true:
+    adrp x0, lit_true
+    add x0, x0, :lo12:lit_true
+    mov x1, #4
+    bl parse_lit
+    b pv_done
+pv_false:
+    adrp x0, lit_false
+    add x0, x0, :lo12:lit_false
+    mov x1, #5
+    bl parse_lit
+    b pv_done
+pv_null:
+    adrp x0, lit_null
+    add x0, x0, :lo12:lit_null
+    mov x1, #4
+    bl parse_lit
+    b pv_done
+pv_num:
+    bl parse_number
+    b pv_done
+pv_bad:
+    b error
+pv_done:
+    ldp x29, x30, [sp], #16
+    ret
+
+// x0 = pointer to literal bytes, x1 = length
+parse_lit:
+    stp x29, x30, [sp, #-32]!
+    stp x19, x20, [sp, #16]
+    mov x19, x0
+    mov x20, x1
+pl_loop:
+    cbz x20, pl_done
+    bl peek
+    ldrb w1, [x19]
+    cmp w0, w1
+    b.ne pl_bad
+    bl bump
+    add x19, x19, #1
+    sub x20, x20, #1
+    b pl_loop
+pl_done:
+    ldp x19, x20, [sp, #16]
+    ldp x29, x30, [sp], #32
+    ret
+pl_bad:
+    b error
+
+parse_number:
+    stp x29, x30, [sp, #-16]!
+    bl peek
+    cmp w0, #CH_MINUS
+    b.ne pn_int
+    bl bump
+pn_int:
+    bl peek
+    cmp w0, #CH_0
+    b.lo pn_bad
+    cmp w0, #CH_9
+    b.hi pn_bad
+    cmp w0, #CH_0
+    b.eq pn_zero
+pn_digs:
+    bl bump
+pn_digs_loop:
+    bl peek
+    cmp w0, #CH_0
+    b.lo pn_frac
+    cmp w0, #CH_9
+    b.hi pn_frac
+    bl bump
+    b pn_digs_loop
+pn_zero:
+    bl bump
+    bl peek
+    cmp w0, #CH_0
+    b.lo pn_frac
+    cmp w0, #CH_9
+    b.ls pn_bad
+    b pn_frac
+pn_frac:
+    bl peek
+    cmp w0, #CH_DOT
+    b.ne pn_exp
+    bl bump
+    bl peek
+    cmp w0, #CH_0
+    b.lo pn_bad
+    cmp w0, #CH_9
+    b.hi pn_bad
+    bl bump
+pn_frac_loop:
+    bl peek
+    cmp w0, #CH_0
+    b.lo pn_exp
+    cmp w0, #CH_9
+    b.hi pn_exp
+    bl bump
+    b pn_frac_loop
+pn_exp:
+    bl peek
+    cmp w0, #CH_e
+    b.eq pn_exp_go
+    cmp w0, #CH_E
+    b.ne pn_done
+pn_exp_go:
+    bl bump
+    bl peek
+    cmp w0, #CH_PLUS
+    b.eq pn_exp_sign
+    cmp w0, #CH_MINUS
+    b.ne pn_exp_digs
+pn_exp_sign:
+    bl bump
+pn_exp_digs:
+    bl peek
+    cmp w0, #CH_0
+    b.lo pn_bad
+    cmp w0, #CH_9
+    b.hi pn_bad
+    bl bump
+pn_exp_loop:
+    bl peek
+    cmp w0, #CH_0
+    b.lo pn_done
+    cmp w0, #CH_9
+    b.hi pn_done
+    bl bump
+    b pn_exp_loop
+pn_done:
+    ldp x29, x30, [sp], #16
+    ret
+pn_bad:
+    b error
+
+parse_string:
+    stp x29, x30, [sp, #-32]!
+    str x19, [sp, #16]
+    bl peek
+    cmp w0, #CH_QUOTE
+    b.ne ps_bad
+    bl bump
+ps_loop:
+    bl peek
+    tbnz w0, #31, ps_bad
+    cmp w0, #CH_QUOTE
+    b.eq ps_end
+    cmp w0, #CH_BACKSLASH
+    b.eq ps_esc
+    cmp w0, #CH_SP
+    b.lo ps_bad
+    bl bump
+    b ps_loop
+ps_esc:
+    bl bump
+    bl peek
+    tbnz w0, #31, ps_bad
+    cmp w0, #CH_QUOTE
+    b.eq ps_esc_ok
+    cmp w0, #CH_BACKSLASH
+    b.eq ps_esc_ok
+    cmp w0, #CH_SLASH
+    b.eq ps_esc_ok
+    cmp w0, #CH_b
+    b.eq ps_esc_ok
+    cmp w0, #CH_f
+    b.eq ps_esc_ok
+    cmp w0, #CH_n
+    b.eq ps_esc_ok
+    cmp w0, #CH_r
+    b.eq ps_esc_ok
+    cmp w0, #CH_t
+    b.eq ps_esc_ok
+    cmp w0, #CH_u
+    b.eq ps_u
+    b ps_bad
+ps_esc_ok:
+    bl bump
+    b ps_loop
+ps_u:
+    bl bump
+    mov x19, #4
+ps_hex_loop:
+    bl peek
+    cmp w0, #CH_0
+    b.lo ps_bad
+    cmp w0, #CH_9
+    b.ls ps_hex_ok
+    cmp w0, #CH_A
+    b.lo ps_bad
+    cmp w0, #CH_F
+    b.ls ps_hex_ok
+    cmp w0, #CH_a
+    b.lo ps_bad
+    cmp w0, #CH_f
+    b.hi ps_bad
+ps_hex_ok:
+    bl bump
+    subs x19, x19, #1
+    b.ne ps_hex_loop
+    b ps_loop
+ps_end:
+    bl bump
+    ldr x19, [sp, #16]
+    ldp x29, x30, [sp], #32
+    ret
+ps_bad:
+    b error
+
+parse_object:
+    stp x29, x30, [sp, #-16]!
+    bl bump
+    bl skip_ws
+    bl peek
+    cmp w0, #CH_RBRACE
+    b.eq po_empty
+po_loop:
+    bl parse_string
+    bl skip_ws
+    bl peek
+    cmp w0, #CH_COLON
+    b.ne po_bad
+    bl bump
+    bl skip_ws
+    bl parse_value
+    bl skip_ws
+    bl peek
+    cmp w0, #CH_COMMA
+    b.eq po_comma
+    cmp w0, #CH_RBRACE
+    b.ne po_bad
+    bl bump
+    ldp x29, x30, [sp], #16
+    ret
+po_comma:
+    bl bump
+    bl skip_ws
+    b po_loop
+po_empty:
+    bl bump
+    ldp x29, x30, [sp], #16
+    ret
+po_bad:
+    b error
+
+parse_array:
+    stp x29, x30, [sp, #-16]!
+    bl bump
+    bl skip_ws
+    bl peek
+    cmp w0, #CH_RBRACK
+    b.eq pa_empty
+pa_loop:
+    bl parse_value
+    bl skip_ws
+    bl peek
+    cmp w0, #CH_COMMA
+    b.eq pa_comma
+    cmp w0, #CH_RBRACK
+    b.ne pa_bad
+    bl bump
+    ldp x29, x30, [sp], #16
+    ret
+pa_comma:
+    bl bump
+    bl skip_ws
+    b pa_loop
+pa_empty:
+    bl bump
+    ldp x29, x30, [sp], #16
+    ret
+pa_bad:
+    b error
+
+// print "error at <pos>\n" and exit 1. pos is the current index.
+error:
+    adrp x1, outbuf
+    add x1, x1, :lo12:outbuf
+    adrp x2, err_prefix
+    add x2, x2, :lo12:err_prefix
+    mov x3, #9
+err_cp:
+    ldrb w4, [x2], #1
+    strb w4, [x1], #1
+    subs x3, x3, #1
+    b.ne err_cp
+    adrp x9, pos
+    add x9, x9, :lo12:pos
+    ldr x0, [x9]
+    sub sp, sp, #32
+    add x2, sp, #32
+    mov x3, #10
+err_dig:
+    udiv x4, x0, x3
+    msub x5, x4, x3, x0
+    add w5, w5, #CH_0
+    sub x2, x2, #1
+    strb w5, [x2]
+    mov x0, x4
+    cbnz x0, err_dig
+    add x6, sp, #32
+err_out:
+    cmp x2, x6
+    b.hs err_nl
+    ldrb w4, [x2], #1
+    strb w4, [x1], #1
+    b err_out
+err_nl:
+    mov w4, #CH_LF
+    strb w4, [x1], #1
+    add sp, sp, #32
+    adrp x4, outbuf
+    add x4, x4, :lo12:outbuf
+    sub x2, x1, x4
+    mov x1, x4
+    mov x0, #STDOUT
+    mov x8, #SYS_write
+    svc #0
+    mov x0, #1
+    b sys_exit
+
+sys_exit:
+    mov x8, #SYS_exit
+sys_exit_loop:
+    svc #0
+    b sys_exit_loop
+
+.section .rodata
+lit_true:
+    .ascii "true"
+lit_false:
+    .ascii "false"
+lit_null:
+    .ascii "null"
+ok_msg:
+    .ascii "ok\n"
+err_prefix:
+    .ascii "error at "
+
+.section .bss
+.balign 8
+in_len:
+    .zero 8
+pos:
+    .zero 8
+buf:
+    .zero 65536
+outbuf:
+    .zero 64

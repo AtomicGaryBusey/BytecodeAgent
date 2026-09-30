@@ -1,0 +1,566 @@
+.section .rodata
+msg_ok:
+    .ascii "ok\n"
+msg_err:
+    .ascii "error at "
+msg_nl:
+    .ascii "\n"
+
+.text
+.globl _start
+
+_start:
+    mov x19, #0
+    adrp x1, pos
+    add x1, x1, :lo12:pos
+    str xzr, [x1]
+    adrp x1, errflag
+    add x1, x1, :lo12:errflag
+    str xzr, [x1]
+    adrp x1, errpos
+    add x1, x1, :lo12:errpos
+    str xzr, [x1]
+
+rd_loop:
+    mov x0, #0
+    adrp x1, inbuf
+    add x1, x1, :lo12:inbuf
+    add x1, x1, x19
+    mov x2, #65536
+    sub x2, x2, x19
+    cbz x2, rd_done
+    mov x8, #63
+    svc #0
+    cmp x0, #0
+    b.le rd_done
+    add x19, x19, x0
+    b rd_loop
+
+rd_done:
+    adrp x1, inlen
+    add x1, x1, :lo12:inlen
+    str x19, [x1]
+    bl parse_document
+    cbnz w0, go_err
+    adrp x1, msg_ok
+    add x1, x1, :lo12:msg_ok
+    mov x0, #1
+    mov x2, #3
+    mov x8, #64
+    svc #0
+    mov x0, #0
+    b do_exit
+
+go_err:
+    adrp x1, msg_err
+    add x1, x1, :lo12:msg_err
+    mov x0, #1
+    mov x2, #9
+    mov x8, #64
+    svc #0
+    adrp x1, errpos
+    add x1, x1, :lo12:errpos
+    ldr x0, [x1]
+    bl print_num
+    adrp x1, msg_nl
+    add x1, x1, :lo12:msg_nl
+    mov x0, #1
+    mov x2, #1
+    mov x8, #64
+    svc #0
+    mov x0, #1
+
+do_exit:
+    mov x8, #93
+    svc #0
+    b do_exit
+
+// w0 = byte, or -1 at end of input
+peek_byte:
+    adrp x1, pos
+    add x1, x1, :lo12:pos
+    ldr x2, [x1]
+    adrp x1, inlen
+    add x1, x1, :lo12:inlen
+    ldr x3, [x1]
+    cmp x2, x3
+    b.hs pb_eof
+    adrp x1, inbuf
+    add x1, x1, :lo12:inbuf
+    ldrb w0, [x1, x2]
+    ret
+pb_eof:
+    mov w0, #-1
+    ret
+
+advance:
+    adrp x1, pos
+    add x1, x1, :lo12:pos
+    ldr x2, [x1]
+    add x2, x2, #1
+    str x2, [x1]
+    ret
+
+// record error at current pos, once; return 1
+set_error:
+    adrp x1, errflag
+    add x1, x1, :lo12:errflag
+    ldr x2, [x1]
+    cbnz x2, se_ret
+    mov x2, #1
+    str x2, [x1]
+    adrp x3, pos
+    add x3, x3, :lo12:pos
+    ldr x4, [x3]
+    adrp x3, errpos
+    add x3, x3, :lo12:errpos
+    str x4, [x3]
+se_ret:
+    mov w0, #1
+    ret
+
+// w0 nonzero if hex digit
+is_hex:
+    cmp w0, #0x30
+    b.lo ih_no
+    cmp w0, #0x39
+    b.ls ih_yes
+    cmp w0, #0x41
+    b.lo ih_no
+    cmp w0, #0x46
+    b.ls ih_yes
+    cmp w0, #0x61
+    b.lo ih_no
+    cmp w0, #0x66
+    b.hi ih_no
+ih_yes:
+    mov w0, #1
+    ret
+ih_no:
+    mov w0, #0
+    ret
+
+skip_ws:
+    stp x29, x30, [sp, #-16]!
+sw_loop:
+    bl peek_byte
+    cmp w0, #0x20
+    b.eq sw_adv
+    cmp w0, #0x09
+    b.eq sw_adv
+    cmp w0, #0x0A
+    b.eq sw_adv
+    cmp w0, #0x0D
+    b.eq sw_adv
+    ldp x29, x30, [sp], #16
+    ret
+sw_adv:
+    bl advance
+    b sw_loop
+
+// w0 = expected byte; return 0 if consumed, else 1 and error
+expect_byte:
+    stp x29, x30, [sp, #-32]!
+    str x19, [sp, #16]
+    mov w19, w0
+    bl peek_byte
+    cmp w0, w19
+    b.ne eb_bad
+    bl advance
+    mov w0, #0
+    b eb_done
+eb_bad:
+    bl set_error
+eb_done:
+    ldr x19, [sp, #16]
+    ldp x29, x30, [sp], #32
+    ret
+
+parse_document:
+    stp x29, x30, [sp, #-16]!
+    bl skip_ws
+    bl parse_value
+    cbnz w0, pd_done
+    bl skip_ws
+    adrp x1, pos
+    add x1, x1, :lo12:pos
+    ldr x2, [x1]
+    adrp x1, inlen
+    add x1, x1, :lo12:inlen
+    ldr x3, [x1]
+    cmp x2, x3
+    b.eq pd_ok
+    bl set_error
+    b pd_done
+pd_ok:
+    mov w0, #0
+pd_done:
+    ldp x29, x30, [sp], #16
+    ret
+
+parse_value:
+    stp x29, x30, [sp, #-16]!
+    bl peek_byte
+    cmp w0, #0x7B
+    b.eq pv_obj
+    cmp w0, #0x5B
+    b.eq pv_arr
+    cmp w0, #0x22
+    b.eq pv_str
+    cmp w0, #0x74
+    b.eq pv_true
+    cmp w0, #0x66
+    b.eq pv_false
+    cmp w0, #0x6E
+    b.eq pv_null
+    cmp w0, #0x2D
+    b.eq pv_num
+    cmp w0, #0x30
+    b.lo pv_bad
+    cmp w0, #0x39
+    b.ls pv_num
+pv_bad:
+    bl set_error
+    b pv_done
+pv_obj:
+    bl parse_object
+    b pv_done
+pv_arr:
+    bl parse_array
+    b pv_done
+pv_str:
+    bl parse_string
+    b pv_done
+pv_true:
+    bl parse_true
+    b pv_done
+pv_false:
+    bl parse_false
+    b pv_done
+pv_null:
+    bl parse_null
+    b pv_done
+pv_num:
+    bl parse_number
+pv_done:
+    ldp x29, x30, [sp], #16
+    ret
+
+parse_true:
+    stp x29, x30, [sp, #-16]!
+    mov w0, #0x74
+    bl expect_byte
+    cbnz w0, pt_done
+    mov w0, #0x72
+    bl expect_byte
+    cbnz w0, pt_done
+    mov w0, #0x75
+    bl expect_byte
+    cbnz w0, pt_done
+    mov w0, #0x65
+    bl expect_byte
+pt_done:
+    ldp x29, x30, [sp], #16
+    ret
+
+parse_false:
+    stp x29, x30, [sp, #-16]!
+    mov w0, #0x66
+    bl expect_byte
+    cbnz w0, pf_done
+    mov w0, #0x61
+    bl expect_byte
+    cbnz w0, pf_done
+    mov w0, #0x6C
+    bl expect_byte
+    cbnz w0, pf_done
+    mov w0, #0x73
+    bl expect_byte
+    cbnz w0, pf_done
+    mov w0, #0x65
+    bl expect_byte
+pf_done:
+    ldp x29, x30, [sp], #16
+    ret
+
+parse_null:
+    stp x29, x30, [sp, #-16]!
+    mov w0, #0x6E
+    bl expect_byte
+    cbnz w0, pnu_done
+    mov w0, #0x75
+    bl expect_byte
+    cbnz w0, pnu_done
+    mov w0, #0x6C
+    bl expect_byte
+    cbnz w0, pnu_done
+    mov w0, #0x6C
+    bl expect_byte
+pnu_done:
+    ldp x29, x30, [sp], #16
+    ret
+
+parse_number:
+    stp x29, x30, [sp, #-16]!
+    bl peek_byte
+    cmp w0, #0x2D
+    b.ne pn_int
+    bl advance
+pn_int:
+    bl peek_byte
+    cmp w0, #0x30
+    b.eq pn_zero
+    cmp w0, #0x31
+    b.lo pn_bad
+    cmp w0, #0x39
+    b.hi pn_bad
+    bl advance
+pn_digits:
+    bl peek_byte
+    cmp w0, #0x30
+    b.lo pn_frac
+    cmp w0, #0x39
+    b.hi pn_frac
+    bl advance
+    b pn_digits
+pn_zero:
+    bl advance
+pn_frac:
+    bl peek_byte
+    cmp w0, #0x2E
+    b.ne pn_exp
+    bl advance
+    bl peek_byte
+    cmp w0, #0x30
+    b.lo pn_bad
+    cmp w0, #0x39
+    b.hi pn_bad
+pn_frac_loop:
+    bl advance
+    bl peek_byte
+    cmp w0, #0x30
+    b.lo pn_exp
+    cmp w0, #0x39
+    b.hi pn_exp
+    b pn_frac_loop
+pn_exp:
+    bl peek_byte
+    cmp w0, #0x65
+    b.eq pn_exp_go
+    cmp w0, #0x45
+    b.ne pn_ok
+pn_exp_go:
+    bl advance
+    bl peek_byte
+    cmp w0, #0x2B
+    b.eq pn_exp_sign
+    cmp w0, #0x2D
+    b.ne pn_exp_dig
+pn_exp_sign:
+    bl advance
+pn_exp_dig:
+    bl peek_byte
+    cmp w0, #0x30
+    b.lo pn_bad
+    cmp w0, #0x39
+    b.hi pn_bad
+pn_exp_loop:
+    bl advance
+    bl peek_byte
+    cmp w0, #0x30
+    b.lo pn_ok
+    cmp w0, #0x39
+    b.hi pn_ok
+    b pn_exp_loop
+pn_ok:
+    mov w0, #0
+    b pn_done
+pn_bad:
+    bl set_error
+pn_done:
+    ldp x29, x30, [sp], #16
+    ret
+
+parse_string:
+    stp x29, x30, [sp, #-32]!
+    str x19, [sp, #16]
+    bl advance
+ps_loop:
+    bl peek_byte
+    cmp w0, #0x20
+    b.lt ps_bad
+    cmp w0, #0x22
+    b.eq ps_end
+    cmp w0, #0x5C
+    b.eq ps_esc
+    bl advance
+    b ps_loop
+ps_end:
+    bl advance
+    mov w0, #0
+    b ps_done
+ps_esc:
+    bl advance
+    bl peek_byte
+    cmp w0, #0x22
+    b.eq ps_esc_ok
+    cmp w0, #0x5C
+    b.eq ps_esc_ok
+    cmp w0, #0x2F
+    b.eq ps_esc_ok
+    cmp w0, #0x62
+    b.eq ps_esc_ok
+    cmp w0, #0x66
+    b.eq ps_esc_ok
+    cmp w0, #0x6E
+    b.eq ps_esc_ok
+    cmp w0, #0x72
+    b.eq ps_esc_ok
+    cmp w0, #0x74
+    b.eq ps_esc_ok
+    cmp w0, #0x75
+    b.eq ps_u
+    b ps_bad
+ps_esc_ok:
+    bl advance
+    b ps_loop
+ps_u:
+    bl advance
+    mov w19, #4
+ps_u_loop:
+    bl peek_byte
+    bl is_hex
+    cbz w0, ps_bad
+    bl advance
+    subs w19, w19, #1
+    b.ne ps_u_loop
+    b ps_loop
+ps_bad:
+    bl set_error
+ps_done:
+    ldr x19, [sp, #16]
+    ldp x29, x30, [sp], #32
+    ret
+
+parse_array:
+    stp x29, x30, [sp, #-16]!
+    bl advance
+    bl skip_ws
+    bl peek_byte
+    cmp w0, #0x5D
+    b.ne pa_first
+    bl advance
+    mov w0, #0
+    b pa_done
+pa_first:
+    bl parse_value
+    cbnz w0, pa_done
+pa_loop:
+    bl skip_ws
+    bl peek_byte
+    cmp w0, #0x5D
+    b.eq pa_end
+    cmp w0, #0x2C
+    b.ne pa_bad
+    bl advance
+    bl skip_ws
+    bl parse_value
+    cbnz w0, pa_done
+    b pa_loop
+pa_end:
+    bl advance
+    mov w0, #0
+    b pa_done
+pa_bad:
+    bl set_error
+pa_done:
+    ldp x29, x30, [sp], #16
+    ret
+
+parse_object:
+    stp x29, x30, [sp, #-16]!
+    bl advance
+    bl skip_ws
+    bl peek_byte
+    cmp w0, #0x7D
+    b.ne po_member
+    bl advance
+    mov w0, #0
+    b po_done
+po_member:
+    bl peek_byte
+    cmp w0, #0x22
+    b.ne po_bad
+    bl parse_string
+    cbnz w0, po_done
+    bl skip_ws
+    mov w0, #0x3A
+    bl expect_byte
+    cbnz w0, po_done
+    bl skip_ws
+    bl parse_value
+    cbnz w0, po_done
+po_loop:
+    bl skip_ws
+    bl peek_byte
+    cmp w0, #0x7D
+    b.eq po_end
+    cmp w0, #0x2C
+    b.ne po_bad
+    bl advance
+    bl skip_ws
+    b po_member
+po_end:
+    bl advance
+    mov w0, #0
+    b po_done
+po_bad:
+    bl set_error
+po_done:
+    ldp x29, x30, [sp], #16
+    ret
+
+// print unsigned x0 in decimal
+print_num:
+    stp x29, x30, [sp, #-32]!
+    stp x19, x20, [sp, #16]
+    mov x19, x0
+    adrp x20, numbuf
+    add x20, x20, :lo12:numbuf
+    add x20, x20, #32
+pnum_loop:
+    mov x2, #10
+    udiv x3, x19, x2
+    mul x4, x3, x2
+    sub x4, x19, x4
+    add w4, w4, #0x30
+    sub x20, x20, #1
+    strb w4, [x20]
+    mov x19, x3
+    cbnz x19, pnum_loop
+    adrp x2, numbuf
+    add x2, x2, :lo12:numbuf
+    add x2, x2, #32
+    sub x2, x2, x20
+    mov x1, x20
+    mov x0, #1
+    mov x8, #64
+    svc #0
+    ldp x19, x20, [sp, #16]
+    ldp x29, x30, [sp], #32
+    ret
+
+.bss
+.balign 8
+inbuf:
+    .zero 65536
+inlen:
+    .zero 8
+pos:
+    .zero 8
+errflag:
+    .zero 8
+errpos:
+    .zero 8
+numbuf:
+    .zero 32

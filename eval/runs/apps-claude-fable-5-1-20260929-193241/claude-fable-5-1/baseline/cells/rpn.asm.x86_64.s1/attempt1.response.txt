@@ -1,0 +1,262 @@
+.equ INBUF_SIZE, 65600
+.equ OUTBUF_SIZE, 524288
+.equ STACK_QWORDS, 32800
+
+.section .rodata
+errmsg: .ascii "error\n"
+
+.bss
+.balign 16
+inbuf: .space INBUF_SIZE
+.balign 16
+outbuf: .space OUTBUF_SIZE
+.balign 16
+rpnstack: .space STACK_QWORDS*8
+.balign 16
+numtmp: .space 32
+
+.text
+.globl _start
+_start:
+    xor r13d, r13d
+read_loop:
+    mov edx, INBUF_SIZE
+    sub rdx, r13
+    jbe read_done
+    lea rsi, [rip + inbuf]
+    add rsi, r13
+    xor eax, eax
+    xor edi, edi
+    syscall
+    test rax, rax
+    jle read_done
+    add r13, rax
+    jmp read_loop
+read_done:
+    lea r12, [rip + inbuf]
+    add r13, r12
+    lea r14, [rip + outbuf]
+
+line_loop:
+    cmp r12, r13
+    jae finish
+    xor r15d, r15d
+token_loop:
+    call peek
+    cmp eax, 32
+    je skip_sep
+    cmp eax, 9
+    je skip_sep
+    cmp eax, 10
+    je line_end
+    cmp eax, '-'
+    je tok_minus
+    cmp eax, '+'
+    je tok_op
+    cmp eax, '*'
+    je tok_op
+    cmp eax, '/'
+    je tok_op
+    cmp eax, '%'
+    je tok_op
+    sub eax, '0'
+    cmp eax, 9
+    ja line_error
+    xor ecx, ecx
+    xor r8d, r8d
+    jmp parse_num
+skip_sep:
+    inc r12
+    jmp token_loop
+
+tok_minus:
+    inc r12
+    call peek
+    cmp eax, 32
+    je do_sub
+    cmp eax, 9
+    je do_sub
+    cmp eax, 10
+    je do_sub
+    sub eax, '0'
+    cmp eax, 9
+    ja line_error
+    xor ecx, ecx
+    mov r8d, 1
+parse_num:
+    xor edx, edx
+num_loop:
+    lea rdx, [rdx + rdx*4]
+    lea rdx, [rax + rdx*2]
+    inc ecx
+    inc r12
+    call peek
+    cmp eax, 32
+    je num_done
+    cmp eax, 9
+    je num_done
+    cmp eax, 10
+    je num_done
+    sub eax, '0'
+    cmp eax, 9
+    ja line_error
+    jmp num_loop
+num_done:
+    cmp ecx, 18
+    ja line_error
+    test r8d, r8d
+    jz 1f
+    neg rdx
+1:  lea rcx, [rip + rpnstack]
+    mov qword ptr [rcx + r15*8], rdx
+    inc r15
+    jmp token_loop
+
+tok_op:
+    mov ebx, eax
+    inc r12
+    call peek
+    cmp eax, 32
+    je do_op
+    cmp eax, 9
+    je do_op
+    cmp eax, 10
+    je do_op
+    jmp line_error
+do_sub:
+    mov ebx, '-'
+do_op:
+    cmp r15, 2
+    jb line_error
+    lea rcx, [rip + rpnstack]
+    mov rax, qword ptr [rcx + r15*8 - 16]
+    mov rsi, qword ptr [rcx + r15*8 - 8]
+    dec r15
+    cmp ebx, '+'
+    je op_add
+    cmp ebx, '-'
+    je op_sub
+    cmp ebx, '*'
+    je op_mul
+    test rsi, rsi
+    jz line_error
+    cmp rsi, -1
+    jne 1f
+    mov rdi, 0x8000000000000000
+    cmp rax, rdi
+    je line_error
+1:  cqo
+    idiv rsi
+    cmp ebx, '/'
+    je store
+    mov rax, rdx
+    jmp store
+op_add:
+    add rax, rsi
+    jmp store
+op_sub:
+    sub rax, rsi
+    jmp store
+op_mul:
+    imul rax, rsi
+store:
+    mov qword ptr [rcx + r15*8 - 8], rax
+    jmp token_loop
+
+line_end:
+    cmp r15, 1
+    jne line_error
+    lea rcx, [rip + rpnstack]
+    mov rax, qword ptr [rcx]
+    call print_num
+    cmp r12, r13
+    jae line_loop
+    inc r12
+    jmp line_loop
+
+line_error:
+    call flush_check
+    mov eax, dword ptr [rip + errmsg]
+    mov dword ptr [r14], eax
+    mov ax, word ptr [rip + errmsg + 4]
+    mov word ptr [r14 + 4], ax
+    add r14, 6
+skip_loop:
+    cmp r12, r13
+    jae line_loop
+    movzx eax, byte ptr [r12]
+    inc r12
+    cmp eax, 10
+    jne skip_loop
+    jmp line_loop
+
+finish:
+    call flush
+    mov eax, 231
+    xor edi, edi
+    syscall
+    mov eax, 60
+    xor edi, edi
+    syscall
+    jmp finish
+
+peek:
+    cmp r12, r13
+    jae 1f
+    movzx eax, byte ptr [r12]
+    ret
+1:  mov eax, 10
+    ret
+
+print_num:
+    call flush_check
+    lea rdi, [rip + numtmp + 24]
+    mov r9, rax
+    test rax, rax
+    jns 1f
+    neg rax
+1:  mov ecx, 10
+2:  xor edx, edx
+    div rcx
+    add dl, '0'
+    dec rdi
+    mov byte ptr [rdi], dl
+    test rax, rax
+    jnz 2b
+    test r9, r9
+    jns 3f
+    mov byte ptr [r14], '-'
+    inc r14
+3:  lea rcx, [rip + numtmp + 24]
+    sub rcx, rdi
+4:  mov al, byte ptr [rdi]
+    mov byte ptr [r14], al
+    inc rdi
+    inc r14
+    dec rcx
+    jnz 4b
+    mov byte ptr [r14], 10
+    inc r14
+    ret
+
+flush_check:
+    lea rax, [rip + outbuf + OUTBUF_SIZE - 64]
+    cmp r14, rax
+    jb 1f
+    call flush
+1:  ret
+
+flush:
+    lea rsi, [rip + outbuf]
+1:  mov rdx, r14
+    sub rdx, rsi
+    jle 2f
+    mov eax, 1
+    mov edi, 1
+    syscall
+    test rax, rax
+    jle 2f
+    add rsi, rax
+    jmp 1b
+2:  lea r14, [rip + outbuf]
+    ret

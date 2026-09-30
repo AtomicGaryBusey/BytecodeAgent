@@ -1,0 +1,421 @@
+.equ SYS_READ, 0
+.equ SYS_WRITE, 1
+.equ SYS_EXIT, 60
+.equ BUF_CAP, 65536
+
+.section .rodata
+msg_ok:
+.ascii "ok\n"
+msg_ok_len = . - msg_ok
+msg_err:
+.ascii "error at "
+msg_err_len = . - msg_err
+msg_nl:
+.ascii "\n"
+msg_nl_len = . - msg_nl
+
+.globl _start
+.text
+_start:
+  xor ebx, ebx
+read_loop:
+  cmp rbx, BUF_CAP
+  jae read_done
+  xor eax, eax
+  xor edi, edi
+  lea rsi, [rip + inbuf]
+  add rsi, rbx
+  mov edx, BUF_CAP
+  sub rdx, rbx
+  syscall
+  cmp rax, 0
+  jle read_done
+  add rbx, rax
+  jmp read_loop
+read_done:
+  mov r13, rbx
+  lea r14, [rip + inbuf]
+  xor r12, r12
+  call parse_document
+  mov eax, SYS_WRITE
+  mov edi, 1
+  lea rsi, [rip + msg_ok]
+  mov edx, msg_ok_len
+  syscall
+exit_ok:
+  mov eax, SYS_EXIT
+  xor edi, edi
+  syscall
+  jmp exit_ok
+
+parse_document:
+  call skip_ws
+  cmp r12, r13
+  jae fail_pos
+  call parse_value
+  call skip_ws
+  cmp r12, r13
+  jne fail_pos
+  ret
+
+skip_ws:
+sw_loop:
+  cmp r12, r13
+  jae sw_done
+  movzx eax, byte ptr [r14 + r12]
+  cmp al, 0x20
+  je sw_yes
+  cmp al, 0x09
+  je sw_yes
+  cmp al, 0x0A
+  je sw_yes
+  cmp al, 0x0D
+  je sw_yes
+sw_done:
+  ret
+sw_yes:
+  inc r12
+  jmp sw_loop
+
+# next input byte must equal bl; consumes it
+expect_byte:
+  cmp r12, r13
+  jae fail_pos
+  movzx eax, byte ptr [r14 + r12]
+  cmp al, bl
+  jne fail_pos
+  inc r12
+  ret
+
+parse_value:
+  cmp r12, r13
+  jae fail_pos
+  movzx eax, byte ptr [r14 + r12]
+  cmp al, 0x7B
+  je parse_object
+  cmp al, 0x5B
+  je parse_array
+  cmp al, 0x22
+  je parse_string
+  cmp al, 0x74
+  je parse_true
+  cmp al, 0x66
+  je parse_false
+  cmp al, 0x6E
+  je parse_null
+  cmp al, 0x2D
+  je parse_number
+  cmp al, 0x30
+  jb fail_pos
+  cmp al, 0x39
+  ja fail_pos
+  jmp parse_number
+
+parse_object:
+  inc r12
+  call skip_ws
+  cmp r12, r13
+  jae fail_pos
+  movzx eax, byte ptr [r14 + r12]
+  cmp al, 0x7D
+  jne po_key
+  inc r12
+  ret
+po_key:
+  cmp al, 0x22
+  jne fail_pos
+po_key_loop:
+  call parse_string
+  call skip_ws
+  cmp r12, r13
+  jae fail_pos
+  movzx eax, byte ptr [r14 + r12]
+  cmp al, 0x3A
+  jne fail_pos
+  inc r12
+  call skip_ws
+  call parse_value
+  call skip_ws
+  cmp r12, r13
+  jae fail_pos
+  movzx eax, byte ptr [r14 + r12]
+  cmp al, 0x7D
+  jne po_comma
+  inc r12
+  ret
+po_comma:
+  cmp al, 0x2C
+  jne fail_pos
+  inc r12
+  call skip_ws
+  cmp r12, r13
+  jae fail_pos
+  movzx eax, byte ptr [r14 + r12]
+  cmp al, 0x22
+  jne fail_pos
+  jmp po_key_loop
+
+parse_array:
+  inc r12
+  call skip_ws
+  cmp r12, r13
+  jae fail_pos
+  movzx eax, byte ptr [r14 + r12]
+  cmp al, 0x5D
+  jne pa_value
+  inc r12
+  ret
+pa_value:
+  call parse_value
+  call skip_ws
+  cmp r12, r13
+  jae fail_pos
+  movzx eax, byte ptr [r14 + r12]
+  cmp al, 0x5D
+  jne pa_comma
+  inc r12
+  ret
+pa_comma:
+  cmp al, 0x2C
+  jne fail_pos
+  inc r12
+  call skip_ws
+  jmp pa_value
+
+parse_string:
+  inc r12
+ps_loop:
+  cmp r12, r13
+  jae fail_pos
+  movzx eax, byte ptr [r14 + r12]
+  cmp al, 0x22
+  je ps_end
+  cmp al, 0x5C
+  je ps_esc
+  cmp al, 0x20
+  jb fail_pos
+  inc r12
+  jmp ps_loop
+ps_end:
+  inc r12
+  ret
+ps_esc:
+  inc r12
+  cmp r12, r13
+  jae fail_pos
+  movzx eax, byte ptr [r14 + r12]
+  cmp al, 0x22
+  je ps_esc_ok
+  cmp al, 0x5C
+  je ps_esc_ok
+  cmp al, 0x2F
+  je ps_esc_ok
+  cmp al, 0x62
+  je ps_esc_ok
+  cmp al, 0x66
+  je ps_esc_ok
+  cmp al, 0x6E
+  je ps_esc_ok
+  cmp al, 0x72
+  je ps_esc_ok
+  cmp al, 0x74
+  je ps_esc_ok
+  cmp al, 0x75
+  je ps_u
+  jmp fail_pos
+ps_esc_ok:
+  inc r12
+  jmp ps_loop
+ps_u:
+  inc r12
+  mov ecx, 4
+ps_hex:
+  cmp r12, r13
+  jae fail_pos
+  movzx eax, byte ptr [r14 + r12]
+  cmp al, 0x30
+  jb fail_pos
+  cmp al, 0x39
+  jbe ps_hex_ok
+  cmp al, 0x41
+  jb fail_pos
+  cmp al, 0x46
+  jbe ps_hex_ok
+  cmp al, 0x61
+  jb fail_pos
+  cmp al, 0x66
+  ja fail_pos
+ps_hex_ok:
+  inc r12
+  dec ecx
+  jnz ps_hex
+  jmp ps_loop
+
+parse_number:
+  movzx eax, byte ptr [r14 + r12]
+  cmp al, 0x2D
+  jne pn_int
+  inc r12
+  cmp r12, r13
+  jae fail_pos
+  movzx eax, byte ptr [r14 + r12]
+pn_int:
+  cmp al, 0x30
+  je pn_zero
+  cmp al, 0x31
+  jb fail_pos
+  cmp al, 0x39
+  ja fail_pos
+  inc r12
+pn_digits:
+  cmp r12, r13
+  jae pn_done
+  movzx eax, byte ptr [r14 + r12]
+  cmp al, 0x30
+  jb pn_frac
+  cmp al, 0x39
+  ja pn_frac
+  inc r12
+  jmp pn_digits
+pn_zero:
+  inc r12
+pn_frac:
+  cmp r12, r13
+  jae pn_done
+  movzx eax, byte ptr [r14 + r12]
+  cmp al, 0x2E
+  jne pn_exp
+  inc r12
+  cmp r12, r13
+  jae fail_pos
+  movzx eax, byte ptr [r14 + r12]
+  cmp al, 0x30
+  jb fail_pos
+  cmp al, 0x39
+  ja fail_pos
+  inc r12
+pn_frac_digits:
+  cmp r12, r13
+  jae pn_done
+  movzx eax, byte ptr [r14 + r12]
+  cmp al, 0x30
+  jb pn_exp
+  cmp al, 0x39
+  ja pn_exp
+  inc r12
+  jmp pn_frac_digits
+pn_exp:
+  cmp r12, r13
+  jae pn_done
+  movzx eax, byte ptr [r14 + r12]
+  cmp al, 0x65
+  je pn_exp_go
+  cmp al, 0x45
+  jne pn_done
+pn_exp_go:
+  inc r12
+  cmp r12, r13
+  jae fail_pos
+  movzx eax, byte ptr [r14 + r12]
+  cmp al, 0x2B
+  je pn_sign
+  cmp al, 0x2D
+  jne pn_exp_dig
+pn_sign:
+  inc r12
+  cmp r12, r13
+  jae fail_pos
+  movzx eax, byte ptr [r14 + r12]
+pn_exp_dig:
+  cmp al, 0x30
+  jb fail_pos
+  cmp al, 0x39
+  ja fail_pos
+  inc r12
+pn_exp_digits:
+  cmp r12, r13
+  jae pn_done
+  movzx eax, byte ptr [r14 + r12]
+  cmp al, 0x30
+  jb pn_done
+  cmp al, 0x39
+  ja pn_done
+  inc r12
+  jmp pn_exp_digits
+pn_done:
+  ret
+
+parse_true:
+  inc r12
+  mov ebx, 0x72
+  call expect_byte
+  mov ebx, 0x75
+  call expect_byte
+  mov ebx, 0x65
+  call expect_byte
+  ret
+
+parse_false:
+  inc r12
+  mov ebx, 0x61
+  call expect_byte
+  mov ebx, 0x6C
+  call expect_byte
+  mov ebx, 0x73
+  call expect_byte
+  mov ebx, 0x65
+  call expect_byte
+  ret
+
+parse_null:
+  inc r12
+  mov ebx, 0x75
+  call expect_byte
+  mov ebx, 0x6C
+  call expect_byte
+  mov ebx, 0x6C
+  call expect_byte
+  ret
+
+fail_pos:
+  mov r15, r12
+  mov eax, SYS_WRITE
+  mov edi, 1
+  lea rsi, [rip + msg_err]
+  mov edx, msg_err_len
+  syscall
+  mov rax, r15
+  lea rsi, [rip + numbuf]
+  add rsi, 32
+  mov rbx, rsi
+  mov r10, 10
+fail_digits:
+  xor edx, edx
+  div r10
+  add dl, 0x30
+  dec rsi
+  mov byte ptr [rsi], dl
+  test rax, rax
+  jnz fail_digits
+  mov rdx, rbx
+  sub rdx, rsi
+  mov eax, SYS_WRITE
+  mov edi, 1
+  syscall
+  mov eax, SYS_WRITE
+  mov edi, 1
+  lea rsi, [rip + msg_nl]
+  mov edx, msg_nl_len
+  syscall
+exit_err:
+  mov eax, SYS_EXIT
+  mov edi, 1
+  syscall
+  jmp exit_err
+
+.bss
+.balign 16
+inbuf:
+.zero 65536
+numbuf:
+.zero 32

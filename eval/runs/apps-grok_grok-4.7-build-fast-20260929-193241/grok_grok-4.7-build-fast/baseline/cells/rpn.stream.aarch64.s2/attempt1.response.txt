@@ -1,0 +1,351 @@
+.equ SYS_read, 63
+.equ SYS_write, 64
+.equ SYS_exit, 93
+
+.section .rodata
+errmsg:
+    .ascii "error\n"
+err_len = . - errmsg
+minmsg:
+    .ascii "-9223372036854775808\n"
+min_len = . - minmsg
+
+.bss
+.balign 8
+rpnstk:
+    .zero 262144
+inbuf:
+    .zero 65536
+
+.text
+.globl _start
+
+_start:
+    bl read_all
+    bl process
+    mov x0, #0
+    mov x8, #SYS_exit
+    svc #0
+
+read_all:
+    stp x29, x30, [sp, #-32]!
+    stp x19, x20, [sp, #16]
+    adrp x19, inbuf
+    add x19, x19, :lo12:inbuf
+    mov x20, #0
+ra_loop:
+    movz x2, #1, lsl #16
+    sub x2, x2, x20
+    cbz x2, ra_done
+    mov x0, #0
+    add x1, x19, x20
+    mov x8, #SYS_read
+    svc #0
+    cmp x0, #0
+    b.le ra_done
+    add x20, x20, x0
+    b ra_loop
+ra_done:
+    mov x0, x20
+    ldp x19, x20, [sp, #16]
+    ldp x29, x30, [sp], #32
+    ret
+
+process:
+    stp x29, x30, [sp, #-48]!
+    stp x19, x20, [sp, #16]
+    stp x21, x22, [sp, #32]
+    adrp x19, inbuf
+    add x19, x19, :lo12:inbuf
+    add x20, x19, x0
+    mov x21, x19
+pr_loop:
+    cmp x21, x20
+    b.hs pr_done
+    mov x22, x21
+pr_scan:
+    cmp x22, x20
+    b.hs pr_last
+    ldrb w0, [x22]
+    cmp w0, #10
+    b.eq pr_nl
+    add x22, x22, #1
+    b pr_scan
+pr_nl:
+    mov x0, x21
+    mov x1, x22
+    bl eval_line
+    add x21, x22, #1
+    b pr_loop
+pr_last:
+    mov x0, x21
+    mov x1, x20
+    bl eval_line
+pr_done:
+    ldp x21, x22, [sp, #32]
+    ldp x19, x20, [sp, #16]
+    ldp x29, x30, [sp], #48
+    ret
+
+eval_line:
+    stp x29, x30, [sp, #-64]!
+    stp x19, x20, [sp, #16]
+    stp x21, x22, [sp, #32]
+    stp x23, x24, [sp, #48]
+    mov x19, x0
+    mov x20, x1
+    mov x21, #0
+ev_tok:
+    cmp x19, x20
+    b.hs ev_end
+    ldrb w0, [x19]
+    cmp w0, #32
+    b.eq ev_sp
+    cmp w0, #9
+    b.eq ev_sp
+    b ev_word
+ev_sp:
+    add x19, x19, #1
+    b ev_tok
+ev_word:
+    mov x22, x19
+ev_wscan:
+    cmp x19, x20
+    b.hs ev_wend
+    ldrb w0, [x19]
+    cmp w0, #32
+    b.eq ev_wend
+    cmp w0, #9
+    b.eq ev_wend
+    add x19, x19, #1
+    b ev_wscan
+ev_wend:
+    sub x2, x19, x22
+    cmp x2, #1
+    b.ne ev_num
+    ldrb w0, [x22]
+    cmp w0, #43
+    b.eq op_add
+    cmp w0, #45
+    b.eq op_sub
+    cmp w0, #42
+    b.eq op_mul
+    cmp w0, #47
+    b.eq op_div
+    cmp w0, #37
+    b.eq op_mod
+ev_num:
+    mov x0, x22
+    mov x1, x19
+    bl parse_int
+    cbnz x1, ev_err
+    bl push_val
+    b ev_tok
+ev_end:
+    cmp x21, #1
+    b.ne ev_err
+    bl pop_val
+    bl print_num
+    b ev_ret
+ev_err:
+    bl print_err
+ev_ret:
+    ldp x23, x24, [sp, #48]
+    ldp x21, x22, [sp, #32]
+    ldp x19, x20, [sp, #16]
+    ldp x29, x30, [sp], #64
+    ret
+
+op_add:
+    cmp x21, #2
+    b.lo ev_err
+    bl pop_val
+    mov x23, x0
+    bl pop_val
+    add x0, x0, x23
+    bl push_val
+    b ev_tok
+
+op_sub:
+    cmp x21, #2
+    b.lo ev_err
+    bl pop_val
+    mov x23, x0
+    bl pop_val
+    sub x0, x0, x23
+    bl push_val
+    b ev_tok
+
+op_mul:
+    cmp x21, #2
+    b.lo ev_err
+    bl pop_val
+    mov x23, x0
+    bl pop_val
+    mul x0, x0, x23
+    bl push_val
+    b ev_tok
+
+op_div:
+    cmp x21, #2
+    b.lo ev_err
+    bl pop_val
+    mov x23, x0
+    bl pop_val
+    mov x24, x0
+    cbz x23, ev_err
+    movz x0, #0x8000, lsl #48
+    cmp x24, x0
+    b.ne op_div_do
+    cmn x23, #1
+    b.eq ev_err
+op_div_do:
+    sdiv x0, x24, x23
+    bl push_val
+    b ev_tok
+
+op_mod:
+    cmp x21, #2
+    b.lo ev_err
+    bl pop_val
+    mov x23, x0
+    bl pop_val
+    mov x24, x0
+    cbz x23, ev_err
+    movz x0, #0x8000, lsl #48
+    cmp x24, x0
+    b.ne op_mod_do
+    cmn x23, #1
+    b.eq ev_err
+op_mod_do:
+    sdiv x0, x24, x23
+    mul x1, x0, x23
+    sub x0, x24, x1
+    bl push_val
+    b ev_tok
+
+push_val:
+    adrp x1, rpnstk
+    add x1, x1, :lo12:rpnstk
+    str x0, [x1, x21, lsl #3]
+    add x21, x21, #1
+    ret
+
+pop_val:
+    sub x21, x21, #1
+    adrp x1, rpnstk
+    add x1, x1, :lo12:rpnstk
+    ldr x0, [x1, x21, lsl #3]
+    ret
+
+parse_int:
+    mov x2, x0
+    mov x3, x1
+    mov x4, #0
+    cmp x2, x3
+    b.hs pi_bad
+    ldrb w5, [x2]
+    cmp w5, #45
+    b.ne pi_digs
+    mov x4, #1
+    add x2, x2, #1
+pi_digs:
+    mov x0, #0
+    mov x6, #0
+pi_loop:
+    cmp x2, x3
+    b.hs pi_done
+    cmp x6, #18
+    b.hs pi_bad
+    ldrb w5, [x2]
+    sub w5, w5, #48
+    cmp w5, #9
+    b.hi pi_bad
+    mov x7, #10
+    mul x0, x0, x7
+    add x0, x0, x5
+    add x2, x2, #1
+    add x6, x6, #1
+    b pi_loop
+pi_done:
+    cbz x6, pi_bad
+    cbz x4, pi_ok
+    neg x0, x0
+pi_ok:
+    mov x1, #0
+    ret
+pi_bad:
+    mov x1, #1
+    ret
+
+print_err:
+    stp x29, x30, [sp, #-16]!
+    adrp x0, errmsg
+    add x0, x0, :lo12:errmsg
+    mov x1, #err_len
+    bl write_all
+    ldp x29, x30, [sp], #16
+    ret
+
+print_num:
+    stp x29, x30, [sp, #-16]!
+    movz x1, #0x8000, lsl #48
+    cmp x0, x1
+    b.ne pn_norm
+    adrp x0, minmsg
+    add x0, x0, :lo12:minmsg
+    mov x1, #min_len
+    bl write_all
+    b pn_ret
+pn_norm:
+    mov x9, #0
+    cmp x0, #0
+    b.ge pn_pos
+    mov x9, #1
+    neg x0, x0
+pn_pos:
+    sub sp, sp, #32
+    add x3, sp, #31
+    mov w4, #10
+    strb w4, [x3]
+pn_loop:
+    mov x4, #10
+    udiv x5, x0, x4
+    mul x6, x5, x4
+    sub x6, x0, x6
+    add x6, x6, #48
+    sub x3, x3, #1
+    strb w6, [x3]
+    mov x0, x5
+    cbnz x0, pn_loop
+    cbz x9, pn_out
+    sub x3, x3, #1
+    mov w6, #45
+    strb w6, [x3]
+pn_out:
+    mov x0, x3
+    add x1, sp, #32
+    sub x1, x1, x3
+    bl write_all
+    add sp, sp, #32
+pn_ret:
+    ldp x29, x30, [sp], #16
+    ret
+
+write_all:
+    mov x10, x0
+    mov x11, x1
+wa_loop:
+    cbz x11, wa_done
+    mov x0, #1
+    mov x1, x10
+    mov x2, x11
+    mov x8, #SYS_write
+    svc #0
+    cmp x0, #0
+    b.le wa_done
+    add x10, x10, x0
+    sub x11, x11, x0
+    b wa_loop
+wa_done:
+    ret

@@ -1,0 +1,304 @@
+.equ SYS_read, 63
+.equ SYS_write, 64
+.equ SYS_exit, 93
+.equ BUF_SIZE, 65536
+.equ STK_BYTES, 8192
+.equ DIG_MAX, 18
+
+.section .rodata
+.balign 8
+min_str:
+    .ascii "-9223372036854775808\n"
+err_str:
+    .ascii "error\n"
+
+.bss
+.balign 8
+input_buf:
+    .zero 65536
+numbuf:
+    .zero 32
+valstack:
+    .zero 8192
+
+.text
+.balign 4
+.globl _start
+_start:
+    adrp x19, input_buf
+    add x19, x19, :lo12:input_buf
+    mov x20, x19
+    mov x3, #BUF_SIZE
+    add x23, x19, x3
+
+read_loop:
+    sub x2, x23, x20
+    cbz x2, read_done
+    mov x0, #0
+    mov x1, x20
+    mov x8, #SYS_read
+    svc #0
+    cbz x0, read_done
+    tbnz x0, #63, read_done
+    add x20, x20, x0
+    b read_loop
+
+read_done:
+    adrp x21, valstack
+    add x21, x21, :lo12:valstack
+    mov x3, #STK_BYTES
+    add x25, x21, x3
+
+line_loop:
+    cmp x19, x20
+    b.hs done_all
+    mov x22, x21
+
+token_loop:
+    cmp x19, x20
+    b.hs finish_line
+    ldrb w0, [x19]
+    cmp w0, #32
+    b.eq skip_sep
+    cmp w0, #9
+    b.eq skip_sep
+    cmp w0, #10
+    b.eq end_line_nl
+    b have_token
+
+skip_sep:
+    add x19, x19, #1
+    b token_loop
+
+end_line_nl:
+    add x19, x19, #1
+    b finish_line
+
+have_token:
+    mov x23, x19
+
+scan_token:
+    cmp x19, x20
+    b.hs token_ready
+    ldrb w0, [x19]
+    cmp w0, #32
+    b.eq token_ready
+    cmp w0, #9
+    b.eq token_ready
+    cmp w0, #10
+    b.eq token_ready
+    add x19, x19, #1
+    b scan_token
+
+token_ready:
+    mov x24, x19
+    sub x0, x24, x23
+    cmp x0, #1
+    b.ne parse_number
+    ldrb w1, [x23]
+    cmp w1, #43
+    b.eq op_add
+    cmp w1, #45
+    b.eq op_sub
+    cmp w1, #42
+    b.eq op_mul
+    cmp w1, #47
+    b.eq op_div
+    cmp w1, #37
+    b.eq op_mod
+
+parse_number:
+    ldrb w1, [x23]
+    mov x3, x23
+    mov x4, #0
+    cmp w1, #45
+    b.ne check_digits
+    add x3, x3, #1
+    mov x4, #1
+
+check_digits:
+    sub x5, x24, x3
+    cbz x5, error_line
+    cmp x5, #DIG_MAX
+    b.hi error_line
+    mov x6, #0
+    mov x7, #10
+
+digit_loop:
+    ldrb w1, [x3], #1
+    sub w1, w1, #48
+    cmp w1, #9
+    b.hi error_line
+    mul x6, x6, x7
+    add x6, x6, x1
+    cmp x3, x24
+    b.ne digit_loop
+    cbz x4, push_num
+    neg x6, x6
+
+push_num:
+    cmp x22, x25
+    b.hs error_line
+    str x6, [x22], #8
+    b token_loop
+
+op_add:
+    bl get_ab
+    add x2, x2, x1
+    b push_result
+
+op_sub:
+    bl get_ab
+    sub x2, x2, x1
+    b push_result
+
+op_mul:
+    bl get_ab
+    mul x2, x2, x1
+    b push_result
+
+op_div:
+    bl get_ab
+    bl check_div
+    sdiv x2, x2, x1
+    b push_result
+
+op_mod:
+    bl get_ab
+    bl check_div
+    sdiv x4, x2, x1
+    mul x4, x4, x1
+    sub x2, x2, x4
+    b push_result
+
+push_result:
+    str x2, [x22], #8
+    b token_loop
+
+finish_line:
+    sub x0, x22, x21
+    cmp x0, #8
+    b.ne print_err
+    ldr x0, [x21]
+    bl print_num
+    b line_loop
+
+error_line:
+    cmp x19, x20
+    b.hs print_err
+    ldrb w0, [x19], #1
+    cmp w0, #10
+    b.ne error_line
+
+print_err:
+    bl print_error
+    b line_loop
+
+done_all:
+    mov x0, #0
+    mov x8, #SYS_exit
+    svc #0
+    b done_all
+
+get_ab:
+    sub x0, x22, x21
+    cmp x0, #16
+    b.lo error_line
+    sub x22, x22, #16
+    ldr x2, [x22]
+    ldr x1, [x22, #8]
+    ret
+
+check_div:
+    cbz x1, error_line
+    mov x4, #1
+    lsl x4, x4, #63
+    cmp x2, x4
+    b.ne check_div_ok
+    movn x4, #0
+    cmp x1, x4
+    b.eq error_line
+
+check_div_ok:
+    ret
+
+print_error:
+    str x30, [sp, #-16]!
+    adrp x1, err_str
+    add x1, x1, :lo12:err_str
+    mov x0, #1
+    mov x2, #6
+    bl write_all
+    ldr x30, [sp], #16
+    ret
+
+print_num:
+    str x30, [sp, #-16]!
+    cmp x0, #0
+    b.ge pn_pos
+    mov x1, #1
+    lsl x1, x1, #63
+    cmp x0, x1
+    b.eq pn_min
+    neg x0, x0
+    mov x4, #1
+    b pn_conv
+
+pn_pos:
+    mov x4, #0
+
+pn_conv:
+    adrp x5, numbuf
+    add x5, x5, :lo12:numbuf
+    add x5, x5, #31
+    mov w3, #10
+    strb w3, [x5]
+    mov x7, #10
+    mov x6, x5
+
+pn_digit:
+    udiv x1, x0, x7
+    msub x2, x1, x7, x0
+    add w2, w2, #48
+    sub x6, x6, #1
+    strb w2, [x6]
+    mov x0, x1
+    cbnz x0, pn_digit
+    cbz x4, pn_write
+    sub x6, x6, #1
+    mov w2, #45
+    strb w2, [x6]
+
+pn_write:
+    mov x0, #1
+    mov x1, x6
+    sub x2, x5, x6
+    add x2, x2, #1
+    bl write_all
+    ldr x30, [sp], #16
+    ret
+
+pn_min:
+    adrp x1, min_str
+    add x1, x1, :lo12:min_str
+    mov x0, #1
+    mov x2, #21
+    bl write_all
+    ldr x30, [sp], #16
+    ret
+
+write_all:
+    mov x8, #SYS_write
+    mov x3, x0
+
+wa_loop:
+    mov x0, x3
+    svc #0
+    tbnz x0, #63, wa_ret
+    cbz x0, wa_ret
+    add x1, x1, x0
+    subs x2, x2, x0
+    b.ne wa_loop
+
+wa_ret:
+    ret

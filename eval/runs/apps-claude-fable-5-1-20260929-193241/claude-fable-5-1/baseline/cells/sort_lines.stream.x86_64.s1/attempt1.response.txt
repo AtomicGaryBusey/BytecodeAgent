@@ -1,0 +1,206 @@
+.bss
+.balign 16
+inbuf:  .space 65536
+outbuf: .space 65536 + 4096 + 64
+.balign 16
+lines:  .space 4096*16
+.balign 16
+tmp:    .space 4096*16
+
+.text
+.globl _start
+_start:
+    xor r12d, r12d              # total bytes read
+read_loop:
+    mov edx, 65536
+    sub edx, r12d
+    jz read_done
+    xor eax, eax                # read
+    xor edi, edi
+    lea rsi, [rip + inbuf]
+    add rsi, r12
+    syscall
+    test rax, rax
+    jle read_done
+    add r12, rax
+    jmp read_loop
+read_done:
+
+    # parse lines
+    lea r8, [rip + inbuf]       # cur
+    lea r9, [r8 + r12]          # end
+    lea r10, [rip + lines]
+    xor ebx, ebx                # line count
+    mov r13, r8                 # line start
+parse_loop:
+    cmp r8, r9
+    jae parse_end
+    movzx eax, byte ptr [r8]
+    inc r8
+    cmp al, 10
+    jne parse_loop
+    cmp ebx, 4096
+    jae sort_begin
+    mov qword ptr [r10], r13
+    lea rax, [r8 - 1]
+    sub rax, r13
+    mov qword ptr [r10 + 8], rax
+    add r10, 16
+    inc ebx
+    mov r13, r8
+    jmp parse_loop
+parse_end:
+    cmp r13, r9
+    je sort_begin
+    cmp ebx, 4096
+    jae sort_begin
+    mov qword ptr [r10], r13
+    mov rax, r9
+    sub rax, r13
+    mov qword ptr [r10 + 8], rax
+    inc ebx
+
+sort_begin:
+    # bottom-up merge sort; rbx = n, r12 = width, r14 = src, r15 = dst
+    mov r12, 1
+    lea r14, [rip + lines]
+    lea r15, [rip + tmp]
+sort_pass:
+    cmp r12, rbx
+    jae sort_done
+    xor r8d, r8d                # i
+merge_loop:
+    cmp r8, rbx
+    jae pass_done
+    mov r9, r8
+    add r9, r12
+    cmp r9, rbx
+    cmova r9, rbx               # mid
+    mov r10, r9
+    add r10, r12
+    cmp r10, rbx
+    cmova r10, rbx              # end
+    mov r11, r8                 # out index
+    mov rbp, r9                 # right index
+merge_inner:
+    cmp r8, r9
+    jae take_right_rest
+    cmp rbp, r10
+    jae take_left
+    mov rax, r8
+    shl rax, 4
+    mov rsi, qword ptr [r14 + rax]
+    mov rcx, qword ptr [r14 + rax + 8]
+    mov rax, rbp
+    shl rax, 4
+    mov rdi, qword ptr [r14 + rax]
+    mov rdx, qword ptr [r14 + rax + 8]
+    call cmp_le
+    test eax, eax
+    jnz take_left
+take_right:
+    mov rax, rbp
+    shl rax, 4
+    movdqa xmm0, xmmword ptr [r14 + rax]
+    mov rax, r11
+    shl rax, 4
+    movdqa xmmword ptr [r15 + rax], xmm0
+    inc rbp
+    inc r11
+    jmp merge_inner
+take_left:
+    mov rax, r8
+    shl rax, 4
+    movdqa xmm0, xmmword ptr [r14 + rax]
+    mov rax, r11
+    shl rax, 4
+    movdqa xmmword ptr [r15 + rax], xmm0
+    inc r8
+    inc r11
+    jmp merge_inner
+take_right_rest:
+    cmp rbp, r10
+    jae merge_next
+    mov rax, rbp
+    shl rax, 4
+    movdqa xmm0, xmmword ptr [r14 + rax]
+    mov rax, r11
+    shl rax, 4
+    movdqa xmmword ptr [r15 + rax], xmm0
+    inc rbp
+    inc r11
+    jmp take_right_rest
+merge_next:
+    mov r8, r10
+    jmp merge_loop
+pass_done:
+    xchg r14, r15
+    shl r12, 1
+    jmp sort_pass
+sort_done:
+
+    # build output buffer
+    lea rdi, [rip + outbuf]
+    mov r8, r14
+    mov r9, rbx
+out_loop:
+    test r9, r9
+    jz out_done
+    mov rsi, qword ptr [r8]
+    mov rcx, qword ptr [r8 + 8]
+    rep movsb
+    mov byte ptr [rdi], 10
+    inc rdi
+    add r8, 16
+    dec r9
+    jmp out_loop
+out_done:
+    lea rsi, [rip + outbuf]
+    mov rdx, rdi
+    sub rdx, rsi                # total length
+write_loop:
+    test rdx, rdx
+    jz do_exit
+    mov eax, 1
+    mov edi, 1
+    syscall
+    test rax, rax
+    jle do_exit
+    add rsi, rax
+    sub rdx, rax
+    jmp write_loop
+do_exit:
+    mov eax, 60
+    xor edi, edi
+    syscall
+
+# cmp_le: rsi/rcx = line a (ptr,len), rdi/rdx = line b; returns eax = 1 if a <= b
+cmp_le:
+    push rcx
+    push rdx
+    cmp rcx, rdx
+    cmova rcx, rdx
+    test rcx, rcx
+    jz 2f
+1:
+    movzx eax, byte ptr [rsi]
+    movzx edx, byte ptr [rdi]
+    cmp eax, edx
+    jne 3f
+    inc rsi
+    inc rdi
+    dec rcx
+    jnz 1b
+2:
+    pop rdx
+    pop rcx
+    xor eax, eax
+    cmp rcx, rdx
+    setbe al
+    ret
+3:
+    setb al
+    movzx eax, al
+    pop rdx
+    pop rcx
+    ret
