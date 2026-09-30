@@ -66,12 +66,16 @@ volume mounted read-only. No plan quota applies.
 | sampling | each model's own Modelfile defaults, recorded per run (the analogue of a CLI's default settings); no effort knob |
 | served model | the stream's model name, and after each call `/api/ps` must show the requested model under the digest recorded at setup with our context length; anything else is fatal |
 | reasoning | a `thinking` field or a leading `<think>` block is recorded in notes, never scored |
+| thinking on/off | per subject, by spec suffix: `local:<model>@think` / `@nothink` sends Ollama's `think: true / false` (only for a model whose `/api/show` capabilities list `thinking`, else fatal); no suffix sends nothing and the model's template default applies (recorded as `model-default`). The two variants are separate subjects with their own directories and table rows. With `@nothink`, any reasoning returned fails the call closed (the server did not honour the request); with `@think`, a call without reasoning is noted. Reasoning tokens count against the context window (Ollama's `eval_count` includes them) |
+| server | `BCA_OLLAMA_URL` picks the server for a run: `bca-ollama` at 127.0.0.1:11435 (the read-only ZebethRadio volume) or `bca-ollama2` at 127.0.0.1:11436 (a writable volume for models downloaded for this eval, same image and settings) |
 | timing | calls are serialised per server (file lock); the per-call clock starts once the lock is held and the model is resident (weights are warmed up outside the timed call). Run with `--jobs 1`: a cell's recorded wall time otherwise includes waiting for the lock (timeouts are unaffected) |
 | version | the server version must be an audited one (0.30.10) |
 
 Models: `qwen3:30b-a3b-instruct-2507-q8_0` (Qwen3 30B-A3B Instruct 2507, mixture of experts, 3B active,
 Q8_0, context 65536 of a native 262144; Modelfile sampling temperature 0.7, top_p 0.8, top_k 20) and
-`qwen2.5:14b` (Q4_K_M, native context 32768; Ollama's default sampling). These are quantised open-weight
+`qwen2.5:14b` (Q4_K_M, native context 32768; Ollama's default sampling). Added on `bca-ollama2`:
+`qwen3-coder-next:q4_K_M` (80B total / 3B active; it never thinks, so no suffix) and `qwen3.6:35b-a3b-q8_0`
+(35B / 3B active; thinks by default, run both `@nothink` and `@think`). These are quantised open-weight
 models on a single desktop-class machine: their results say what such a setup can do, not what the same
 models do at full precision on a provider's servers.
 

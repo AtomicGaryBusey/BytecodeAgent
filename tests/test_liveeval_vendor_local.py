@@ -30,6 +30,7 @@ class Fake:
         self.delay = 0.0
         self.final = {"prompt_eval_count": 300, "eval_count": 10}
         self.thinking = None
+        self.capabilities = ["completion", "thinking"]
 
 
 def serve(fake: Fake):
@@ -62,7 +63,7 @@ def serve(fake: Fake):
                 if body["model"] != MODEL:
                     return self._json({"error": f"model '{body['model']}' not found"}, 404)
                 return self._json({"model_info": {"qwen3moe.context_length": 262144},
-                                   "parameters": "temperature 0.7\ntop_p 0.8"})
+                                   "parameters": "temperature 0.7\ntop_p 0.8", "capabilities": fake.capabilities})
             if self.path == "/api/generate":
                 fake.warmups += 1
                 fake.loaded = True
@@ -187,6 +188,62 @@ def test_reasoning_is_recorded_not_scored(env):
     r = subj(url).complete("x")
     assert r.ok and r.text == "ret\n"
     assert any("reasoning not scored" in n and "let me think" in n and "more thought" in n for n in r.notes)
+
+
+def test_think_suffix_is_parsed_and_sent(env):
+    fake, url = env
+    from bca.liveeval.registry import safe_name
+    s = make_subject(f"local:{MODEL}@nothink", timeout=10)
+    assert s.model == MODEL and s.think is False and s.name == f"local:{MODEL}@nothink"
+    assert safe_name(f"local:{MODEL}@nothink") != safe_name(f"local:{MODEL}@think") != safe_name(f"local:{MODEL}")
+    with pytest.raises(ValueError, match="unknown suffix"):
+        LocalSubject(f"{MODEL}@maybe", url=url)
+    for suffix, sent, label in (("@think", True, "think"), ("@nothink", False, "no-think"), ("", None, "model-default")):
+        fake.requests.clear()
+        if sent:
+            fake.thinking = "plan"
+        s = LocalSubject(MODEL + suffix, url=url, timeout=30)
+        r = s.complete("x")
+        assert r.ok, r.error
+        body = fake.requests[0]
+        assert body.get("think", None) is sent and ("think" in body) == (sent is not None)
+        d = s.describe()
+        assert d["effort"] == label and d["local"]["think"] is sent
+        fake.thinking = None
+
+
+def test_think_off_but_reasoning_returned_fails_closed(env):
+    fake, url = env
+    for how in ("field", "tag"):
+        if how == "field":
+            fake.thinking, fake.chunks = "sneaky", ["ret\n"]
+        else:
+            fake.thinking, fake.chunks = None, ["<think>sneaky</think>\n", "ret\n"]
+        r = LocalSubject(MODEL + "@nothink", url=url, timeout=30).complete("x")
+        assert not r.ok and r.error.startswith("isolation: thinking was off") and infra_kind(r.error) == "fatal"
+
+
+def test_think_on_without_reasoning_is_noted(env):
+    fake, url = env
+    r = LocalSubject(MODEL + "@think", url=url, timeout=30).complete("x")
+    assert r.ok and "think=true: no reasoning was returned" in r.notes and "think=true" in r.notes
+
+
+def test_think_needs_the_thinking_capability(env):
+    fake, url = env
+    fake.capabilities = ["completion"]
+    r = LocalSubject(MODEL + "@nothink", url=url, timeout=30).complete("x")
+    assert not r.ok and "thinking` capability" in r.error and infra_kind(r.error) == "fatal"
+    assert subj(url).complete("x").ok  # no suffix: the field is never sent, no capability needed
+
+
+def test_reasoning_tokens_count_against_the_context_window(env):
+    # Ollama's eval_count includes the reasoning tokens: a long think fills the window like a long answer
+    fake, url = env
+    fake.thinking = "t" * 100
+    fake.final = {"prompt_eval_count": 5000, "eval_count": 60600}
+    r = LocalSubject(MODEL + "@think", url=url, timeout=30).complete("x")
+    assert not r.ok and "context window" in r.error
 
 
 def test_think_filter_passes_plain_text_through():

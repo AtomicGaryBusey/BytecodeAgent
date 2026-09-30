@@ -13,6 +13,14 @@ There is no agent CLI in the way, so the fairness contract holds by construction
   must show it loaded under the digest recorded at setup, with our context length. Anything else is an
   `isolation:` error (fatal).
 - Reasoning: a `thinking` field or a leading <think>...</think> block is recorded in notes, never scored.
+  Thinking on/off is chosen per subject with a spec suffix: `local:<model>@think` / `local:<model>@nothink`
+  sends Ollama's `think: true|false` (only for a model whose /api/show capabilities include `thinking`);
+  without a suffix the field is not sent and the model's template default applies ("model-default").
+  With @nothink, any reasoning in the answer (the `thinking` field or a <think> block) fails closed: the
+  server did not honour the request. With @think, a call that returned no reasoning is noted. Ollama's
+  eval_count counts the reasoning tokens too, so the context-window check below includes them.
+- Server: BCA_OLLAMA_URL (default http://127.0.0.1:11435) picks the Ollama server for the whole run; the
+  second server for downloaded models (`bca-ollama2`, writable volume) is http://127.0.0.1:11436.
 - Timing. The server runs one request at a time (OLLAMA_NUM_PARALLEL=1), so calls are serialised per
   server through a cross-process file lock, and the per-call clock starts only once the lock is held and
   the model is resident: queueing behind other calls and loading the weights (35-50 s) never count
@@ -39,6 +47,7 @@ LOCAL_MAX_CTX = 65536  # enough for prompt + the longest answer the 900 s app ti
 AUDITED_VERSIONS = ("0.30.10",)
 KEEP_ALIVE = "60m"
 MODEL_DEFAULT_SAMPLING = "model-default"  # recorded as the effort: no effort knob, Modelfile sampling
+THINK_SUFFIXES = {"think": True, "nothink": False}  # local:<model>@think | @nothink
 
 
 class LocalError(RuntimeError):
@@ -98,8 +107,14 @@ class LocalSubject(Subject):
             raise ValueError("local: no effort levels (the model's own sampling defaults are used); omit --effort")
         if not model:
             raise ValueError("local: name the Ollama model, e.g. local:qwen2.5:14b")
+        self.think: bool | None = None
+        base, sep, suffix = model.rpartition("@")
+        if sep:
+            if suffix not in THINK_SUFFIXES or not base:
+                raise ValueError(f"local: unknown suffix @{suffix}; use local:<model>@think or local:<model>@nothink")
+            model, self.think = base, THINK_SUFFIXES[suffix]
         self.model = model
-        self.name = f"local:{model}"
+        self.name = f"local:{model}" + ("" if self.think is None else "@" + ("think" if self.think else "nothink"))
         self.timeout = timeout
         self.effort = None
         self.budget = budget
@@ -145,11 +160,16 @@ class LocalSubject(Subject):
             if not isinstance(native, int):
                 raise LocalError(f"isolation: cannot read the native context length of {self.model}")
             d = tags[self.model].get("details") or {}
+            caps = show.get("capabilities")
+            if self.think is not None and not (isinstance(caps, list) and "thinking" in caps):
+                raise LocalError(f"isolation: {self.model} does not report the `thinking` capability ({caps}); "
+                                 "omit @think/@nothink")
             self._setup = {
                 "version": version, "digest": tags[self.model]["digest"], "native_ctx": native,
                 "num_ctx": min(native, LOCAL_MAX_CTX), "sampling": (show.get("parameters") or "").strip(),
                 "modelfile_system": bool(show.get("system")), "quantization": d.get("quantization_level"),
                 "parameter_size": d.get("parameter_size"), "family": d.get("family"),
+                "capabilities": caps if isinstance(caps, list) else None,
             }
         return self._setup
 
@@ -162,10 +182,15 @@ class LocalSubject(Subject):
 
     def describe(self) -> dict:
         s = self.setup()
-        return {"effort": MODEL_DEFAULT_SAMPLING, "cli_version": f"ollama {s['version']}", "vendor": "local",
+        return {"effort": self.think_label, "cli_version": f"ollama {s['version']}", "vendor": "local",
                 "local": {"digest": s["digest"], "num_ctx": s["num_ctx"], "native_ctx": s["native_ctx"],
                           "quantization": s["quantization"], "parameter_size": s["parameter_size"],
-                          "sampling": s["sampling"] or "ollama defaults"}}
+                          "sampling": s["sampling"] or "ollama defaults", "think": self.think,
+                          "server": f"{self.host}:{self.port}"}}
+
+    @property
+    def think_label(self) -> str:
+        return MODEL_DEFAULT_SAMPLING if self.think is None else ("think" if self.think else "no-think")
 
     def _resident(self) -> dict | None:
         for m in self._http("GET", "/api/ps").get("models", []):
@@ -185,9 +210,12 @@ class LocalSubject(Subject):
 
     def request_body(self, prompt: str) -> dict:
         s = self.setup()
-        return {"model": self.model, "stream": True, "keep_alive": KEEP_ALIVE,
+        body = {"model": self.model, "stream": True, "keep_alive": KEEP_ALIVE,
                 "messages": [{"role": "system", "content": SYSTEM_PROMPT}, {"role": "user", "content": prompt}],
                 "options": {"num_ctx": s["num_ctx"]}}
+        if self.think is not None:
+            body["think"] = self.think
+        return body
 
     def complete(self, prompt: str, on_text: OnText | None = None, *, raw_path: str = "",
                  timeout: float | None = None) -> Response:
@@ -306,6 +334,13 @@ class LocalSubject(Subject):
         thinking = "".join(thinking_field) + filt.thinking
         if thinking:
             notes.append(f"reasoning not scored ({len(thinking)} chars): {thinking[:200]}")
+        if self.think is False and thinking and not error:
+            error, killed = (f"isolation: thinking was off (think=false) but the model returned "
+                             f"{len(thinking)} chars of reasoning: the server did not honour the request"), False
+        elif self.think is True and not thinking and (final is not None or killed):
+            notes.append("think=true: no reasoning was returned")
+        if self.think is not None:
+            notes.append(f"think={'true' if self.think else 'false'}")
         ok = not error or (killed and not error.startswith("isolation:"))
         return Response("".join(text), ok=ok and not timed_out, killed=killed, timed_out=timed_out,
                         error="" if ok and not timed_out else error, model=model or self.model,
