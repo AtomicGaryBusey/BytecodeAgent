@@ -96,6 +96,49 @@ Fixup strategy for labels:
     substituted with its low 12 bits (patched later for forward labels); other relocation
     specifiers and `ldr xN, =value` literal pools are rejected.
   * Labels still unresolved at `finish()` are errors.
+
+Program mode (`StreamAssembler(isa, program=True)`): a whole static program instead of one
+function. Everything above still holds for instructions; in addition:
+  * Sections: `.text`, `.data`, `.bss` and `.section NAME` for .text/.rodata/.data/.bss (with
+    their default flags only), plus `.section .note.GNU-stack` (which may hold nothing).
+    Instructions go in .text only. .text is laid out at TEXT_BASE (0x400000, where
+    bca.image.link_program puts it), so references between .text locations are resolved
+    in the stream exactly as in function mode.
+  * Data directives (in .rodata/.data): `.byte`, `.short`/`.hword`/`.2byte`, `.word` (2 bytes
+    on x86-64, 4 on AArch64), `.long`/`.int`/`.4byte`, `.quad`/`.8byte` (and `.xword`/`.dword`
+    on AArch64), `.ascii`, `.asciz`/`.string`, `.zero`, `.space`/`.skip` (optional fill byte);
+    alignment `.align` (bytes on x86-64, a power of two on AArch64, as in GNU as), `.balign`,
+    `.p2align` (optional fill and maximum skip; at most page alignment) in every section
+    (.text pads with NOPs); .bss takes only zero fill and alignment. `.globl`/`.global` mark
+    symbols global; `.type`, `.size`, `.file` and `.intel_syntax noprefix` are accepted
+    without effect. Constants: `.equ name, expr`, `.set`, `.equiv`, `name = expr`, where expr
+    is a number or a difference of labels defined earlier in the current section (`len = .
+    - msg`); they must be defined before use and are substituted into later operands.
+    GNU as local labels (`1:`, referenced as `1f` / `1b`) work in every section. Everything
+    else is refused with a message, in particular anything that reads files, expands text or
+    emits unverified bytes (`.incbin`, `.include`, `.macro`, `.rept`, `.irp`, `.if`, `.inst`,
+    `.fill`, `.org`, `.eqv`, `.comm`/`.lcomm`, section stacks, `.cfi_*`, ...).
+  * Strings (`"..."`, escapes \\\\ \\" \\' \\n \\t \\r \\b \\f, octal \\0 to \\377, \\xHH) and
+    character literals with those escapes (`'\\n'`, `'#'`) are understood; the splitter keeps
+    `;`, `#` and `//` inside them.
+  * Labels may be defined in any section. A reference to a label in another section (or not
+    yet placed) cannot be resolved in the stream; it becomes a relocation record, as GNU as
+    would emit it: x86-64 `[rip + label]` (R_X86_64_PC32), absolute `offset label` / `[label]`
+    / `[label + reg*8]` (R_X86_64_32/32S/64); AArch64 `adrp` (ADR_PREL_PG_HI21), `add ...,
+    :lo12:label` (ADD_ABS_LO12_NC), `ldr/str ..., [xN, :lo12:label]` (LDSTn_ABS_LO12_NC), `adr`
+    (ADR_PREL_LO21), `ldr xN, label` (LD_PREL_LO19); data `.quad/.long label+k` (ABS64/ABS32,
+    R_X86_64_64/32). A difference of two labels already defined in the same section is a
+    constant. Branches into data sections are refused.
+  * Cross-check: every instruction, directive and relocation is assembled by GNU as in its
+    own section: bytes must match exactly (data) or as in function mode (instructions), and
+    the relocations GNU as emits against the not-yet-placed labels must equal the stream's
+    records (type, offset, addend). Alignment padding in .text takes GNU as's NOP bytes; a
+    constant's value is checked as GNU as's `.quad expr`. Metadata directives with no effect
+    on the output (.globl, .type, .size, .file, section switches) are not sent to GNU as.
+  * Limits: MAX_CODE bytes of .text, MAX_DATA bytes of .rodata + .data, MAX_BSS bytes of .bss.
+  * `finish()` returns a StreamObject: sections, symbols, relocations and errors, with
+    `to_elf()` (a relocatable ELF object in GNU as's layout) and `link()` (through
+    bca.image.link_program, into the same Image the `asm` path produces).
 """
 
 import atexit
@@ -140,6 +183,10 @@ _X86_NEAR = 0x40
 MAX_LINE = 4096  # characters per physical line
 MAX_BUFFER = 4 << 20  # characters of unconsumed input
 MAX_CODE = 16 << 20  # bytes of machine code per stream
+MAX_DATA = 4 << 20  # program mode: bytes of .rodata + .data
+MAX_BSS = 1 << 24  # program mode: bytes of .bss (bca.image.link_program's default limit)
+TEXT_BASE = 0x400000  # program mode: where bca.image.link_program places .text
+_PAGE = 0x1000
 _MAX_MESSAGE = 600  # characters of any diagnostic quoted from a tool
 _MAX_SHOWN = 120  # characters of statement text quoted in a message
 _MAX_DEPTH = 32  # nesting of parentheses / unary operators in one expression
@@ -205,6 +252,79 @@ class Program:
         return None
 
 
+@dataclass(frozen=True)
+class Relocation:
+    """A reference only the linker can resolve: the field at `section` + `offset` gets ELF
+    relocation `type` (R_X86_64_* / R_AARCH64_* number) for `symbol` + `addend`."""
+
+    section: str
+    offset: int
+    type: int
+    symbol: str
+    addend: int
+    line: int = 0
+
+
+@dataclass
+class DataItem:
+    """A committed directive that placed bytes in .rodata/.data or space in .bss."""
+
+    section: str
+    offset: int
+    text: str
+    data: bytes  # empty in .bss
+    size: int
+    line: int
+
+
+@dataclass
+class StreamObject:
+    """finish() in program mode: a whole program as sections, symbols and relocations.
+
+    `to_elf()` is a relocatable ELF object laid out as GNU as would (one .text, .rodata,
+    .data, .bss; local labels STB_LOCAL, `.globl` ones STB_GLOBAL; RELA against the labels);
+    `link()` runs it through bca.image.link_program."""
+
+    isa: Isa
+    base: int  # address .text was resolved for (TEXT_BASE)
+    sections: dict[str, bytes]  # ".text", ".rodata", ".data"
+    bss_size: int
+    symbols: dict[str, tuple[str, int]]  # label -> (section, offset in it)
+    globals: list[str]
+    relocations: list[Relocation]
+    alignments: dict[str, int]
+    instructions: list[Instruction]
+    items: list[DataItem]
+    errors: list[Event]
+    warnings: list[Event]
+    events: list[Event]
+
+    @property
+    def ok(self) -> bool:
+        return not self.errors
+
+    @property
+    def code(self) -> bytes:
+        return self.sections[".text"]
+
+    def to_elf(self) -> bytes:
+        if not self.ok:
+            raise ValueError(f"program has errors: {self.errors[0].message}")
+        return _write_elf(self)
+
+    def link(self, entry_symbol: str = "_start", bss_size_limit: int = MAX_BSS):
+        """The bca.image.Image of this program (raises bca.image.LinkError)."""
+        from bca.image import LinkError, link_program
+
+        image = link_program(self.to_elf(), self.isa.name, entry_symbol=entry_symbol,
+                             bss_size_limit=bss_size_limit)  # fmt: skip
+        # .text was resolved in the stream for self.base: the linker must agree.
+        text = image.sections.get(".text")
+        if self.sections[".text"] and (text is None or text[0] != self.base):
+            raise LinkError(f".text linked at {text and hex(text[0])}, expected {self.base:#x}")
+        return image
+
+
 class AsmError(Exception):
     pass
 
@@ -221,8 +341,10 @@ class StreamHalted(RuntimeError):
 class _Fixup:
     index: int  # into StreamAssembler._insns
     label: str
-    form: str  # "x86_branch" | "x86_riprel" | "a64_pcrel" | "a64_lo12"
+    form: str  # "x86_branch" | "x86_riprel" | "x86_abs" | "a64_pcrel" | "a64_lo12"
     placeholder: int
+    addend: int = 0  # program mode: constant added to the label (x86 forms)
+    kind: str = ""  # program mode, x86_abs: "imm" | "mem" | "mem32"
 
 
 @dataclass
@@ -233,6 +355,13 @@ class _Check:
     addr: int
     labels: dict[str, int]  # labels it refers to
     cacheable: bool  # bytes depend on neither its address nor label values
+    # Program mode: the section it is assembled in (None: function mode), the labels GNU as
+    # must leave undefined, and the relocations (offset, type, symbol, addend) expected
+    # against them.
+    section: str | None = None
+    externs: frozenset = frozenset()
+    relocs: tuple = ()
+    expect: bytes | None = None  # program mode: the bytes a constant's `.quad` must produce
 
 
 @dataclass
@@ -251,6 +380,7 @@ class _Undo:
     labels: list[str]
     fixup: _Fixup | None = None
     patched: list[tuple[int, _Fixup, bytes]] = field(default_factory=list)
+    prog: tuple | None = None  # program mode: _program_snapshot() before the statement
 
 
 def _clip(text: str, limit: int = _MAX_SHOWN) -> str:
@@ -261,9 +391,13 @@ class _Splitter:
     """Cuts buffered text into complete statements, honouring comments and separators.
     Linear: `pos` is the start of unconsumed text and nothing before it is re-scanned."""
 
-    def __init__(self, comment_markers: tuple[str, ...], semicolon_separates: bool):
+    def __init__(self, comment_markers: tuple[str, ...], semicolon_separates: bool,
+                 strings: bool = False):
         alts = {*comment_markers, "/*"} | ({";"} if semicolon_separates else set())
-        self._special = re.compile("|".join(re.escape(a) for a in sorted(alts, key=len)[::-1]))
+        special = "|".join(re.escape(a) for a in sorted(alts, key=len)[::-1])
+        if strings:  # program mode: "..." and 'c' / '\c' are opaque
+            special = r"""'(?:\\[^\n]|[^\\\n])'|"|""" + special
+        self._special = re.compile(special)
         self.semicolon_separates = semicolon_separates
         self.buf = ""
         self.pos = 0
@@ -323,7 +457,16 @@ class _Splitter:
                 parts.append(buf[i:end])
                 break
             parts.append(buf[i : m.start()])
-            if m[0] == "/*":
+            if m[0] == '"':  # a string runs to its closing quote (or the end of the line)
+                j = m.end()
+                while j < end and buf[j] != '"':
+                    j += 2 if buf[j] == "\\" else 1
+                i = min(j + 1, end)
+                parts.append(buf[m.start() : i])
+            elif m[0][0] == "'":  # a character literal
+                parts.append(m[0])
+                i = m.end()
+            elif m[0] == "/*":
                 in_block, i = True, m.end()
                 parts.append(" ")
             elif m[0] == ";" and self.semicolon_separates:
@@ -346,19 +489,23 @@ class StreamAssembler:
     def __init__(
         self,
         isa: Isa,
-        base: int = CODE_BASE,
+        base: int | None = None,
         *,
         abort_on_error: bool = True,
         semicolon_comments: bool = False,
         crosscheck: bool = True,
+        program: bool = False,
     ):
+        """base: address of the first instruction (default CODE_BASE; TEXT_BASE, where the
+        linker puts .text, in program mode). program: whole-program mode (module docstring)."""
         self.isa = isa
-        self.base = base
+        self._program = program
+        self.base = (TEXT_BASE if program else CODE_BASE) if base is None else base
         self.abort_on_error = abort_on_error
         markers = ("#", "//") if isa is X86_64 else ("//",)
         if semicolon_comments:
             markers += (";",)
-        self._splitter = _Splitter(markers, not semicolon_comments)
+        self._splitter = _Splitter(markers, not semicolon_comments, strings=program)
         self._x86 = isa is X86_64
         self._cs = isa.disassembler()
         self._gas = _gas_tool(isa.name) if crosscheck else None
@@ -403,11 +550,14 @@ class StreamAssembler:
         self._splitter.push(chunk)
         return self._drain(final=False)
 
-    def finish(self) -> Program:
+    def finish(self) -> "Program | StreamObject":
         """Flush the last statement and report unresolved labels. The stream stays open:
-        a caller may feed a missing label and call finish() again."""
+        a caller may feed a missing label and call finish() again. In program mode the
+        result is a StreamObject."""
         if not self.halted:
             self._drain(final=True)
+        if self._program:
+            return self._finish_program()
         errors = list(self._skipped) + ([self.halted] if self.halted else [])
         unresolved = []
         for fx in self._fixups:
@@ -469,6 +619,17 @@ class StreamAssembler:
         # (statement number, instruction index, check) awaiting the GNU as cross-check.
         self._unchecked: list[tuple[int, int, _Check]] = []
         self._warns: list[tuple[int, Event]] = []  # (statement number, warning)
+        # Program mode (all empty in function mode, where .text is the only section).
+        self._section = ".text"
+        self._data = {".rodata": bytearray(), ".data": bytearray()}
+        self._bss = 0
+        self._symtab: dict[str, tuple[str, int]] = {}  # labels outside .text: (section, offset)
+        self._globals: list[str] = []
+        self._relocs: list[Relocation] = []
+        self._items: list[DataItem] = []
+        self._align = dict.fromkeys(_PROGRAM_SECTIONS, 1)
+        self._numeric: dict[int, int] = {}  # GNU as local labels: N -> definitions so far
+        self._consts: dict[str, int] = {}  # .equ / .set / = constants
 
     def _rollback(self, keep: int) -> None:
         """Un-commit every statement after the first `keep`, restoring the exact state."""
@@ -489,10 +650,15 @@ class StreamAssembler:
             del self._code[undo.code_len :]
             for name in undo.labels:
                 self._labels.pop(name, None)
+                self._symtab.pop(name, None)
+            if undo.prog is not None:
+                self._program_restore(undo.prog)
         self._unchecked = [u for u in self._unchecked if u[0] < keep]
         self._warns = [w for w in self._warns if w[0] < keep]
 
     def _error_event(self, message: str, text: str, line: int) -> Event:
+        if self._program:
+            message, text = _pretty_names(message), _pretty_names(text)
         where = f" (line {line}: {_clip(text)!r})" if line else ""
         msg = f"{self.isa.name}: {_clip(message, _MAX_MESSAGE)}{where}"
         return Event("error", self.address, _clip(text, MAX_LINE), message=msg, line=line)
@@ -553,10 +719,13 @@ class StreamAssembler:
             return []
         added: list[str] = []
         try:
+            if self._program:
+                return self._process_program_statement(text, line, added)
             return self._process_statement(text, line, added)
         except Exception as exc:  # noqa: BLE001 - any bug must cost one statement, not state
             for name in added:
                 self._labels.pop(name, None)
+                self._symtab.pop(name, None)
             return [self._error_event(
                 f"internal error while assembling ({type(exc).__name__}: {exc}); "
                 "statement rejected", text, line)]  # fmt: skip
@@ -675,6 +844,589 @@ class StreamAssembler:
         self._warns += [(number, w) for w in warnings]
         return warnings
 
+    # -- program mode -------------------------------------------------------------------
+
+    def _program_snapshot(self) -> tuple:
+        return (self._section, len(self._data[".rodata"]), len(self._data[".data"]), self._bss,
+                len(self._relocs), len(self._items), len(self._globals), dict(self._align),
+                dict(self._numeric), dict(self._consts))  # fmt: skip
+
+    def _program_restore(self, snap: tuple) -> None:
+        section, rodata, data, bss, relocs, items, globs, align, numeric, consts = snap
+        self._section, self._bss, self._align, self._numeric = section, bss, align, numeric
+        self._consts = consts
+        del self._data[".rodata"][rodata:]
+        del self._data[".data"][data:]
+        del self._relocs[relocs:]
+        del self._items[items:]
+        del self._globals[globs:]
+
+    def _section_size(self, section: str) -> int:
+        if section == ".text":
+            return len(self._code)
+        if section == ".bss":
+            return self._bss
+        return len(self._data.get(section, b""))
+
+    def _process_program_statement(self, raw: str, line: int, added: list[str]) -> list[Event]:
+        addr = self.address
+
+        def error(message: str) -> list[Event]:
+            return [self._error_event(message, raw, line)]
+
+        if not raw.isascii():
+            return error("non-ASCII characters")
+        try:
+            text, strings = _mask_strings(raw)
+            text = _PROGRAM_CHAR_RE.sub(lambda m: str(_char_value(m[1])), text)
+        except AsmError as exc:
+            return error(str(exc))
+        if re.search(r"[\"'\\]", _STRING_TOKEN_RE.sub("", text)):
+            return error("unsupported quote, escape or character literal (a character literal "
+                         "is one character or escape in single quotes: 'a', '\\n')")  # fmt: skip
+        if any(_CTRL_RE.search(s.replace("\t", "")) for s in strings):
+            return error("control characters in a string (write them as escapes: \\n, \\t, \\0)")
+        text = _WS_RE.sub(" ", text)
+        if _CTRL_RE.search(text):
+            return error("control characters")
+        labels, numeric, generated = [], {}, set()
+        while m := _LABEL_RE.match(text) or _NUMERIC_LABEL_RE.match(text):
+            if m.re is _NUMERIC_LABEL_RE:  # GNU as local label `N:`, referenced as Nb / Nf
+                n = int(m[1])
+                numeric[n] = numeric.get(n, self._numeric.get(n, 0)) + 1
+                labels.append(_numeric_name(n, numeric[n] - 1))
+                generated.add(labels[-1])
+            else:
+                labels.append(m[1])
+            text = text[m.end() :].lstrip()
+        if text:
+            try:
+                text = _NUMERIC_REF_RE.sub(lambda r: self._numeric_ref(r, numeric), text)
+            except AsmError as exc:
+                return error(str(exc))
+        for name in labels:
+            if name in generated:
+                continue
+            if (name in self._labels or name in self._symtab or name in self._consts
+                    or labels.count(name) > 1):  # fmt: skip
+                return error(f"duplicate label {name!r}")
+            if _reserved_name(self.isa, name):
+                return error(
+                    f"label name {name!r} is a register name or operand keyword; "
+                    "the assembler would not read it as a label"
+                )
+            if name.startswith(_RESERVED_PREFIX) or name in (".", "$"):
+                return error(f"label name {name!r} is reserved")
+        section = self._section
+        if labels and section == _NOTE_SECTION:
+            return error(f"nothing may be placed in {section}")
+        try:
+            assignment = _parse_assignment(text)
+        except AsmError as exc:
+            return error(str(exc))
+        if assignment is None and text and self._consts:
+            text = self._substitute_consts(text)
+        if assignment is not None:
+            if strings:
+                return error("a constant must be a number or a difference of labels, not a string")
+        elif text and not text.startswith("."):
+            if not _MNEMONIC_RE.match(text):
+                return error(
+                    "unrecognised statement syntax (a label is `name:` with name made of letters, "
+                    "digits, _ . $; an instruction starts with its mnemonic)"
+                )
+            if strings:
+                return error("strings are only allowed in .ascii, .asciz and .string")
+            if section != ".text":
+                return error(f"instructions belong in .text (the current section is {section})")
+            try:
+                _reject_stray_colons(self.isa, text)
+            except AsmError as exc:
+                return error(str(exc))
+            if len(self._code) >= MAX_CODE:
+                return error(f"program too large (more than {MAX_CODE} bytes of code)")
+
+        patches: list[tuple[_Fixup, bytes, _Check | None, tuple]] = []
+        try:
+            if labels:
+                offset = self._section_size(section)
+                for fx in self._fixups:
+                    if fx.label in labels:
+                        try:
+                            if section == ".text":
+                                patches.append((fx, *self._patch(fx, addr), ()))
+                            else:
+                                insn = self._insns[fx.index]
+                                patches.append((fx, *self._reloc_records(
+                                    insn.text, insn.address, insn.data, fx, section)))  # fmt: skip
+                        except AsmError as exc:
+                            insn = self._insns[fx.index]
+                            return error(f"cannot resolve {fx.label!r} for {insn.text!r} "
+                                         f"(line {insn.line}): {exc}")  # fmt: skip
+                if section == ".text":
+                    self._labels.update(dict.fromkeys(labels, addr))
+                else:
+                    self._symtab.update(dict.fromkeys(labels, (section, offset)))
+                added += labels
+            content = None
+            if assignment is not None:
+                content = self._program_constant(*assignment, labels)
+            elif text.startswith("."):
+                content = self._program_directive(text, strings, line, addr)
+            elif text:
+                encoded = self._encode(text, addr)
+                if len(self._code) + len(encoded.data) > MAX_CODE:
+                    raise AsmError(f"program too large (more than {MAX_CODE} bytes of code)")
+                relocs: tuple = ()
+                fx = encoded.fixup
+                if fx is not None and fx.label in self._symtab:
+                    where = self._symtab[fx.label][0]
+                    data, check, relocs = self._reloc_records(text, addr, encoded.data, fx, where)
+                    encoded = _Encoded(data, check=check)
+                content = ("insn", encoded, relocs)
+        except AsmError as exc:
+            for name in added:
+                self._labels.pop(name, None)
+                self._symtab.pop(name, None)
+            added.clear()
+            return error(str(exc))
+        return self._commit_program(text, line, addr, labels, patches, content, numeric)
+
+    def _numeric_ref(self, m: re.Match, numeric: dict[int, int]) -> str:
+        n = int(m[1])
+        count = numeric.get(n, self._numeric.get(n, 0))
+        if m[2].lower() == "b":
+            if not count:
+                raise AsmError(f"local label {m[0]!r} refers back to `{n}:`, which is not defined yet")
+            return _numeric_name(n, count - 1)
+        return _numeric_name(n, count)
+
+    def _commit_program(self, text, line, addr, labels, patches, content, numeric) -> list[Event]:
+        """Nothing in here can fail on valid state."""
+        undo = _Undo(len(self._code), len(self._insns), list(labels),
+                     prog=self._program_snapshot())  # fmt: skip
+        self._numeric.update(numeric)
+        self._committed.append((text, line))
+        number = len(self._committed) - 1
+        section = self._section
+        here = addr if section == ".text" else self._section_size(section)
+        events = [Event("label", here, name, message="" if section == ".text" else section,
+                        line=line) for name in labels]  # fmt: skip
+        for fx, data, check, relocs in patches:
+            insn = self._insns[fx.index]
+            pos = next(i for i, f in enumerate(self._fixups) if f is fx)
+            del self._fixups[pos]
+            undo.patched.append((pos, fx, insn.data))
+            off = insn.address - self.base
+            self._code[off : off + len(data)] = data
+            insn.data, insn.pending = data, None
+            for r_off, rtype, symbol, addend in relocs:
+                self._relocs.append(Relocation(".text", off + r_off, rtype, symbol, addend, insn.line))
+            self._queue_check(number, fx.index, check)
+            how = f"{addr:#x}" if not relocs else f"{section}+{here:#x} (relocation)"
+            events.append(Event("patch", insn.address, insn.text, data, f"{fx.label} = {how}",
+                                insn.line))  # fmt: skip
+            events += self._warn(number, insn)
+        kind = content[0] if content else None
+        if kind in ("insn", "text"):
+            encoded = content[1]
+            insn = Instruction(addr, text, encoded.data, line)
+            if encoded.fixup:
+                encoded.fixup.index = len(self._insns)
+                insn.pending = encoded.fixup.label
+                self._fixups.append(encoded.fixup)
+                undo.fixup = encoded.fixup
+            else:
+                self._queue_check(number, len(self._insns), encoded.check)
+            if kind == "insn":
+                for r_off, rtype, symbol, addend in content[2]:
+                    self._relocs.append(Relocation(".text", addr - self.base + r_off, rtype, symbol,
+                                                   addend, line))  # fmt: skip
+            else:
+                self._align[".text"] = max(self._align[".text"], content[2])
+            self._by_addr[addr] = len(self._insns)
+            self._insns.append(insn)
+            self._code += encoded.data
+            events.append(Event("insn", addr, text, encoded.data, line=line, pending=insn.pending))
+            if kind == "insn":
+                events += self._warn(number, insn)
+        elif kind == "data":
+            item, check, relocs, align = content[1:]
+            index = len(self._items)
+            self._items.append(item)
+            if item.section == ".bss":
+                self._bss += item.size
+            else:
+                self._data[item.section] += item.data
+            for r_off, rtype, symbol, addend in relocs:
+                self._relocs.append(Relocation(item.section, item.offset + r_off, rtype, symbol,
+                                               addend, line))  # fmt: skip
+            self._align[item.section] = max(self._align[item.section], align)
+            self._queue_check(number, index, check)
+            events.append(Event("data", item.offset, item.text, item.data, item.section, line))
+        elif kind == "section":
+            self._section = content[1]
+        elif kind == "const":
+            self._consts[content[1]] = content[2]
+            self._queue_check(number, -1, content[3])
+            events.append(Event("const", content[2] & MASK64, content[1], line=line,
+                                message=f"{content[1]} = {content[2]}"))  # fmt: skip
+        elif kind == "globl":
+            self._globals += [n for n in dict.fromkeys(content[1]) if n not in self._globals]
+        self._undo.append(undo)
+        return events
+
+    def _reloc_records(self, text: str, addr: int, data: bytes, fx: _Fixup, where: str):
+        """A .text instruction whose label lives in section `where`: its bytes with the
+        relocated field zeroed (as GNU as leaves it), the GNU as check, and the relocation
+        (offset in the instruction, type, label, addend)."""
+        label = fx.label
+        if fx.form == "x86_branch":
+            raise AsmError(f"branch target {label!r} is in {where}, not in .text")
+        buf = bytearray(data)
+        if self._x86:
+            decoder = iced_x86.Decoder(64, data, ip=addr)
+            ins = decoder.decode()
+            co = decoder.get_constant_offsets(ins)
+            if fx.form == "x86_riprel":
+                off, width = co.displacement_offset, co.displacement_size
+                rtype, addend = 2, fx.addend - (len(data) - off)  # R_X86_64_PC32
+                if width != 4:
+                    raise AsmError(f"unexpected rip-relative encoding {data.hex()}")
+            elif fx.kind == "imm":
+                off, width = co.immediate_offset, co.immediate_size
+                kinds = [ins.op_kind(i) for i in range(ins.op_count)
+                         if ins.op_kind(i) in _X86_IMM_BITS]  # fmt: skip
+                # R_X86_64_64, R_X86_64_32 (zero-extended imm32), R_X86_64_32S (sign-extended)
+                rtype = {8: 1, 4: 10 if kinds[:1] == [iced_x86.OpKind.IMMEDIATE32] else 11}.get(width)
+                addend = fx.addend
+            else:
+                off, width = co.displacement_offset, co.displacement_size
+                rtype = {8: 1, 4: 10 if fx.kind == "mem32" else 11}.get(width)
+                addend = fx.addend
+            if rtype is None:
+                raise AsmError(f"the address of {label!r} does not fit this {8 * width}-bit field")
+            buf[off : off + width] = bytes(width)
+        else:
+            word = int.from_bytes(data, "little")
+            off = 0
+            try:
+                if fx.form == "a64_pcrel":
+                    kind = _a64_pcrel_kind(word)
+                    rtype = {"adrp": 275, "adr": 274, "ldr literal": 273}.get(kind)
+                    if rtype is None:
+                        raise AsmError(f"branch target {label!r} is in {where}, not in .text")
+                    mnemonic, ops = _split_statement(text, False)
+                    expr = ops[_a64_target_index(mnemonic, ops)]
+                    mask = (3 << 29 | 0x7FFFF << 5) if kind in ("adr", "adrp") else 0x7FFFF << 5
+                else:
+                    rtype = _a64_lo12_type(word)
+                    if rtype is None:
+                        raise AsmError(f":lo12:{label} is not supported in this instruction")
+                    expr = _LO12_RE.search(text)[1]
+                    mask = 0xFFF << 10
+                addend, sym, _ = _eval_label(expr, x86=False, labels=self._labels, here=addr,
+                                             forward=True)  # fmt: skip
+            except _ExprError as exc:
+                raise AsmError(str(exc)) from None
+            if sym != label:
+                raise AsmError(f"internal error: relocation for {sym!r}, expected {label!r}")
+            buf[0:4] = (word & ~mask).to_bytes(4, "little")
+        relocs = ((off, rtype, label, addend),)
+        check = replace(self._check(text, addr, self._labels, False), section=".text",
+                        externs=frozenset({label}), relocs=relocs)  # fmt: skip
+        return bytes(buf), check, relocs
+
+    def _substitute_consts(self, text: str) -> str:
+        """Replace constants (.equ/.set/=) in the operands by their values."""
+        head = text.split(" ", 1)[0] if text.startswith(".") else _split_statement(text, self._x86)[0]
+
+        def sub(m: re.Match) -> str:
+            v = self._consts.get(m[0])
+            return m[0] if v is None else str(v) if v >= 0 else f"({v})"
+
+        return head + _IDENT_RE.sub(sub, text[len(head) :])
+
+    def _program_constant(self, name: str, expr: str, labels: list[str]):
+        """`.equ name, expr` / `.set` / `name = expr`: a number, or a difference of labels
+        defined earlier in the current section (`. - msg`)."""
+        if (name in self._labels or name in self._symtab or name in self._consts
+                or name in labels or _NUMERIC_NAME_RE.fullmatch(name)):  # fmt: skip
+            raise AsmError(f"{name!r} is already defined (constants cannot be redefined)")
+        if _reserved_name(self.isa, name) or name.startswith(_RESERVED_PREFIX) or name in (".", "$"):
+            raise AsmError(f"{name!r} is a register name, keyword or reserved name")
+        if any(fx.label == name for fx in self._fixups):
+            raise AsmError(f"{name!r} was used before this definition; define constants first")
+        expr = self._substitute_consts("x " + expr)[2:]
+        section = self._section if self._section in _PROGRAM_SECTIONS else ".data"
+        here = self._section_size(section)
+        used: dict[str, int] = {}
+        value, reloc = self._data_value(expr, 8, here, section, used)
+        if reloc is not None:
+            raise AsmError(f"constant {name!r} would be the address of {reloc[0]!r}; only numbers "
+                           "and differences of labels in the same section are constants")  # fmt: skip
+        cacheable = not used and "." not in [m[0] for m in _IDENT_RE.finditer(expr)]
+        check = _Check(f".quad {expr}", here, used, cacheable, section=".data",
+                       expect=(value & MASK64).to_bytes(8, "little"))  # fmt: skip
+        return ("const", name, value, check)
+
+    def _program_directive(self, text: str, strings: list[str], line: int, addr: int):
+        """Parse one directive; returns the content to commit (see _commit_program)."""
+        head, _, args = text.partition(" ")
+        name, args = head.lower(), args.strip()
+        section = self._section
+        full = _unmask(text, strings)  # what GNU as sees
+        if name in _REFUSED_DIRECTIVES or name.startswith((".cfi_", ".if")):
+            raise AsmError(_REFUSED_DIRECTIVES.get(name, f"{head} is not supported"))
+        if name in (".text", ".data", ".bss"):
+            if args:
+                raise AsmError(f"{head} takes no operands (subsections are not supported)")
+            return ("section", name)
+        if name == ".section":
+            return ("section", _parse_section(args, strings))
+        if name in (".globl", ".global"):
+            names = [a.strip() for a in args.split(",")]
+            for n in names:
+                if not _SYMBOL_RE.fullmatch(n) or n.startswith(_RESERVED_PREFIX):
+                    raise AsmError(f"{head}: {n!r} is not a label name")
+            return ("globl", names)
+        if name in (".type", ".size", ".file"):
+            return ("none",)
+        if name == ".intel_syntax":
+            if not self._x86 or args.lower() != "noprefix":
+                raise AsmError("only `.intel_syntax noprefix` (x86-64) is supported")
+            return ("none",)
+        if name not in _ALIGN_DIRECTIVES | _FILL_DIRECTIVES | _STRING_DIRECTIVES and \
+                _data_width(self._x86, name) is None:  # fmt: skip
+            raise AsmError(f"unsupported directive {head!r}")
+        if section == _NOTE_SECTION:
+            raise AsmError(f"nothing may be placed in {section}")
+        if name in _ALIGN_DIRECTIVES:
+            return self._program_align(name, head, args, full, line, addr)
+        if section == ".text":
+            raise AsmError(f"{head} is not allowed in .text (only instructions and alignment); "
+                           "put data in .data or .rodata")  # fmt: skip
+        if section == ".bss" and name not in _FILL_DIRECTIVES:
+            raise AsmError(f"{head} is not allowed in .bss (only .zero/.space/.skip and alignment)")
+        offset = self._section_size(section)
+        relocs: list[tuple[int, int, str, int]] = []
+        used: dict[str, int] = {}
+        ops = _split_args(args)
+        if name in _FILL_DIRECTIVES:
+            if not 1 <= len(ops) <= (1 if name == ".zero" else 2):
+                raise AsmError(f"{head} takes a size" + ("" if name == ".zero" else " and an optional fill byte"))
+            size = self._const(ops[0], head)
+            fill = self._const(ops[1], head) if len(ops) == 2 else 0
+            if size < 0:
+                raise AsmError(f"{head}: negative size {size}")
+            if not -128 <= fill <= 255 or (section == ".bss" and fill):
+                raise AsmError(f"{head}: fill value {fill} is not a byte" if section != ".bss"
+                               else ".bss can only hold zeros")  # fmt: skip
+            self._reserve(section, size)
+            data = b"" if section == ".bss" else bytes([fill & 0xFF]) * size
+        elif name in _STRING_DIRECTIVES:
+            if not ops or not all(_STRING_TOKEN_RE.fullmatch(o) for o in ops):
+                raise AsmError(f"{head} takes one or more strings in double quotes")
+            data = b"".join(_decode_string(strings[int(o[1:-1])]) +
+                            (b"\0" if name != ".ascii" else b"") for o in ops)  # fmt: skip
+            size = len(data)
+            self._reserve(section, size)
+        else:
+            width = _data_width(self._x86, name)
+            if not ops:
+                raise AsmError(f"{head} takes one or more values")
+            out = bytearray()
+            for op in ops:
+                value, reloc = self._data_value(op, width, offset + len(out), section, used)
+                if reloc is not None:
+                    relocs.append((len(out), _DATA_RELOC[self.isa.name][width], *reloc))
+                    value = 0
+                out += (value & ((1 << 8 * width) - 1)).to_bytes(width, "little")
+            data, size = bytes(out), len(out)
+            both = sorted(set(used) & {r[2] for r in relocs})
+            if both:
+                raise AsmError(f"{both[0]!r} is used both in a label difference and as an address in "
+                               "one directive; split it into two directives")  # fmt: skip
+            self._reserve(section, size)
+        ids = [m[0] for m in _IDENT_RE.finditer(_STRING_TOKEN_RE.sub("", text[len(head):]))]
+        check = _Check(full, offset, used, not ids and not relocs, section=section,
+                       externs=frozenset(r[2] for r in relocs), relocs=tuple(relocs))  # fmt: skip
+        return ("data", DataItem(section, offset, full, data, size, line), check, tuple(relocs), 1)
+
+    def _program_align(self, name, head, args, full, line, addr):
+        section = self._section
+        ops = _split_args(args)
+        if not 1 <= len(ops) <= 3 or not ops[0]:
+            raise AsmError(f"{head} takes an alignment, an optional fill byte and an optional "
+                           "maximum skip")  # fmt: skip
+        n = self._const(ops[0], head)
+        if name == ".p2align" or (name == ".align" and not self._x86):
+            if not 0 <= n <= 12:
+                raise AsmError(f"{head} {n}: the power of two must be 0..12 (at most page alignment)")
+            n = 1 << n
+        elif not 1 <= n <= _PAGE or n & (n - 1):
+            raise AsmError(f"{head} {n}: the alignment must be a power of two from 1 to {_PAGE} bytes"
+                           + (" (on AArch64 `.align` takes a power of two)" if not self._x86 else ""))
+        fill, most = 0, None
+        if len(ops) == 3:
+            most = self._const(ops[2], head)
+            if most < 0:
+                raise AsmError(f"{head}: negative maximum skip {most}")
+        if len(ops) >= 2 and ops[1]:
+            if section == ".text":
+                raise AsmError("a fill value is not allowed in .text (it is padded with NOPs)")
+            fill = self._const(ops[1], head)
+            if not -128 <= fill <= 255 or (section == ".bss" and fill):
+                raise AsmError(f"{head}: fill value {fill} is not a byte" if section != ".bss"
+                               else ".bss can only hold zeros")  # fmt: skip
+        offset = self._section_size(section)
+        pad = -offset % n
+        if most is not None and pad > most:
+            pad = 0  # GNU as: no alignment when more than `most` bytes would be skipped
+        self._reserve(section, pad)
+        if section == ".text":
+            filler = b"\x90" * pad if self._x86 else _A64_NOP * (pad // 4)
+            check = _Check(full, addr, {}, False, section=".text")
+            return ("text", _Encoded(filler, check=check), n)
+        data = b"" if section == ".bss" else bytes([fill & 0xFF]) * pad
+        check = _Check(full, offset, {}, False, section=section)
+        return ("data", DataItem(section, offset, full, data, pad, line), check, (), n)
+
+    def _reserve(self, section: str, size: int) -> None:
+        """Resource limits: refuse a directive that would grow a section past its cap."""
+        if section == ".text":
+            if len(self._code) + size > MAX_CODE:
+                raise AsmError(f"program too large (more than {MAX_CODE} bytes of code)")
+        elif section == ".bss":
+            if self._bss + size > MAX_BSS:
+                raise AsmError(f".bss too large (more than {MAX_BSS} bytes)")
+        elif len(self._data[".rodata"]) + len(self._data[".data"]) + size > MAX_DATA:
+            raise AsmError(f"data too large (more than {MAX_DATA} bytes in .rodata and .data)")
+
+    def _const(self, expr: str, head: str) -> int:
+        try:
+            return _eval_const(expr, self._x86)
+        except _ExprError as exc:
+            raise AsmError(f"{head}: bad constant {_clip(expr, 60)!r}: {exc}") from None
+
+    def _data_value(self, expr: str, width: int, here: int, section: str, used: dict):
+        """(value, None) for a constant, or (0, (label, addend)) for an address the linker
+        fills in. A difference of labels defined earlier in the same section (or `.`) is a
+        constant."""
+        try:
+            lin = _eval_lin(expr, x86=self._x86, here=here, forward=True)
+        except _ExprError as exc:
+            raise AsmError(f"bad value {_clip(expr, 60)!r}: {exc}") from None
+        terms = dict(lin.terms)
+        dot = terms.pop(("sec",), 0)
+        names = {k[1]: v for k, v in terms.items()}
+        total = dot + sum(names.values())
+        if total == 1 and not dot and len(names) == 1 and next(iter(names.values())) == 1:
+            if width not in (4, 8):
+                raise AsmError(f"a label address needs 4 or 8 bytes (.long/.quad), not {width}")
+            return 0, (next(iter(names)), lin.c)
+        if total != 0:
+            raise AsmError(
+                f"unsupported label arithmetic in {_clip(expr, 60)!r} (allowed: a constant, "
+                "label + constant, or a difference of labels defined earlier in the same section)"
+            )
+        value = lin.c  # `.` is already in c
+        for n, coef in names.items():
+            where = self._symtab.get(n)
+            if section == ".text" and n in self._labels:
+                where = (".text", self._labels[n] - self.base)
+            if where is None or where[0] != section:
+                raise AsmError(f"{n!r} in {_clip(expr, 60)!r}: a label difference needs both labels "
+                               f"defined earlier in this section ({section})")  # fmt: skip
+            used[n] = where[1]
+            value += coef * where[1]
+        bits = 8 * width
+        if not -(1 << (bits - 1)) <= value < 1 << bits:
+            raise AsmError(f"value {_fmt(value)} does not fit in {width} byte(s)")
+        return value, None
+
+    def _program_verify(self, index: int, chk: _Check, theirs: bytes, their_relocs) -> str | None:
+        """Compare GNU as's bytes and relocations with a committed program-mode statement."""
+        if chk.expect is not None:  # a constant
+            if theirs != chk.expect:
+                return (f"GNU as evaluates the constant to {int.from_bytes(theirs, 'little'):#x}, "
+                        f"the stream to {int.from_bytes(chk.expect, 'little'):#x}")  # fmt: skip
+            return None
+        mine = sorted(chk.relocs)
+        got = sorted(tuple(r) for r in their_relocs)
+        if mine != got:
+            return (f"GNU as emits relocations {_fmt_relocs(self.isa, got)}, the stream "
+                    f"{_fmt_relocs(self.isa, mine)}")  # fmt: skip
+        if chk.section != ".text":
+            item = self._items[index]
+            want = bytes(item.size) if item.section == ".bss" else item.data
+            if theirs != want:
+                return (f"GNU as assembles this directive to {len(theirs)} bytes "
+                        f"({_clip(theirs.hex(), 80) or '-'}), the stream to {len(want)} "
+                        f"({_clip(want.hex(), 80) or '-'})")  # fmt: skip
+            return None
+        insn = self._insns[index]
+        if theirs == insn.data:
+            return None
+        directive = insn.text.startswith(".")
+        a = self._disasm_text(insn.data, insn.address)
+        b = self._disasm_text(theirs, insn.address)
+        if not directive and not chk.relocs and a is not None and a == b:
+            return None
+        if len(theirs) == len(insn.data) and (not chk.relocs or directive):
+            if directive and not _is_padding(self.isa, theirs, insn.address):
+                return f"GNU as pads with {_clip(theirs.hex(), 80)}, which is not NOP padding"
+            off = insn.address - self.base
+            self._code[off : off + len(theirs)] = theirs
+            self._insns[index] = replace(insn, data=theirs)
+            if not directive:
+                self.substitutions.append((insn.line, insn.data.hex(), theirs.hex(), a, b))
+            return None
+        return (f"keystone encoded {_clip(insn.data.hex(), 80)} ({a}) but GNU as encodes "
+                f"{_clip(theirs.hex(), 80)} ({b})"
+                + (", a different size" if len(theirs) != len(insn.data) else ""))
+
+    def _finish_program(self) -> StreamObject:
+        errors = list(self._skipped) + ([self.halted] if self.halted else [])
+        unresolved = []
+        for fx in self._fixups:
+            insn = self._insns[fx.index]
+            unresolved.append(Event("error", insn.address, insn.text, message=(
+                f"undefined label {fx.label!r} (line {insn.line}: {_clip(insn.text)!r})"),
+                line=insn.line))  # fmt: skip
+        defined = set(self._labels) | set(self._symtab)
+        reported = set()
+        for r in self._relocs:
+            if r.symbol not in defined and r.symbol not in reported:
+                reported.add(r.symbol)
+                unresolved.append(Event("error", r.offset, r.symbol, message=(
+                    f"undefined label {r.symbol!r} (line {r.line}, {r.section})"), line=r.line))
+        for g in self._globals:
+            if g not in defined:
+                unresolved.append(Event("error", 0, g, message=(
+                    f"`.globl {g}` names a label that is never defined")))  # fmt: skip
+        for ev in unresolved:
+            ev.message, ev.text = _pretty_names(ev.message), _pretty_names(ev.text)
+        errors += unresolved
+        symbols = {n: (".text", a - self.base) for n, a in self._labels.items()}
+        symbols.update(self._symtab)
+        return StreamObject(
+            isa=self.isa,
+            base=self.base,
+            sections={".text": bytes(self._code), ".rodata": bytes(self._data[".rodata"]),
+                      ".data": bytes(self._data[".data"])},  # fmt: skip
+            bss_size=self._bss,
+            symbols=symbols,
+            globals=list(self._globals),
+            relocations=list(self._relocs),
+            alignments=dict(self._align),
+            instructions=[replace(i) for i in self._insns],
+            items=[replace(i) for i in self._items],
+            errors=errors,
+            warnings=[ev for _, ev in self._warns],
+            events=self.events + unresolved,
+        )
+
     # -- keystone (isolated worker) -----------------------------------------------------
 
     def _asm(self, text: str, addr: int) -> bytes:
@@ -744,7 +1496,7 @@ class StreamAssembler:
         branch = _x86_direct_branch(head, ops)
         if branch is not None:
             return self._x86_branch(text, head, branch, addr, labels, want_len, provisional)
-        canon = [_x86_operand(op, labels, addr) for op in ops]
+        canon = [_x86_operand(op, labels, addr, self._program) for op in ops]
         forward = list(dict.fromkeys(o.fwd for o in canon if o.fwd))
         if len(forward) > 1:
             raise AsmError(f"more than one forward label: {', '.join(forward)}")
@@ -766,12 +1518,20 @@ class StreamAssembler:
                 raise AsmError(f"RIP-relative encoding changed size ({len(first)} -> {len(data)})")
         else:
             data = self._asm(render(), addr)
+            if (self._program and head.lower() != "movabs"
+                    and any(o.kind == "mem" and not (o.base or o.index) for o in canon)):  # fmt: skip
+                data = _x86_force_absolute(data, addr)
         if want_len is not None and len(data) != want_len:
             raise AsmError(f"re-encoding changed size ({want_len} -> {len(data)})")
         if forward:
             # Provisional bytes are not checked: they are never executed or exposed as
             # final, and are re-encoded and checked when the label arrives.
             _x86_check_length(data, addr)
+            if self._program:
+                owner = next(o for o in canon if o.fwd)
+                form = "x86_riprel" if owner.riprel else "x86_abs"
+                kind = "imm" if owner.kind == "imm" else "mem32" if owner.addr32 else "mem"
+                return _Encoded(data, _Fixup(-1, forward[0], form, 0, owner.addend, kind))
             return _Encoded(data, _Fixup(-1, forward[0], "x86_riprel", 0))
         _x86_verify(data, addr, canon)
         return _Encoded(data, check=self._check(text, addr, labels, cacheable=True))
@@ -908,6 +1668,8 @@ class StreamAssembler:
 
     def _queue_check(self, number: int, index: int, check: _Check | None) -> None:
         if check is not None and self._gas is not None:
+            if self._program and check.section is None:
+                check.section = ".text"
             self._unchecked.append((number, index, check))
 
     def _run_crosscheck(self) -> tuple[int, str] | None:
@@ -927,9 +1689,14 @@ class StreamAssembler:
             return items[0][0], (
                 f"internal error in the GNU as cross-check ({type(exc).__name__}: {exc})"
             )
-        for (number, index, _), (theirs, err) in zip(items, results, strict=False):
+        for (number, index, chk), (theirs, err, *extra) in zip(items, results, strict=False):
             if err:
                 return number, f"rejected by the GNU as cross-check: {err}"
+            if chk.section is not None:
+                problem = self._program_verify(index, chk, theirs, extra[0] if extra else [])
+                if problem:
+                    return number, problem
+                continue
             insn = self._insns[index]
             if theirs != insn.data:
                 a = self._disasm_text(insn.data, insn.address)
@@ -1205,16 +1972,17 @@ def _gas_check(tool: str, isa: Isa, checks: list[_Check]) -> list[tuple[bytes | 
         if len(_GAS_CACHE) > 100_000:
             _GAS_CACHE.clear()
         for i, c in enumerate(checks):
-            if c.cacheable and (isa.name, c.text) in _GAS_CACHE:
-                results[i] = (_GAS_CACHE[(isa.name, c.text)], None)
+            if c.cacheable and _cache_key(isa, c) in _GAS_CACHE:
+                results[i] = (_GAS_CACHE[_cache_key(isa, c)], None)
     todo = [i for i in range(n) if results[i] is None]
     solo: set[int] = set()
     while todo:
         windows: list[list[int]] = []
-        for i in sorted(todo, key=lambda i: checks[i].addr):
+        for i in sorted(todo, key=lambda i: (checks[i].section or "", checks[i].addr)):
             last = windows[-1][-1] if windows else None
             if (last is None or i in solo or last in solo
-                    or checks[i].addr - checks[last].addr > _GAS_WINDOW_GAP):  # fmt: skip
+                    or checks[i].addr - checks[last].addr > _GAS_WINDOW_GAP
+                    or _separate(checks, windows[-1], i)):  # fmt: skip
                 windows.append([i])
             else:
                 windows[-1].append(i)
@@ -1254,7 +2022,7 @@ def _gas_check(tool: str, isa: Isa, checks: list[_Check]) -> list[tuple[bytes | 
             break
         if checks[i].cacheable:
             with _GAS_LOCK:
-                _GAS_CACHE[(isa.name, checks[i].text)] = res[0]
+                _GAS_CACHE[_cache_key(isa, checks[i])] = res[0]
     return out
 
 
@@ -1262,7 +2030,11 @@ def _gas_start(tool: str, isa: Isa, checks: list[_Check]) -> dict:
     """Start GNU as on one address window: statements laid out at their offsets from the
     lowest address, labels defined relative to it."""
     base = min(c.addr for c in checks)
-    src = [*_GAS_HEADER[isa.name], "__bca_w:"]
+    header = _GAS_HEADER[isa.name]
+    if checks[0].section is not None:  # program mode: page-aligned base keeps .align exact
+        base &= ~(_PAGE - 1)
+        header = header[:-1] + [_GAS_SECTION_HEADER[checks[0].section]]
+    src = [*header, "__bca_w:"]
     owner: list[object] = [None] * len(src)
     defined: set[str] = set()
     for j, c in enumerate(checks):
@@ -1345,12 +2117,14 @@ def _gas_extract(isa: Isa, blob: bytes, checks: list[_Check], base: int):
 
     try:
         elf = Elf(blob)
-        text_sec = next(s for s in elf.sections if s.name == ".text")
+        section = checks[0].section
+        text_sec = next(s for s in elf.sections if s.name == (section or ".text"))
         symbols = elf.symbols()
         relocs = elf.relocations_for(text_sec)
     except (ElfError, StopIteration, struct.error, IndexError, ValueError) as exc:
         raise _ToolFailure(f"cannot read GNU as output: {exc}") from None
-    text = bytearray(elf.data(text_sec))
+    text = bytearray(text_sec.size if text_sec.type == 8 else elf.data(text_sec))  # 8: NOBITS
+    left: dict[int, list] = {}  # program mode: relocations against the extern labels
     where = {s.name: s.value for s in symbols if s.shndx == text_sec.index and s.name}
     out: list[tuple[bytes | None, str | None]] = []
     spans = []
@@ -1365,6 +2139,10 @@ def _gas_extract(isa: Isa, blob: bytes, checks: list[_Check], base: int):
         if owner is None:
             raise _ToolFailure(f"relocation outside every statement at {r.offset:#x}")
         sym = symbols[r.sym_index] if r.sym_index < len(symbols) else None
+        if section is not None and sym is not None and sym.shndx == 0 and r.symbol in checks[owner].externs:
+            lo = spans[owner][0]
+            left.setdefault(owner, []).append((r.offset - lo, r.type, r.symbol, r.addend))
+            continue
         if r.sym_index == 0 or sym is None:
             s_val = 0
         elif sym.shndx == text_sec.index:
@@ -1379,7 +2157,12 @@ def _gas_extract(isa: Isa, blob: bytes, checks: list[_Check], base: int):
         except AsmError as exc:
             errors.setdefault(owner, str(exc))
     for j, (lo, hi) in enumerate(spans):
-        out.append((None, errors[j]) if j in errors else (bytes(text[lo:hi]), None))
+        if j in errors:
+            out.append((None, errors[j]))
+        elif section is not None:
+            out.append((bytes(text[lo:hi]), None, left.get(j, [])))
+        else:
+            out.append((bytes(text[lo:hi]), None))
     return out
 
 
@@ -1911,6 +2694,7 @@ class _X86Op:
     target: int | None = None  # riprel: absolute target (label / `.` forms)
     addr32: bool = False
     fwd: str | None = None
+    addend: int = 0  # program mode: the constant added to the forward label `fwd`
 
     def render(self, disp: int | None = None) -> str:
         if self.kind != "mem":
@@ -1926,8 +2710,11 @@ class _X86Op:
         return f"{self.size}{self.seg}[{inner}]"
 
 
-def _x86_operand(op: str, labels: dict[str, int], addr: int) -> _X86Op:
-    """Parse and evaluate one non-branch operand with GNU as semantics."""
+def _x86_operand(op: str, labels: dict[str, int], addr: int, program: bool = False) -> _X86Op:
+    """Parse and evaluate one non-branch operand with GNU as semantics. In program mode an
+    unknown label may also be used as an absolute address (`offset lbl`, `[lbl]`,
+    `[lbl + rax*8]`): the operand then holds a 32-bit placeholder until it is resolved or
+    becomes a relocation."""
     s = op.strip()
     if s.lower() in _X86_REGISTERS or _X86_RAW_RE.fullmatch(s):
         for m in _IDENT_RE.finditer(s):
@@ -1963,6 +2750,14 @@ def _x86_operand(op: str, labels: dict[str, int], addr: int) -> _X86Op:
     if sec not in (0, 1):
         raise AsmError(f"invalid arithmetic on labels in {op!r}")
     if not memory:
+        if fwd and program:
+            if seg:
+                raise AsmError(f"a segment override cannot be combined with a label ({op!r})")
+            if offset:
+                return _X86Op("imm", text=f"{size}{_fmt(lin.c + _X86_ABS_PLACEHOLDER)}",
+                              value=lin.c, fwd=fwd[0], addend=lin.c)  # fmt: skip
+            return _X86Op("mem", size=size, disp=lin.c + _X86_ABS_PLACEHOLDER, fwd=fwd[0],
+                          addend=lin.c)  # fmt: skip
         if fwd:
             raise AsmError(f"forward reference to {fwd[0]!r} in a non-PC-relative operand")
         if (sec and not offset) or seg:  # GNU as: a label (or seg:addr) is a memory reference
@@ -1977,8 +2772,8 @@ def _x86_operand(op: str, labels: dict[str, int], addr: int) -> _X86Op:
         target = lin.c if (sec or fwd) else None
         return _X86Op("mem", size=size, seg=seg, base=rip[0], disp=lin.c, riprel=True,
                       target=target, addr32=rip[0] == "eip",
-                      fwd=fwd[0] if fwd else None)  # fmt: skip
-    if fwd:
+                      fwd=fwd[0] if fwd else None, addend=lin.c)  # fmt: skip
+    if fwd and not program:
         raise AsmError(f"forward reference to {fwd[0]!r} in a non-PC-relative operand")
     base = index = None
     scale = 1
@@ -1997,6 +2792,10 @@ def _x86_operand(op: str, labels: dict[str, int], addr: int) -> _X86Op:
     if index and scale == 1 and index in ("rsp", "esp"):
         base, index = index, base
     addr32 = any(re.fullmatch(r"e..|r\d+d", r) for r, _ in regs)
+    if fwd:  # program mode: absolute label address plus registers
+        return _X86Op("mem", size=size, seg=seg, base=base, index=index, scale=scale,
+                      disp=lin.c + _X86_ABS_PLACEHOLDER, addr32=addr32, fwd=fwd[0],
+                      addend=lin.c)  # fmt: skip
     return _X86Op("mem", size=size, seg=seg, base=base, index=index, scale=scale, disp=lin.c,
                   addr32=addr32)  # fmt: skip
 
@@ -2045,6 +2844,40 @@ def _x86_check_supported(ins: iced_x86.Instruction) -> None:
     if ins.encoding == _EK.VEX and not set(ins.cpuid_features()) <= _X86_VEX_OK:
         raise AsmError(f"{what}: AVX/AVX2/FMA (VEX-encoded vector) instructions are not supported by the "
                        "emulator (it rejects or miscomputes them); use the SSE form (up to SSE4.2)")
+
+
+_C = iced_x86.Code
+_X86_MOFFS = {_C.MOV_AL_MOFFS8: (_C.MOV_R8_RM8, True), _C.MOV_AX_MOFFS16: (_C.MOV_R16_RM16, True),
+              _C.MOV_EAX_MOFFS32: (_C.MOV_R32_RM32, True), _C.MOV_RAX_MOFFS64: (_C.MOV_R64_RM64, True),
+              _C.MOV_MOFFS8_AL: (_C.MOV_RM8_R8, False), _C.MOV_MOFFS16_AX: (_C.MOV_RM16_R16, False),
+              _C.MOV_MOFFS32_EAX: (_C.MOV_RM32_R32, False),
+              _C.MOV_MOFFS64_RAX: (_C.MOV_RM64_R64, False)}  # fmt: skip
+
+
+def _x86_force_absolute(data: bytes, addr: int) -> bytes:
+    """keystone may reach an absolute address rip-relatively; GNU as (and a relocation)
+    needs the absolute disp32 form. Program mode re-encodes it that way."""
+    ins = iced_x86.Decoder(64, data, ip=addr).decode()
+    if ins.code in _X86_MOFFS:  # mov al/ax/eax/rax <-> [moffs64]: use the ModRM form
+        code, load = _X86_MOFFS[ins.code]
+        reg = ins.op0_register if load else ins.op1_register
+        mem = iced_x86.MemoryOperand(displ=ins.memory_displacement, displ_size=8)
+        ins = (iced_x86.Instruction.create_reg_mem(code, reg, mem) if load
+               else iced_x86.Instruction.create_mem_reg(code, mem, reg))  # fmt: skip
+        target = ins.memory_displacement
+    elif ins.code == iced_x86.Code.INVALID or not ins.is_ip_rel_memory_operand:
+        return data
+    else:
+        target = ins.ip_rel_memory_address
+        ins.memory_base = iced_x86.Register.NONE
+        ins.memory_displacement = target
+        ins.memory_displ_size = 8  # 64-bit addressing, sign-extended disp32
+    enc = iced_x86.Encoder(64)
+    try:
+        enc.encode(ins, addr)
+    except ValueError as exc:
+        raise AsmError(f"cannot encode absolute address {target:#x}: {exc}") from None
+    return bytes(enc.take_buffer())
 
 
 def _x86_check_length(data: bytes, addr: int) -> None:
@@ -2393,6 +3226,298 @@ def _same_mnemonic(isa: Isa, text: str, decoded: str) -> bool:
     return src == got or any(src in g and got in g for g in _ALIASES)
 
 
+# -- program mode ---------------------------------------------------------------------
+
+_PROGRAM_SECTIONS = (".text", ".rodata", ".data", ".bss")
+_NOTE_SECTION = ".note.GNU-stack"
+# x86 absolute label operands are encoded against this address until resolved or relocated:
+# it forces the 32-bit immediate / displacement forms GNU as uses for a symbol.
+_X86_ABS_PLACEHOLDER = 0x1000_0000
+_GAS_SECTION_HEADER = {".text": ".text", ".rodata": '.section .rodata,"a",@progbits',
+                       ".data": ".data", ".bss": ".bss"}  # fmt: skip
+# (flags, type) each section may be declared with
+_SECTION_FLAGS = {".text": ("ax", "progbits"), ".rodata": ("a", "progbits"),
+                  ".data": ("aw", "progbits"), ".bss": ("aw", "nobits"),
+                  _NOTE_SECTION: ("", "progbits")}  # fmt: skip
+_NUMERIC_LABEL_RE = re.compile(r"(\d+)\s*:(?!:)")
+_NUMERIC_REF_RE = re.compile(r"(?<![\w.$@])(\d+)([fbFB])(?![\w.$@])")
+_NUMERIC_NAME_RE = re.compile(r"__bca_L(\d+)_(\d+)")
+
+
+def _numeric_name(n: int, k: int) -> str:
+    """Internal name of the k-th definition of GNU as local label `n:`."""
+    return f"__bca_L{n}_{k}"
+
+
+def _pretty_names(message: str) -> str:
+    return _NUMERIC_NAME_RE.sub(lambda m: f"local label {m[1]}", message)
+
+
+_PROGRAM_CHAR_RE = re.compile(r"'(\\[^\n]|[^\\'\n])'")
+_STRING_TOKEN_RE = re.compile(r'"\d+"')
+_ASSIGN_RE = re.compile(r"(?i)(?:\.(?:equ|set|equiv) ([A-Za-z_.$][\w.$]*) ?,|([A-Za-z_.$][\w.$]*) ?=(?!=))(.*)")
+
+
+def _parse_assignment(text: str) -> tuple[str, str] | None:
+    """(name, expression) for `.equ name, expr`, `.set name, expr`, `.equiv` or `name = expr`."""
+    m = _ASSIGN_RE.fullmatch(text)
+    if m is None:
+        if re.match(r"[A-Za-z_.$][\w.$]* ?==", text):
+            raise AsmError("`==` is not supported: use `name = value` or .equ")
+        return None
+    if not m[3].strip():
+        raise AsmError("missing value in constant definition")
+    return m[1] or m[2], m[3].strip()
+_SYMBOL_RE = re.compile(r"[A-Za-z_.$][\w.$]*")
+_ESCAPES = {"n": 10, "t": 9, "r": 13, "b": 8, "f": 12, "\\": 92, '"': 34, "'": 39}
+_ALIGN_DIRECTIVES = {".align", ".balign", ".p2align"}
+_FILL_DIRECTIVES = {".zero", ".space", ".skip"}
+_STRING_DIRECTIVES = {".ascii", ".asciz", ".string"}
+_DATA_WIDTHS = {".byte": 1, ".short": 2, ".hword": 2, ".2byte": 2, ".long": 4, ".int": 4,
+                ".4byte": 4, ".quad": 8, ".8byte": 8}  # fmt: skip
+_DATA_RELOC = {"x86_64": {4: 10, 8: 1}, "aarch64": {4: 258, 8: 257}}  # R_*_32 / R_*_64 (ABS)
+_A64_NOP = bytes.fromhex("1f2003d5")
+_REFUSED_DIRECTIVES = {
+    ".incbin": "`.incbin` (reading a file) is not allowed",
+    ".include": "`.include` (reading a file) is not allowed",
+    ".rodata": "GNU as has no `.rodata` directive: write `.section .rodata`",
+    ".inst": "`.inst` (raw instruction words) is not allowed: write the instruction",
+    ".fill": "`.fill` is not supported: use .zero/.space or write the values",
+    ".org": "`.org` is not supported",
+    ".att_syntax": "only Intel syntax (`.intel_syntax noprefix`) is supported",
+    **dict.fromkeys((".macro", ".endm", ".exitm", ".purgem", ".altmacro", ".noaltmacro"),
+                    "macros are not supported: write every statement out"),
+    **dict.fromkeys((".rept", ".irp", ".irpc", ".endr"),
+                    "repetition blocks (.rept/.irp/.irpc) are not supported: write every "
+                    "statement out"),
+    **dict.fromkeys((".else", ".elseif", ".endif"), "conditional assembly is not supported"),
+    ".eqv": "`.eqv` (lazy symbol) is not supported: use .equ",
+    **dict.fromkeys((".comm", ".lcomm"), "`.comm`/`.lcomm` are not supported: reserve space "
+                    "with a label and .zero in .bss"),
+    **dict.fromkeys((".pushsection", ".popsection", ".previous", ".subsection"),
+                    "section stacks are not supported: switch with .text/.data/.bss/.section"),
+}  # fmt: skip
+for _d in (".if", ".ifdef", ".ifndef", ".ifc", ".ifnc", ".ifeq", ".ifne", ".ifb", ".ifnb"):
+    _REFUSED_DIRECTIVES[_d] = "conditional assembly is not supported"
+
+
+def _data_width(x86: bool, name: str) -> int | None:
+    if name == ".word":
+        return 2 if x86 else 4
+    if not x86 and name in (".xword", ".dword"):
+        return 8
+    return _DATA_WIDTHS.get(name)
+
+
+def _cache_key(isa: Isa, c: _Check) -> tuple[str, str]:
+    if c.section in (None, ".text"):
+        return isa.name, c.text
+    return isa.name, f"{c.section}\n{c.text}"
+
+
+def _separate(checks: list[_Check], window: list[int], i: int) -> bool:
+    """Program mode: must check i start a new GNU as window? Sections differ, or a label
+    one statement needs undefined (a relocation) would be defined for another."""
+    c = checks[i]
+    if c.section is None:
+        return False
+    if c.section != checks[window[-1]].section or c.expect is not None:
+        return True
+    if any(checks[j].expect is not None for j in window):
+        return True
+    defined = set().union(*(checks[j].labels for j in window))
+    externs = set().union(*(checks[j].externs for j in window))
+    return bool(c.externs & defined or externs & set(c.labels))
+
+
+def _mask_strings(text: str) -> tuple[str, list[str]]:
+    """Replace each "..." by a token `"N"`; returns the text and the raw string bodies."""
+    out, strings = [], []
+    k = start = 0
+    while k < len(text):
+        ch = text[k]
+        if ch == "'":
+            m = _PROGRAM_CHAR_RE.match(text, k)
+            k = m.end() if m else k + 1
+            continue
+        if ch == '"':
+            j = k + 1
+            while j < len(text) and text[j] != '"':
+                j += 2 if text[j] == "\\" else 1
+            if j >= len(text):
+                raise AsmError("unterminated string")
+            out += [text[start:k], f'"{len(strings)}"']
+            strings.append(text[k + 1 : j])
+            k = start = j + 1
+            continue
+        k += 1
+    out.append(text[start:])
+    return "".join(out), strings
+
+
+def _unmask(text: str, strings: list[str]) -> str:
+    return _STRING_TOKEN_RE.sub(lambda m: f'"{strings[int(m[0][1:-1])]}"', text)
+
+
+def _decode_string(body: str) -> bytes:
+    """GNU as string escapes (the unambiguous subset)."""
+    out = bytearray()
+    i = 0
+    while i < len(body):
+        ch = body[i]
+        if ch != "\\":
+            out.append(ord(ch))
+            i += 1
+            continue
+        e = body[i + 1] if i + 1 < len(body) else ""
+        if e in _ESCAPES:
+            out.append(_ESCAPES[e])
+            i += 2
+        elif e and e in "01234567":
+            digits = re.match(r"[0-7]{1,3}", body[i + 1 :])[0]
+            if int(digits, 8) > 255:
+                raise AsmError(f"octal escape \\{digits} is larger than a byte")
+            out.append(int(digits, 8))
+            i += 1 + len(digits)
+        elif e in ("x", "X"):
+            m = re.match(r"[0-9a-fA-F]*", body[i + 2 :])
+            if not 1 <= len(m[0]) <= 2:
+                raise AsmError("\\x takes one or two hex digits (GNU as reads every hex digit "
+                               "that follows)")  # fmt: skip
+            out.append(int(m[0], 16))
+            i += 2 + len(m[0])
+        else:
+            raise AsmError(f"unsupported escape \\{e} (supported: \\n \\t \\r \\b \\f \\\\ "
+                           "\\\" \\' \\ooo \\xhh)")  # fmt: skip
+    return bytes(out)
+
+
+def _char_value(body: str) -> int:
+    data = _decode_string(body)
+    if len(data) != 1:
+        raise AsmError(f"character literal '{body}' is not one character")
+    return data[0]
+
+
+def _split_args(args: str) -> list[str]:
+    """Top-level comma-separated operands (strings are masked already)."""
+    if not args.strip():
+        return []
+    return _split_statement("x " + args, False)[1]
+
+
+def _parse_section(args: str, strings: list[str]) -> str:
+    parts = [p.strip() for p in args.split(",")] if args else [""]
+    name = parts[0]
+    if name not in _SECTION_FLAGS:
+        raise AsmError(f"section {name!r} is not supported (use .text, .rodata, .data or .bss)")
+    flags, kind = _SECTION_FLAGS[name]
+    if len(parts) > 3:
+        raise AsmError(f"too many operands for .section {name}")
+    if len(parts) > 1:
+        token = _STRING_TOKEN_RE.fullmatch(parts[1])
+        if not token or strings[int(parts[1][1:-1])] != flags:
+            raise AsmError(f'section {name} must have its default flags "{flags}"')
+    if len(parts) > 2 and parts[2] not in (f"@{kind}", f"%{kind}"):
+        raise AsmError(f"section {name} must have its default type @{kind}")
+    return name
+
+
+def _a64_lo12_type(word: int) -> int | None:
+    """R_AARCH64_*_ABS_LO12_NC type for the instruction that holds a :lo12: field."""
+    if word >> 23 & 0x3F == 0x22:  # add/sub (immediate)
+        return 277
+    if word >> 24 & 0x3B == 0x39:  # load/store register (unsigned immediate)
+        size, vector, opc = word >> 30, word >> 26 & 1, word >> 22 & 3
+        if vector and size == 0 and opc >= 2:
+            return 299  # 128-bit q register
+        return {0: 278, 1: 284, 2: 285, 3: 286}[size]
+    return None
+
+
+def _is_padding(isa: Isa, data: bytes, addr: int) -> bool:
+    """NOPs, optionally after one jump to the end of the padding (GNU as's form for long
+    x86 padding)."""
+    if isa is not X86_64:
+        return len(data) % 4 == 0 and data == _A64_NOP * (len(data) // 4)
+    insns = list(iced_x86.Decoder(64, data, ip=addr))
+    if insns and insns[0].mnemonic == iced_x86.Mnemonic.JMP and insns[0].op0_kind in _NEAR_BRANCH:
+        if insns[0].near_branch64 != addr + len(data):
+            return False
+        insns = insns[1:]
+    return all(ins.mnemonic == iced_x86.Mnemonic.NOP for ins in insns)
+
+
+def _fmt_relocs(isa: Isa, relocs) -> str:
+    from bca.ir.elf import reloc_name
+
+    shown = [f"{reloc_name(isa.name, t)} {s}{a:+#x} at +{o}" for o, t, s, a in relocs]
+    return "[" + ", ".join(shown) + "]" if shown else "none"
+
+
+def _write_elf(obj: StreamObject) -> bytes:
+    """A relocatable ELF64 object (ET_REL) with GNU as's section set."""
+    from bca.ir.elf import MACHINES
+
+    names = [".text", ".rodata", ".data", ".bss"]
+    index = {n: i + 1 for i, n in enumerate(names)}
+    strtab = bytearray(b"\0")
+
+    def string(table: bytearray, s: str) -> int:
+        off = len(table)
+        table += s.encode() + b"\0"
+        return off
+
+    glob = set(obj.globals)
+    ordered = [n for n in obj.symbols if n not in glob] + [n for n in obj.symbols if n in glob]
+    symtab = bytearray(24)  # the null symbol
+    for n in names:  # section symbols (STB_LOCAL, STT_SECTION)
+        symtab += struct.pack("<IBBHQQ", 0, 3, 0, index[n], 0, 0)
+    sym_index = {}
+    for n in ordered:
+        section, offset = obj.symbols[n]
+        sym_index[n] = len(symtab) // 24
+        bind = 1 if n in glob else 0
+        symtab += struct.pack("<IBBHQQ", string(strtab, n), bind << 4, 0, index[section], offset, 0)
+    first_global = 1 + len(names) + sum(1 for n in ordered if n not in glob)
+    rela = {n: bytearray() for n in names[:3]}
+    for r in obj.relocations:
+        rela[r.section] += struct.pack("<QQq", r.offset, sym_index[r.symbol] << 32 | r.type, r.addend)
+    min_align = 4 if obj.isa is AARCH64 else 1
+    # (name, type, flags, payload or size, link, info, align, entsize)
+    secs = [
+        (".text", 1, 6, obj.sections[".text"], 0, 0, max(obj.alignments[".text"], min_align), 0),
+        (".rodata", 1, 2, obj.sections[".rodata"], 0, 0, obj.alignments[".rodata"], 0),
+        (".data", 1, 3, obj.sections[".data"], 0, 0, obj.alignments[".data"], 0),
+        (".bss", 8, 3, obj.bss_size, 0, 0, obj.alignments[".bss"], 0),
+        *((f".rela{n}", 4, 0x40, bytes(rela[n]), 8, index[n], 8, 24) for n in names[:3]),
+        (".symtab", 2, 0, bytes(symtab), 9, first_global, 8, 24),
+        (".strtab", 3, 0, bytes(strtab), 0, 0, 1, 0),
+    ]
+    shstrtab = bytearray(b"\0")
+    name_offs = [string(shstrtab, s[0]) for s in secs]
+    shstr_name = string(shstrtab, ".shstrtab")
+    secs.append((".shstrtab", 3, 0, bytes(shstrtab), 0, 0, 1, 0))
+    name_offs.append(shstr_name)
+    body = bytearray(64)
+    headers = [bytes(64)]
+    for (_, stype, flags, payload, link, info, align, entsize), noff in zip(secs, name_offs, strict=True):
+        if isinstance(payload, int):  # NOBITS
+            offset, size = len(body), payload
+        else:
+            body += bytes(-len(body) % max(align, 1))
+            offset, size = len(body), len(payload)
+            body += payload
+        headers.append(struct.pack("<IIQQQQIIQQ", noff, stype, flags, 0, offset, size, link, info,
+                                   align, entsize))  # fmt: skip
+    body += bytes(-len(body) % 8)
+    shoff = len(body)
+    ident = b"\x7fELF\x02\x01\x01" + bytes(9)
+    body[:64] = struct.pack("<16sHHIQQQIHHHHHH", ident, 1, MACHINES[obj.isa.name], 1, 0, 0, shoff,
+                            0, 64, 0, 0, 64, len(headers), len(headers) - 1)  # fmt: skip
+    return bytes(body) + b"".join(headers)
+
+
 # -- execution ------------------------------------------------------------------------
 
 
@@ -2526,15 +3651,21 @@ def assemble_stream(isa: Isa, chunks: Iterable[str], **kwargs) -> Program:
 
 
 __all__ = [
+    "MAX_BSS",
     "MAX_BUFFER",
     "MAX_CODE",
+    "MAX_DATA",
     "MAX_LINE",
+    "TEXT_BASE",
     "AsmError",
+    "DataItem",
     "Event",
     "Instruction",
     "LiveRunner",
     "Program",
+    "Relocation",
     "StreamAssembler",
+    "StreamObject",
     "StreamHalted",
     "TraceStep",
     "assemble_stream",
