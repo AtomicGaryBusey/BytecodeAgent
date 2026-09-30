@@ -147,6 +147,26 @@ def test_anthropic_trailing_whitespace_trim_is_allowed_and_noted(env):
     assert "the runtime trimmed the prompt's trailing whitespace" in r.notes
 
 
+def test_a_reasoning_only_message_is_not_a_second_call(env):
+    # seen live (gpt-6-luna, sum_to.ir.x86_64, 2026-09-29): the Responses API returns the encrypted reasoning as its
+    # own assistant.message (empty content, no tool requests) next to the answer, within the one model call
+    rec = copy.deepcopy(load("luna"))
+    i = next(k for k, e in enumerate(rec["events"]) if e["type"] == "assistant.message")
+    ans = rec["events"][i]["data"]
+    rec["events"].insert(i, {"type": "assistant.message", "data": {
+        "messageId": "r1", "model": ans.get("model", "gpt-6-luna"), "content": "", "toolRequests": [],
+        "reasoningOpaque": "opaque", "turnId": ans.get("turnId", "0")}})
+    r = subject(env, rec, "gpt-6-luna", effort="low").complete(PROMPT)
+    assert r.ok, r.error
+    assert r.text == "OK"
+    # an empty message WITHOUT reasoning, or one with content, is still a second message and fails closed
+    for extra in ({"content": ""}, {"content": "more", "reasoningOpaque": "opaque"}):
+        bad = copy.deepcopy(rec)
+        bad["events"][i]["data"] = {"messageId": "r1", "model": "gpt-6-luna", "toolRequests": [], **extra}
+        r = subject(env, bad, "gpt-6-luna", effort="low").complete(PROMPT)
+        assert not r.ok and "2 assistant.message events" in r.error
+
+
 # -- fail closed ------------------------------------------------------------------------------------
 
 

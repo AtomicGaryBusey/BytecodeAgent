@@ -161,6 +161,14 @@ def _sdk_entry() -> Path:
                 f"~/.local/opt/copilot/sdk-{COPILOT_SDK_VERSION}/node_modules/@github/copilot-sdk").expanduser()
 
 
+def _reasoning_item(d: dict) -> bool:
+    """An assistant.message that only carries the model's encrypted reasoning: the Responses API returns
+    it as a separate output item of the same model call (gpt-6-luna, seen 2026-09-29), with empty
+    content and no tool requests. It is neither an answer nor a second model call."""
+    return (d.get("content") == "" and not d.get("toolRequests")
+            and bool(d.get("reasoningOpaque") or d.get("reasoningText")))
+
+
 class CopilotSubject(CliSubject):
     vendor = "copilot"
     binary_name = "copilot"
@@ -295,7 +303,7 @@ class CopilotSubject(CliSubject):
             content = d.get("content")
             if not isinstance(content, str):
                 bad(f"malformed assistant message {json.dumps(d)[:160]}")
-            else:
+            elif not _reasoning_item(d):
                 p.text = content if not p.text else p.text + "\n" + content
         return None
 
@@ -309,7 +317,8 @@ class CopilotSubject(CliSubject):
         if home is None:
             p.violations.append("cannot verify the request: private home unknown")
         else:
-            answered = any(t == "assistant.message" for t, _ in getattr(self._call, "events", []))
+            answered = any(t == "assistant.message" and not _reasoning_item(d)
+                           for t, d in getattr(self._call, "events", []))
             self.audit_events(p, answered)
             self.audit_wire(home, getattr(self._call, "prompt", ""), p, required=answered or not p.error)
         if p.violations:
@@ -319,8 +328,9 @@ class CopilotSubject(CliSubject):
         bad = p.violations.append
         evs = getattr(self._call, "events", [])
         prompt = getattr(self._call, "prompt", "")
-        count = {k: sum(1 for t, _ in evs if t == k) for k in ("model.call_start", "assistant.usage", "assistant.message",
-                                                              "model.model_call_success", "user.message", "system.message")}
+        count = {k: sum(1 for t, d in evs if t == k and not (t == "assistant.message" and _reasoning_item(d)))
+                 for k in ("model.call_start", "assistant.usage", "assistant.message", "model.model_call_success",
+                           "user.message", "system.message")}
         for t, d in evs:
             if t == "user.message" and (d.get("content") != prompt or d.get("transformedContent", prompt) != prompt):
                 bad(f"the user message is not the prompt verbatim: {str(d.get('transformedContent'))[:100]!r}")
