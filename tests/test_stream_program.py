@@ -578,3 +578,66 @@ def test_keystone_refused_gnu_as_accepted_mov_shift_runs(shift, status):
     for image in (obj.link(), link_program(assemble_program(src, "aarch64"), "aarch64")):
         r = run_program(image, b"")
         assert (r.status, r.fault) == (status, None)
+
+
+# -- .end, .arch/.cpu and GNU's one-quote character literal (MAI-Code app review, 2026-09-30) --------
+
+
+def _both_paths(src: str, isa: str) -> tuple[str | None, str | None]:
+    """(asm-path error, stream-path error); None where the path accepts the program."""
+    from bca.image import AsmError, assemble_program
+
+    try:
+        assemble_program(src, isa)
+        asm = None
+    except AsmError as exc:
+        asm = str(exc)
+    sa = stream_mod.StreamAssembler(ISAS[isa], program=True)
+    try:
+        sa.feed(src)
+        obj = sa.finish()
+        st = obj.errors[0].message if obj.errors else None
+    except stream_mod.StreamHalted as exc:
+        st = str(exc)
+    return asm, st
+
+
+@pytest.mark.parametrize("isa,body,ok", [
+    ("aarch64", ".arch armv8-a\n", True),
+    ("aarch64", ".arch armv8-a+fp+simd\n", True),
+    ("aarch64", ".arch armv8-a+nocrc\n", True),
+    ("aarch64", ".cpu generic+simd\n", True),
+    ("aarch64", ".arch armv8.1-a+crc\n", False),  # would enable CRC32 / LSE on the asm path
+    ("aarch64", ".arch armv8-a+crc\n", False),
+    ("aarch64", ".arch armv8-a+nofp\n", False),
+    ("aarch64", ".arch_extension crc\n", False),
+    ("x86_64", ".arch generic64\n", False),  # can only narrow what GNU as accepts; the stream does not model it
+    ("aarch64", "mov w0, #0\n.end\nthis is prose, and .macro / .incbin are not read\n", True),
+    ("x86_64", "xor eax, eax\n.END\n\\ anything\n", True),
+])
+def test_arch_cpu_and_end_are_accepted_alike_on_both_paths(isa, body, ok):
+    src = ".globl _start\n.text\n_start:\n" + body
+    asm, st = _both_paths(src, isa)
+    assert (asm is None) is ok and (st is None) is ok, (asm, st)
+    if not ok:
+        assert any(w in asm and w in st for w in ("instruction set", "not supported")), (asm, st)
+
+
+@pytest.mark.parametrize("isa", ["x86_64", "aarch64"])
+def test_one_quote_character_literal_and_end_run_alike(isa):
+    # GNU as reads 'c (no closing quote) as the character's value, like 'c'; MAI-Code wrote `cmp w3, #'{`
+    from bca.image import assemble_program, link_program
+    from bca.process import run_program
+
+    code = {"x86_64": "mov edi, '{\n    cmp edi, '{'\n    jne 1f\n    mov edi, 'A\n    sub edi, 'A'-7\n1:\n"
+                      "    mov eax, 60\n    syscall\n",
+            "aarch64": "mov w0, #'{\n    cmp w0, #'{'\n    b.ne 1f\n    mov w0, #'A\n    sub w0, w0, #'A'-7\n1:\n"
+                       "    mov x8, #93\n    svc #0\n"}[isa]
+    src = f".globl _start\n.text\n_start:\n    {code}.end\n.macro junk after end\n"
+    sa = stream_mod.StreamAssembler(ISAS[isa], program=True)
+    sa.feed(src)
+    obj = sa.finish()
+    assert not obj.errors, obj.errors[0].message
+    for image in (obj.link(), link_program(assemble_program(src, isa), isa)):
+        r = run_program(image, b"")
+        assert (r.status, r.fault) == (7, None)

@@ -1666,3 +1666,15 @@ def test_recorded_luna_mat_pow_answer_passes_the_stream_pipeline():
     task = known_tasks()["mat_pow"][0]
     a = attempt(FakeSubject([text]), "stream", "aarch64", task, "(prompt not needed)")
     assert a.ok, (a.category, a.failure)
+
+
+def test_function_mode_one_quote_literal_end_and_arch():
+    # GNU as: 'c without the closing quote is the character's value; nothing after `.end` is read
+    x86 = assemble_stream(X86_64, ["mov eax, 'A\nadd eax, 'B'\n.end\nthis line is not read\n"])
+    assert not x86.errors and x86.code == keystone_whole(X86_64, "mov eax, 65\nadd eax, 66")
+    a64 = assemble_stream(AARCH64, [".arch armv8-a\nmov w0, #'{\nret\n.end\n.macro nope\n"])
+    assert not a64.errors and a64.code == keystone_whole(AARCH64, "mov w0, #123\nret")
+    bad = assemble_stream(AARCH64, [".arch armv8.2-a+crc\nret\n"])
+    assert bad.errors and "outside the prompt's instruction set" in bad.errors[0].message
+    bad = assemble_stream(X86_64, [".arch generic64\nret\n"])
+    assert bad.errors and "not supported on x86-64" in bad.errors[0].message

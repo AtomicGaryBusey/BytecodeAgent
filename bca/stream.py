@@ -197,10 +197,33 @@ _LABEL_RE = re.compile(r"([A-Za-z_.$][\w.$]*)\s*:(?!:)")
 _MNEMONIC_RE = re.compile(r"[A-Za-z_][\w.]*(?: |$)")
 _WS_RE = re.compile(r"[ \t\r\f\v]+")
 _CTRL_RE = re.compile(r"[\x00-\x1f\x7f]")
-# A printable one-character literal, minus quote, backslash and the comment/separator characters.
-_CHAR_LIT_RE = re.compile(r"'([ !$-&(-\[\]-~])'")
+# A printable one-character literal, minus quote, backslash and the comment/separator characters;
+# GNU as also takes the one-quote form 'c (the closing quote is optional).
+_CHAR_LIT_RE = re.compile(r"'([ !$-&(-\[\]-~])'?")
 _IGNORED_DIRECTIVES = {".text", ".globl", ".global", ".type", ".size", ".file", ".intel_syntax"}
 _RESERVED_PREFIX = "__bca_"
+_END_RE = re.compile(r"\.end", re.I)
+_ARCH_DIRECTIVES = {".arch", ".cpu", ".arch_extension"}
+# AArch64: GNU as defaults to plain ARMv8.0-A, the prompt's level. `.arch armv8-a` / `.cpu generic` restate it
+# (with +fp / +simd, or +no<ext> for an extension that is off anyway); anything else would let GNU as accept
+# instructions the prompt rejects (CRC32, LSE, ...) on the asm path, so both paths refuse it.
+_A64_ARCH_RE = re.compile(r"(?:armv8-a|generic)((?:\+(?:fp|simd|no(?!fp\b|simd\b)[a-z0-9]+))*)", re.I)
+
+
+def _arch_directive_error(x86: bool, head: str, args: str) -> str | None:
+    """None if `.arch` / `.cpu` / `.arch_extension` stays within the prompt's instruction set, else why not.
+    Shared by the stream and asm (bca.image) paths so both accept exactly the same."""
+    name, value = head.lower(), args.strip()
+    if x86:
+        return (f"`{name}` is not supported on x86-64: the instruction set is fixed by the prompt's rules "
+                "(remove the directive)")
+    if name == ".arch_extension":
+        return "`.arch_extension` is not supported: the instruction set is ARMv8.0-A (remove the directive)"
+    base = "armv8-a" if name == ".arch" else "generic"
+    if not value.lower().startswith(base) or not _A64_ARCH_RE.fullmatch(value):
+        return (f"`{name} {value}` is outside the prompt's instruction set; only `{name} {base}` "
+                "(ARMv8.0-A, optionally +fp / +simd) is allowed")
+    return None
 
 
 @dataclass
@@ -396,7 +419,7 @@ class _Splitter:
         alts = {*comment_markers, "/*"} | ({";"} if semicolon_separates else set())
         special = "|".join(re.escape(a) for a in sorted(alts, key=len)[::-1])
         if strings:  # program mode: "..." and 'c' / '\c' are opaque
-            special = r"""'(?:\\[^\n]|[^\\\n])'|"|""" + special
+            special = r"""'(?:\\[^\n]|[^\\\n])'?|"|""" + special
         self._special = re.compile(special)
         self.semicolon_separates = semicolon_separates
         self.buf = ""
@@ -632,6 +655,8 @@ class StreamAssembler:
         self._align = dict.fromkeys(_PROGRAM_SECTIONS, 1)
         self._numeric: dict[int, int] = {}  # GNU as local labels: N -> definitions so far
         self._consts: dict[str, int] = {}  # .equ / .set / = constants
+        # `.end` seen after this many committed statements: GNU as ignores everything after it
+        self._end_at: int | None = None
 
     def _rollback(self, keep: int) -> None:
         """Un-commit every statement after the first `keep`, restoring the exact state."""
@@ -657,6 +682,8 @@ class StreamAssembler:
                 self._program_restore(undo.prog)
         self._unchecked = [u for u in self._unchecked if u[0] < keep]
         self._warns = [w for w in self._warns if w[0] < keep]
+        if self._end_at is not None and self._end_at >= keep:
+            self._end_at = None  # `.end` came after the undone statements: it is read again
 
     def _error_event(self, message: str, text: str, line: int) -> Event:
         if self._program:
@@ -681,7 +708,9 @@ class StreamAssembler:
                 kind, text, line = stmt
                 after = self._splitter.state()
                 number, start = len(self._committed), len(out)
-                if kind == "long":
+                if self._end_at is not None:
+                    events = []  # after `.end`: ignored, as GNU as does
+                elif kind == "long":
                     message = f"line longer than {MAX_LINE} characters; dropped"
                     events = [self._error_event(message, text + "...", line)]
                 else:
@@ -717,7 +746,10 @@ class StreamAssembler:
     def _process(self, raw: str, line: int) -> list[Event]:
         """Handle one statement. Returns its events; on error nothing is committed."""
         text = raw.strip()
-        if not text or text.startswith("```"):
+        if not text or text.startswith("```") or self._end_at is not None:
+            return []
+        if _END_RE.fullmatch(text):  # GNU as stops reading here; so does the stream
+            self._end_at = len(self._committed)
             return []
         added: list[str] = []
         try:
@@ -765,8 +797,13 @@ class StreamAssembler:
             if name.startswith(_RESERVED_PREFIX) or name in (".", "$"):
                 return error(f"label name {name!r} is reserved")
         if text.startswith("."):
-            if text.split()[0] not in _IGNORED_DIRECTIVES:
-                return error(f"unsupported directive {text.split()[0]!r}")
+            head, _, args = text.partition(" ")
+            if head.lower() in _ARCH_DIRECTIVES:
+                why = _arch_directive_error(self._x86, head, args)
+                if why:
+                    return error(why)
+            elif head not in _IGNORED_DIRECTIVES:
+                return error(f"unsupported directive {head!r}")
             text = ""
         elif text and not _MNEMONIC_RE.match(text):
             return error(
@@ -1197,6 +1234,11 @@ class StreamAssembler:
                     raise AsmError(f"{head}: {n!r} is not a label name")
             return ("globl", names)
         if name in (".type", ".size", ".file"):
+            return ("none",)
+        if name in _ARCH_DIRECTIVES:
+            why = _arch_directive_error(self._x86, head, args)
+            if why:
+                raise AsmError(why)
             return ("none",)
         if name == ".intel_syntax":
             if not self._x86 or args.lower() != "noprefix":
@@ -3309,7 +3351,7 @@ def _pretty_names(message: str) -> str:
     return _NUMERIC_NAME_RE.sub(lambda m: f"local label {m[1]}", message)
 
 
-_PROGRAM_CHAR_RE = re.compile(r"'(\\[^\n]|[^\\'\n])'")
+_PROGRAM_CHAR_RE = re.compile(r"'(\\[^\n]|[^\\'\n])'?")  # 'c', '\n', or GNU's one-quote 'c
 _STRING_TOKEN_RE = re.compile(r'"\d+"')
 _ASSIGN_RE = re.compile(r"(?i)(?:\.(?:equ|set|equiv) ([A-Za-z_.$][\w.$]*) ?,|([A-Za-z_.$][\w.$]*) ?=(?!=))(.*)")
 

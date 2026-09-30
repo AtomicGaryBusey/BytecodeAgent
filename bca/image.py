@@ -89,6 +89,8 @@ def _page_up(n: int) -> int:
 # -- assembling ------------------------------------------------------------------------------
 
 _GAS_DIAG_RE = re.compile(r"^\{standard input\}:(\d+): (Error|Warning|Fatal error): (.*)$", re.M)
+# a diagnostic with no line number (e.g. an undefined local label `1f`)
+_GAS_DIAG_NOLINE_RE = re.compile(r"^\{standard input\}: (Error|Fatal error): (.*)$", re.M)
 # The prompt's "Not allowed" list, the same set the stream path refuses (bca.stream), is rejected
 # before GNU as runs, wherever the name appears outside a string or comment. Refusing macros and
 # repetition blocks also closes name building (`.inc\()bin` inside a `.macro`): with no macro
@@ -122,8 +124,27 @@ def _refused_directive(name: str) -> str | None:
     return None
 
 
+def _end_offset(masked: str) -> int | None:
+    """Offset of the first `.end` statement: GNU as reads nothing after it (and neither does the stream)."""
+    pos = 0
+    for raw in masked.split("\n"):
+        off = pos
+        for stmt in raw.split(";"):
+            body = stmt
+            while m := _LABEL_PREFIX_RE.match(body):
+                body = body[m.end():]
+            if body.strip().lower() == ".end":
+                return off
+            off += len(stmt) + 1
+        pos += len(raw) + 1
+    return None
+
+
 def _check_source(source: str, isa_name: str, prompt_rules: bool = True) -> None:
     masked = _MASK_RE[isa_name].sub(lambda m: re.sub(r"[^\n]", " ", m.group(0)), source)
+    end = _end_offset(masked)
+    if end is not None:
+        masked = masked[:end]
     for m in _DIRECTIVE_RE.finditer(masked):
         why = _refused_directive(m.group(0))
         if why:
@@ -147,7 +168,7 @@ def _check_layout(masked: str, isa_name: str) -> None:
     """The prompt's placement and constant rules, as the stream path enforces them (bca.stream
     program mode): instructions only in .text; only alignment in .text besides instructions; only
     .zero/.space/.skip and alignment in .bss; every constant defined before its first use."""
-    from bca.stream import _ASSIGN_RE, _data_width
+    from bca.stream import _ARCH_DIRECTIVES, _ASSIGN_RE, _arch_directive_error, _data_width
 
     x86 = isa_name == "x86_64"
     data = {".ascii", ".asciz", ".string", ".zero", ".space", ".skip"}
@@ -173,7 +194,11 @@ def _check_layout(masked: str, isa_name: str) -> None:
             seen.update(words)
             head = stmt.split(None, 1)[0].lower()
             if head.startswith("."):
-                if head in (".text", ".data", ".bss"):
+                if head in _ARCH_DIRECTIVES:
+                    why = _arch_directive_error(x86, head, (stmt.split(None, 1)[1:] or [""])[0])
+                    if why:
+                        raise AsmError(f"line {n}: {why}", n)
+                elif head in (".text", ".data", ".bss"):
                     section = head
                 elif head == ".section":
                     section = (stmt.split(None, 1)[1:] or [""])[0].split(",")[0].strip()
@@ -240,8 +265,16 @@ def assemble_program(source: str, isa_name: str, *, prompt_rules: bool = True) -
             line = int(m.group(1)) - len(header)
             first_line = first_line or line
             errors.append(f"line {line}: {m.group(3)}")
+        for m in _GAS_DIAG_NOLINE_RE.finditer(diag):
+            msg = m.group(2)
+            if re.search(r"can't write|memory|exhausted", msg):  # a resource limit fired
+                msg += f" (limits: object {ASM_OBJECT_LIMIT >> 20} MiB, memory {ASM_MEMORY_LIMIT >> 20} MiB)"
+            errors.append(msg)
         if proc.returncode != 0 or errors:
-            if not errors:
+            if not errors and proc.returncode > 0:  # failed without saying why
+                tail = diag.strip().splitlines()[-3:]
+                errors = [f"GNU as failed (exit status {proc.returncode})" + (": " + " / ".join(tail) if tail else "")]
+            if not errors:  # killed by a signal: the object-size, CPU or memory limit
                 reason = (f"killed by signal {-proc.returncode}" if proc.returncode < 0
                           else f"exit status {proc.returncode}")
                 tail = diag.strip().splitlines()[-3:]

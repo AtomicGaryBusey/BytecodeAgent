@@ -665,3 +665,10 @@ def test_asm_accepts_what_the_prompt_allows(isa):
            ".data\n.balign 8\nd: .quad K, msg\n.bss\n.balign 16\nb: .zero 64\n.text\n"
            f".balign 4\n_start: {mov}; 1: nop\n")
     assemble_program(src, isa)
+
+
+def test_gnu_as_message_without_a_line_number_is_shown_as_is():
+    # an undefined local label: GNU as names no line; the message must be GNU as's own, not a limits note
+    with pytest.raises(AsmError) as exc:
+        assemble_program(".globl _start\n_start: jmp 1f\n", "x86_64")
+    assert "is not defined" in str(exc.value) and "limits" not in str(exc.value)
