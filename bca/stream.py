@@ -753,10 +753,10 @@ class StreamAssembler:
         for name in labels:
             if name in self._labels or labels.count(name) > 1:
                 return error(f"duplicate label {name!r}")
-            if _reserved_name(self.isa, name):
+            if _refused_label(self.isa, name):
                 return error(
-                    f"label name {name!r} is a register name or operand keyword; "
-                    "the assembler would not read it as a label"
+                    f"label name {name!r} is a register name or operand keyword that GNU as "
+                    "does not read as a label; rename the label"
                 )
             if name.startswith(_RESERVED_PREFIX) or name in (".", "$"):
                 return error(f"label name {name!r} is reserved")
@@ -910,10 +910,10 @@ class StreamAssembler:
             if (name in self._labels or name in self._symtab or name in self._consts
                     or labels.count(name) > 1):  # fmt: skip
                 return error(f"duplicate label {name!r}")
-            if _reserved_name(self.isa, name):
+            if _refused_label(self.isa, name):
                 return error(
-                    f"label name {name!r} is a register name or operand keyword; "
-                    "the assembler would not read it as a label"
+                    f"label name {name!r} is a register name or operand keyword that GNU as "
+                    "does not read as a label; rename the label"
                 )
             if name.startswith(_RESERVED_PREFIX) or name in (".", "$"):
                 return error(f"label name {name!r} is reserved")
@@ -2433,7 +2433,7 @@ def _eval_lin(
             return _Lin(0, {("reg", v.lower()): 1})
         if v in labels:
             return _Lin(labels[v], {("sec",): 1})
-        if forward and not (x86 and v.lower() in _X86_REGISTERS | _X86_KEYWORDS):
+        if forward and not (x86 and _refused_label(X86_64, v)):
             return _Lin(0, {("fwd", v): 1})
         raise _ExprError(f"unknown symbol {v!r}")
 
@@ -2597,6 +2597,9 @@ _X86_REGISTERS |= {f"r{i}b" for i in range(8, 16)}
 _X86_KEYWORDS = {"ptr", "byte", "word", "dword", "qword", "tbyte", "tword", "xword", "oword",
                  "fword", "mmword", "xmmword", "ymmword", "zmmword", "offset", "short", "near",
                  "far", "rel", "abs", "st", ".", "$"}  # fmt: skip
+# GNU as reads these as a symbol wherever one can go; every other keyword (the size names,
+# `near`, `far`, `offset`, `short`, `st`) it misreads as the keyword or rejects.
+_X86_REFUSED_KEYWORDS = _X86_KEYWORDS - {"ptr", "rel", "abs", "tword", "xword"}
 _X86_PREFIXES = {"lock", "rep", "repe", "repz", "repne", "repnz", "bnd", "notrack", "xacquire",
                  "xrelease", "data16", "data32", "addr32"}  # fmt: skip
 _X86_CONDS = ["a", "ae", "b", "be", "c", "e", "g", "ge", "l", "le", "na", "nae", "nb", "nbe",
@@ -2672,7 +2675,8 @@ def _x86_direct_branch(head: str, ops: list[str]) -> tuple[str, str] | None:
     if head.split()[-1].lower() not in _X86_BRANCHES or len(ops) != 1:
         return None
     keyword, target = _branch_operand(ops[0])
-    if "[" in target or re.search(r"(?i)\bptr\b", target):
+    bare = _IDENT_RE.fullmatch(target) and not _refused_label(X86_64, target)  # `jmp ptr`: a label
+    if "[" in target or (not bare and re.search(r"(?i)\bptr\b", target)):
         return None  # indirect through memory
     if target.lower() in _X86_REGISTERS:
         return None
@@ -2975,6 +2979,18 @@ _PLAIN_LITERAL_RE = re.compile(r"-?\s*(?:0[xX][0-9a-fA-F]+|[1-9][0-9]*|0)")
 _FLOAT_RE = re.compile(r"[-+]?\s*(?:\d+\.\d*|\.\d+)(?:[eE][-+]?\d+)?|[-+]?\s*\d+[eE][-+]?\d+")
 
 
+def _refused_label(isa: Isa, name: str) -> bool:
+    """A label name GNU as does not read as a label everywhere a label can go. AArch64: none
+    (GNU as reads `lt`, `lsl`, `sp`, even `x0` as a symbol wherever a symbol is expected, and
+    as the keyword or register elsewhere). x86-64: register names and the keywords GNU as
+    misreads or rejects as a symbol (_X86_REFUSED_KEYWORDS); `ptr`, `rel`, `abs`, `tword`
+    and `xword` are labels to GNU as."""
+    if isa is not X86_64:
+        return name in (".", "$")
+    low = name.lower()
+    return low in _X86_REGISTERS or low in _X86_REFUSED_KEYWORDS
+
+
 def _reserved_name(isa: Isa, name: str) -> bool:
     low = name.lower()
     if isa is X86_64:
@@ -3060,7 +3076,7 @@ def _a64_prepare(text: str, addr: int, labels: dict[str, int]) -> _A64Statement:
         if i == idx:
             continue
         for m in _IDENT_RE.finditer(op):
-            if m[0] in labels or m[0] == ".":
+            if (m[0] in labels and not _reserved_name(AARCH64, m[0])) or m[0] == ".":
                 raise AsmError(
                     f"{m[0]!r} can only be used as a PC-relative target or in :lo12: "
                     "(GNU as would need a relocation)"
@@ -3076,8 +3092,6 @@ def _a64_prepare(text: str, addr: int, labels: dict[str, int]) -> _A64Statement:
     if forward:
         raise AsmError(":lo12: cannot be combined with a PC-relative target")
     operand = ops[idx].strip()
-    if _reserved_name(AARCH64, operand):
-        raise AsmError(f"{operand!r} is a register name or keyword, not a label; rename the label")
     try:
         value, sym, reloc = _eval_label(operand, x86=False, labels=labels, here=addr, forward=True)
     except _ExprError as exc:

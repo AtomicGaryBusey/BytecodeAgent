@@ -4,6 +4,8 @@ import subprocess
 import sys
 from pathlib import Path
 
+import re
+
 import pytest
 
 from bca.difftest import buffer_differential, compile_c_reference, differential, int_inputs
@@ -811,18 +813,42 @@ def test_numeric_literals_mean_the_same_with_and_without_labels():
 @pytest.mark.parametrize(
     "isa,text",
     [
-        (AARCH64, "b b1\nb1: ret"),
-        (AARCH64, "b1: ret"),
-        (AARCH64, "cbz x0, x1\nx1: ret"),
-        (AARCH64, "w0: ret"),
-        (AARCH64, "eq: ret"),
         (X86_64, "rax: ret"),
         (X86_64, "nop\nbl: ret"),
+        (X86_64, "byte: ret"),
+        (X86_64, "offset: ret"),
+        (X86_64, "near: ret"),
     ],
 )
 def test_register_named_labels_get_a_clear_error(isa, text):
+    # GNU as reads these as the register or keyword (or rejects them), never as the label.
     prog = assemble_stream(isa, [text + "\n"])
     assert not prog.ok and "register name" in prog.errors[0].message, prog.errors[0].message
+
+
+@pytest.mark.parametrize(
+    "isa,name,text",
+    [
+        (AARCH64, "b1", "b {L}\n{L}: ret"),
+        (AARCH64, "x1", "cbz x0, {L}\n{L}: ret"),
+        (AARCH64, "w0", "{L}: ret"),
+        (AARCH64, "lt", "b.lt {L}\nadr x1, {L}\n{L}: csel x0, x1, x2, lt\nret"),
+        (AARCH64, "lsl", "{L}: add x0, x0, x1, lsl #3\ncbnz x0, {L}\nret"),
+        (AARCH64, "sp", "bl {L}\nret\n{L}: mov sp, x29\nret"),
+        (X86_64, "ptr", "jmp {L}\n{L}: ret"),
+        (X86_64, "abs", "call {L}\nret\n{L}: lea rax, [rip + {L}]\nmov rax, qword ptr [rip + {L}]\nret"),
+        (X86_64, "tword", "{L}: jmp {L}"),
+    ],
+)
+def test_keyword_named_labels_gnu_as_accepts(isa, name, text):
+    # GNU as reads these names as symbols where a symbol goes (checked per position on both
+    # ISAs), and as the keyword or register elsewhere; the stream does the same, with the bytes
+    # any other label name gives.
+    prog = assemble_stream(isa, [text.format(L=name) + "\n"])
+    assert prog.ok, prog.errors[0].message
+    other = assemble_stream(isa, [text.format(L="plain") + "\n"])
+    assert other.ok and other.code == prog.code
+    assert prog.labels[name] == other.labels["plain"]
 
 
 def test_x86_label_plus_constant():

@@ -520,3 +520,46 @@ def test_canned_app_solutions_pass_through_the_stream(path):
     for test in task.tests():
         res = run_program(image, test.stdin, max_insns=task.max_insns)
         assert (res.stdout, res.status) == (test.stdout, test.status), test.label
+
+
+def test_keyword_named_data_labels_link_and_run():
+    # The app-battery false reject: Sonnet 5.5's json_lint named a rodata label `lt` and was
+    # stopped at `adrp x26, lt`, which GNU as accepts. Same program on both paths.
+    from bca.image import assemble_program, link_program
+    from bca.process import run_program
+
+    src = """.globl _start
+.text
+_start:
+    adrp x1, lt
+    add x1, x1, :lo12:lt
+    adrp x3, lsl
+    ldr x3, [x3, :lo12:lsl]
+    ldr x2, [x3]
+    cmp x2, x2
+    b.lt lt_fail
+    mov x0, #1
+    mov x2, #5
+    mov x8, #64
+    svc #0
+    mov x0, #0
+    mov x8, #93
+    svc #0
+lt_fail:
+    mov x0, #1
+    mov x8, #93
+    svc #0
+.section .rodata
+lt: .ascii "true\\n"
+.data
+.balign 8
+lsl: .quad lt
+"""
+    sa = stream_mod.StreamAssembler(ISAS["aarch64"], program=True)
+    events = sa.feed(src)
+    assert not [e for e in events if e.kind == "error"]
+    obj = sa.finish()
+    assert obj.ok, obj.errors
+    for image in (obj.link(), link_program(assemble_program(src, "aarch64"), "aarch64")):
+        r = run_program(image, b"")
+        assert (r.stdout, r.status, r.fault) == (b"true\n", 0, None)
