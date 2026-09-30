@@ -1,0 +1,279 @@
+Write the complete program `sort_lines`: a static Linux executable for AArch64 (ARMv8-A, little-endian), written in assembly. There is no C library, no C runtime and no helper code: you write the entry point `_start`, every function, every table and string, and make the system calls yourself.
+
+Entry state (as the Linux kernel sets it up): execution starts at the label `_start`. sp is 16-byte aligned and points at argc = 0, followed by the NULL terminators of an empty argv, an empty envp and an empty auxiliary vector: the program gets no arguments. Every other general-purpose register (x0-x30) is zero; x30 is not a return address, so `_start` must never return with `ret`; the program ends only through the exit system call.
+
+System calls: the `svc #0` instruction, with the system call number in x8 and the arguments in x0, x1, x2; the result comes back in x0. Every other register is preserved. Exactly these four are available:
+- read = 63: read(fd = 0, buf, count) reads up to count bytes of standard input into buf; returns the number of bytes read, 0 at end of input.
+- write = 64: write(fd, buf, count) with fd 1 (standard output) or 2 (standard error); returns count.
+- exit = 93: exit(status) ends the program; the exit status is the low 8 bits of status.
+- exit_group = 94: the same as exit.
+Any other system call number or file descriptor stops the program with an error, and so does a buffer that is not entirely inside the program's memory.
+
+Memory: the program's own sections plus a stack of 1 MiB below the entry sp. There is no heap (no brk, no mmap, no malloc): put working storage in `.bss` (zero-initialised), at most 1 MiB in total, or on the stack. Code is not writable. Any access outside these areas stops the program. Each test run may execute at most 200,000,000 instructions.
+
+Output format: one complete assembly source file in GNU assembler (GNU as) syntax for AArch64. Examples: `ldr x2, [x0, x1, lsl #3]`, `ldrb w3, [x1], #1`, `stp x29, x30, [sp, #-16]!`. Comments start with `//`; do not use `;`.
+Allowed in the file:
+- Sections: `.text` (code), `.section .rodata` (read-only data), `.data` (initialised writable data), `.bss` (zero-initialised space: only `.zero`/`.space` and alignment). Instructions go in `.text` only.
+- Data directives: `.byte`, `.short`/`.2byte`, `.word` (4 bytes on this target), `.long`/`.int`/`.4byte`, `.quad`/`.8byte`, `.ascii`, `.asciz`/`.string`, `.zero`/`.space`, alignment with `.align`/`.balign`/`.p2align`, and `.globl`/`.global` (write `.globl _start`).
+- Labels `name:` in any section, and GNU local labels `1:` referenced as `1f` (next) / `1b` (previous).
+- Constants: `.equ name, value` (or `.set name, value`, or `name = value`), where value is a number or a difference of labels defined earlier in the same section (e.g. `msg_len = . - msg`). Define every constant before its first use.
+- Addressing data: `adrp x0, label` followed by `add x0, x0, :lo12:label` (or a load/store `ldr x1, [x0, :lo12:label]`); `adr x0, label` also works within +-1 MiB. Literal pools are NOT allowed: no `ldr x0, =label` and no `ldr x0, =constant` (build constants with mov/movz/movk).
+Not allowed: macros (`.macro`, `.rept`, `.irp`), conditional assembly (`.if`), `.include`, `.incbin`, `.fill`, `.org`, `.comm`/`.lcomm`, `.inst`, `.cfi_*` directives, section stacks (`.pushsection`) and any other section. No libc and no other library: there is nothing to link against, so every symbol you use must be defined in your file.
+Instruction set: ARMv8.0-A with floating point and Advanced SIMD (NEON). Not supported (rejected): CRC32, LSE atomics, dot product, half-precision, crypto (AES/SHA/PMULL) and SVE.
+Output ONLY the assembly source: no Markdown fences, no prose before or after it.
+
+Specification: Task `sort_lines`: print the lines of standard input sorted in ascending byte-wise order.
+
+- Lines are defined as follows: a line is a (possibly empty) sequence of bytes terminated by a newline 0x0A; if
+  the input does not end with a newline, the bytes after the last newline form one more, final line. Empty input
+  has no lines, and the empty remainder after a final newline is not a line.
+- Order: compare two lines byte by byte as UNSIGNED values 0x00-0xFF (like C `memcmp`); the first differing
+  byte decides. If one line is a prefix of the other, the shorter line comes first (so the empty line sorts
+  before every non-empty line). Equal lines are all printed (duplicates are kept).
+- Print every line followed by one newline 0x0A (the final line gets a newline even if it had none in the
+  input). Empty input prints nothing. A carriage return 0x0D and every other byte value are ordinary bytes.
+
+Example: `pear\napple\nPear\n\napple` prints `\nPear\napple\napple\npear\n`.
+
+Limits: the input is at most 32768 bytes and has at most 1000 lines. Exit status 0.
+
+Input and output (applies to this whole task):
+- The input is the complete contents of standard input (file descriptor 0). Read it with `read` until `read`
+  returns 0 (end of input). A `read` may return FEWER bytes than requested, at any position (in the middle of a
+  line, a token or a group of bytes), so keep calling it; only a return value of 0 means end of input.
+- Write the output to standard output (file descriptor 1). Only the bytes this task describes may appear on
+  standard output (standard error is ignored). Every output byte must be written before the program exits.
+- Finish with `exit` (or `exit_group`) and the exit status this task gives. The program must not run off the end
+  of its code or crash.
+
+Your previous attempt was:
+<previous>
+.text
+.align 2
+.globl _start
+
+_start:
+    bl read_all
+    bl parse_lines
+    bl sort_lines
+    bl write_output
+    mov x0, #0
+    mov x8, #93
+    svc #0
+
+read_all:
+    adrp x19, total_bytes
+    add x19, x19, :lo12:total_bytes
+    mov x20, #0
+read_loop:
+    mov x0, #0
+    adrp x1, input_buf
+    add x1, x1, :lo12:input_buf
+    add x1, x1, x20
+    mov x2, #4096
+    mov x3, #32768
+    sub x3, x3, x20
+    cmp x3, x2
+    b.hs read_count_ok
+    mov x2, x3
+read_count_ok:
+    mov x8, #63
+    svc #0
+    cmp x0, #0
+    b.eq read_done
+    add x20, x20, x0
+    cmp x20, #32768
+    b.ge read_done
+    b read_loop
+read_done:
+    str x20, [x19]
+    ret
+
+parse_lines:
+    adrp x20, total_bytes
+    add x20, x20, :lo12:total_bytes
+    ldr x20, [x20]
+    mov x21, #0
+    adrp x22, line_recs
+    add x22, x22, :lo12:line_recs
+    adrp x23, input_buf
+    add x23, x23, :lo12:input_buf
+    mov x24, x23
+    mov x25, x23
+    add x26, x23, x20
+parse_loop:
+    cmp x25, x26
+    b.ge parse_done
+    ldrb w27, [x25]
+    cmp w27, #10
+    b.ne parse_not_nl
+    sub x27, x25, x24
+    add x28, x22, x21, lsl #4
+    stp x24, x27, [x28]
+    add x21, x21, #1
+    add x25, x25, #1
+    mov x24, x25
+    b parse_loop
+parse_not_nl:
+    add x25, x25, #1
+    b parse_loop
+parse_done:
+    cmp x24, x26
+    b.eq parse_no_final
+    sub x27, x26, x24
+    add x28, x22, x21, lsl #4
+    stp x24, x27, [x28]
+    add x21, x21, #1
+parse_no_final:
+    adrp x0, line_count
+    add x0, x0, :lo12:line_count
+    str x21, [x0]
+    ret
+
+sort_lines:
+    adrp x0, line_count
+    add x0, x0, :lo12:line_count
+    ldr x19, [x0]
+    cmp x19, #1
+    b.le sort_done
+    mov x20, #1
+outer_sort:
+    cmp x20, x19
+    b.ge sort_done
+    adrp x21, line_recs
+    add x21, x21, :lo12:line_recs
+    add x21, x21, x20, lsl #4
+    adrp x22, key_rec
+    add x22, x22, :lo12:key_rec
+    ldp x23, x24, [x21]
+    stp x23, x24, [x22]
+    sub x25, x20, #1
+inner_sort:
+    cmp x25, #0
+    b.lt insert_key
+    adrp x26, line_recs
+    add x26, x26, :lo12:line_recs
+    add x26, x26, x25, lsl #4
+    mov x0, x26
+    mov x1, x22
+    bl compare_lines
+    cmp x0, #0
+    b.gt shift_line
+    b insert_key
+shift_line:
+    add x27, x26, #16
+    ldp x28, x29, [x26]
+    stp x28, x29, [x27]
+    sub x25, x25, #1
+    b inner_sort
+insert_key:
+    add x29, x25, #1
+    adrp x30, line_recs
+    add x30, x30, :lo12:line_recs
+    add x30, x30, x29, lsl #4
+    ldp x27, x28, [x22]
+    stp x27, x28, [x30]
+    add x20, x20, #1
+    b outer_sort
+sort_done:
+    ret
+
+compare_lines:
+    ldp x2, x3, [x0]
+    ldp x4, x5, [x1]
+    mov x6, #0
+compare_loop:
+    cmp x6, x3
+    b.hs a_exhausted
+    cmp x6, x5
+    b.hs b_exhausted
+    add x7, x2, x6
+    add x8, x4, x6
+    ldrb w9, [x7]
+    ldrb w10, [x8]
+    cmp w9, w10
+    b.lt cmp_less
+    b.gt cmp_greater
+    add x6, x6, #1
+    b compare_loop
+a_exhausted:
+    cmp x6, x5
+    b.lt cmp_less
+    b.eq cmp_equal
+    mov x0, #1
+    ret
+b_exhausted:
+    mov x0, #1
+    ret
+cmp_less:
+    mov x0, #-1
+    ret
+cmp_greater:
+    mov x0, #1
+    ret
+cmp_equal:
+    mov x0, #0
+    ret
+
+write_output:
+    adrp x19, line_count
+    add x19, x19, :lo12:line_count
+    ldr x19, [x19]
+    cmp x19, #0
+    b.eq write_done
+    mov x20, #0
+write_loop:
+    cmp x20, x19
+    b.ge write_done
+    adrp x21, line_recs
+    add x21, x21, :lo12:line_recs
+    add x21, x21, x20, lsl #4
+    ldp x22, x23, [x21]
+    cmp x23, #0
+    b.eq write_newline_only
+    mov x0, #1
+    mov x1, x22
+    mov x2, x23
+    mov x8, #64
+    svc #0
+write_newline_only:
+    mov x0, #1
+    adrp x1, newline
+    add x1, x1, :lo12:newline
+    mov x2, #1
+    mov x8, #64
+    svc #0
+    add x20, x20, #1
+    b write_loop
+write_done:
+    ret
+
+.section .rodata
+.align 2
+newline:
+    .byte 10
+
+.section .bss
+.align 3
+total_bytes:
+    .space 8
+line_count:
+    .space 8
+key_rec:
+    .space 16
+input_buf:
+    .space 32768
+line_recs:
+    .space 16000
+</previous>
+It failed:
+<failure>
+Test `two` failed (stdin delivered whole; test run 4 of 42; the runs before it passed).
+stdin (4 bytes): "b\na\n"
+The program stopped with a fault (crash): jumped to 0x40a020: data (not executable) at pc 0x40a020
+exit status: expected 0, got none (the program did not exit)
+stdout differs from byte 0 on (line 1, column 1 of the expected output); expected 4 bytes in total, got 0
+  expected from byte 0: "a\nb\n"
+  actual from byte 0:   (end of output)
+</failure>
+Write a corrected, complete version. Same output format; output only the code.

@@ -1,0 +1,217 @@
+.text
+.globl _start
+
+_start:
+    // Read stdin into input_buf.
+    mov x19, #0                    // total bytes read
+    adrp x20, input_buf
+    add x20, x20, :lo12:input_buf
+
+read_loop:
+    cmp x19, #32768
+    b.hs read_done
+    mov x8, #63                    // read
+    mov x0, #0                     // fd = 0
+    add x1, x20, x19               // buf = input_buf + total
+    mov x2, #32768
+    sub x2, x2, x19                // count = 32768 - total
+    svc #0
+    mov x21, x0
+    cmp x21, #0
+    b.lt error_exit
+    add x19, x19, x21
+    cmp x21, #0
+    b.ne read_loop
+
+read_done:
+    // Parse lines from input_buf[0:total).
+    mov x21, #0                    // line_count
+    mov x22, #0                    // current position
+    mov x23, #0                    // line start offset
+
+parse_loop:
+    cmp x22, x19
+    b.hs parse_end
+
+    add x0, x20, x22
+    ldrb w0, [x0]
+    cmp w0, #10                    // newline?
+    b.ne parse_continue
+
+    // Store line: [start, current_pos)
+    sub x1, x22, x23               // len
+    adrp x9, line_ptrs
+    add x9, x9, :lo12:line_ptrs
+    adrp x10, line_lens
+    add x10, x10, :lo12:line_lens
+    add x11, x9, x21, lsl #3
+    add x12, x10, x21, lsl #2
+    add x13, x20, x23
+    str x13, [x11]
+    str w1, [x12]
+    add x21, x21, #1
+    add x23, x22, #1
+
+parse_continue:
+    add x22, x22, #1
+    b parse_loop
+
+parse_end:
+    // Final line if input does not end with newline.
+    cmp x23, x19
+    b.hs after_final
+
+    sub x1, x19, x23               // len
+    adrp x9, line_ptrs
+    add x9, x9, :lo12:line_ptrs
+    adrp x10, line_lens
+    add x10, x10, :lo12:line_lens
+    add x11, x9, x21, lsl #3
+    add x12, x10, x21, lsl #2
+    add x13, x20, x23
+    str x13, [x11]
+    str w1, [x12]
+    add x21, x21, #1
+
+after_final:
+    // Sort lines by byte-wise unsigned lexicographic order.
+    cmp x21, #1
+    b.ls output_lines
+
+    mov x24, #1                    // i = 1
+
+sort_outer:
+    cmp x24, x21
+    b.hs output_lines
+
+    adrp x28, line_ptrs
+    add x28, x28, :lo12:line_ptrs
+    adrp x29, line_lens
+    add x29, x29, :lo12:line_lens
+
+    ldr x26, [x28, x24, lsl #3]    // tmp_ptr
+    ldr w27, [x29, x24, lsl #2]    // tmp_len
+    mov x25, x24                   // j = i
+
+sort_inner:
+    cmp x25, #0
+    b.le insert_here
+
+    sub x9, x25, #1                // left index = j - 1
+    ldr x10, [x28, x9, lsl #3]     // left_ptr
+    ldr w11, [x29, x9, lsl #2]     // left_len
+
+    mov x15, #0                    // compare index
+    cmp w11, w27
+    csel x14, x11, x27, lo         // min = left_len < tmp_len ? left_len : tmp_len
+
+compare_loop:
+    cmp x15, x14
+    b.hs compare_done
+
+    ldrb w16, [x10, x15]
+    ldrb w17, [x26, x15]
+    cmp w16, w17
+    b.ne compare_diff
+    add x15, x15, #1
+    b compare_loop
+
+compare_done:
+    cmp w11, w27
+    b.lt left_smaller
+    b.gt shift
+    b insert_here
+
+compare_diff:
+    cmp w16, w17
+    b.lo left_smaller
+
+shift:
+    str x10, [x28, x25, lsl #3]
+    str w11, [x29, x25, lsl #2]
+    sub x25, x25, #1
+    b sort_inner
+
+left_smaller:
+    b insert_here
+
+insert_here:
+    str x26, [x28, x25, lsl #3]
+    str w27, [x29, x25, lsl #2]
+    add x24, x24, #1
+    b sort_outer
+
+output_lines:
+    // Build output in output_buf, then single write.
+    adrp x23, output_buf
+    add x23, x23, :lo12:output_buf
+    mov x24, #0                    // output index
+    mov x25, #0                    // output size
+
+    adrp x28, line_ptrs
+    add x28, x28, :lo12:line_ptrs
+    adrp x29, line_lens
+    add x29, x29, :lo12:line_lens
+
+output_loop:
+    cmp x24, x21
+    b.hs write_output
+
+    add x9, x23, x25               // dest = output_buf + output_size
+    ldr x10, [x28, x24, lsl #3]    // src_ptr
+    ldr w11, [x29, x24, lsl #2]    // len
+
+    mov x12, x11                   // remaining = len
+copy_loop:
+    cmp x12, #0
+    b.eq append_newline
+    ldrb w13, [x10], #1
+    strb w13, [x9], #1
+    sub x12, x12, #1
+    b copy_loop
+
+append_newline:
+    mov w13, #10
+    strb w13, [x9], #1
+    add x25, x25, x11
+    add x25, x25, #1
+    add x24, x24, #1
+    b output_loop
+
+write_output:
+    cmp x25, #0
+    b.eq exit_ok
+
+    mov x8, #64                    // write
+    mov x0, #1                     // fd = 1 (stdout)
+    mov x1, x23                    // buf = output_buf
+    mov x2, x25                    // count = output_size
+    svc #0
+
+    // Ignore partial writes; assume normal stdout accepts all.
+    // Exit cleanly with status 0.
+    b exit_ok
+
+exit_ok:
+    mov x8, #93                    // exit
+    mov x0, #0                     // status = 0
+    svc #0
+
+error_exit:
+    mov x8, #93                    // exit
+    mov x0, #1                     // error status
+    svc #0
+
+.section .bss
+    .balign 8
+input_buf:
+    .space 32768
+
+line_ptrs:
+    .space 1000 * 8
+
+line_lens:
+    .space 1000 * 4
+
+output_buf:
+    .space 65536
