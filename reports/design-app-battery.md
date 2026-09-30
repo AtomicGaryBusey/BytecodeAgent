@@ -1,6 +1,6 @@
 # Design: the app battery ("can a model write a whole program in machine code?")
 
-Status: proposed (2026-09-29). Every battery so far asks for **one function** of at most ~250 instructions,
+Status: approved 2026-09-29 (decisions below); being built. Every battery so far asks for **one function** of at most ~250 instructions,
 called by the harness under Unicorn. An application is a different kind of task: several functions calling
 each other, data and read-only data, a zero-initialised buffer area, an entry point that the OS jumps to, and
 input/output through system calls, all of which must stay consistent across hundreds to a few thousand
@@ -82,10 +82,10 @@ Expected program sizes: ~80 (wc) to ~1,500 instructions (json_lint).
 4. Adversarial review of the runner (escape attempts: writes to text, syscalls with bad pointers, huge outputs,
    stack exhaustion) and of the verdicts; then smokes, then full runs with plan budgets checked first.
 
-## Decisions needed
+## Decisions (made 2026-09-29)
 
 1. **The IR path.** QBE cannot issue system calls. Options: (a) drop IR for apps; (b) give every path the same
    harness-supplied `sys_read`/`sys_write`/`sys_exit` wrappers (then "no helper code" is relaxed equally for all
-   paths); (c) IR only, with the wrappers. Recommendation: (a) for the first round, `asm` + `stream` only.
-2. **Samples per cell**: 3 (recommended) or 5.
-3. **Which models** in the first round (suggested above) and plan budget per vendor.
+   paths); (c) IR only, with the wrappers. **Decided: (a), `asm` + `stream` only in round 1.**
+2. **Samples per cell: 3.**
+3. **Models: the six at >= 90% on functions** (Astra, Opus 5.5, Fable 5.1, Grok 4.7 build-fast, Kimi K3, Sonnet 5.5); plan budgets checked before each run.
