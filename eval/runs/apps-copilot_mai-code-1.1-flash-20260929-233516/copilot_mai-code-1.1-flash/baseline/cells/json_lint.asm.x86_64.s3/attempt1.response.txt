@@ -1,0 +1,689 @@
+.globl _start
+
+.section .rodata
+true_str: .ascii "true"
+false_str: .ascii "false"
+null_str: .ascii "null"
+ok_msg: .ascii "ok\n"
+err_prefix: .ascii "error at "
+newline_byte: .byte 10
+
+.section .bss
+.align 8
+input_pos: .zero 8
+input_len: .zero 8
+input_buf: .space 65536
+numbuf: .space 32
+
+.text
+
+_start:
+    call read_all
+    call parse_document
+    test rax, rax
+    jz .ok
+    call print_error
+    mov edi, 1
+    mov eax, 60
+    syscall
+.ok:
+    call print_ok
+    xor edi, edi
+    mov eax, 60
+    syscall
+
+read_all:
+    mov qword ptr [rip + input_len], 0
+    mov qword ptr [rip + input_pos], 0
+.loop:
+    lea rsi, [rip + input_buf]
+    mov rax, qword ptr [rip + input_len]
+    add rsi, rax
+    mov rdi, 0
+    mov rdx, 65536
+    mov rax, 0
+    syscall
+    cmp rax, 0
+    je .done
+    mov rcx, qword ptr [rip + input_len]
+    add rcx, rax
+    cmp rcx, 65536
+    jbe .store
+    mov rcx, 65536
+.store:
+    mov qword ptr [rip + input_len], rcx
+    cmp rcx, 65536
+    je .done
+    jmp .loop
+.done:
+    ret
+
+parse_document:
+    mov qword ptr [rip + input_pos], 0
+    call skip_ws
+    test rax, rax
+    jnz .done
+    call parse_value
+    test rax, rax
+    jnz .done
+    call skip_ws
+    mov rax, qword ptr [rip + input_pos]
+    mov rcx, qword ptr [rip + input_len]
+    cmp rax, rcx
+    jne .extra
+    xor rax, rax
+    ret
+.extra:
+    mov rax, qword ptr [rip + input_pos]
+    inc rax
+    ret
+.done:
+    ret
+
+skip_ws:
+    mov rbx, qword ptr [rip + input_pos]
+    mov rdx, qword ptr [rip + input_len]
+    lea rsi, [rip + input_buf]
+.loop:
+    cmp rbx, rdx
+    jae .end
+    movzx eax, byte ptr [rsi + rbx]
+    cmp al, 0x20
+    je .ws
+    cmp al, 0x09
+    je .ws
+    cmp al, 0x0A
+    je .ws
+    cmp al, 0x0D
+    je .ws
+    jmp .end
+.ws:
+    inc rbx
+    jmp .loop
+.end:
+    mov qword ptr [rip + input_pos], rbx
+    xor rax, rax
+    ret
+
+parse_value:
+    mov rbx, qword ptr [rip + input_pos]
+    mov rdx, qword ptr [rip + input_len]
+    cmp rbx, rdx
+    jae .incomplete
+    lea rsi, [rip + input_buf]
+    movzx eax, byte ptr [rsi + rbx]
+    cmp al, '{'
+    je .object
+    cmp al, '['
+    je .array
+    cmp al, '"'
+    je .string
+    cmp al, '-'
+    je .number
+    cmp al, '0'
+    jb .check_literal
+    cmp al, '9'
+    jbe .number
+.check_literal:
+    cmp al, 't'
+    je .true
+    cmp al, 'f'
+    je .false
+    cmp al, 'n'
+    je .null
+.invalid:
+    mov rax, rbx
+    inc rax
+    ret
+.object:
+    call parse_object
+    ret
+.array:
+    call parse_array
+    ret
+.string:
+    call parse_string
+    ret
+.number:
+    call parse_number
+    ret
+.true:
+    call parse_true
+    ret
+.false:
+    call parse_false
+    ret
+.null:
+    call parse_null
+    ret
+.incomplete:
+    mov rax, qword ptr [rip + input_len]
+    inc rax
+    ret
+
+parse_object:
+    mov rbx, qword ptr [rip + input_pos]
+    mov rdx, qword ptr [rip + input_len]
+    lea rsi, [rip + input_buf]
+    cmp rbx, rdx
+    jae .incomplete
+    movzx eax, byte ptr [rsi + rbx]
+    cmp al, '{'
+    jne .fail
+    inc rbx
+    mov qword ptr [rip + input_pos], rbx
+    call skip_ws
+    mov rbx, qword ptr [rip + input_pos]
+    mov rdx, qword ptr [rip + input_len]
+    lea rsi, [rip + input_buf]
+    cmp rbx, rdx
+    jae .incomplete
+    movzx eax, byte ptr [rsi + rbx]
+    cmp al, '}'
+    je .close
+.member:
+    call parse_string
+    test rax, rax
+    jnz .ret
+    call skip_ws
+    mov rbx, qword ptr [rip + input_pos]
+    mov rdx, qword ptr [rip + input_len]
+    lea rsi, [rip + input_buf]
+    cmp rbx, rdx
+    jae .incomplete
+    movzx eax, byte ptr [rsi + rbx]
+    cmp al, ':'
+    jne .fail_current
+    inc rbx
+    mov qword ptr [rip + input_pos], rbx
+    call skip_ws
+    call parse_value
+    test rax, rax
+    jnz .ret
+    call skip_ws
+    mov rbx, qword ptr [rip + input_pos]
+    mov rdx, qword ptr [rip + input_len]
+    lea rsi, [rip + input_buf]
+    cmp rbx, rdx
+    jae .incomplete
+    movzx eax, byte ptr [rsi + rbx]
+    cmp al, ','
+    jne .end_member
+    inc rbx
+    mov qword ptr [rip + input_pos], rbx
+    call skip_ws
+    jmp .member
+.end_member:
+    cmp al, '}'
+    jne .fail_current
+.close:
+    inc rbx
+    mov qword ptr [rip + input_pos], rbx
+    xor rax, rax
+    ret
+.fail:
+    mov rax, qword ptr [rip + input_pos]
+    inc rax
+    ret
+.fail_current:
+    mov rax, qword ptr [rip + input_pos]
+    inc rax
+    ret
+.incomplete:
+    mov rax, qword ptr [rip + input_len]
+    inc rax
+    ret
+.ret:
+    ret
+
+parse_array:
+    mov rbx, qword ptr [rip + input_pos]
+    mov rdx, qword ptr [rip + input_len]
+    lea rsi, [rip + input_buf]
+    cmp rbx, rdx
+    jae .incomplete
+    movzx eax, byte ptr [rsi + rbx]
+    cmp al, '['
+    jne .fail
+    inc rbx
+    mov qword ptr [rip + input_pos], rbx
+    call skip_ws
+    mov rbx, qword ptr [rip + input_pos]
+    mov rdx, qword ptr [rip + input_len]
+    lea rsi, [rip + input_buf]
+    cmp rbx, rdx
+    jae .incomplete
+    movzx eax, byte ptr [rsi + rbx]
+    cmp al, ']'
+    je .close
+.loop:
+    call parse_value
+    test rax, rax
+    jnz .ret
+    call skip_ws
+    mov rbx, qword ptr [rip + input_pos]
+    mov rdx, qword ptr [rip + input_len]
+    lea rsi, [rip + input_buf]
+    cmp rbx, rdx
+    jae .incomplete
+    movzx eax, byte ptr [rsi + rbx]
+    cmp al, ','
+    jne .end
+    inc rbx
+    mov qword ptr [rip + input_pos], rbx
+    call skip_ws
+    jmp .loop
+.end:
+    cmp al, ']'
+    jne .fail_current
+    inc rbx
+    mov qword ptr [rip + input_pos], rbx
+    xor rax, rax
+    ret
+.fail:
+    mov rax, qword ptr [rip + input_pos]
+    inc rax
+    ret
+.fail_current:
+    mov rax, qword ptr [rip + input_pos]
+    inc rax
+    ret
+.close:
+    inc rbx
+    mov qword ptr [rip + input_pos], rbx
+    xor rax, rax
+    ret
+.incomplete:
+    mov rax, qword ptr [rip + input_len]
+    inc rax
+    ret
+.ret:
+    ret
+
+parse_string:
+    mov rbx, qword ptr [rip + input_pos]
+    mov rdx, qword ptr [rip + input_len]
+    lea rsi, [rip + input_buf]
+    cmp rbx, rdx
+    jae .incomplete
+    movzx eax, byte ptr [rsi + rbx]
+    cmp al, '"'
+    jne .fail
+    inc rbx
+    mov qword ptr [rip + input_pos], rbx
+.loop:
+    cmp rbx, rdx
+    jae .incomplete
+    movzx eax, byte ptr [rsi + rbx]
+    cmp al, '"'
+    je .done
+    cmp al, '\\'
+    je .escape
+    cmp al, 0x20
+    jb .invalid_control
+    inc rbx
+    jmp .loop
+.escape:
+    inc rbx
+    cmp rbx, rdx
+    jae .incomplete
+    movzx eax, byte ptr [rsi + rbx]
+    cmp al, '"'
+    je .cont
+    cmp al, '\\'
+    je .cont
+    cmp al, '/'
+    je .cont
+    cmp al, 'b'
+    je .cont
+    cmp al, 'f'
+    je .cont
+    cmp al, 'n'
+    je .cont
+    cmp al, 'r'
+    je .cont
+    cmp al, 't'
+    je .cont
+    cmp al, 'u'
+    je .unicode
+    mov rax, rbx
+    inc rax
+    ret
+.cont:
+    inc rbx
+    jmp .loop
+.unicode:
+    mov r8, rbx
+    inc r8
+    mov r9, r8
+    add r9, 4
+    cmp r9, rdx
+    ja .incomplete
+    mov r10, 0
+.u_loop:
+    cmp r10, 4
+    je .u_done
+    movzx eax, byte ptr [rsi + r8 + r10]
+    cmp al, '0'
+    jb .u_invalid
+    cmp al, '9'
+    jbe .u_ok_char
+    cmp al, 'a'
+    jb .u_invalid
+    cmp al, 'f'
+    jbe .u_ok_char
+    cmp al, 'A'
+    jb .u_invalid
+    cmp al, 'F'
+    jbe .u_ok_char
+    jmp .u_invalid
+.u_ok_char:
+    inc r10
+    jmp .u_loop
+.u_invalid:
+    mov rax, r8
+    add rax, r10
+    inc rax
+    ret
+.u_done:
+    mov rbx, r8
+    add rbx, 4
+    mov qword ptr [rip + input_pos], rbx
+    jmp .loop
+.done:
+    inc rbx
+    mov qword ptr [rip + input_pos], rbx
+    xor rax, rax
+    ret
+.fail:
+    mov rax, qword ptr [rip + input_pos]
+    inc rax
+    ret
+.invalid_control:
+    mov rax, rbx
+    inc rax
+    ret
+.incomplete:
+    mov rax, qword ptr [rip + input_len]
+    inc rax
+    ret
+
+parse_true:
+    mov rbx, qword ptr [rip + input_pos]
+    mov rdx, qword ptr [rip + input_len]
+    lea rsi, [rip + true_str]
+    lea rax, [rbx + 4]
+    cmp rax, rdx
+    ja .incomplete
+    mov rcx, 0
+.loop:
+    cmp rcx, 4
+    je .ok
+    movzx r8d, byte ptr [rip + input_buf + rbx + rcx]
+    mov dl, byte ptr [rsi + rcx]
+    cmp r8b, dl
+    jne .mismatch
+    inc rcx
+    jmp .loop
+.mismatch:
+    mov rax, rbx
+    add rax, rcx
+    inc rax
+    ret
+.ok:
+    add rbx, 4
+    mov qword ptr [rip + input_pos], rbx
+    xor rax, rax
+    ret
+.incomplete:
+    mov rax, qword ptr [rip + input_len]
+    inc rax
+    ret
+
+parse_false:
+    mov rbx, qword ptr [rip + input_pos]
+    mov rdx, qword ptr [rip + input_len]
+    lea rsi, [rip + false_str]
+    lea rax, [rbx + 5]
+    cmp rax, rdx
+    ja .incomplete
+    mov rcx, 0
+.loop:
+    cmp rcx, 5
+    je .ok
+    movzx r8d, byte ptr [rip + input_buf + rbx + rcx]
+    mov dl, byte ptr [rsi + rcx]
+    cmp r8b, dl
+    jne .mismatch
+    inc rcx
+    jmp .loop
+.mismatch:
+    mov rax, rbx
+    add rax, rcx
+    inc rax
+    ret
+.ok:
+    add rbx, 5
+    mov qword ptr [rip + input_pos], rbx
+    xor rax, rax
+    ret
+.incomplete:
+    mov rax, qword ptr [rip + input_len]
+    inc rax
+    ret
+
+parse_null:
+    mov rbx, qword ptr [rip + input_pos]
+    mov rdx, qword ptr [rip + input_len]
+    lea rsi, [rip + null_str]
+    lea rax, [rbx + 4]
+    cmp rax, rdx
+    ja .incomplete
+    mov rcx, 0
+.loop:
+    cmp rcx, 4
+    je .ok
+    movzx r8d, byte ptr [rip + input_buf + rbx + rcx]
+    mov dl, byte ptr [rsi + rcx]
+    cmp r8b, dl
+    jne .mismatch
+    inc rcx
+    jmp .loop
+.mismatch:
+    mov rax, rbx
+    add rax, rcx
+    inc rax
+    ret
+.ok:
+    add rbx, 4
+    mov qword ptr [rip + input_pos], rbx
+    xor rax, rax
+    ret
+.incomplete:
+    mov rax, qword ptr [rip + input_len]
+    inc rax
+    ret
+
+parse_number:
+    mov rbx, qword ptr [rip + input_pos]
+    mov rdx, qword ptr [rip + input_len]
+    lea rsi, [rip + input_buf]
+    mov rcx, rbx
+    cmp rcx, rdx
+    jae .incomplete
+    movzx eax, byte ptr [rsi + rcx]
+    cmp al, '-'
+    jne .after_minus
+    inc rcx
+    cmp rcx, rdx
+    jae .incomplete
+.after_minus:
+    movzx eax, byte ptr [rsi + rcx]
+    cmp al, '0'
+    je .zero
+    cmp al, '1'
+    jb .invalid
+    cmp al, '9'
+    jbe .int_digits
+    jmp .invalid
+.zero:
+    inc rcx
+    cmp rcx, rdx
+    jae .done
+    movzx eax, byte ptr [rsi + rcx]
+    cmp al, '0'
+    jb .done
+    cmp al, '9'
+    jbe .invalid_digit
+    jmp .done
+.int_digits:
+    inc rcx
+.loop_int:
+    cmp rcx, rdx
+    jae .done
+    movzx eax, byte ptr [rsi + rcx]
+    cmp al, '0'
+    jb .done
+    cmp al, '9'
+    jbe .inc_int
+    jmp .done
+.inc_int:
+    inc rcx
+    jmp .loop_int
+.invalid_digit:
+    mov rax, rcx
+    inc rax
+    ret
+.invalid:
+    mov rax, rcx
+    inc rax
+    ret
+.done:
+    cmp rcx, rdx
+    jae .done_valid
+    movzx eax, byte ptr [rsi + rcx]
+    cmp al, '.'
+    jne .exp_check
+    inc rcx
+    cmp rcx, rdx
+    jae .incomplete
+    movzx eax, byte ptr [rsi + rcx]
+    cmp al, '0'
+    jb .invalid_after_dot
+    cmp al, '9'
+    jbe .frac_digits
+    jmp .invalid_after_dot
+.frac_digits:
+    inc rcx
+.loop_frac:
+    cmp rcx, rdx
+    jae .exp_check
+    movzx eax, byte ptr [rsi + rcx]
+    cmp al, '0'
+    jb .exp_check
+    cmp al, '9'
+    jbe .frac_inc
+    jmp .exp_check
+.frac_inc:
+    inc rcx
+    jmp .loop_frac
+.invalid_after_dot:
+    mov rax, rcx
+    inc rax
+    ret
+.exp_check:
+    cmp rcx, rdx
+    jae .done_valid
+    movzx eax, byte ptr [rsi + rcx]
+    cmp al, 'e'
+    je .exp
+    cmp al, 'E'
+    je .exp
+.done_valid:
+    mov qword ptr [rip + input_pos], rcx
+    xor rax, rax
+    ret
+.exp:
+    inc rcx
+    cmp rcx, rdx
+    jae .incomplete
+    movzx eax, byte ptr [rsi + rcx]
+    cmp al, '+'
+    je .exp_sign
+    cmp al, '-'
+    je .exp_sign
+    jmp .exp_digit_check
+.exp_sign:
+    inc rcx
+    cmp rcx, rdx
+    jae .incomplete
+.exp_digit_check:
+    movzx eax, byte ptr [rsi + rcx]
+    cmp al, '0'
+    jb .invalid_exp
+    cmp al, '9'
+    jbe .exp_digits
+    jmp .invalid_exp
+.invalid_exp:
+    mov rax, rcx
+    inc rax
+    ret
+.exp_digits:
+    inc rcx
+.loop_exp:
+    cmp rcx, rdx
+    jae .done_valid
+    movzx eax, byte ptr [rsi + rcx]
+    cmp al, '0'
+    jb .done_valid
+    cmp al, '9'
+    jbe .exp_inc
+    jmp .done_valid
+.exp_inc:
+    inc rcx
+    jmp .loop_exp
+.incomplete:
+    mov rax, qword ptr [rip + input_len]
+    inc rax
+    ret
+
+print_ok:
+    mov rdi, 1
+    lea rsi, [rip + ok_msg]
+    mov rdx, 3
+    mov rax, 1
+    syscall
+    ret
+
+print_error:
+    dec rax
+    mov r12, rax
+    mov rdi, 1
+    lea rsi, [rip + err_prefix]
+    mov rdx, 9
+    mov rax, 1
+    syscall
+    lea rdi, [rip + numbuf + 32]
+    mov rax, r12
+    mov rbx, 10
+.loop:
+    xor rdx, rdx
+    div rbx
+    add dl, '0'
+    dec rdi
+    mov byte ptr [rdi], dl
+    test rax, rax
+    jnz .loop
+    mov rsi, rdi
+    lea r13, [rip + numbuf + 32]
+    sub r13, rsi
+    mov rdx, r13
+    mov rdi, 1
+    mov rax, 1
+    syscall
+    mov rdi, 1
+    lea rsi, [rip + newline_byte]
+    mov rdx, 1
+    mov rax, 1
+    syscall
+    ret

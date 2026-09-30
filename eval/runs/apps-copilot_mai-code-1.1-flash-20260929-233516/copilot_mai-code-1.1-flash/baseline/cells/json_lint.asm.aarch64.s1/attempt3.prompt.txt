@@ -1,0 +1,1062 @@
+Write the complete program `json_lint`: a static Linux executable for AArch64 (ARMv8-A, little-endian), written in assembly. There is no C library, no C runtime and no helper code: you write the entry point `_start`, every function, every table and string, and make the system calls yourself.
+
+Entry state (as the Linux kernel sets it up): execution starts at the label `_start`. sp is 16-byte aligned and points at argc = 0, followed by the NULL terminators of an empty argv, an empty envp and an empty auxiliary vector: the program gets no arguments. Every other general-purpose register (x0-x30) is zero; x30 is not a return address, so `_start` must never return with `ret`; the program ends only through the exit system call.
+
+System calls: the `svc #0` instruction, with the system call number in x8 and the arguments in x0, x1, x2; the result comes back in x0. Every other register is preserved. Exactly these four are available:
+- read = 63: read(fd = 0, buf, count) reads up to count bytes of standard input into buf; returns the number of bytes read, 0 at end of input.
+- write = 64: write(fd, buf, count) with fd 1 (standard output) or 2 (standard error); returns count.
+- exit = 93: exit(status) ends the program; the exit status is the low 8 bits of status.
+- exit_group = 94: the same as exit.
+Any other system call number or file descriptor stops the program with an error, and so does a buffer that is not entirely inside the program's memory.
+
+Memory: the program's own sections plus a stack of 1 MiB below the entry sp. There is no heap (no brk, no mmap, no malloc): put working storage in `.bss` (zero-initialised), at most 1 MiB in total, or on the stack. Code is not writable. Any access outside these areas stops the program. Each test run may execute at most 50,000,000 instructions.
+
+Output format: one complete assembly source file in GNU assembler (GNU as) syntax for AArch64. Examples: `ldr x2, [x0, x1, lsl #3]`, `ldrb w3, [x1], #1`, `stp x29, x30, [sp, #-16]!`. Comments start with `//`; do not use `;`.
+Allowed in the file:
+- Sections: `.text` (code), `.section .rodata` (read-only data), `.data` (initialised writable data), `.bss` (zero-initialised space: only `.zero`/`.space` and alignment). Instructions go in `.text` only.
+- Data directives: `.byte`, `.short`/`.2byte`, `.word` (4 bytes on this target), `.long`/`.int`/`.4byte`, `.quad`/`.8byte`, `.ascii`, `.asciz`/`.string`, `.zero`/`.space`, alignment with `.align`/`.balign`/`.p2align`, and `.globl`/`.global` (write `.globl _start`).
+- Labels `name:` in any section, and GNU local labels `1:` referenced as `1f` (next) / `1b` (previous).
+- Constants: `.equ name, value` (or `.set name, value`, or `name = value`), where value is a number or a difference of labels defined earlier in the same section (e.g. `msg_len = . - msg`). Define every constant before its first use.
+- Addressing data: `adrp x0, label` followed by `add x0, x0, :lo12:label` (or a load/store `ldr x1, [x0, :lo12:label]`); `adr x0, label` also works within +-1 MiB. Literal pools are NOT allowed: no `ldr x0, =label` and no `ldr x0, =constant` (build constants with mov/movz/movk).
+Not allowed: macros (`.macro`, `.rept`, `.irp`), conditional assembly (`.if`), `.include`, `.incbin`, `.fill`, `.org`, `.comm`/`.lcomm`, `.inst`, `.cfi_*` directives, section stacks (`.pushsection`) and any other section. No libc and no other library: there is nothing to link against, so every symbol you use must be defined in your file.
+Instruction set: ARMv8.0-A with floating point and Advanced SIMD (NEON). Not supported (rejected): CRC32, LSE atomics, dot product, half-precision, crypto (AES/SHA/PMULL) and SVE.
+Output ONLY the assembly source: no Markdown fences, no prose before or after it.
+
+Specification: Task `json_lint`: check that standard input is exactly one valid JSON document (RFC 8259 grammar) and report
+the byte offset of the first error.
+
+Grammar (byte-level):
+- document = ws value ws, and nothing else. ws = any number of the bytes space 0x20, tab 0x09, newline 0x0A,
+  carriage return 0x0D (only these four).
+- value = object | array | string | number | `true` | `false` | `null` (lowercase only).
+- object = `{` ws `}`, or `{` ws member (ws `,` ws member)* ws `}`, where member = string ws `:` ws value.
+  array = `[` ws `]`, or `[` ws value (ws `,` ws value)* ws `]`. No trailing commas.
+- string = `"` chars `"`. A char is any byte 0x20-0xFF except `"` (0x22) and `\` (0x5C) (bytes >= 0x80 are
+  accepted as they are; no UTF-8 validation), or an escape: `\` followed by one of `"` `\` `/` `b` `f` `n` `r`
+  `t`, or `\u` followed by exactly 4 hex digits (`0-9a-fA-F`; any code unit, surrogates are not checked).
+  Bytes 0x00-0x1F inside a string are errors.
+- number = `-`? int frac? exp?, where int = `0` | a digit `1`-`9` followed by any digits; frac = `.` and one or
+  more digits; exp = `e` or `E`, an optional `+` or `-`, and one or more digits. (So `01`, `+1`, `.5`, `1.`,
+  `1e`, `-` are not valid numbers.)
+
+Output: if the input is valid, print `ok\n` and exit with status 0. Otherwise print `error at N\n` (N in
+decimal, no padding) and exit with status 1, where N is the 0-based offset of the first byte at which the input
+stops being the beginning of some valid document: the first byte that no valid document could have at that
+position given all the bytes before it. If every byte of the input is such a valid beginning but the document is
+incomplete (this includes empty and whitespace-only input), N is the length of the input.
+
+Examples: `[1, 2]` ok; empty input `error at 0`; `[1,]` `error at 3`; `{"a" 1}` `error at 5`; `01` `error at 1`;
+`tru` `error at 3`; `trux` `error at 3`; `[1] x` `error at 4`; `"a<TAB>b"` (a raw tab byte) `error at 2`;
+`-` `error at 1`; `1.e5` `error at 2`.
+
+Limits: the input is at most 65536 bytes; arrays and objects are nested at most 1000 deep. These limits
+describe the inputs you will be given; you do not need to detect or report inputs that exceed them.
+
+Input and output (applies to this whole task):
+- The input is the complete contents of standard input (file descriptor 0). Read it with `read` until `read`
+  returns 0 (end of input). A `read` may return FEWER bytes than requested, at any position (in the middle of a
+  line, a token or a group of bytes), so keep calling it; only a return value of 0 means end of input.
+- Write the output to standard output (file descriptor 1). Only the bytes this task describes may appear on
+  standard output (standard error is ignored). Every output byte must be written before the program exits.
+- Finish with `exit` (or `exit_group`) and the exit status this task gives. The program must not run off the end
+  of its code or crash.
+
+Your previous attempt was:
+<previous>
+.text
+.globl _start
+
+.equ SYS_READ, 63
+.equ SYS_WRITE, 64
+.equ SYS_EXIT, 93
+.equ SYS_EXIT_GROUP, 94
+
+_start:
+  mov x19, #0
+read_loop:
+  mov x8, #SYS_READ
+  mov x0, #0
+  adrp x1, input_buf
+  add x1, x1, :lo12:input_buf
+  add x1, x1, x19
+  mov x2, #65536
+  sub x2, x2, x19
+  svc #0
+  mov x20, x0
+  cmp x20, #0
+  b.eq read_done
+  add x19, x19, x20
+  b read_loop
+read_done:
+  adrp x0, input_len
+  add x0, x0, :lo12:input_len
+  str x19, [x0]
+  mov x19, #0
+  adrp x0, input_idx
+  add x0, x0, :lo12:input_idx
+  str x19, [x0]
+  adrp x0, error_offset
+  add x0, x0, :lo12:error_offset
+  str x19, [x0]
+  bl parse_document
+  cmp x0, #0
+  b.eq print_error
+  mov x0, #1
+  adrp x1, ok_msg
+  add x1, x1, :lo12:ok_msg
+  mov x2, #3
+  mov x8, #SYS_WRITE
+  svc #0
+  mov x0, #0
+  mov x8, #SYS_EXIT
+  svc #0
+
+print_error:
+  mov x0, #1
+  adrp x1, err_prefix
+  add x1, x1, :lo12:err_prefix
+  mov x2, #9
+  mov x8, #SYS_WRITE
+  svc #0
+
+  adrp x0, error_offset
+  add x0, x0, :lo12:error_offset
+  ldr x3, [x0]
+
+  adrp x4, outbuf
+  add x4, x4, :lo12:outbuf
+  add x4, x4, #32
+  mov x7, x3
+  mov x5, #10
+  cmp x7, #0
+  b.ne err_num_loop
+  sub x4, x4, #1
+  mov w8, #'0'
+  strb w8, [x4]
+  mov x2, #1
+  b err_digits_done
+err_num_loop:
+  cmp x7, #0
+  b.eq err_digits_done
+  udiv x8, x7, x5
+  msub x9, x8, x5, x7
+  add x9, x9, #'0'
+  sub x4, x4, #1
+  strb w9, [x4]
+  mov x7, x8
+  add x2, x2, #1
+  b err_num_loop
+err_digits_done:
+  mov x0, #1
+  mov x1, x4
+  adrp x6, outbuf
+  add x6, x6, :lo12:outbuf
+  add x6, x6, #32
+  sub x2, x6, x4
+  mov x8, #SYS_WRITE
+  svc #0
+
+  mov x0, #1
+  adrp x1, err_suffix
+  add x1, x1, :lo12:err_suffix
+  mov x2, #1
+  mov x8, #SYS_WRITE
+  svc #0
+
+  mov x0, #1
+  mov x8, #SYS_EXIT
+  svc #0
+
+parse_document:
+  bl parse_ws
+  bl parse_value
+  cmp x0, #0
+  b.eq doc_fail
+  bl parse_ws
+  adrp x0, input_idx
+  add x0, x0, :lo12:input_idx
+  ldr x1, [x0]
+  adrp x2, input_len
+  add x2, x2, :lo12:input_len
+  ldr x3, [x2]
+  cmp x1, x3
+  b.eq doc_ok
+  adrp x4, error_offset
+  add x4, x4, :lo12:error_offset
+  str x1, [x4]
+  mov x0, #0
+  ret
+doc_ok:
+  mov x0, #1
+  ret
+doc_fail:
+  mov x0, #0
+  ret
+
+parse_ws:
+ws_loop:
+  adrp x0, input_idx
+  add x0, x0, :lo12:input_idx
+  ldr x1, [x0]
+  adrp x2, input_len
+  add x2, x2, :lo12:input_len
+  ldr x3, [x2]
+  cmp x1, x3
+  b.hs ws_done
+  adrp x4, input_buf
+  add x4, x4, :lo12:input_buf
+  add x4, x4, x1
+  ldrb w5, [x4]
+  cmp w5, #0x20
+  b.eq ws_advance
+  cmp w5, #0x09
+  b.eq ws_advance
+  cmp w5, #0x0A
+  b.eq ws_advance
+  cmp w5, #0x0D
+  b.eq ws_advance
+  b ws_done
+ws_advance:
+  add x1, x1, #1
+  str x1, [x0]
+  b ws_loop
+ws_done:
+  ret
+
+parse_value:
+  stp x29, x30, [sp, #-16]!
+  mov x29, sp
+  str x19, [sp, #-16]!
+  adrp x0, input_idx
+  add x0, x0, :lo12:input_idx
+  ldr x19, [x0]
+  bl parse_object
+  cmp x0, #0
+  b.ne val_ok
+  adrp x0, input_idx
+  add x0, x0, :lo12:input_idx
+  str x19, [x0]
+  bl parse_array
+  cmp x0, #0
+  b.ne val_ok
+  adrp x0, input_idx
+  add x0, x0, :lo12:input_idx
+  str x19, [x0]
+  bl parse_string
+  cmp x0, #0
+  b.ne val_ok
+  adrp x0, input_idx
+  add x0, x0, :lo12:input_idx
+  str x19, [x0]
+  bl parse_number
+  cmp x0, #0
+  b.ne val_ok
+  adrp x0, input_idx
+  add x0, x0, :lo12:input_idx
+  str x19, [x0]
+  bl parse_literal
+  cmp x0, #0
+  b.ne val_ok
+  adrp x0, input_idx
+  add x0, x0, :lo12:input_idx
+  str x19, [x0]
+  adrp x0, error_offset
+  add x0, x0, :lo12:error_offset
+  str x19, [x0]
+  mov x0, #0
+  b val_done
+val_ok:
+  mov x0, #1
+val_done:
+  ldr x19, [sp], #16
+  ldp x29, x30, [sp], #16
+  ret
+
+parse_object:
+  adrp x0, input_idx
+  add x0, x0, :lo12:input_idx
+  ldr x9, [x0]
+  adrp x1, input_len
+  add x1, x1, :lo12:input_len
+  ldr x10, [x1]
+  cmp x9, x10
+  b.hs obj_fail_eof
+  adrp x2, input_buf
+  add x2, x2, :lo12:input_buf
+  add x2, x2, x9
+  ldrb w3, [x2]
+  cmp w3, #'{
+  b.ne obj_fail
+  add x9, x9, #1
+  str x9, [x0]
+  bl parse_ws
+  adrp x0, input_idx
+  add x0, x0, :lo12:input_idx
+  ldr x9, [x0]
+  adrp x1, input_len
+  add x1, x1, :lo12:input_len
+  ldr x10, [x1]
+  cmp x9, x10
+  b.hs obj_fail_eof
+  adrp x2, input_buf
+  add x2, x2, :lo12:input_buf
+  add x2, x2, x9
+  ldrb w3, [x2]
+  cmp w3, #'}'
+  b.eq obj_close
+obj_member_loop:
+  bl parse_string
+  cmp x0, #0
+  b.eq obj_fail
+  bl parse_ws
+  adrp x0, input_idx
+  add x0, x0, :lo12:input_idx
+  ldr x9, [x0]
+  adrp x1, input_len
+  add x1, x1, :lo12:input_len
+  ldr x10, [x1]
+  cmp x9, x10
+  b.hs obj_fail_eof
+  adrp x2, input_buf
+  add x2, x2, :lo12:input_buf
+  add x2, x2, x9
+  ldrb w3, [x2]
+  cmp w3, #':'
+  b.ne obj_missing_colon
+  add x9, x9, #1
+  str x9, [x0]
+  bl parse_ws
+  bl parse_value
+  cmp x0, #0
+  b.eq obj_fail
+  bl parse_ws
+  adrp x0, input_idx
+  add x0, x0, :lo12:input_idx
+  ldr x9, [x0]
+  adrp x1, input_len
+  add x1, x1, :lo12:input_len
+  ldr x10, [x1]
+  cmp x9, x10
+  b.hs obj_fail_eof
+  adrp x2, input_buf
+  add x2, x2, :lo12:input_buf
+  add x2, x2, x9
+  ldrb w3, [x2]
+  cmp w3, #','
+  b.eq obj_comma
+  cmp w3, #'}'
+  b.eq obj_close
+  adrp x0, error_offset
+  add x0, x0, :lo12:error_offset
+  str x9, [x0]
+  mov x0, #0
+  ret
+obj_comma:
+  add x9, x9, #1
+  str x9, [x0]
+  bl parse_ws
+  b obj_member_loop
+obj_close:
+  add x9, x9, #1
+  str x9, [x0]
+  mov x0, #1
+  ret
+obj_missing_colon:
+  adrp x0, error_offset
+  add x0, x0, :lo12:error_offset
+  str x9, [x0]
+  mov x0, #0
+  ret
+obj_fail:
+  adrp x0, input_idx
+  add x0, x0, :lo12:input_idx
+  ldr x9, [x0]
+  adrp x1, error_offset
+  add x1, x1, :lo12:error_offset
+  str x9, [x1]
+  mov x0, #0
+  ret
+obj_fail_eof:
+  adrp x0, input_idx
+  add x0, x0, :lo12:input_idx
+  ldr x9, [x0]
+  adrp x1, error_offset
+  add x1, x1, :lo12:error_offset
+  str x9, [x1]
+  mov x0, #0
+  ret
+
+parse_array:
+  adrp x0, input_idx
+  add x0, x0, :lo12:input_idx
+  ldr x9, [x0]
+  adrp x1, input_len
+  add x1, x1, :lo12:input_len
+  ldr x10, [x1]
+  cmp x9, x10
+  b.hs arr_fail
+  adrp x2, input_buf
+  add x2, x2, :lo12:input_buf
+  add x2, x2, x9
+  ldrb w3, [x2]
+  cmp w3, #'['
+  b.ne arr_fail
+  add x9, x9, #1
+  str x9, [x0]
+  bl parse_ws
+  adrp x0, input_idx
+  add x0, x0, :lo12:input_idx
+  ldr x9, [x0]
+  adrp x1, input_len
+  add x1, x1, :lo12:input_len
+  ldr x10, [x1]
+  cmp x9, x10
+  b.hs arr_fail_eof
+  adrp x2, input_buf
+  add x2, x2, :lo12:input_buf
+  add x2, x2, x9
+  ldrb w3, [x2]
+  cmp w3, #']'
+  b.eq arr_close
+arr_loop:
+  bl parse_value
+  cmp x0, #0
+  b.eq arr_fail
+  bl parse_ws
+  adrp x0, input_idx
+  add x0, x0, :lo12:input_idx
+  ldr x9, [x0]
+  adrp x1, input_len
+  add x1, x1, :lo12:input_len
+  ldr x10, [x1]
+  cmp x9, x10
+  b.hs arr_fail_eof
+  adrp x2, input_buf
+  add x2, x2, :lo12:input_buf
+  add x2, x2, x9
+  ldrb w3, [x2]
+  cmp w3, #','
+  b.eq arr_comma
+  cmp w3, #']'
+  b.eq arr_close
+  adrp x0, error_offset
+  add x0, x0, :lo12:error_offset
+  str x9, [x0]
+  mov x0, #0
+  ret
+arr_comma:
+  add x9, x9, #1
+  str x9, [x0]
+  bl parse_ws
+  b arr_loop
+arr_close:
+  add x9, x9, #1
+  str x9, [x0]
+  mov x0, #1
+  ret
+arr_fail:
+  adrp x0, input_idx
+  add x0, x0, :lo12:input_idx
+  ldr x9, [x0]
+  adrp x1, error_offset
+  add x1, x1, :lo12:error_offset
+  str x9, [x1]
+  mov x0, #0
+  ret
+arr_fail_eof:
+  adrp x0, input_idx
+  add x0, x0, :lo12:input_idx
+  ldr x9, [x0]
+  adrp x1, error_offset
+  add x1, x1, :lo12:error_offset
+  str x9, [x1]
+  mov x0, #0
+  ret
+
+parse_string:
+  adrp x0, input_idx
+  add x0, x0, :lo12:input_idx
+  ldr x9, [x0]
+  adrp x1, input_len
+  add x1, x1, :lo12:input_len
+  ldr x10, [x1]
+  cmp x9, x10
+  b.hs str_fail_eof
+  adrp x2, input_buf
+  add x2, x2, :lo12:input_buf
+  add x2, x2, x9
+  ldrb w3, [x2]
+  cmp w3, #'"'
+  b.ne str_fail
+  add x9, x9, #1
+  str x9, [x0]
+str_loop:
+  adrp x0, input_idx
+  add x0, x0, :lo12:input_idx
+  ldr x9, [x0]
+  adrp x1, input_len
+  add x1, x1, :lo12:input_len
+  ldr x10, [x1]
+  cmp x9, x10
+  b.hs str_fail_eof
+  adrp x2, input_buf
+  add x2, x2, :lo12:input_buf
+  add x2, x2, x9
+  ldrb w3, [x2]
+  cmp w3, #'"'
+  b.eq str_close
+  cmp w3, #'\\'
+  b.eq str_escape
+  cmp w3, #0x00
+  b.le str_fail_control
+  add x9, x9, #1
+  str x9, [x0]
+  b str_loop
+str_escape:
+  add x9, x9, #1
+  str x9, [x0]
+  adrp x1, input_len
+  add x1, x1, :lo12:input_len
+  ldr x10, [x1]
+  cmp x9, x10
+  b.hs str_fail_eof
+  adrp x2, input_buf
+  add x2, x2, :lo12:input_buf
+  add x2, x2, x9
+  ldrb w3, [x2]
+  cmp w3, #'"'
+  b.eq str_after_escape
+  cmp w3, #'\\'
+  b.eq str_after_escape
+  cmp w3, #'/'
+  b.eq str_after_escape
+  cmp w3, #'b'
+  b.eq str_after_escape
+  cmp w3, #'f'
+  b.eq str_after_escape
+  cmp w3, #'n'
+  b.eq str_after_escape
+  cmp w3, #'r'
+  b.eq str_after_escape
+  cmp w3, #'t'
+  b.eq str_after_escape
+  cmp w3, #'u'
+  b.eq str_unicode
+  adrp x0, error_offset
+  add x0, x0, :lo12:error_offset
+  str x9, [x0]
+  mov x0, #0
+  ret
+str_after_escape:
+  add x9, x9, #1
+  str x9, [x0]
+  b str_loop
+str_unicode:
+  add x9, x9, #1
+  str x9, [x0]
+  mov x11, #0
+str_u_loop:
+  adrp x1, input_len
+  add x1, x1, :lo12:input_len
+  ldr x10, [x1]
+  cmp x9, x10
+  b.hs str_fail_eof
+  adrp x2, input_buf
+  add x2, x2, :lo12:input_buf
+  add x2, x2, x9
+  ldrb w3, [x2]
+  cmp w3, #'0'
+  b.lt str_u_fail
+  cmp w3, #'9'
+  b.le str_u_digit
+  cmp w3, #'A'
+  b.lt str_u_fail
+  cmp w3, #'F'
+  b.le str_u_digit
+  cmp w3, #'a'
+  b.lt str_u_fail
+  cmp w3, #'f'
+  b.gt str_u_fail
+str_u_digit:
+  add x9, x9, #1
+  str x9, [x0]
+  add x11, x11, #1
+  cmp x11, #4
+  b.eq str_loop
+  b str_u_loop
+str_u_fail:
+  adrp x0, error_offset
+  add x0, x0, :lo12:error_offset
+  str x9, [x0]
+  mov x0, #0
+  ret
+str_fail_control:
+  adrp x0, error_offset
+  add x0, x0, :lo12:error_offset
+  str x9, [x0]
+  mov x0, #0
+  ret
+str_fail:
+  adrp x0, input_idx
+  add x0, x0, :lo12:input_idx
+  ldr x9, [x0]
+  adrp x1, error_offset
+  add x1, x1, :lo12:error_offset
+  str x9, [x1]
+  mov x0, #0
+  ret
+str_fail_eof:
+  adrp x0, input_idx
+  add x0, x0, :lo12:input_idx
+  ldr x9, [x0]
+  adrp x1, error_offset
+  add x1, x1, :lo12:error_offset
+  str x9, [x1]
+  mov x0, #0
+  ret
+str_close:
+  add x9, x9, #1
+  str x9, [x0]
+  mov x0, #1
+  ret
+
+parse_number:
+  adrp x0, input_idx
+  add x0, x0, :lo12:input_idx
+  ldr x9, [x0]
+  adrp x1, input_len
+  add x1, x1, :lo12:input_len
+  ldr x10, [x1]
+  cmp x9, x10
+  b.hs num_fail_eof
+  adrp x2, input_buf
+  add x2, x2, :lo12:input_buf
+  add x2, x2, x9
+  ldrb w3, [x2]
+  cmp w3, #'-'
+  b.ne num_no_minus
+  add x9, x9, #1
+  str x9, [x0]
+num_no_minus:
+  adrp x1, input_len
+  add x1, x1, :lo12:input_len
+  ldr x10, [x1]
+  cmp x9, x10
+  b.hs num_fail_current
+  adrp x2, input_buf
+  add x2, x2, :lo12:input_buf
+  add x2, x2, x9
+  ldrb w3, [x2]
+  cmp w3, #'0'
+  b.eq num_zero
+  cmp w3, #'1'
+  b.lt num_fail_current
+  cmp w3, #'9'
+  b.gt num_fail_current
+  add x9, x9, #1
+  str x9, [x0]
+num_int_digits:
+  adrp x1, input_len
+  add x1, x1, :lo12:input_len
+  ldr x10, [x1]
+  cmp x9, x10
+  b.hs num_after_int
+  adrp x2, input_buf
+  add x2, x2, :lo12:input_buf
+  add x2, x2, x9
+  ldrb w3, [x2]
+  cmp w3, #'0'
+  b.lt num_after_int
+  cmp w3, #'9'
+  b.gt num_after_int
+  add x9, x9, #1
+  str x9, [x0]
+  b num_int_digits
+num_zero:
+  add x9, x9, #1
+  str x9, [x0]
+  adrp x1, input_len
+  add x1, x1, :lo12:input_len
+  ldr x10, [x1]
+  cmp x9, x10
+  b.hs num_after_int
+  adrp x2, input_buf
+  add x2, x2, :lo12:input_buf
+  add x2, x2, x9
+  ldrb w3, [x2]
+  cmp w3, #'0'
+  b.eq num_fail_current
+  cmp w3, #'1'
+  b.lt num_after_int
+  cmp w3, #'9'
+  b.le num_fail_current
+num_after_int:
+  adrp x1, input_len
+  add x1, x1, :lo12:input_len
+  ldr x10, [x1]
+  cmp x9, x10
+  b.hs num_ok
+  adrp x2, input_buf
+  add x2, x2, :lo12:input_buf
+  add x2, x2, x9
+  ldrb w3, [x2]
+  cmp w3, #'.'
+  b.eq num_frac
+  cmp w3, #'e'
+  b.eq num_exp
+  cmp w3, #'E'
+  b.eq num_exp
+  b num_ok
+num_frac:
+  add x9, x9, #1
+  str x9, [x0]
+  adrp x1, input_len
+  add x1, x1, :lo12:input_len
+  ldr x10, [x1]
+  cmp x9, x10
+  b.hs num_fail_current
+  adrp x2, input_buf
+  add x2, x2, :lo12:input_buf
+  add x2, x2, x9
+  ldrb w3, [x2]
+  cmp w3, #'0'
+  b.lt num_fail_current
+  cmp w3, #'9'
+  b.gt num_fail_current
+num_frac_digits:
+  add x9, x9, #1
+  str x9, [x0]
+  adrp x1, input_len
+  add x1, x1, :lo12:input_len
+  ldr x10, [x1]
+  cmp x9, x10
+  b.hs num_ok
+  adrp x2, input_buf
+  add x2, x2, :lo12:input_buf
+  add x2, x2, x9
+  ldrb w3, [x2]
+  cmp w3, #'0'
+  b.lt num_ok
+  cmp w3, #'9'
+  b.gt num_ok
+  b num_frac_digits
+num_exp:
+  add x9, x9, #1
+  str x9, [x0]
+  adrp x1, input_len
+  add x1, x1, :lo12:input_len
+  ldr x10, [x1]
+  cmp x9, x10
+  b.hs num_fail_current
+  adrp x2, input_buf
+  add x2, x2, :lo12:input_buf
+  add x2, x2, x9
+  ldrb w3, [x2]
+  cmp w3, #'+'
+  b.eq num_exp_sign
+  cmp w3, #'-'
+  b.eq num_exp_sign
+  cmp w3, #'0'
+  b.lt num_fail_current
+  cmp w3, #'9'
+  b.gt num_fail_current
+  b num_exp_digits
+num_exp_sign:
+  add x9, x9, #1
+  str x9, [x0]
+  adrp x1, input_len
+  add x1, x1, :lo12:input_len
+  ldr x10, [x1]
+  cmp x9, x10
+  b.hs num_fail_current
+  adrp x2, input_buf
+  add x2, x2, :lo12:input_buf
+  add x2, x2, x9
+  ldrb w3, [x2]
+  cmp w3, #'0'
+  b.lt num_fail_current
+  cmp w3, #'9'
+  b.gt num_fail_current
+num_exp_digits:
+  add x9, x9, #1
+  str x9, [x0]
+  adrp x1, input_len
+  add x1, x1, :lo12:input_len
+  ldr x10, [x1]
+  cmp x9, x10
+  b.hs num_ok
+  adrp x2, input_buf
+  add x2, x2, :lo12:input_buf
+  add x2, x2, x9
+  ldrb w3, [x2]
+  cmp w3, #'0'
+  b.lt num_ok
+  cmp w3, #'9'
+  b.gt num_ok
+  b num_exp_digits
+num_ok:
+  mov x0, #1
+  ret
+num_fail_current:
+  adrp x0, error_offset
+  add x0, x0, :lo12:error_offset
+  str x9, [x0]
+  mov x0, #0
+  ret
+num_fail_eof:
+  adrp x0, error_offset
+  add x0, x0, :lo12:error_offset
+  adrp x1, input_idx
+  add x1, x1, :lo12:input_idx
+  ldr x1, [x1]
+  str x1, [x0]
+  mov x0, #0
+  ret
+
+parse_literal:
+  adrp x0, input_idx
+  add x0, x0, :lo12:input_idx
+  ldr x9, [x0]
+  adrp x1, input_len
+  add x1, x1, :lo12:input_len
+  ldr x10, [x1]
+  cmp x9, x10
+  b.hs lit_fail_eof
+  adrp x2, input_buf
+  add x2, x2, :lo12:input_buf
+  add x2, x2, x9
+  ldrb w3, [x2]
+  cmp w3, #'t'
+  b.eq lit_true
+  cmp w3, #'f'
+  b.eq lit_false
+  cmp w3, #'n'
+  b.eq lit_null
+  b lit_fail
+lit_true:
+  add x9, x9, #1
+  str x9, [x0]
+  adrp x1, input_len
+  add x1, x1, :lo12:input_len
+  ldr x10, [x1]
+  cmp x9, x10
+  b.hs lit_true_incomplete
+  adrp x2, input_buf
+  add x2, x2, :lo12:input_buf
+  add x2, x2, x9
+  ldrb w3, [x2]
+  cmp w3, #'r'
+  b.ne lit_fail
+  add x9, x9, #1
+  str x9, [x0]
+  adrp x1, input_len
+  add x1, x1, :lo12:input_len
+  ldr x10, [x1]
+  cmp x9, x10
+  b.hs lit_true_incomplete
+  adrp x2, input_buf
+  add x2, x2, :lo12:input_buf
+  add x2, x2, x9
+  ldrb w3, [x2]
+  cmp w3, #'u'
+  b.ne lit_fail
+  add x9, x9, #1
+  str x9, [x0]
+  adrp x1, input_len
+  add x1, x1, :lo12:input_len
+  ldr x10, [x1]
+  cmp x9, x10
+  b.hs lit_true_incomplete
+  adrp x2, input_buf
+  add x2, x2, :lo12:input_buf
+  add x2, x2, x9
+  ldrb w3, [x2]
+  cmp w3, #'e'
+  b.ne lit_fail
+  add x9, x9, #1
+  str x9, [x0]
+  mov x0, #1
+  ret
+lit_true_incomplete:
+  adrp x0, error_offset
+  add x0, x0, :lo12:error_offset
+  adrp x1, input_len
+  add x1, x1, :lo12:input_len
+  ldr x1, [x1]
+  str x1, [x0]
+  mov x0, #0
+  ret
+lit_false:
+  add x9, x9, #1
+  str x9, [x0]
+  adrp x1, input_len
+  add x1, x1, :lo12:input_len
+  ldr x10, [x1]
+  cmp x9, x10
+  b.hs lit_false_incomplete
+  adrp x2, input_buf
+  add x2, x2, :lo12:input_buf
+  add x2, x2, x9
+  ldrb w3, [x2]
+  cmp w3, #'a'
+  b.ne lit_fail
+  add x9, x9, #1
+  str x9, [x0]
+  adrp x1, input_len
+  add x1, x1, :lo12:input_len
+  ldr x10, [x1]
+  cmp x9, x10
+  b.hs lit_false_incomplete
+  adrp x2, input_buf
+  add x2, x2, :lo12:input_buf
+  add x2, x2, x9
+  ldrb w3, [x2]
+  cmp w3, #'l'
+  b.ne lit_fail
+  add x9, x9, #1
+  str x9, [x0]
+  adrp x1, input_len
+  add x1, x1, :lo12:input_len
+  ldr x10, [x1]
+  cmp x9, x10
+  b.hs lit_false_incomplete
+  adrp x2, input_buf
+  add x2, x2, :lo12:input_buf
+  add x2, x2, x9
+  ldrb w3, [x2]
+  cmp w3, #'s'
+  b.ne lit_fail
+  add x9, x9, #1
+  str x9, [x0]
+  adrp x1, input_len
+  add x1, x1, :lo12:input_len
+  ldr x10, [x1]
+  cmp x9, x10
+  b.hs lit_false_incomplete
+  adrp x2, input_buf
+  add x2, x2, :lo12:input_buf
+  add x2, x2, x9
+  ldrb w3, [x2]
+  cmp w3, #'e'
+  b.ne lit_fail
+  add x9, x9, #1
+  str x9, [x0]
+  mov x0, #1
+  ret
+lit_false_incomplete:
+  adrp x0, error_offset
+  add x0, x0, :lo12:error_offset
+  adrp x1, input_len
+  add x1, x1, :lo12:input_len
+  ldr x1, [x1]
+  str x1, [x0]
+  mov x0, #0
+  ret
+lit_null:
+  add x9, x9, #1
+  str x9, [x0]
+  adrp x1, input_len
+  add x1, x1, :lo12:input_len
+  ldr x10, [x1]
+  cmp x9, x10
+  b.hs lit_null_incomplete
+  adrp x2, input_buf
+  add x2, x2, :lo12:input_buf
+  add x2, x2, x9
+  ldrb w3, [x2]
+  cmp w3, #'u'
+  b.ne lit_fail
+  add x9, x9, #1
+  str x9, [x0]
+  adrp x1, input_len
+  add x1, x1, :lo12:input_len
+  ldr x10, [x1]
+  cmp x9, x10
+  b.hs lit_null_incomplete
+  adrp x2, input_buf
+  add x2, x2, :lo12:input_buf
+  add x2, x2, x9
+  ldrb w3, [x2]
+  cmp w3, #'l'
+  b.ne lit_fail
+  add x9, x9, #1
+  str x9, [x0]
+  adrp x1, input_len
+  add x1, x1, :lo12:input_len
+  ldr x10, [x1]
+  cmp x9, x10
+  b.hs lit_null_incomplete
+  adrp x2, input_buf
+  add x2, x2, :lo12:input_buf
+  add x2, x2, x9
+  ldrb w3, [x2]
+  cmp w3, #'l'
+  b.ne lit_fail
+  add x9, x9, #1
+  str x9, [x0]
+  mov x0, #1
+  ret
+lit_null_incomplete:
+  adrp x0, error_offset
+  add x0, x0, :lo12:error_offset
+  adrp x1, input_len
+  add x1, x1, :lo12:input_len
+  ldr x1, [x1]
+  str x1, [x0]
+  mov x0, #0
+  ret
+lit_fail:
+  adrp x0, error_offset
+  add x0, x0, :lo12:error_offset
+  adrp x1, input_idx
+  add x1, x1, :lo12:input_idx
+  ldr x1, [x1]
+  str x1, [x0]
+  mov x0, #0
+  ret
+lit_fail_eof:
+  adrp x0, error_offset
+  add x0, x0, :lo12:error_offset
+  adrp x1, input_idx
+  add x1, x1, :lo12:input_idx
+  ldr x1, [x1]
+  str x1, [x0]
+  mov x0, #0
+  ret
+
+.section .rodata
+ok_msg:
+  .asciz "ok\n"
+err_prefix:
+  .asciz "error at "
+err_suffix:
+  .asciz "\n"
+
+.section .bss
+  .align 3
+input_buf:
+  .space 65536
+  .align 3
+input_len:
+  .space 8
+  .align 3
+input_idx:
+  .space 8
+  .align 3
+error_offset:
+  .space 8
+  .align 3
+outbuf:
+  .space 32
+</previous>
+It failed:
+<failure>
+Test `empty` failed (stdin delivered whole; test run 1 of 80; the runs before it passed).
+stdin (0 bytes): ""
+The program stopped with a fault (no_exit): did not exit within 50000000 instructions (stopped at pc=0x4001a0) at pc 0x4001a0 [the faulting instruction is `mov x0, #0` at 0x4001a0 (doc_fail) (disassembly of the assembled program)]
+exit status: expected 1, got none (the program did not exit)
+stdout differs from byte 0 on (line 1, column 1 of the expected output); expected 11 bytes in total, got 0
+  expected from byte 0: "error at 0\n"
+  actual from byte 0:   (end of output)
+</failure>
+Write a corrected, complete version. Same output format; output only the code.

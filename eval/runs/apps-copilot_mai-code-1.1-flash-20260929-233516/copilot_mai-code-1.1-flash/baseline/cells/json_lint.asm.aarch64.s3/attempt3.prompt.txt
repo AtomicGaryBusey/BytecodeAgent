@@ -1,0 +1,783 @@
+Write the complete program `json_lint`: a static Linux executable for AArch64 (ARMv8-A, little-endian), written in assembly. There is no C library, no C runtime and no helper code: you write the entry point `_start`, every function, every table and string, and make the system calls yourself.
+
+Entry state (as the Linux kernel sets it up): execution starts at the label `_start`. sp is 16-byte aligned and points at argc = 0, followed by the NULL terminators of an empty argv, an empty envp and an empty auxiliary vector: the program gets no arguments. Every other general-purpose register (x0-x30) is zero; x30 is not a return address, so `_start` must never return with `ret`; the program ends only through the exit system call.
+
+System calls: the `svc #0` instruction, with the system call number in x8 and the arguments in x0, x1, x2; the result comes back in x0. Every other register is preserved. Exactly these four are available:
+- read = 63: read(fd = 0, buf, count) reads up to count bytes of standard input into buf; returns the number of bytes read, 0 at end of input.
+- write = 64: write(fd, buf, count) with fd 1 (standard output) or 2 (standard error); returns count.
+- exit = 93: exit(status) ends the program; the exit status is the low 8 bits of status.
+- exit_group = 94: the same as exit.
+Any other system call number or file descriptor stops the program with an error, and so does a buffer that is not entirely inside the program's memory.
+
+Memory: the program's own sections plus a stack of 1 MiB below the entry sp. There is no heap (no brk, no mmap, no malloc): put working storage in `.bss` (zero-initialised), at most 1 MiB in total, or on the stack. Code is not writable. Any access outside these areas stops the program. Each test run may execute at most 50,000,000 instructions.
+
+Output format: one complete assembly source file in GNU assembler (GNU as) syntax for AArch64. Examples: `ldr x2, [x0, x1, lsl #3]`, `ldrb w3, [x1], #1`, `stp x29, x30, [sp, #-16]!`. Comments start with `//`; do not use `;`.
+Allowed in the file:
+- Sections: `.text` (code), `.section .rodata` (read-only data), `.data` (initialised writable data), `.bss` (zero-initialised space: only `.zero`/`.space` and alignment). Instructions go in `.text` only.
+- Data directives: `.byte`, `.short`/`.2byte`, `.word` (4 bytes on this target), `.long`/`.int`/`.4byte`, `.quad`/`.8byte`, `.ascii`, `.asciz`/`.string`, `.zero`/`.space`, alignment with `.align`/`.balign`/`.p2align`, and `.globl`/`.global` (write `.globl _start`).
+- Labels `name:` in any section, and GNU local labels `1:` referenced as `1f` (next) / `1b` (previous).
+- Constants: `.equ name, value` (or `.set name, value`, or `name = value`), where value is a number or a difference of labels defined earlier in the same section (e.g. `msg_len = . - msg`). Define every constant before its first use.
+- Addressing data: `adrp x0, label` followed by `add x0, x0, :lo12:label` (or a load/store `ldr x1, [x0, :lo12:label]`); `adr x0, label` also works within +-1 MiB. Literal pools are NOT allowed: no `ldr x0, =label` and no `ldr x0, =constant` (build constants with mov/movz/movk).
+Not allowed: macros (`.macro`, `.rept`, `.irp`), conditional assembly (`.if`), `.include`, `.incbin`, `.fill`, `.org`, `.comm`/`.lcomm`, `.inst`, `.cfi_*` directives, section stacks (`.pushsection`) and any other section. No libc and no other library: there is nothing to link against, so every symbol you use must be defined in your file.
+Instruction set: ARMv8.0-A with floating point and Advanced SIMD (NEON). Not supported (rejected): CRC32, LSE atomics, dot product, half-precision, crypto (AES/SHA/PMULL) and SVE.
+Output ONLY the assembly source: no Markdown fences, no prose before or after it.
+
+Specification: Task `json_lint`: check that standard input is exactly one valid JSON document (RFC 8259 grammar) and report
+the byte offset of the first error.
+
+Grammar (byte-level):
+- document = ws value ws, and nothing else. ws = any number of the bytes space 0x20, tab 0x09, newline 0x0A,
+  carriage return 0x0D (only these four).
+- value = object | array | string | number | `true` | `false` | `null` (lowercase only).
+- object = `{` ws `}`, or `{` ws member (ws `,` ws member)* ws `}`, where member = string ws `:` ws value.
+  array = `[` ws `]`, or `[` ws value (ws `,` ws value)* ws `]`. No trailing commas.
+- string = `"` chars `"`. A char is any byte 0x20-0xFF except `"` (0x22) and `\` (0x5C) (bytes >= 0x80 are
+  accepted as they are; no UTF-8 validation), or an escape: `\` followed by one of `"` `\` `/` `b` `f` `n` `r`
+  `t`, or `\u` followed by exactly 4 hex digits (`0-9a-fA-F`; any code unit, surrogates are not checked).
+  Bytes 0x00-0x1F inside a string are errors.
+- number = `-`? int frac? exp?, where int = `0` | a digit `1`-`9` followed by any digits; frac = `.` and one or
+  more digits; exp = `e` or `E`, an optional `+` or `-`, and one or more digits. (So `01`, `+1`, `.5`, `1.`,
+  `1e`, `-` are not valid numbers.)
+
+Output: if the input is valid, print `ok\n` and exit with status 0. Otherwise print `error at N\n` (N in
+decimal, no padding) and exit with status 1, where N is the 0-based offset of the first byte at which the input
+stops being the beginning of some valid document: the first byte that no valid document could have at that
+position given all the bytes before it. If every byte of the input is such a valid beginning but the document is
+incomplete (this includes empty and whitespace-only input), N is the length of the input.
+
+Examples: `[1, 2]` ok; empty input `error at 0`; `[1,]` `error at 3`; `{"a" 1}` `error at 5`; `01` `error at 1`;
+`tru` `error at 3`; `trux` `error at 3`; `[1] x` `error at 4`; `"a<TAB>b"` (a raw tab byte) `error at 2`;
+`-` `error at 1`; `1.e5` `error at 2`.
+
+Limits: the input is at most 65536 bytes; arrays and objects are nested at most 1000 deep. These limits
+describe the inputs you will be given; you do not need to detect or report inputs that exceed them.
+
+Input and output (applies to this whole task):
+- The input is the complete contents of standard input (file descriptor 0). Read it with `read` until `read`
+  returns 0 (end of input). A `read` may return FEWER bytes than requested, at any position (in the middle of a
+  line, a token or a group of bytes), so keep calling it; only a return value of 0 means end of input.
+- Write the output to standard output (file descriptor 1). Only the bytes this task describes may appear on
+  standard output (standard error is ignored). Every output byte must be written before the program exits.
+- Finish with `exit` (or `exit_group`) and the exit status this task gives. The program must not run off the end
+  of its code or crash.
+
+Your previous attempt was:
+<previous>
+.text
+.globl _start
+
+.equ STDIN, 0
+.equ STDOUT, 1
+.equ READ, 63
+.equ WRITE, 64
+.equ EXIT, 93
+.equ EXIT_GROUP, 94
+
+_start:
+    bl read_all
+    mov x0, #0
+    bl parse_document
+    cbnz x1, 1f
+    bl print_error_at
+1:
+    bl print_ok
+
+read_all:
+    stp x29, x30, [sp, #-16]!
+    mov x29, sp
+    mov x9, #0
+    adrp x10, g_buf
+    add x10, x10, :lo12:g_buf
+    adrp x11, g_len
+    add x11, x11, :lo12:g_len
+1:
+    cmp x9, #65536
+    b.hs 2f
+    mov x0, #STDIN
+    mov x1, x10
+    add x1, x1, x9
+    mov x2, #65536
+    sub x2, x2, x9
+    mov x8, #READ
+    svc #0
+    cmp x0, #0
+    b.lt 3f
+    beq 2f
+    add x9, x9, x0
+    b 1b
+2:
+    str x9, [x11]
+    mov x0, x9
+    ldp x29, x30, [sp], #16
+    ret
+3:
+    mov x0, #1
+    mov x8, #EXIT
+    svc #0
+
+parse_document:
+    stp x29, x30, [sp, #-16]!
+    mov x29, sp
+    mov x9, x0
+    mov x0, x9
+    bl parse_ws
+    mov x9, x0
+    mov x0, x9
+    bl parse_value
+    mov x10, x0
+    mov x11, x1
+    cbnz x11, 1f
+    mov x0, x10
+    mov x1, #0
+    ldp x29, x30, [sp], #16
+    ret
+1:
+    mov x0, x10
+    bl parse_ws
+    mov x9, x0
+    adrp x10, g_len
+    add x10, x10, :lo12:g_len
+    ldr x10, [x10]
+    cmp x9, x10
+    b.ne 2f
+    mov x0, x9
+    mov x1, #1
+    ldp x29, x30, [sp], #16
+    ret
+2:
+    mov x0, x9
+    mov x1, #0
+    ldp x29, x30, [sp], #16
+    ret
+
+parse_ws:
+    stp x29, x30, [sp, #-16]!
+    mov x29, sp
+    mov x9, x0
+    adrp x10, g_buf
+    add x10, x10, :lo12:g_buf
+    adrp x11, g_len
+    add x11, x11, :lo12:g_len
+    ldr x11, [x11]
+1:
+    cmp x9, x11
+    b.hs 2f
+    ldrb w12, [x10, x9]
+    cmp w12, #0x20
+    beq 3f
+    cmp w12, #0x09
+    beq 3f
+    cmp w12, #0x0A
+    beq 3f
+    cmp w12, #0x0D
+    beq 3f
+    b 2f
+3:
+    add x9, x9, #1
+    b 1b
+2:
+    mov x0, x9
+    mov x1, #1
+    ldp x29, x30, [sp], #16
+    ret
+
+parse_value:
+    stp x29, x30, [sp, #-16]!
+    mov x29, sp
+    mov x9, x0
+    mov x0, x9
+    bl parse_object
+    mov x10, x0
+    mov x11, x1
+    cbnz x11, 9f
+    mov x0, x9
+    bl parse_array
+    mov x10, x0
+    mov x11, x1
+    cbnz x11, 9f
+    mov x0, x9
+    bl parse_string
+    mov x10, x0
+    mov x11, x1
+    cbnz x11, 9f
+    mov x0, x9
+    bl parse_number
+    mov x10, x0
+    mov x11, x1
+    cbnz x11, 9f
+    mov x0, x9
+    bl parse_true
+    mov x10, x0
+    mov x11, x1
+    cbnz x11, 9f
+    mov x0, x9
+    bl parse_false
+    mov x10, x0
+    mov x11, x1
+    cbnz x11, 9f
+    mov x0, x9
+    bl parse_null
+    mov x10, x0
+    mov x11, x1
+    cbnz x11, 9f
+    mov x0, x9
+    mov x1, #0
+    ldp x29, x30, [sp], #16
+    ret
+9:
+    mov x0, x10
+    mov x1, x11
+    ldp x29, x30, [sp], #16
+    ret
+
+parse_object:
+    stp x29, x30, [sp, #-16]!
+    mov x29, sp
+    mov x9, x0
+    adrp x10, g_buf
+    add x10, x10, :lo12:g_buf
+    adrp x11, g_len
+    add x11, x11, :lo12:g_len
+    ldr x11, [x11]
+    cmp x9, x11
+    b.hs 5f
+    ldrb w12, [x10, x9]
+    cmp w12, #0x7B
+    b.ne 5f
+    add x9, x9, #1
+    mov x0, x9
+    bl parse_ws
+    mov x9, x0
+    cmp x9, x11
+    b.hs 5f
+    ldrb w12, [x10, x9]
+    cmp w12, #0x7D
+    b.eq 1f
+2:
+    mov x0, x9
+    bl parse_string
+    mov x9, x0
+    mov x12, x1
+    cbnz x12, 3f
+    mov x0, x9
+    mov x1, #0
+    ldp x29, x30, [sp], #16
+    ret
+3:
+    mov x0, x9
+    bl parse_ws
+    mov x9, x0
+    cmp x9, x11
+    b.hs 5f
+    ldrb w12, [x10, x9]
+    cmp w12, #0x3A
+    b.ne 6f
+    add x9, x9, #1
+    mov x0, x9
+    bl parse_ws
+    mov x9, x0
+    mov x0, x9
+    bl parse_value
+    mov x9, x0
+    mov x12, x1
+    cbnz x12, 4f
+    mov x0, x9
+    mov x1, #0
+    ldp x29, x30, [sp], #16
+    ret
+4:
+    mov x0, x9
+    bl parse_ws
+    mov x9, x0
+    cmp x9, x11
+    b.hs 5f
+    ldrb w12, [x10, x9]
+    cmp w12, #0x2C
+    b.eq 7f
+    cmp w12, #0x7D
+    b.eq 1f
+    b 6f
+7:
+    add x9, x9, #1
+    mov x0, x9
+    bl parse_ws
+    mov x9, x0
+    b 2b
+1:
+    add x9, x9, #1
+    mov x0, x9
+    mov x1, #1
+    ldp x29, x30, [sp], #16
+    ret
+5:
+    mov x0, x9
+    mov x1, #0
+    ldp x29, x30, [sp], #16
+    ret
+6:
+    mov x0, x9
+    mov x1, #0
+    ldp x29, x30, [sp], #16
+    ret
+
+parse_array:
+    stp x29, x30, [sp, #-16]!
+    mov x29, sp
+    mov x9, x0
+    adrp x10, g_buf
+    add x10, x10, :lo12:g_buf
+    adrp x11, g_len
+    add x11, x11, :lo12:g_len
+    ldr x11, [x11]
+    cmp x9, x11
+    b.hs 5f
+    ldrb w12, [x10, x9]
+    cmp w12, #0x5B
+    b.ne 5f
+    add x9, x9, #1
+    mov x0, x9
+    bl parse_ws
+    mov x9, x0
+    cmp x9, x11
+    b.hs 5f
+    ldrb w12, [x10, x9]
+    cmp w12, #0x5D
+    b.eq 1f
+2:
+    mov x0, x9
+    bl parse_value
+    mov x9, x0
+    mov x12, x1
+    cbnz x12, 3f
+    mov x0, x9
+    mov x1, #0
+    ldp x29, x30, [sp], #16
+    ret
+3:
+    mov x0, x9
+    bl parse_ws
+    mov x9, x0
+    cmp x9, x11
+    b.hs 5f
+    ldrb w12, [x10, x9]
+    cmp w12, #0x2C
+    b.eq 7f
+    cmp w12, #0x5D
+    b.eq 1f
+    b 6f
+7:
+    add x9, x9, #1
+    mov x0, x9
+    bl parse_ws
+    mov x9, x0
+    b 2b
+1:
+    add x9, x9, #1
+    mov x0, x9
+    mov x1, #1
+    ldp x29, x30, [sp], #16
+    ret
+5:
+    mov x0, x9
+    mov x1, #0
+    ldp x29, x30, [sp], #16
+    ret
+6:
+    mov x0, x9
+    mov x1, #0
+    ldp x29, x30, [sp], #16
+    ret
+
+parse_string:
+    stp x29, x30, [sp, #-16]!
+    mov x29, sp
+    mov x9, x0
+    adrp x10, g_buf
+    add x10, x10, :lo12:g_buf
+    adrp x11, g_len
+    add x11, x11, :lo12:g_len
+    ldr x11, [x11]
+    cmp x9, x11
+    b.hs 9f
+    ldrb w12, [x10, x9]
+    cmp w12, #0x22
+    b.ne 8f
+    add x9, x9, #1
+1:
+    cmp x9, x11
+    b.hs 9f
+    ldrb w12, [x10, x9]
+    cmp w12, #0x22
+    b.eq 2f
+    cmp w12, #0x5C
+    b.eq 3f
+    cmp w12, #0x20
+    b.lt 8f
+    add x9, x9, #1
+    b 1b
+3:
+    add x9, x9, #1
+    cmp x9, x11
+    b.hs 9f
+    ldrb w12, [x10, x9]
+    cmp w12, #0x22
+    b.eq 4f
+    cmp w12, #0x5C
+    b.eq 4f
+    cmp w12, #0x2F
+    b.eq 4f
+    cmp w12, #0x62
+    b.eq 4f
+    cmp w12, #0x66
+    b.eq 4f
+    cmp w12, #0x6E
+    b.eq 4f
+    cmp w12, #0x72
+    b.eq 4f
+    cmp w12, #0x74
+    b.eq 4f
+    cmp w12, #0x75
+    b.eq 5f
+    b 6f
+4:
+    add x9, x9, #1
+    b 1b
+5:
+    add x9, x9, #1
+    mov x13, #0
+6:
+    cmp x13, #4
+    b.eq 1b
+    cmp x9, x11
+    b.hs 9f
+    ldrb w12, [x10, x9]
+    cmp w12, #0x30
+    b.lt 7f
+    cmp w12, #0x39
+    b.le 10f
+    cmp w12, #0x41
+    b.lt 7f
+    cmp w12, #0x46
+    b.le 10f
+    cmp w12, #0x61
+    b.lt 7f
+    cmp w12, #0x66
+    b.le 10f
+    b 7f
+10:
+    add x9, x9, #1
+    add x13, x13, #1
+    b 6b
+7:
+    mov x0, x9
+    mov x1, #0
+    ldp x29, x30, [sp], #16
+    ret
+2:
+    add x9, x9, #1
+    mov x0, x9
+    mov x1, #1
+    ldp x29, x30, [sp], #16
+    ret
+8:
+    mov x0, x9
+    mov x1, #0
+    ldp x29, x30, [sp], #16
+    ret
+9:
+    mov x0, x11
+    mov x1, #0
+    ldp x29, x30, [sp], #16
+    ret
+
+parse_number:
+    stp x29, x30, [sp, #-16]!
+    mov x29, sp
+    mov x9, x0
+    adrp x10, g_buf
+    add x10, x10, :lo12:g_buf
+    adrp x11, g_len
+    add x11, x11, :lo12:g_len
+    ldr x11, [x11]
+    cmp x9, x11
+    b.hs 9f
+    ldrb w12, [x10, x9]
+    cmp w12, #0x2D
+    b.ne 1f
+    add x9, x9, #1
+    cmp x9, x11
+    b.hs 9f
+1:
+    ldrb w12, [x10, x9]
+    cmp w12, #0x30
+    b.eq 2f
+    cmp w12, #0x31
+    b.lt 9f
+    cmp w12, #0x39
+    b.gt 9f
+    add x9, x9, #1
+    b 3f
+2:
+    add x9, x9, #1
+    cmp x9, x11
+    b.hs 4f
+    ldrb w12, [x10, x9]
+    cmp w12, #0x30
+    b.lt 4f
+    cmp w12, #0x39
+    b.gt 4f
+    b 9f
+3:
+    cmp x9, x11
+    b.hs 4f
+    ldrb w12, [x10, x9]
+    cmp w12, #0x30
+    b.lt 4f
+    cmp w12, #0x39
+    b.gt 4f
+    add x9, x9, #1
+    b 3b
+4:
+    cmp x9, x11
+    b.hs 5f
+    ldrb w12, [x10, x9]
+    cmp w12, #0x2E
+    b.ne 5f
+    add x9, x9, #1
+    cmp x9, x11
+    b.hs 9f
+    ldrb w12, [x10, x9]
+    cmp w12, #0x30
+    b.lt 9f
+    cmp w12, #0x39
+    b.gt 9f
+    add x9, x9, #1
+    b 6f
+6:
+    cmp x9, x11
+    b.hs 5f
+    ldrb w12, [x10, x9]
+    cmp w12, #0x30
+    b.lt 5f
+    cmp w12, #0x39
+    b.gt 5f
+    add x9, x9, #1
+    b 6b
+5:
+    cmp x9, x11
+    b.hs 7f
+    ldrb w12, [x10, x9]
+    cmp w12, #0x65
+    b.eq 8f
+    cmp w12, #0x45
+    b.eq 8f
+    b 7f
+8:
+    add x9, x9, #1
+    cmp x9, x11
+    b.hs 9f
+    ldrb w12, [x10, x9]
+    cmp w12, #0x2B
+    b.eq 10f
+    cmp w12, #0x2D
+    b.eq 10f
+    b 11f
+10:
+    add x9, x9, #1
+11:
+    cmp x9, x11
+    b.hs 9f
+    ldrb w12, [x10, x9]
+    cmp w12, #0x30
+    b.lt 9f
+    cmp w12, #0x39
+    b.gt 9f
+    add x9, x9, #1
+    b 12f
+12:
+    cmp x9, x11
+    b.hs 7f
+    ldrb w12, [x10, x9]
+    cmp w12, #0x30
+    b.lt 7f
+    cmp w12, #0x39
+    b.gt 7f
+    add x9, x9, #1
+    b 12b
+7:
+    mov x0, x9
+    mov x1, #1
+    ldp x29, x30, [sp], #16
+    ret
+9:
+    mov x0, x9
+    mov x1, #0
+    ldp x29, x30, [sp], #16
+    ret
+
+parse_literal:
+    stp x29, x30, [sp, #-16]!
+    mov x29, sp
+    mov x9, x0
+    mov x10, x1
+    mov x11, x2
+    adrp x12, g_buf
+    add x12, x12, :lo12:g_buf
+    adrp x13, g_len
+    add x13, x13, :lo12:g_len
+    ldr x13, [x13]
+    mov x14, #0
+1:
+    cmp x14, x11
+    b.eq 2f
+    add x15, x9, x14
+    cmp x15, x13
+    b.hs 4f
+    add x16, x10, x14
+    ldrb w17, [x16]
+    ldrb w18, [x12, x15]
+    cmp w17, w18
+    b.ne 3f
+    add x14, x14, #1
+    b 1b
+2:
+    add x0, x9, x11
+    mov x1, #1
+    ldp x29, x30, [sp], #16
+    ret
+3:
+    mov x0, x15
+    mov x1, #0
+    ldp x29, x30, [sp], #16
+    ret
+4:
+    mov x0, x13
+    mov x1, #0
+    ldp x29, x30, [sp], #16
+    ret
+
+parse_true:
+    stp x29, x30, [sp, #-16]!
+    mov x29, sp
+    adrp x1, lit_true
+    add x1, x1, :lo12:lit_true
+    mov x2, #4
+    bl parse_literal
+    ldp x29, x30, [sp], #16
+    ret
+
+parse_false:
+    stp x29, x30, [sp, #-16]!
+    mov x29, sp
+    adrp x1, lit_false
+    add x1, x1, :lo12:lit_false
+    mov x2, #5
+    bl parse_literal
+    ldp x29, x30, [sp], #16
+    ret
+
+parse_null:
+    stp x29, x30, [sp, #-16]!
+    mov x29, sp
+    adrp x1, lit_null
+    add x1, x1, :lo12:lit_null
+    mov x2, #4
+    bl parse_literal
+    ldp x29, x30, [sp], #16
+    ret
+
+print_ok:
+    stp x29, x30, [sp, #-16]!
+    mov x29, sp
+    mov x0, #STDOUT
+    adrp x1, ok_msg
+    add x1, x1, :lo12:ok_msg
+    mov x2, #3
+    mov x8, #WRITE
+    svc #0
+    mov x0, #0
+    mov x8, #EXIT
+    svc #0
+
+print_error_at:
+    stp x29, x30, [sp, #-16]!
+    mov x29, sp
+    mov x19, x0
+    mov x0, #STDOUT
+    adrp x1, err_prefix
+    add x1, x1, :lo12:err_prefix
+    mov x2, #9
+    mov x8, #WRITE
+    svc #0
+    sub sp, sp, #16
+    mov x9, sp
+    add x9, x9, #15
+    mov x10, x19
+    mov x11, #10
+    mov x12, #0
+1:
+    cmp x10, #0
+    b.eq 2f
+    udiv x13, x10, x11
+    msub x14, x13, x11, x10
+    add x14, x14, #48
+    strb w14, [x9]
+    sub x9, x9, #1
+    add x12, x12, #1
+    mov x10, x13
+    b 1b
+2:
+    add x9, x9, #1
+    mov x0, #STDOUT
+    mov x1, x9
+    mov x2, x12
+    mov x8, #WRITE
+    svc #0
+    add sp, sp, #16
+    mov x0, #STDOUT
+    adrp x1, err_suffix
+    add x1, x1, :lo12:err_suffix
+    mov x2, #1
+    mov x8, #WRITE
+    svc #0
+    mov x0, #1
+    mov x8, #EXIT
+    svc #0
+
+.section .rodata
+ok_msg:
+    .asciz "ok\n"
+
+err_prefix:
+    .ascii "error at "
+
+err_suffix:
+    .byte 0x0A
+
+lit_true:
+    .ascii "true"
+
+lit_false:
+    .ascii "false"
+
+lit_null:
+    .ascii "null"
+
+.section .bss
+.balign 8
+g_buf:
+    .space 65536
+
+g_len:
+    .space 8
+</previous>
+It failed:
+<failure>
+Test `empty` failed (stdin delivered whole; test run 1 of 80; the runs before it passed).
+stdin (0 bytes): ""
+exit status: expected 1, got 1
+stdout differs from byte 9 on (line 1, column 10 of the expected output); expected 11 bytes in total, got 10
+  expected from byte 9: "0\n"
+  actual from byte 9:   "\n"
+</failure>
+Write a corrected, complete version. Same output format; output only the code.

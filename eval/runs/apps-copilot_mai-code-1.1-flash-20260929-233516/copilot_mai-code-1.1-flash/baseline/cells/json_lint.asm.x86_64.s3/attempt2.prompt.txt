@@ -1,0 +1,781 @@
+Write the complete program `json_lint`: a static Linux executable for x86-64 (AMD64), written in assembly. There is no C library, no C runtime and no helper code: you write the entry point `_start`, every function, every table and string, and make the system calls yourself.
+
+Entry state (as the Linux kernel sets it up): execution starts at the label `_start`. rsp is 16-byte aligned and points at argc = 0, followed by the NULL terminators of an empty argv, an empty envp and an empty auxiliary vector: the program gets no arguments. Every other general-purpose register is zero, and the direction flag is clear. There is no return address: `_start` must never return with `ret`; the program ends only through the exit system call.
+
+System calls: the `syscall` instruction, with the system call number in rax and the arguments in rdi, rsi, rdx; the result comes back in rax. The kernel overwrites rcx and r11; every other register is preserved. Exactly these four are available:
+- read = 0: read(fd = 0, buf, count) reads up to count bytes of standard input into buf; returns the number of bytes read, 0 at end of input.
+- write = 1: write(fd, buf, count) with fd 1 (standard output) or 2 (standard error); returns count.
+- exit = 60: exit(status) ends the program; the exit status is the low 8 bits of status.
+- exit_group = 231: the same as exit.
+Any other system call number, another file descriptor, `int 0x80` or `sysenter` stops the program with an error, and so does a buffer that is not entirely inside the program's memory.
+
+Memory: the program's own sections plus a stack of 1 MiB below the entry sp. There is no heap (no brk, no mmap, no malloc): put working storage in `.bss` (zero-initialised), at most 1 MiB in total, or on the stack. Code is not writable. Any access outside these areas stops the program. Each test run may execute at most 50,000,000 instructions.
+
+Output format: one complete assembly source file in GNU assembler (GNU as) syntax, Intel flavour without register prefixes: the harness puts `.intel_syntax noprefix` in front of your text, so do not write it yourself. Examples: `mov rax, qword ptr [rbx + rcx*8]`, `movzx eax, byte ptr [rsi]`, `lea rsi, [rip + buffer]`. Comments start with `#`; do not use `;`.
+Allowed in the file:
+- Sections: `.text` (code), `.section .rodata` (read-only data), `.data` (initialised writable data), `.bss` (zero-initialised space: only `.zero`/`.space` and alignment). Instructions go in `.text` only.
+- Data directives: `.byte`, `.short`/`.2byte`, `.word` (2 bytes on this target), `.long`/`.int`/`.4byte`, `.quad`/`.8byte`, `.ascii`, `.asciz`/`.string`, `.zero`/`.space`, alignment with `.align`/`.balign`/`.p2align`, and `.globl`/`.global` (write `.globl _start`).
+- Labels `name:` in any section, and GNU local labels `1:` referenced as `1f` (next) / `1b` (previous).
+- Constants: `.equ name, value` (or `.set name, value`, or `name = value`), where value is a number or a difference of labels defined earlier in the same section (e.g. `msg_len = . - msg`). Define every constant before its first use.
+- Addressing data: rip-relative, `lea rdi, [rip + table]` or `mov al, byte ptr [rip + table + 3]`. The program is linked at fixed low addresses, so absolute forms (`mov esi, offset buffer`, `movzx eax, byte ptr [table + rcx]`) work as well.
+Not allowed: macros (`.macro`, `.rept`, `.irp`), conditional assembly (`.if`), `.include`, `.incbin`, `.fill`, `.org`, `.comm`/`.lcomm`, `.inst`, `.cfi_*` directives, section stacks (`.pushsection`) and any other section. No libc and no other library: there is nothing to link against, so every symbol you use must be defined in your file.
+Instruction set: x86-64 with SSE up to SSE4.2 (including SSSE3, SSE4.1 and crc32), POPCNT, LZCNT, BMI1/BMI2 (andn, bextr, blsi, blsr, tzcnt, bzhi, mulx, pdep, pext, rorx, sarx, shlx, shrx), MOVBE, AES-NI and PCLMULQDQ. Not supported (rejected): AVX, AVX2, AVX-512, FMA, F16C and every other VEX/EVEX vector instruction, ADX (adcx/adox; use adc) and SHA.
+Output ONLY the assembly source: no Markdown fences, no prose before or after it.
+
+Specification: Task `json_lint`: check that standard input is exactly one valid JSON document (RFC 8259 grammar) and report
+the byte offset of the first error.
+
+Grammar (byte-level):
+- document = ws value ws, and nothing else. ws = any number of the bytes space 0x20, tab 0x09, newline 0x0A,
+  carriage return 0x0D (only these four).
+- value = object | array | string | number | `true` | `false` | `null` (lowercase only).
+- object = `{` ws `}`, or `{` ws member (ws `,` ws member)* ws `}`, where member = string ws `:` ws value.
+  array = `[` ws `]`, or `[` ws value (ws `,` ws value)* ws `]`. No trailing commas.
+- string = `"` chars `"`. A char is any byte 0x20-0xFF except `"` (0x22) and `\` (0x5C) (bytes >= 0x80 are
+  accepted as they are; no UTF-8 validation), or an escape: `\` followed by one of `"` `\` `/` `b` `f` `n` `r`
+  `t`, or `\u` followed by exactly 4 hex digits (`0-9a-fA-F`; any code unit, surrogates are not checked).
+  Bytes 0x00-0x1F inside a string are errors.
+- number = `-`? int frac? exp?, where int = `0` | a digit `1`-`9` followed by any digits; frac = `.` and one or
+  more digits; exp = `e` or `E`, an optional `+` or `-`, and one or more digits. (So `01`, `+1`, `.5`, `1.`,
+  `1e`, `-` are not valid numbers.)
+
+Output: if the input is valid, print `ok\n` and exit with status 0. Otherwise print `error at N\n` (N in
+decimal, no padding) and exit with status 1, where N is the 0-based offset of the first byte at which the input
+stops being the beginning of some valid document: the first byte that no valid document could have at that
+position given all the bytes before it. If every byte of the input is such a valid beginning but the document is
+incomplete (this includes empty and whitespace-only input), N is the length of the input.
+
+Examples: `[1, 2]` ok; empty input `error at 0`; `[1,]` `error at 3`; `{"a" 1}` `error at 5`; `01` `error at 1`;
+`tru` `error at 3`; `trux` `error at 3`; `[1] x` `error at 4`; `"a<TAB>b"` (a raw tab byte) `error at 2`;
+`-` `error at 1`; `1.e5` `error at 2`.
+
+Limits: the input is at most 65536 bytes; arrays and objects are nested at most 1000 deep. These limits
+describe the inputs you will be given; you do not need to detect or report inputs that exceed them.
+
+Input and output (applies to this whole task):
+- The input is the complete contents of standard input (file descriptor 0). Read it with `read` until `read`
+  returns 0 (end of input). A `read` may return FEWER bytes than requested, at any position (in the middle of a
+  line, a token or a group of bytes), so keep calling it; only a return value of 0 means end of input.
+- Write the output to standard output (file descriptor 1). Only the bytes this task describes may appear on
+  standard output (standard error is ignored). Every output byte must be written before the program exits.
+- Finish with `exit` (or `exit_group`) and the exit status this task gives. The program must not run off the end
+  of its code or crash.
+
+Your previous attempt was:
+<previous>
+.globl _start
+
+.section .rodata
+true_str: .ascii "true"
+false_str: .ascii "false"
+null_str: .ascii "null"
+ok_msg: .ascii "ok\n"
+err_prefix: .ascii "error at "
+newline_byte: .byte 10
+
+.section .bss
+.align 8
+input_pos: .zero 8
+input_len: .zero 8
+input_buf: .space 65536
+numbuf: .space 32
+
+.text
+
+_start:
+    call read_all
+    call parse_document
+    test rax, rax
+    jz .ok
+    call print_error
+    mov edi, 1
+    mov eax, 60
+    syscall
+.ok:
+    call print_ok
+    xor edi, edi
+    mov eax, 60
+    syscall
+
+read_all:
+    mov qword ptr [rip + input_len], 0
+    mov qword ptr [rip + input_pos], 0
+.loop:
+    lea rsi, [rip + input_buf]
+    mov rax, qword ptr [rip + input_len]
+    add rsi, rax
+    mov rdi, 0
+    mov rdx, 65536
+    mov rax, 0
+    syscall
+    cmp rax, 0
+    je .done
+    mov rcx, qword ptr [rip + input_len]
+    add rcx, rax
+    cmp rcx, 65536
+    jbe .store
+    mov rcx, 65536
+.store:
+    mov qword ptr [rip + input_len], rcx
+    cmp rcx, 65536
+    je .done
+    jmp .loop
+.done:
+    ret
+
+parse_document:
+    mov qword ptr [rip + input_pos], 0
+    call skip_ws
+    test rax, rax
+    jnz .done
+    call parse_value
+    test rax, rax
+    jnz .done
+    call skip_ws
+    mov rax, qword ptr [rip + input_pos]
+    mov rcx, qword ptr [rip + input_len]
+    cmp rax, rcx
+    jne .extra
+    xor rax, rax
+    ret
+.extra:
+    mov rax, qword ptr [rip + input_pos]
+    inc rax
+    ret
+.done:
+    ret
+
+skip_ws:
+    mov rbx, qword ptr [rip + input_pos]
+    mov rdx, qword ptr [rip + input_len]
+    lea rsi, [rip + input_buf]
+.loop:
+    cmp rbx, rdx
+    jae .end
+    movzx eax, byte ptr [rsi + rbx]
+    cmp al, 0x20
+    je .ws
+    cmp al, 0x09
+    je .ws
+    cmp al, 0x0A
+    je .ws
+    cmp al, 0x0D
+    je .ws
+    jmp .end
+.ws:
+    inc rbx
+    jmp .loop
+.end:
+    mov qword ptr [rip + input_pos], rbx
+    xor rax, rax
+    ret
+
+parse_value:
+    mov rbx, qword ptr [rip + input_pos]
+    mov rdx, qword ptr [rip + input_len]
+    cmp rbx, rdx
+    jae .incomplete
+    lea rsi, [rip + input_buf]
+    movzx eax, byte ptr [rsi + rbx]
+    cmp al, '{'
+    je .object
+    cmp al, '['
+    je .array
+    cmp al, '"'
+    je .string
+    cmp al, '-'
+    je .number
+    cmp al, '0'
+    jb .check_literal
+    cmp al, '9'
+    jbe .number
+.check_literal:
+    cmp al, 't'
+    je .true
+    cmp al, 'f'
+    je .false
+    cmp al, 'n'
+    je .null
+.invalid:
+    mov rax, rbx
+    inc rax
+    ret
+.object:
+    call parse_object
+    ret
+.array:
+    call parse_array
+    ret
+.string:
+    call parse_string
+    ret
+.number:
+    call parse_number
+    ret
+.true:
+    call parse_true
+    ret
+.false:
+    call parse_false
+    ret
+.null:
+    call parse_null
+    ret
+.incomplete:
+    mov rax, qword ptr [rip + input_len]
+    inc rax
+    ret
+
+parse_object:
+    mov rbx, qword ptr [rip + input_pos]
+    mov rdx, qword ptr [rip + input_len]
+    lea rsi, [rip + input_buf]
+    cmp rbx, rdx
+    jae .incomplete
+    movzx eax, byte ptr [rsi + rbx]
+    cmp al, '{'
+    jne .fail
+    inc rbx
+    mov qword ptr [rip + input_pos], rbx
+    call skip_ws
+    mov rbx, qword ptr [rip + input_pos]
+    mov rdx, qword ptr [rip + input_len]
+    lea rsi, [rip + input_buf]
+    cmp rbx, rdx
+    jae .incomplete
+    movzx eax, byte ptr [rsi + rbx]
+    cmp al, '}'
+    je .close
+.member:
+    call parse_string
+    test rax, rax
+    jnz .ret
+    call skip_ws
+    mov rbx, qword ptr [rip + input_pos]
+    mov rdx, qword ptr [rip + input_len]
+    lea rsi, [rip + input_buf]
+    cmp rbx, rdx
+    jae .incomplete
+    movzx eax, byte ptr [rsi + rbx]
+    cmp al, ':'
+    jne .fail_current
+    inc rbx
+    mov qword ptr [rip + input_pos], rbx
+    call skip_ws
+    call parse_value
+    test rax, rax
+    jnz .ret
+    call skip_ws
+    mov rbx, qword ptr [rip + input_pos]
+    mov rdx, qword ptr [rip + input_len]
+    lea rsi, [rip + input_buf]
+    cmp rbx, rdx
+    jae .incomplete
+    movzx eax, byte ptr [rsi + rbx]
+    cmp al, ','
+    jne .end_member
+    inc rbx
+    mov qword ptr [rip + input_pos], rbx
+    call skip_ws
+    jmp .member
+.end_member:
+    cmp al, '}'
+    jne .fail_current
+.close:
+    inc rbx
+    mov qword ptr [rip + input_pos], rbx
+    xor rax, rax
+    ret
+.fail:
+    mov rax, qword ptr [rip + input_pos]
+    inc rax
+    ret
+.fail_current:
+    mov rax, qword ptr [rip + input_pos]
+    inc rax
+    ret
+.incomplete:
+    mov rax, qword ptr [rip + input_len]
+    inc rax
+    ret
+.ret:
+    ret
+
+parse_array:
+    mov rbx, qword ptr [rip + input_pos]
+    mov rdx, qword ptr [rip + input_len]
+    lea rsi, [rip + input_buf]
+    cmp rbx, rdx
+    jae .incomplete
+    movzx eax, byte ptr [rsi + rbx]
+    cmp al, '['
+    jne .fail
+    inc rbx
+    mov qword ptr [rip + input_pos], rbx
+    call skip_ws
+    mov rbx, qword ptr [rip + input_pos]
+    mov rdx, qword ptr [rip + input_len]
+    lea rsi, [rip + input_buf]
+    cmp rbx, rdx
+    jae .incomplete
+    movzx eax, byte ptr [rsi + rbx]
+    cmp al, ']'
+    je .close
+.loop:
+    call parse_value
+    test rax, rax
+    jnz .ret
+    call skip_ws
+    mov rbx, qword ptr [rip + input_pos]
+    mov rdx, qword ptr [rip + input_len]
+    lea rsi, [rip + input_buf]
+    cmp rbx, rdx
+    jae .incomplete
+    movzx eax, byte ptr [rsi + rbx]
+    cmp al, ','
+    jne .end
+    inc rbx
+    mov qword ptr [rip + input_pos], rbx
+    call skip_ws
+    jmp .loop
+.end:
+    cmp al, ']'
+    jne .fail_current
+    inc rbx
+    mov qword ptr [rip + input_pos], rbx
+    xor rax, rax
+    ret
+.fail:
+    mov rax, qword ptr [rip + input_pos]
+    inc rax
+    ret
+.fail_current:
+    mov rax, qword ptr [rip + input_pos]
+    inc rax
+    ret
+.close:
+    inc rbx
+    mov qword ptr [rip + input_pos], rbx
+    xor rax, rax
+    ret
+.incomplete:
+    mov rax, qword ptr [rip + input_len]
+    inc rax
+    ret
+.ret:
+    ret
+
+parse_string:
+    mov rbx, qword ptr [rip + input_pos]
+    mov rdx, qword ptr [rip + input_len]
+    lea rsi, [rip + input_buf]
+    cmp rbx, rdx
+    jae .incomplete
+    movzx eax, byte ptr [rsi + rbx]
+    cmp al, '"'
+    jne .fail
+    inc rbx
+    mov qword ptr [rip + input_pos], rbx
+.loop:
+    cmp rbx, rdx
+    jae .incomplete
+    movzx eax, byte ptr [rsi + rbx]
+    cmp al, '"'
+    je .done
+    cmp al, '\\'
+    je .escape
+    cmp al, 0x20
+    jb .invalid_control
+    inc rbx
+    jmp .loop
+.escape:
+    inc rbx
+    cmp rbx, rdx
+    jae .incomplete
+    movzx eax, byte ptr [rsi + rbx]
+    cmp al, '"'
+    je .cont
+    cmp al, '\\'
+    je .cont
+    cmp al, '/'
+    je .cont
+    cmp al, 'b'
+    je .cont
+    cmp al, 'f'
+    je .cont
+    cmp al, 'n'
+    je .cont
+    cmp al, 'r'
+    je .cont
+    cmp al, 't'
+    je .cont
+    cmp al, 'u'
+    je .unicode
+    mov rax, rbx
+    inc rax
+    ret
+.cont:
+    inc rbx
+    jmp .loop
+.unicode:
+    mov r8, rbx
+    inc r8
+    mov r9, r8
+    add r9, 4
+    cmp r9, rdx
+    ja .incomplete
+    mov r10, 0
+.u_loop:
+    cmp r10, 4
+    je .u_done
+    movzx eax, byte ptr [rsi + r8 + r10]
+    cmp al, '0'
+    jb .u_invalid
+    cmp al, '9'
+    jbe .u_ok_char
+    cmp al, 'a'
+    jb .u_invalid
+    cmp al, 'f'
+    jbe .u_ok_char
+    cmp al, 'A'
+    jb .u_invalid
+    cmp al, 'F'
+    jbe .u_ok_char
+    jmp .u_invalid
+.u_ok_char:
+    inc r10
+    jmp .u_loop
+.u_invalid:
+    mov rax, r8
+    add rax, r10
+    inc rax
+    ret
+.u_done:
+    mov rbx, r8
+    add rbx, 4
+    mov qword ptr [rip + input_pos], rbx
+    jmp .loop
+.done:
+    inc rbx
+    mov qword ptr [rip + input_pos], rbx
+    xor rax, rax
+    ret
+.fail:
+    mov rax, qword ptr [rip + input_pos]
+    inc rax
+    ret
+.invalid_control:
+    mov rax, rbx
+    inc rax
+    ret
+.incomplete:
+    mov rax, qword ptr [rip + input_len]
+    inc rax
+    ret
+
+parse_true:
+    mov rbx, qword ptr [rip + input_pos]
+    mov rdx, qword ptr [rip + input_len]
+    lea rsi, [rip + true_str]
+    lea rax, [rbx + 4]
+    cmp rax, rdx
+    ja .incomplete
+    mov rcx, 0
+.loop:
+    cmp rcx, 4
+    je .ok
+    movzx r8d, byte ptr [rip + input_buf + rbx + rcx]
+    mov dl, byte ptr [rsi + rcx]
+    cmp r8b, dl
+    jne .mismatch
+    inc rcx
+    jmp .loop
+.mismatch:
+    mov rax, rbx
+    add rax, rcx
+    inc rax
+    ret
+.ok:
+    add rbx, 4
+    mov qword ptr [rip + input_pos], rbx
+    xor rax, rax
+    ret
+.incomplete:
+    mov rax, qword ptr [rip + input_len]
+    inc rax
+    ret
+
+parse_false:
+    mov rbx, qword ptr [rip + input_pos]
+    mov rdx, qword ptr [rip + input_len]
+    lea rsi, [rip + false_str]
+    lea rax, [rbx + 5]
+    cmp rax, rdx
+    ja .incomplete
+    mov rcx, 0
+.loop:
+    cmp rcx, 5
+    je .ok
+    movzx r8d, byte ptr [rip + input_buf + rbx + rcx]
+    mov dl, byte ptr [rsi + rcx]
+    cmp r8b, dl
+    jne .mismatch
+    inc rcx
+    jmp .loop
+.mismatch:
+    mov rax, rbx
+    add rax, rcx
+    inc rax
+    ret
+.ok:
+    add rbx, 5
+    mov qword ptr [rip + input_pos], rbx
+    xor rax, rax
+    ret
+.incomplete:
+    mov rax, qword ptr [rip + input_len]
+    inc rax
+    ret
+
+parse_null:
+    mov rbx, qword ptr [rip + input_pos]
+    mov rdx, qword ptr [rip + input_len]
+    lea rsi, [rip + null_str]
+    lea rax, [rbx + 4]
+    cmp rax, rdx
+    ja .incomplete
+    mov rcx, 0
+.loop:
+    cmp rcx, 4
+    je .ok
+    movzx r8d, byte ptr [rip + input_buf + rbx + rcx]
+    mov dl, byte ptr [rsi + rcx]
+    cmp r8b, dl
+    jne .mismatch
+    inc rcx
+    jmp .loop
+.mismatch:
+    mov rax, rbx
+    add rax, rcx
+    inc rax
+    ret
+.ok:
+    add rbx, 4
+    mov qword ptr [rip + input_pos], rbx
+    xor rax, rax
+    ret
+.incomplete:
+    mov rax, qword ptr [rip + input_len]
+    inc rax
+    ret
+
+parse_number:
+    mov rbx, qword ptr [rip + input_pos]
+    mov rdx, qword ptr [rip + input_len]
+    lea rsi, [rip + input_buf]
+    mov rcx, rbx
+    cmp rcx, rdx
+    jae .incomplete
+    movzx eax, byte ptr [rsi + rcx]
+    cmp al, '-'
+    jne .after_minus
+    inc rcx
+    cmp rcx, rdx
+    jae .incomplete
+.after_minus:
+    movzx eax, byte ptr [rsi + rcx]
+    cmp al, '0'
+    je .zero
+    cmp al, '1'
+    jb .invalid
+    cmp al, '9'
+    jbe .int_digits
+    jmp .invalid
+.zero:
+    inc rcx
+    cmp rcx, rdx
+    jae .done
+    movzx eax, byte ptr [rsi + rcx]
+    cmp al, '0'
+    jb .done
+    cmp al, '9'
+    jbe .invalid_digit
+    jmp .done
+.int_digits:
+    inc rcx
+.loop_int:
+    cmp rcx, rdx
+    jae .done
+    movzx eax, byte ptr [rsi + rcx]
+    cmp al, '0'
+    jb .done
+    cmp al, '9'
+    jbe .inc_int
+    jmp .done
+.inc_int:
+    inc rcx
+    jmp .loop_int
+.invalid_digit:
+    mov rax, rcx
+    inc rax
+    ret
+.invalid:
+    mov rax, rcx
+    inc rax
+    ret
+.done:
+    cmp rcx, rdx
+    jae .done_valid
+    movzx eax, byte ptr [rsi + rcx]
+    cmp al, '.'
+    jne .exp_check
+    inc rcx
+    cmp rcx, rdx
+    jae .incomplete
+    movzx eax, byte ptr [rsi + rcx]
+    cmp al, '0'
+    jb .invalid_after_dot
+    cmp al, '9'
+    jbe .frac_digits
+    jmp .invalid_after_dot
+.frac_digits:
+    inc rcx
+.loop_frac:
+    cmp rcx, rdx
+    jae .exp_check
+    movzx eax, byte ptr [rsi + rcx]
+    cmp al, '0'
+    jb .exp_check
+    cmp al, '9'
+    jbe .frac_inc
+    jmp .exp_check
+.frac_inc:
+    inc rcx
+    jmp .loop_frac
+.invalid_after_dot:
+    mov rax, rcx
+    inc rax
+    ret
+.exp_check:
+    cmp rcx, rdx
+    jae .done_valid
+    movzx eax, byte ptr [rsi + rcx]
+    cmp al, 'e'
+    je .exp
+    cmp al, 'E'
+    je .exp
+.done_valid:
+    mov qword ptr [rip + input_pos], rcx
+    xor rax, rax
+    ret
+.exp:
+    inc rcx
+    cmp rcx, rdx
+    jae .incomplete
+    movzx eax, byte ptr [rsi + rcx]
+    cmp al, '+'
+    je .exp_sign
+    cmp al, '-'
+    je .exp_sign
+    jmp .exp_digit_check
+.exp_sign:
+    inc rcx
+    cmp rcx, rdx
+    jae .incomplete
+.exp_digit_check:
+    movzx eax, byte ptr [rsi + rcx]
+    cmp al, '0'
+    jb .invalid_exp
+    cmp al, '9'
+    jbe .exp_digits
+    jmp .invalid_exp
+.invalid_exp:
+    mov rax, rcx
+    inc rax
+    ret
+.exp_digits:
+    inc rcx
+.loop_exp:
+    cmp rcx, rdx
+    jae .done_valid
+    movzx eax, byte ptr [rsi + rcx]
+    cmp al, '0'
+    jb .done_valid
+    cmp al, '9'
+    jbe .exp_inc
+    jmp .done_valid
+.exp_inc:
+    inc rcx
+    jmp .loop_exp
+.incomplete:
+    mov rax, qword ptr [rip + input_len]
+    inc rax
+    ret
+
+print_ok:
+    mov rdi, 1
+    lea rsi, [rip + ok_msg]
+    mov rdx, 3
+    mov rax, 1
+    syscall
+    ret
+
+print_error:
+    dec rax
+    mov r12, rax
+    mov rdi, 1
+    lea rsi, [rip + err_prefix]
+    mov rdx, 9
+    mov rax, 1
+    syscall
+    lea rdi, [rip + numbuf + 32]
+    mov rax, r12
+    mov rbx, 10
+.loop:
+    xor rdx, rdx
+    div rbx
+    add dl, '0'
+    dec rdi
+    mov byte ptr [rdi], dl
+    test rax, rax
+    jnz .loop
+    mov rsi, rdi
+    lea r13, [rip + numbuf + 32]
+    sub r13, rsi
+    mov rdx, r13
+    mov rdi, 1
+    mov rax, 1
+    syscall
+    mov rdi, 1
+    lea rsi, [rip + newline_byte]
+    mov rdx, 1
+    mov rax, 1
+    syscall
+    ret
+</previous>
+It failed:
+<failure>
+GNU as rejected the program:
+line 80: symbol `.done' is already defined
+line 87: symbol `.loop' is already defined
+line 232: symbol `.incomplete' is already defined
+line 259: symbol `.loop' is already defined
+line 276: symbol `.end' is already defined
+line 283: symbol `.fail' is already defined
+line 287: symbol `.fail_current' is already defined
+line 291: symbol `.close' is already defined
+line 296: symbol `.incomplete' is already defined
+line 300: symbol `.ret' is already defined
+line 314: symbol `.loop' is already defined
+line 366: `byte ptr [rsi+r8+r10]' is not a valid base/index expression
+line 393: symbol `.done' is already defined
+line 398: symbol `.fail' is already defined
+line 406: symbol `.incomplete' is already defined
+line 419: symbol `.loop' is already defined
+line 422: `byte ptr [rip+input_buf+rbx+rcx]' is not a valid base/index expression
+line 433: symbol `.ok' is already defined
+line 438: symbol `.incomplete' is already defined
+line 451: symbol `.loop' is already defined
+(+13 more errors)
+</failure>
+Write a corrected, complete version. Same output format; output only the code.

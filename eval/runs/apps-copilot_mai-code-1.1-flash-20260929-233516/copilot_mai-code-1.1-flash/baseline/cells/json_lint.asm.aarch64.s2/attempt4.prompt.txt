@@ -1,0 +1,1330 @@
+Write the complete program `json_lint`: a static Linux executable for AArch64 (ARMv8-A, little-endian), written in assembly. There is no C library, no C runtime and no helper code: you write the entry point `_start`, every function, every table and string, and make the system calls yourself.
+
+Entry state (as the Linux kernel sets it up): execution starts at the label `_start`. sp is 16-byte aligned and points at argc = 0, followed by the NULL terminators of an empty argv, an empty envp and an empty auxiliary vector: the program gets no arguments. Every other general-purpose register (x0-x30) is zero; x30 is not a return address, so `_start` must never return with `ret`; the program ends only through the exit system call.
+
+System calls: the `svc #0` instruction, with the system call number in x8 and the arguments in x0, x1, x2; the result comes back in x0. Every other register is preserved. Exactly these four are available:
+- read = 63: read(fd = 0, buf, count) reads up to count bytes of standard input into buf; returns the number of bytes read, 0 at end of input.
+- write = 64: write(fd, buf, count) with fd 1 (standard output) or 2 (standard error); returns count.
+- exit = 93: exit(status) ends the program; the exit status is the low 8 bits of status.
+- exit_group = 94: the same as exit.
+Any other system call number or file descriptor stops the program with an error, and so does a buffer that is not entirely inside the program's memory.
+
+Memory: the program's own sections plus a stack of 1 MiB below the entry sp. There is no heap (no brk, no mmap, no malloc): put working storage in `.bss` (zero-initialised), at most 1 MiB in total, or on the stack. Code is not writable. Any access outside these areas stops the program. Each test run may execute at most 50,000,000 instructions.
+
+Output format: one complete assembly source file in GNU assembler (GNU as) syntax for AArch64. Examples: `ldr x2, [x0, x1, lsl #3]`, `ldrb w3, [x1], #1`, `stp x29, x30, [sp, #-16]!`. Comments start with `//`; do not use `;`.
+Allowed in the file:
+- Sections: `.text` (code), `.section .rodata` (read-only data), `.data` (initialised writable data), `.bss` (zero-initialised space: only `.zero`/`.space` and alignment). Instructions go in `.text` only.
+- Data directives: `.byte`, `.short`/`.2byte`, `.word` (4 bytes on this target), `.long`/`.int`/`.4byte`, `.quad`/`.8byte`, `.ascii`, `.asciz`/`.string`, `.zero`/`.space`, alignment with `.align`/`.balign`/`.p2align`, and `.globl`/`.global` (write `.globl _start`).
+- Labels `name:` in any section, and GNU local labels `1:` referenced as `1f` (next) / `1b` (previous).
+- Constants: `.equ name, value` (or `.set name, value`, or `name = value`), where value is a number or a difference of labels defined earlier in the same section (e.g. `msg_len = . - msg`). Define every constant before its first use.
+- Addressing data: `adrp x0, label` followed by `add x0, x0, :lo12:label` (or a load/store `ldr x1, [x0, :lo12:label]`); `adr x0, label` also works within +-1 MiB. Literal pools are NOT allowed: no `ldr x0, =label` and no `ldr x0, =constant` (build constants with mov/movz/movk).
+Not allowed: macros (`.macro`, `.rept`, `.irp`), conditional assembly (`.if`), `.include`, `.incbin`, `.fill`, `.org`, `.comm`/`.lcomm`, `.inst`, `.cfi_*` directives, section stacks (`.pushsection`) and any other section. No libc and no other library: there is nothing to link against, so every symbol you use must be defined in your file.
+Instruction set: ARMv8.0-A with floating point and Advanced SIMD (NEON). Not supported (rejected): CRC32, LSE atomics, dot product, half-precision, crypto (AES/SHA/PMULL) and SVE.
+Output ONLY the assembly source: no Markdown fences, no prose before or after it.
+
+Specification: Task `json_lint`: check that standard input is exactly one valid JSON document (RFC 8259 grammar) and report
+the byte offset of the first error.
+
+Grammar (byte-level):
+- document = ws value ws, and nothing else. ws = any number of the bytes space 0x20, tab 0x09, newline 0x0A,
+  carriage return 0x0D (only these four).
+- value = object | array | string | number | `true` | `false` | `null` (lowercase only).
+- object = `{` ws `}`, or `{` ws member (ws `,` ws member)* ws `}`, where member = string ws `:` ws value.
+  array = `[` ws `]`, or `[` ws value (ws `,` ws value)* ws `]`. No trailing commas.
+- string = `"` chars `"`. A char is any byte 0x20-0xFF except `"` (0x22) and `\` (0x5C) (bytes >= 0x80 are
+  accepted as they are; no UTF-8 validation), or an escape: `\` followed by one of `"` `\` `/` `b` `f` `n` `r`
+  `t`, or `\u` followed by exactly 4 hex digits (`0-9a-fA-F`; any code unit, surrogates are not checked).
+  Bytes 0x00-0x1F inside a string are errors.
+- number = `-`? int frac? exp?, where int = `0` | a digit `1`-`9` followed by any digits; frac = `.` and one or
+  more digits; exp = `e` or `E`, an optional `+` or `-`, and one or more digits. (So `01`, `+1`, `.5`, `1.`,
+  `1e`, `-` are not valid numbers.)
+
+Output: if the input is valid, print `ok\n` and exit with status 0. Otherwise print `error at N\n` (N in
+decimal, no padding) and exit with status 1, where N is the 0-based offset of the first byte at which the input
+stops being the beginning of some valid document: the first byte that no valid document could have at that
+position given all the bytes before it. If every byte of the input is such a valid beginning but the document is
+incomplete (this includes empty and whitespace-only input), N is the length of the input.
+
+Examples: `[1, 2]` ok; empty input `error at 0`; `[1,]` `error at 3`; `{"a" 1}` `error at 5`; `01` `error at 1`;
+`tru` `error at 3`; `trux` `error at 3`; `[1] x` `error at 4`; `"a<TAB>b"` (a raw tab byte) `error at 2`;
+`-` `error at 1`; `1.e5` `error at 2`.
+
+Limits: the input is at most 65536 bytes; arrays and objects are nested at most 1000 deep. These limits
+describe the inputs you will be given; you do not need to detect or report inputs that exceed them.
+
+Input and output (applies to this whole task):
+- The input is the complete contents of standard input (file descriptor 0). Read it with `read` until `read`
+  returns 0 (end of input). A `read` may return FEWER bytes than requested, at any position (in the middle of a
+  line, a token or a group of bytes), so keep calling it; only a return value of 0 means end of input.
+- Write the output to standard output (file descriptor 1). Only the bytes this task describes may appear on
+  standard output (standard error is ignored). Every output byte must be written before the program exits.
+- Finish with `exit` (or `exit_group`) and the exit status this task gives. The program must not run off the end
+  of its code or crash.
+
+Your previous attempt was:
+<previous>
+.section .text
+.globl _start
+
+_start:
+    bl read_all
+    adrp x0, g_pos
+    add x0, x0, :lo12:g_pos
+    mov x1, #0
+    str x1, [x0]
+    bl parse_document
+    adrp x0, g_status
+    add x0, x0, :lo12:g_status
+    ldr x0, [x0]
+    cbz x0, print_error
+    bl print_ok
+    mov x0, #0
+    mov x8, #93
+    svc #0
+
+read_all:
+    stp x29, x30, [sp, #-16]!
+    mov x29, sp
+read_loop:
+    adrp x1, input_buf
+    add x1, x1, :lo12:input_buf
+    adrp x2, g_len
+    add x2, x2, :lo12:g_len
+    ldr x3, [x2]
+    add x1, x1, x3
+    mov x4, #65536
+    sub x4, x4, x3
+    mov x0, #0
+    mov x2, x4
+    mov x8, #63
+    svc #0
+    cmp x0, #0
+    ble read_done
+    adrp x2, g_len
+    add x2, x2, :lo12:g_len
+    ldr x3, [x2]
+    add x3, x3, x0
+    str x3, [x2]
+    cmp x3, #65536
+    b.hs read_done
+    b read_loop
+read_done:
+    ldp x29, x30, [sp], #16
+    ret
+
+parse_document:
+    stp x29, x30, [sp, #-16]!
+    mov x29, sp
+    adrp x0, g_pos
+    add x0, x0, :lo12:g_pos
+    mov x1, #0
+    str x1, [x0]
+    bl parse_ws
+    adrp x0, g_pos
+    add x0, x0, :lo12:g_pos
+    ldr x1, [x0]
+    adrp x2, g_len
+    add x2, x2, :lo12:g_len
+    ldr x2, [x2]
+    cmp x1, x2
+    b.hs doc_fail_len
+    bl parse_value
+    adrp x0, g_status
+    add x0, x0, :lo12:g_status
+    ldr x0, [x0]
+    cbz x0, doc_done
+    bl parse_ws
+    adrp x0, g_pos
+    add x0, x0, :lo12:g_pos
+    ldr x1, [x0]
+    adrp x2, g_len
+    add x2, x2, :lo12:g_len
+    ldr x2, [x2]
+    cmp x1, x2
+    b.ne doc_fail_pos
+    adrp x0, g_status
+    add x0, x0, :lo12:g_status
+    mov x1, #1
+    str x1, [x0]
+    ldp x29, x30, [sp], #16
+    ret
+
+doc_fail_len:
+    adrp x0, g_err
+    add x0, x0, :lo12:g_err
+    adrp x1, g_len
+    add x1, x1, :lo12:g_len
+    ldr x1, [x1]
+    str x1, [x0]
+    adrp x0, g_status
+    add x0, x0, :lo12:g_status
+    mov x1, #0
+    str x1, [x0]
+    ldp x29, x30, [sp], #16
+    ret
+
+doc_fail_pos:
+    adrp x0, g_err
+    add x0, x0, :lo12:g_err
+    str x1, [x0]
+    adrp x0, g_status
+    add x0, x0, :lo12:g_status
+    mov x1, #0
+    str x1, [x0]
+    ldp x29, x30, [sp], #16
+    ret
+
+doc_done:
+    ldp x29, x30, [sp], #16
+    ret
+
+parse_ws:
+    stp x29, x30, [sp, #-16]!
+    mov x29, sp
+    adrp x0, g_pos
+    add x0, x0, :lo12:g_pos
+    ldr x1, [x0]
+    adrp x2, g_len
+    add x2, x2, :lo12:g_len
+    ldr x2, [x2]
+ws_loop:
+    cmp x1, x2
+    b.hs ws_done
+    adrp x3, input_buf
+    add x3, x3, :lo12:input_buf
+    add x3, x3, x1
+    ldrb w4, [x3]
+    cmp w4, #0x20
+    b.eq ws_inc
+    cmp w4, #0x09
+    b.eq ws_inc
+    cmp w4, #0x0A
+    b.eq ws_inc
+    cmp w4, #0x0D
+    b.ne ws_done
+ws_inc:
+    add x1, x1, #1
+    b ws_loop
+ws_done:
+    str x1, [x0]
+    ldp x29, x30, [sp], #16
+    ret
+
+parse_value:
+    stp x29, x30, [sp, #-16]!
+    mov x29, sp
+    adrp x0, g_pos
+    add x0, x0, :lo12:g_pos
+    ldr x1, [x0]
+    adrp x2, g_len
+    add x2, x2, :lo12:g_len
+    ldr x2, [x2]
+    cmp x1, x2
+    b.hs value_fail_len
+    adrp x3, input_buf
+    add x3, x3, :lo12:input_buf
+    add x3, x3, x1
+    ldrb w4, [x3]
+    cmp w4, #'{'
+    b.eq value_object
+    cmp w4, #'['
+    b.eq value_array
+    cmp w4, #'\"'
+    b.eq value_string
+    cmp w4, #'-'
+    b.eq value_number
+    cmp w4, #'t'
+    b.eq value_true
+    cmp w4, #'f'
+    b.eq value_false
+    cmp w4, #'n'
+    b.eq value_null
+    cmp w4, #'0'
+    b.lt value_fail_pos
+    cmp w4, #'9'
+    b.hi value_fail_pos
+    b value_number
+
+value_object:
+    bl parse_object
+    b value_done
+
+value_array:
+    bl parse_array
+    b value_done
+
+value_string:
+    bl parse_string
+    b value_done
+
+value_number:
+    bl parse_number
+    b value_done
+
+value_true:
+    bl parse_true
+    b value_done
+
+value_false:
+    bl parse_false
+    b value_done
+
+value_null:
+    bl parse_null
+    b value_done
+
+value_fail_pos:
+    adrp x0, g_err
+    add x0, x0, :lo12:g_err
+    str x1, [x0]
+    adrp x0, g_status
+    add x0, x0, :lo12:g_status
+    mov x1, #0
+    str x1, [x0]
+    ldp x29, x30, [sp], #16
+    ret
+
+value_fail_len:
+    adrp x0, g_err
+    add x0, x0, :lo12:g_err
+    str x2, [x0]
+    adrp x0, g_status
+    add x0, x0, :lo12:g_status
+    mov x1, #0
+    str x1, [x0]
+    ldp x29, x30, [sp], #16
+    ret
+
+value_done:
+    ldp x29, x30, [sp], #16
+    ret
+
+parse_object:
+    stp x29, x30, [sp, #-16]!
+    mov x29, sp
+    adrp x0, g_pos
+    add x0, x0, :lo12:g_pos
+    ldr x1, [x0]
+    adrp x2, g_len
+    add x2, x2, :lo12:g_len
+    ldr x2, [x2]
+    cmp x1, x2
+    b.hs obj_fail_len
+    adrp x3, input_buf
+    add x3, x3, :lo12:input_buf
+    add x3, x3, x1
+    ldrb w4, [x3]
+    cmp w4, #'{'
+    b.ne obj_fail_pos
+    add x1, x1, #1
+    str x1, [x0]
+    bl parse_ws
+    adrp x0, g_pos
+    add x0, x0, :lo12:g_pos
+    ldr x1, [x0]
+    adrp x2, g_len
+    add x2, x2, :lo12:g_len
+    ldr x2, [x2]
+    cmp x1, x2
+    b.hs obj_fail_len
+    adrp x3, input_buf
+    add x3, x3, :lo12:input_buf
+    add x3, x3, x1
+    ldrb w4, [x3]
+    cmp w4, #'}'
+    b.eq obj_close
+
+obj_member_loop:
+    bl parse_string
+    adrp x0, g_status
+    add x0, x0, :lo12:g_status
+    ldr x0, [x0]
+    cbz x0, obj_done
+    bl parse_ws
+    adrp x0, g_pos
+    add x0, x0, :lo12:g_pos
+    ldr x1, [x0]
+    adrp x2, g_len
+    add x2, x2, :lo12:g_len
+    ldr x2, [x2]
+    cmp x1, x2
+    b.hs obj_fail_len
+    adrp x3, input_buf
+    add x3, x3, :lo12:input_buf
+    add x3, x3, x1
+    ldrb w4, [x3]
+    cmp w4, #':'
+    b.ne obj_fail_pos
+    add x1, x1, #1
+    str x1, [x0]
+    bl parse_ws
+    bl parse_value
+    adrp x0, g_status
+    add x0, x0, :lo12:g_status
+    ldr x0, [x0]
+    cbz x0, obj_done
+    bl parse_ws
+    adrp x0, g_pos
+    add x0, x0, :lo12:g_pos
+    ldr x1, [x0]
+    adrp x2, g_len
+    add x2, x2, :lo12:g_len
+    ldr x2, [x2]
+    cmp x1, x2
+    b.hs obj_fail_len
+    adrp x3, input_buf
+    add x3, x3, :lo12:input_buf
+    add x3, x3, x1
+    ldrb w4, [x3]
+    cmp w4, #','
+    b.eq obj_comma
+    cmp w4, #'}'
+    b.eq obj_close
+    b obj_fail_pos
+
+obj_comma:
+    add x1, x1, #1
+    str x1, [x0]
+    bl parse_ws
+    b obj_member_loop
+
+obj_close:
+    adrp x0, g_pos
+    add x0, x0, :lo12:g_pos
+    ldr x1, [x0]
+    add x1, x1, #1
+    str x1, [x0]
+    bl parse_ws
+    adrp x0, g_status
+    add x0, x0, :lo12:g_status
+    mov x1, #1
+    str x1, [x0]
+    ldp x29, x30, [sp], #16
+    ret
+
+obj_fail_pos:
+    adrp x0, g_err
+    add x0, x0, :lo12:g_err
+    str x1, [x0]
+    adrp x0, g_status
+    add x0, x0, :lo12:g_status
+    mov x1, #0
+    str x1, [x0]
+    ldp x29, x30, [sp], #16
+    ret
+
+obj_fail_len:
+    adrp x0, g_err
+    add x0, x0, :lo12:g_err
+    adrp x1, g_len
+    add x1, x1, :lo12:g_len
+    ldr x1, [x1]
+    str x1, [x0]
+    adrp x0, g_status
+    add x0, x0, :lo12:g_status
+    mov x1, #0
+    str x1, [x0]
+    ldp x29, x30, [sp], #16
+    ret
+
+obj_done:
+    ldp x29, x30, [sp], #16
+    ret
+
+parse_array:
+    stp x29, x30, [sp, #-16]!
+    mov x29, sp
+    adrp x0, g_pos
+    add x0, x0, :lo12:g_pos
+    ldr x1, [x0]
+    adrp x2, g_len
+    add x2, x2, :lo12:g_len
+    ldr x2, [x2]
+    cmp x1, x2
+    b.hs arr_fail_len
+    adrp x3, input_buf
+    add x3, x3, :lo12:input_buf
+    add x3, x3, x1
+    ldrb w4, [x3]
+    cmp w4, #'['
+    b.ne arr_fail_pos
+    add x1, x1, #1
+    str x1, [x0]
+    bl parse_ws
+    adrp x0, g_pos
+    add x0, x0, :lo12:g_pos
+    ldr x1, [x0]
+    adrp x2, g_len
+    add x2, x2, :lo12:g_len
+    ldr x2, [x2]
+    cmp x1, x2
+    b.hs arr_fail_len
+    adrp x3, input_buf
+    add x3, x3, :lo12:input_buf
+    add x3, x3, x1
+    ldrb w4, [x3]
+    cmp w4, #']'
+    b.eq arr_close
+
+arr_value_loop:
+    bl parse_value
+    adrp x0, g_status
+    add x0, x0, :lo12:g_status
+    ldr x0, [x0]
+    cbz x0, arr_done
+    bl parse_ws
+    adrp x0, g_pos
+    add x0, x0, :lo12:g_pos
+    ldr x1, [x0]
+    adrp x2, g_len
+    add x2, x2, :lo12:g_len
+    ldr x2, [x2]
+    cmp x1, x2
+    b.hs arr_fail_len
+    adrp x3, input_buf
+    add x3, x3, :lo12:input_buf
+    add x3, x3, x1
+    ldrb w4, [x3]
+    cmp w4, #','
+    b.eq arr_comma
+    cmp w4, #']'
+    b.eq arr_close
+    b arr_fail_pos
+
+arr_comma:
+    add x1, x1, #1
+    str x1, [x0]
+    bl parse_ws
+    b arr_value_loop
+
+arr_close:
+    adrp x0, g_pos
+    add x0, x0, :lo12:g_pos
+    ldr x1, [x0]
+    add x1, x1, #1
+    str x1, [x0]
+    bl parse_ws
+    adrp x0, g_status
+    add x0, x0, :lo12:g_status
+    mov x1, #1
+    str x1, [x0]
+    ldp x29, x30, [sp], #16
+    ret
+
+arr_fail_pos:
+    adrp x0, g_err
+    add x0, x0, :lo12:g_err
+    str x1, [x0]
+    adrp x0, g_status
+    add x0, x0, :lo12:g_status
+    mov x1, #0
+    str x1, [x0]
+    ldp x29, x30, [sp], #16
+    ret
+
+arr_fail_len:
+    adrp x0, g_err
+    add x0, x0, :lo12:g_err
+    adrp x1, g_len
+    add x1, x1, :lo12:g_len
+    ldr x1, [x1]
+    str x1, [x0]
+    adrp x0, g_status
+    add x0, x0, :lo12:g_status
+    mov x1, #0
+    str x1, [x0]
+    ldp x29, x30, [sp], #16
+    ret
+
+arr_done:
+    ldp x29, x30, [sp], #16
+    ret
+
+parse_string:
+    stp x29, x30, [sp, #-16]!
+    mov x29, sp
+    adrp x0, g_pos
+    add x0, x0, :lo12:g_pos
+    ldr x1, [x0]
+    adrp x2, g_len
+    add x2, x2, :lo12:g_len
+    ldr x2, [x2]
+    cmp x1, x2
+    b.hs str_fail_len
+    adrp x3, input_buf
+    add x3, x3, :lo12:input_buf
+    add x3, x3, x1
+    ldrb w4, [x3]
+    cmp w4, #'\"'
+    b.ne str_fail_pos
+    add x1, x1, #1
+    str x1, [x0]
+
+str_loop:
+    adrp x0, g_pos
+    add x0, x0, :lo12:g_pos
+    ldr x1, [x0]
+    adrp x2, g_len
+    add x2, x2, :lo12:g_len
+    ldr x2, [x2]
+    cmp x1, x2
+    b.hs str_fail_len
+    adrp x3, input_buf
+    add x3, x3, :lo12:input_buf
+    add x3, x3, x1
+    ldrb w4, [x3]
+    cmp w4, #'\"'
+    b.eq str_ok
+    cmp w4, #'\\'
+    b.eq str_escape
+    cmp w4, #0x20
+    b.lo str_fail_char
+    add x1, x1, #1
+    str x1, [x0]
+    b str_loop
+
+str_escape:
+    add x1, x1, #1
+    str x1, [x0]
+    adrp x0, g_pos
+    add x0, x0, :lo12:g_pos
+    ldr x1, [x0]
+    adrp x2, g_len
+    add x2, x2, :lo12:g_len
+    ldr x2, [x2]
+    cmp x1, x2
+    b.hs str_fail_len
+    adrp x3, input_buf
+    add x3, x3, :lo12:input_buf
+    add x3, x3, x1
+    ldrb w4, [x3]
+    cmp w4, #'\"'
+    b.eq str_esc_advance
+    cmp w4, #'\\'
+    b.eq str_esc_advance
+    cmp w4, #'/'
+    b.eq str_esc_advance
+    cmp w4, #'b'
+    b.eq str_esc_advance
+    cmp w4, #'f'
+    b.eq str_esc_advance
+    cmp w4, #'n'
+    b.eq str_esc_advance
+    cmp w4, #'r'
+    b.eq str_esc_advance
+    cmp w4, #'t'
+    b.eq str_esc_advance
+    cmp w4, #'u'
+    b.eq str_unicode
+    b str_fail_pos
+
+str_esc_advance:
+    add x1, x1, #1
+    str x1, [x0]
+    b str_loop
+
+str_unicode:
+    add x1, x1, #1
+    str x1, [x0]
+    adrp x0, g_pos
+    add x0, x0, :lo12:g_pos
+    ldr x1, [x0]
+    adrp x2, g_len
+    add x2, x2, :lo12:g_len
+    ldr x2, [x2]
+    add x3, x1, #4
+    cmp x3, x2
+    b.hi str_fail_len
+    mov x4, #0
+hex_loop:
+    cmp x4, #4
+    b.hs hex_done
+    adrp x5, input_buf
+    add x5, x5, :lo12:input_buf
+    add x5, x5, x1
+    add x5, x5, x4
+    ldrb w6, [x5]
+    cmp w6, #'0'
+    b.lt hex_fail
+    cmp w6, #'9'
+    b.le hex_ok
+    cmp w6, #'A'
+    b.lt hex_fail
+    cmp w6, #'F'
+    b.le hex_ok
+    cmp w6, #'a'
+    b.lt hex_fail
+    cmp w6, #'f'
+    b.hi hex_fail
+hex_ok:
+    add x4, x4, #1
+    b hex_loop
+
+hex_done:
+    add x1, x1, #4
+    str x1, [x0]
+    b str_loop
+
+hex_fail:
+    adrp x0, g_err
+    add x0, x0, :lo12:g_err
+    add x6, x1, x4
+    str x6, [x0]
+    adrp x0, g_status
+    add x0, x0, :lo12:g_status
+    mov x1, #0
+    str x1, [x0]
+    ldp x29, x30, [sp], #16
+    ret
+
+str_ok:
+    adrp x0, g_pos
+    add x0, x0, :lo12:g_pos
+    ldr x1, [x0]
+    add x1, x1, #1
+    str x1, [x0]
+    adrp x0, g_status
+    add x0, x0, :lo12:g_status
+    mov x1, #1
+    str x1, [x0]
+    ldp x29, x30, [sp], #16
+    ret
+
+str_fail_pos:
+    adrp x0, g_err
+    add x0, x0, :lo12:g_err
+    adrp x1, g_pos
+    add x1, x1, :lo12:g_pos
+    ldr x1, [x1]
+    str x1, [x0]
+    adrp x0, g_status
+    add x0, x0, :lo12:g_status
+    mov x1, #0
+    str x1, [x0]
+    ldp x29, x30, [sp], #16
+    ret
+
+str_fail_len:
+    adrp x0, g_err
+    add x0, x0, :lo12:g_err
+    adrp x1, g_len
+    add x1, x1, :lo12:g_len
+    ldr x1, [x1]
+    str x1, [x0]
+    adrp x0, g_status
+    add x0, x0, :lo12:g_status
+    mov x1, #0
+    str x1, [x0]
+    ldp x29, x30, [sp], #16
+    ret
+
+str_fail_char:
+    adrp x0, g_err
+    add x0, x0, :lo12:g_err
+    adrp x1, g_pos
+    add x1, x1, :lo12:g_pos
+    ldr x1, [x1]
+    str x1, [x0]
+    adrp x0, g_status
+    add x0, x0, :lo12:g_status
+    mov x1, #0
+    str x1, [x0]
+    ldp x29, x30, [sp], #16
+    ret
+
+parse_number:
+    stp x29, x30, [sp, #-16]!
+    mov x29, sp
+    adrp x0, g_pos
+    add x0, x0, :lo12:g_pos
+    ldr x1, [x0]
+    adrp x2, g_len
+    add x2, x2, :lo12:g_len
+    ldr x2, [x2]
+    adrp x3, input_buf
+    add x3, x3, :lo12:input_buf
+    add x3, x3, x1
+    ldrb w4, [x3]
+    cmp w4, #'-'
+    b.ne num_start
+    add x1, x1, #1
+    str x1, [x0]
+    cmp x1, x2
+    b.hs num_fail_len
+    adrp x3, input_buf
+    add x3, x3, :lo12:input_buf
+    add x3, x3, x1
+    ldrb w4, [x3]
+
+num_start:
+    cmp w4, #'0'
+    b.eq num_zero
+    cmp w4, #'1'
+    b.lt num_fail_pos
+    cmp w4, #'9'
+    b.hi num_fail_pos
+    add x1, x1, #1
+    str x1, [x0]
+num_int_loop:
+    cmp x1, x2
+    b.hs num_after_int
+    adrp x3, input_buf
+    add x3, x3, :lo12:input_buf
+    add x3, x3, x1
+    ldrb w4, [x3]
+    cmp w4, #'0'
+    b.lt num_after_int
+    cmp w4, #'9'
+    b.hi num_after_int
+    add x1, x1, #1
+    str x1, [x0]
+    b num_int_loop
+
+num_after_int:
+    cmp x1, x2
+    b.hs num_ok
+    adrp x3, input_buf
+    add x3, x3, :lo12:input_buf
+    add x3, x3, x1
+    ldrb w4, [x3]
+    cmp w4, #'.'
+    b.ne num_after_frac
+    add x1, x1, #1
+    str x1, [x0]
+    cmp x1, x2
+    b.hs num_fail_len
+    adrp x3, input_buf
+    add x3, x3, :lo12:input_buf
+    add x3, x3, x1
+    ldrb w4, [x3]
+    cmp w4, #'0'
+    b.lt num_fail_pos
+    cmp w4, #'9'
+    b.hi num_fail_pos
+    add x1, x1, #1
+    str x1, [x0]
+frac_loop:
+    cmp x1, x2
+    b.hs num_after_frac
+    adrp x3, input_buf
+    add x3, x3, :lo12:input_buf
+    add x3, x3, x1
+    ldrb w4, [x3]
+    cmp w4, #'0'
+    b.lt num_after_frac
+    cmp w4, #'9'
+    b.hi num_after_frac
+    add x1, x1, #1
+    str x1, [x0]
+    b frac_loop
+
+num_after_frac:
+    cmp x1, x2
+    b.hs num_ok
+    adrp x3, input_buf
+    add x3, x3, :lo12:input_buf
+    add x3, x3, x1
+    ldrb w4, [x3]
+    cmp w4, #'e'
+    b.eq num_exp
+    cmp w4, #'E'
+    b.eq num_exp
+    b num_ok
+
+num_exp:
+    add x1, x1, #1
+    str x1, [x0]
+    cmp x1, x2
+    b.hs num_fail_len
+    adrp x3, input_buf
+    add x3, x3, :lo12:input_buf
+    add x3, x3, x1
+    ldrb w4, [x3]
+    cmp w4, #'+'
+    b.eq num_exp_sign
+    cmp w4, #'-'
+    b.eq num_exp_sign
+    cmp w4, #'0'
+    b.lt num_fail_pos
+    cmp w4, #'9'
+    b.hi num_fail_pos
+    add x1, x1, #1
+    str x1, [x0]
+exp_loop:
+    cmp x1, x2
+    b.hs num_ok
+    adrp x3, input_buf
+    add x3, x3, :lo12:input_buf
+    add x3, x3, x1
+    ldrb w4, [x3]
+    cmp w4, #'0'
+    b.lt num_ok
+    cmp w4, #'9'
+    b.hi num_ok
+    add x1, x1, #1
+    str x1, [x0]
+    b exp_loop
+
+num_exp_sign:
+    add x1, x1, #1
+    str x1, [x0]
+    cmp x1, x2
+    b.hs num_fail_len
+    adrp x3, input_buf
+    add x3, x3, :lo12:input_buf
+    add x3, x3, x1
+    ldrb w4, [x3]
+    cmp w4, #'0'
+    b.lt num_fail_pos
+    cmp w4, #'9'
+    b.hi num_fail_pos
+    add x1, x1, #1
+    str x1, [x0]
+    b exp_loop
+
+num_zero:
+    add x1, x1, #1
+    str x1, [x0]
+    cmp x1, x2
+    b.hs num_ok
+    adrp x3, input_buf
+    add x3, x3, :lo12:input_buf
+    add x3, x3, x1
+    ldrb w4, [x3]
+    cmp w4, #'0'
+    b.lt num_after_int
+    cmp w4, #'9'
+    b.hi num_after_int
+    b num_fail_pos
+
+num_ok:
+    adrp x0, g_status
+    add x0, x0, :lo12:g_status
+    mov x1, #1
+    str x1, [x0]
+    ldp x29, x30, [sp], #16
+    ret
+
+num_fail_pos:
+    adrp x0, g_err
+    add x0, x0, :lo12:g_err
+    str x1, [x0]
+    adrp x0, g_status
+    add x0, x0, :lo12:g_status
+    mov x1, #0
+    str x1, [x0]
+    ldp x29, x30, [sp], #16
+    ret
+
+num_fail_len:
+    adrp x0, g_err
+    add x0, x0, :lo12:g_err
+    str x2, [x0]
+    adrp x0, g_status
+    add x0, x0, :lo12:g_status
+    mov x1, #0
+    str x1, [x0]
+    ldp x29, x30, [sp], #16
+    ret
+
+parse_true:
+    stp x29, x30, [sp, #-16]!
+    mov x29, sp
+    adrp x0, g_pos
+    add x0, x0, :lo12:g_pos
+    ldr x1, [x0]
+    adrp x2, g_len
+    add x2, x2, :lo12:g_len
+    ldr x2, [x2]
+    add x3, x1, #4
+    cmp x3, x2
+    b.hi true_fail_len
+    adrp x4, input_buf
+    add x4, x4, :lo12:input_buf
+    add x4, x4, x1
+    ldrb w5, [x4, #0]
+    cmp w5, #'t'
+    b.ne true_fail0
+    ldrb w5, [x4, #1]
+    cmp w5, #'r'
+    b.ne true_fail1
+    ldrb w5, [x4, #2]
+    cmp w5, #'u'
+    b.ne true_fail2
+    ldrb w5, [x4, #3]
+    cmp w5, #'e'
+    b.ne true_fail3
+    add x1, x1, #4
+    str x1, [x0]
+    adrp x0, g_status
+    add x0, x0, :lo12:g_status
+    mov x1, #1
+    str x1, [x0]
+    ldp x29, x30, [sp], #16
+    ret
+
+true_fail0:
+    adrp x0, g_err
+    add x0, x0, :lo12:g_err
+    str x1, [x0]
+    adrp x0, g_status
+    add x0, x0, :lo12:g_status
+    mov x1, #0
+    str x1, [x0]
+    ldp x29, x30, [sp], #16
+    ret
+
+true_fail1:
+    add x1, x1, #1
+    adrp x0, g_err
+    add x0, x0, :lo12:g_err
+    str x1, [x0]
+    adrp x0, g_status
+    add x0, x0, :lo12:g_status
+    mov x1, #0
+    str x1, [x0]
+    ldp x29, x30, [sp], #16
+    ret
+
+true_fail2:
+    add x1, x1, #2
+    adrp x0, g_err
+    add x0, x0, :lo12:g_err
+    str x1, [x0]
+    adrp x0, g_status
+    add x0, x0, :lo12:g_status
+    mov x1, #0
+    str x1, [x0]
+    ldp x29, x30, [sp], #16
+    ret
+
+true_fail3:
+    add x1, x1, #3
+    adrp x0, g_err
+    add x0, x0, :lo12:g_err
+    str x1, [x0]
+    adrp x0, g_status
+    add x0, x0, :lo12:g_status
+    mov x1, #0
+    str x1, [x0]
+    ldp x29, x30, [sp], #16
+    ret
+
+true_fail_len:
+    adrp x0, g_err
+    add x0, x0, :lo12:g_err
+    str x2, [x0]
+    adrp x0, g_status
+    add x0, x0, :lo12:g_status
+    mov x1, #0
+    str x1, [x0]
+    ldp x29, x30, [sp], #16
+    ret
+
+parse_false:
+    stp x29, x30, [sp, #-16]!
+    mov x29, sp
+    adrp x0, g_pos
+    add x0, x0, :lo12:g_pos
+    ldr x1, [x0]
+    adrp x2, g_len
+    add x2, x2, :lo12:g_len
+    ldr x2, [x2]
+    add x3, x1, #5
+    cmp x3, x2
+    b.hi false_fail_len
+    adrp x4, input_buf
+    add x4, x4, :lo12:input_buf
+    add x4, x4, x1
+    ldrb w5, [x4, #0]
+    cmp w5, #'f'
+    b.ne false_fail0
+    ldrb w5, [x4, #1]
+    cmp w5, #'a'
+    b.ne false_fail1
+    ldrb w5, [x4, #2]
+    cmp w5, #'l'
+    b.ne false_fail2
+    ldrb w5, [x4, #3]
+    cmp w5, #'s'
+    b.ne false_fail3
+    ldrb w5, [x4, #4]
+    cmp w5, #'e'
+    b.ne false_fail4
+    add x1, x1, #5
+    str x1, [x0]
+    adrp x0, g_status
+    add x0, x0, :lo12:g_status
+    mov x1, #1
+    str x1, [x0]
+    ldp x29, x30, [sp], #16
+    ret
+
+false_fail0:
+    adrp x0, g_err
+    add x0, x0, :lo12:g_err
+    str x1, [x0]
+    adrp x0, g_status
+    add x0, x0, :lo12:g_status
+    mov x1, #0
+    str x1, [x0]
+    ldp x29, x30, [sp], #16
+    ret
+
+false_fail1:
+    add x1, x1, #1
+    adrp x0, g_err
+    add x0, x0, :lo12:g_err
+    str x1, [x0]
+    adrp x0, g_status
+    add x0, x0, :lo12:g_status
+    mov x1, #0
+    str x1, [x0]
+    ldp x29, x30, [sp], #16
+    ret
+
+false_fail2:
+    add x1, x1, #2
+    adrp x0, g_err
+    add x0, x0, :lo12:g_err
+    str x1, [x0]
+    adrp x0, g_status
+    add x0, x0, :lo12:g_status
+    mov x1, #0
+    str x1, [x0]
+    ldp x29, x30, [sp], #16
+    ret
+
+false_fail3:
+    add x1, x1, #3
+    adrp x0, g_err
+    add x0, x0, :lo12:g_err
+    str x1, [x0]
+    adrp x0, g_status
+    add x0, x0, :lo12:g_status
+    mov x1, #0
+    str x1, [x0]
+    ldp x29, x30, [sp], #16
+    ret
+
+false_fail4:
+    add x1, x1, #4
+    adrp x0, g_err
+    add x0, x0, :lo12:g_err
+    str x1, [x0]
+    adrp x0, g_status
+    add x0, x0, :lo12:g_status
+    mov x1, #0
+    str x1, [x0]
+    ldp x29, x30, [sp], #16
+    ret
+
+false_fail_len:
+    adrp x0, g_err
+    add x0, x0, :lo12:g_err
+    str x2, [x0]
+    adrp x0, g_status
+    add x0, x0, :lo12:g_status
+    mov x1, #0
+    str x1, [x0]
+    ldp x29, x30, [sp], #16
+    ret
+
+parse_null:
+    stp x29, x30, [sp, #-16]!
+    mov x29, sp
+    adrp x0, g_pos
+    add x0, x0, :lo12:g_pos
+    ldr x1, [x0]
+    adrp x2, g_len
+    add x2, x2, :lo12:g_len
+    ldr x2, [x2]
+    add x3, x1, #4
+    cmp x3, x2
+    b.hi null_fail_len
+    adrp x4, input_buf
+    add x4, x4, :lo12:input_buf
+    add x4, x4, x1
+    ldrb w5, [x4, #0]
+    cmp w5, #'n'
+    b.ne null_fail0
+    ldrb w5, [x4, #1]
+    cmp w5, #'u'
+    b.ne null_fail1
+    ldrb w5, [x4, #2]
+    cmp w5, #'l'
+    b.ne null_fail2
+    ldrb w5, [x4, #3]
+    cmp w5, #'l'
+    b.ne null_fail3
+    add x1, x1, #4
+    str x1, [x0]
+    adrp x0, g_status
+    add x0, x0, :lo12:g_status
+    mov x1, #1
+    str x1, [x0]
+    ldp x29, x30, [sp], #16
+    ret
+
+null_fail0:
+    adrp x0, g_err
+    add x0, x0, :lo12:g_err
+    str x1, [x0]
+    adrp x0, g_status
+    add x0, x0, :lo12:g_status
+    mov x1, #0
+    str x1, [x0]
+    ldp x29, x30, [sp], #16
+    ret
+
+null_fail1:
+    add x1, x1, #1
+    adrp x0, g_err
+    add x0, x0, :lo12:g_err
+    str x1, [x0]
+    adrp x0, g_status
+    add x0, x0, :lo12:g_status
+    mov x1, #0
+    str x1, [x0]
+    ldp x29, x30, [sp], #16
+    ret
+
+null_fail2:
+    add x1, x1, #2
+    adrp x0, g_err
+    add x0, x0, :lo12:g_err
+    str x1, [x0]
+    adrp x0, g_status
+    add x0, x0, :lo12:g_status
+    mov x1, #0
+    str x1, [x0]
+    ldp x29, x30, [sp], #16
+    ret
+
+null_fail3:
+    add x1, x1, #3
+    adrp x0, g_err
+    add x0, x0, :lo12:g_err
+    str x1, [x0]
+    adrp x0, g_status
+    add x0, x0, :lo12:g_status
+    mov x1, #0
+    str x1, [x0]
+    ldp x29, x30, [sp], #16
+    ret
+
+null_fail_len:
+    adrp x0, g_err
+    add x0, x0, :lo12:g_err
+    str x2, [x0]
+    adrp x0, g_status
+    add x0, x0, :lo12:g_status
+    mov x1, #0
+    str x1, [x0]
+    ldp x29, x30, [sp], #16
+    ret
+
+print_ok:
+    stp x29, x30, [sp, #-16]!
+    mov x29, sp
+    mov x0, #1
+    adrp x1, ok_msg
+    add x1, x1, :lo12:ok_msg
+    mov x2, #3
+    mov x8, #64
+    svc #0
+    ldp x29, x30, [sp], #16
+    ret
+
+print_error:
+    stp x29, x30, [sp, #-16]!
+    mov x29, sp
+    adrp x0, g_err
+    add x0, x0, :lo12:g_err
+    ldr x0, [x0]
+    adrp x3, outbuf
+    add x3, x3, :lo12:outbuf
+    adrp x1, err_prefix
+    add x1, x1, :lo12:err_prefix
+    mov x4, x3
+    mov x5, #9
+1:
+    ldrb w6, [x1], #1
+    strb w6, [x4], #1
+    subs x5, x5, #1
+    b.ne 1b
+
+    sub sp, sp, #32
+    mov x7, sp
+    mov x8, #0
+    mov x9, x0
+    cbz x9, zero_case
+
+digit_loop:
+    mov x10, #10
+    udiv x11, x9, x10
+    msub x12, x11, x10, x9
+    add x12, x12, #'0'
+    strb w12, [x7, x8]
+    add x8, x8, #1
+    mov x9, x11
+    cbnz x9, digit_loop
+    b reverse
+
+zero_case:
+    mov w12, #'0'
+    strb w12, [x7, x8]
+    add x8, x8, #1
+
+reverse:
+    sub x8, x8, #1
+    ldrb w12, [x7, x8]
+    strb w12, [x4], #1
+    cbnz x8, reverse
+
+    mov w12, #10
+    strb w12, [x4], #1
+    add sp, sp, #32
+
+    mov x0, #1
+    mov x1, x3
+    sub x2, x4, x3
+    mov x8, #64
+    svc #0
+
+    ldp x29, x30, [sp], #16
+    ret
+
+.section .rodata
+err_prefix:
+    .ascii "error at "
+ok_msg:
+    .ascii "ok\n"
+
+.section .bss
+    .align 3
+input_buf:
+    .zero 65536
+    .align 3
+g_len:
+    .zero 8
+g_pos:
+    .zero 8
+g_status:
+    .zero 8
+g_err:
+    .zero 8
+outbuf:
+    .zero 64
+</previous>
+It failed:
+<failure>
+Test `empty` failed (stdin delivered whole; test run 1 of 80; the runs before it passed).
+stdin (0 bytes): ""
+The program stopped with a fault (output_limit): stdout exceeds the limit of 1048576 bytes at pc 0x401084 [the faulting instruction is `svc #0` at 0x401084 (reverse+0x2c) (disassembly of the assembled program)]
+exit status: expected 1, got none (the program did not exit)
+stdout differs from byte 11 on (line 2, column 1 of the expected output); expected 11 bytes in total, got 1048576
+  expected from byte 11: (end of output)
+  actual from byte 11:   "error at 0\nerror at 0\nerror at 0\nerror at 0\nerror at 0\nerror at 0\nerror at 0\nerror at 0\nerror at 0\nerror at 0\nerror at 0\nerror at 0\nerror at 0\nerror at 0\nerror " ... (1048405 more bytes)
+</failure>
+Write a corrected, complete version. Same output format; output only the code.
