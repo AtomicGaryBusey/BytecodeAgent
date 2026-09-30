@@ -1,0 +1,349 @@
+.text
+.globl _start
+
+.equ SYS_READ, 63
+.equ SYS_WRITE, 64
+.equ SYS_EXIT, 93
+.equ INPUT_SIZE, 65536
+.equ STACK_SIZE, 32768
+.equ OUTBUF_SIZE, 64
+
+_start:
+    adrp x19, input_buf
+    add x19, x19, :lo12:input_buf
+    mov x20, #0
+
+read_loop:
+    cmp x20, #INPUT_SIZE
+    b.hs read_done
+    mov x0, #0
+    add x1, x19, x20
+    mov x2, #INPUT_SIZE
+    sub x2, x2, x20
+    mov x8, #SYS_READ
+    svc #0
+    cmp x0, #0
+    b.lt exit_error
+    b.eq read_done
+    add x20, x20, x0
+    b read_loop
+
+read_done:
+    mov x9, #0x7fff
+    movk x9, #0xffff, lsl #16
+    movk x9, #0xffff, lsl #32
+    movk x9, #0x7fff, lsl #48
+    mov x10, #0
+    movk x10, #0, lsl #16
+    movk x10, #0, lsl #32
+    movk x10, #0x8000, lsl #48
+    mov x11, #10
+    mov x21, #0
+
+process_line_loop:
+    cmp x21, x20
+    b.hs exit_ok
+    mov x22, x21
+    mov x23, x21
+
+scan_for_newline:
+    cmp x23, x20
+    b.hs no_newline
+    add x24, x19, x23
+    ldrb w25, [x24]
+    cmp w25, #10
+    b.eq newline_found
+    add x23, x23, #1
+    b scan_for_newline
+
+newline_found:
+    mov x26, #1
+    b eval_line
+
+no_newline:
+    mov x23, x20
+    mov x26, #0
+
+eval_line:
+    adrp x12, stack
+    add x12, x12, :lo12:stack
+    mov x13, #0
+    mov x14, x22
+    mov x15, x23
+    mov x16, #0
+
+parse_tokens:
+    cmp x14, x15
+    b.hs finish_line
+
+skip_separators:
+    cmp x14, x15
+    b.hs finish_line
+    ldrb w17, [x14]
+    cmp w17, #0x20
+    b.eq skip_sep_next
+    cmp w17, #0x09
+    b.eq skip_sep_next
+    b process_token
+
+skip_sep_next:
+    add x14, x14, #1
+    b skip_separators
+
+process_token:
+    mov x17, x14
+    add x14, x14, #1
+
+scan_token:
+    cmp x14, x15
+    b.hs token_end
+    ldrb w18, [x14]
+    cmp w18, #0x20
+    b.eq token_end
+    cmp w18, #0x09
+    b.eq token_end
+    add x14, x14, #1
+    b scan_token
+
+token_end:
+    sub x18, x14, x17
+    cmp x18, #1
+    b.ne parse_literal
+    ldrb w19, [x17]
+    cmp w19, #43
+    b.eq do_operator
+    cmp w19, #45
+    b.eq do_operator
+    cmp w19, #42
+    b.eq do_operator
+    cmp w19, #47
+    b.eq do_operator
+    cmp w19, #37
+    b.eq do_operator
+
+parse_literal:
+    mov x27, #0
+    mov x28, x17
+    mov x29, #0
+    ldrb w30, [x28]
+    cmp w30, #45
+    b.ne digit_loop
+    mov x29, #1
+    add x28, x28, #1
+    cmp x28, x14
+    b.hs token_invalid
+
+digit_loop:
+    cmp x28, x14
+    b.hs digits_done
+    ldrb w30, [x28]
+    cmp w30, #48
+    b.lt token_invalid
+    cmp w30, #57
+    b.gt token_invalid
+    sub w30, w30, #48
+    madd x27, x27, x11, x30
+    add x28, x28, #1
+    b digit_loop
+
+digits_done:
+    cmp x29, #0
+    b.eq positive_check
+    cmp x27, x10
+    b.hi token_invalid
+    neg x27, x27
+    b push_value
+
+positive_check:
+    cmp x27, x9
+    b.hi token_invalid
+
+push_value:
+    str x27, [x12, x13, lsl #3]
+    add x13, x13, #1
+    b parse_tokens
+
+do_operator:
+    cmp x13, #2
+    b.lt token_invalid
+    sub x13, x13, #1
+    ldr x24, [x12, x13, lsl #3]
+    sub x13, x13, #1
+    ldr x25, [x12, x13, lsl #3]
+
+    cmp w19, #43
+    b.eq op_plus
+    cmp w19, #45
+    b.eq op_minus
+    cmp w19, #42
+    b.eq op_mul
+    cmp w19, #47
+    b.eq op_div
+    cmp w19, #37
+    b.eq op_mod
+    b token_invalid
+
+op_plus:
+    add x27, x25, x24
+    b push_result
+
+op_minus:
+    sub x27, x25, x24
+    b push_result
+
+op_mul:
+    mul x27, x25, x24
+    b push_result
+
+op_div:
+    cmp x24, #0
+    b.eq line_error
+    cmp x25, x10
+    b.ne div_ok
+    cmp x24, #-1
+    b.ne div_ok
+    b line_error
+
+div_ok:
+    sdiv x27, x25, x24
+    b push_result
+
+op_mod:
+    cmp x24, #0
+    b.eq line_error
+    cmp x25, x10
+    b.ne mod_ok
+    cmp x24, #-1
+    b.ne mod_ok
+    b line_error
+
+mod_ok:
+    sdiv x27, x25, x24
+    msub x27, x27, x24, x25
+    b push_result
+
+push_result:
+    str x27, [x12, x13, lsl #3]
+    add x13, x13, #1
+    b parse_tokens
+
+token_invalid:
+    mov x16, #1
+    mov x14, x15
+    b finish_line
+
+line_error:
+    mov x16, #1
+    b finish_line
+
+finish_line:
+    cmp x16, #0
+    b.ne emit_error
+    cmp x13, #1
+    b.ne emit_error
+    ldr x0, [x12]
+    bl output_signed_value
+    b next_line
+
+emit_error:
+    adrp x1, msg_error
+    add x1, x1, :lo12:msg_error
+    mov x2, #6
+    bl write_buffer
+
+next_line:
+    cmp x26, #0
+    b.eq line_finished
+    add x21, x23, #1
+    b process_line_loop
+
+line_finished:
+    mov x21, x20
+    b process_line_loop
+
+exit_error:
+    mov x0, #1
+    mov x8, #93
+    svc #0
+
+exit_ok:
+    mov x0, #0
+    mov x8, #93
+    svc #0
+
+write_buffer:
+    mov x0, #1
+    mov x8, #SYS_WRITE
+    svc #0
+    ret
+
+output_signed_value:
+    mov x19, x0
+    adrp x20, outbuf
+    add x20, x20, :lo12:outbuf
+    add x21, x20, #64
+    mov x22, x21
+    mov x23, #0
+
+    cmp x19, #0
+    b.ge value_nonnegative
+    mov x23, #1
+    add x19, x19, #1
+    neg x19, x19
+    add x19, x19, #1
+
+value_nonnegative:
+    cmp x19, #0
+    b.ne digit_loop_out
+    sub x22, x22, #1
+    mov w24, #'0'
+    strb w24, [x22]
+    b sign_check
+
+digit_loop_out:
+    cmp x19, #0
+    b.eq sign_check
+    mov x24, #10
+    udiv x25, x19, x24
+    msub x26, x25, x24, x19
+    add w26, w26, #'0'
+    sub x22, x22, #1
+    strb w26, [x22]
+    mov x19, x25
+    b digit_loop_out
+
+sign_check:
+    cmp x23, #0
+    b.eq emit_number
+    sub x22, x22, #1
+    mov w26, #'-'
+    strb w26, [x22]
+
+emit_number:
+    sub x2, x21, x22
+    mov x1, x22
+    bl write_buffer
+    adrp x1, newline
+    add x1, x1, :lo12:newline
+    mov x2, #1
+    bl write_buffer
+    ret
+
+.section .rodata
+msg_error:
+    .asciz "error\n"
+newline:
+    .byte 10
+
+.section .bss
+.balign 8
+input_buf:
+    .space INPUT_SIZE
+
+.balign 8
+stack:
+    .space STACK_SIZE
+
+.balign 8
+outbuf:
+    .space OUTBUF_SIZE
