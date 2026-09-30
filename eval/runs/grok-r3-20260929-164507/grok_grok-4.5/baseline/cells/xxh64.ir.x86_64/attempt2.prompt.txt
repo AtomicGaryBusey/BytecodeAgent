@@ -1,0 +1,207 @@
+Implement the function `uint64_t xxh64(const uint8_t *p, int64_t n, uint64_t seed)`.
+
+Target: x86-64, Linux System V ABI. Integer/pointer arguments in rdi, rsi, rdx, rcx, r8, r9; 64-bit result in rax. Callee-saved: rbx, rbp, r12, r13, r14, r15 (restore them if you use them); all other registers may be clobbered. rsp is 16-byte aligned before the call, so it is 8 mod 16 at entry; it must be back to its entry value when you return with ret. Never write to the caller's frame (at or above the return address). More ABI facts: arguments beyond the sixth are passed on the stack; at entry the return address is at [rsp], the 7th argument at [rsp+8], the 8th at [rsp+16]. A call clobbers the caller-saved registers rax, rcx, rdx, rsi, rdi, r8-r11, all xmm registers and the flags, so keep values that must survive a call in callee-saved registers (saved/restored by you) or in your own stack frame. rsp must be 16-byte aligned at every call instruction (at entry rsp is 8 mod 16, so an odd number of 8-byte pushes, or `sub rsp, 8` plus any multiple of 16, re-aligns it). Anything below rsp may be overwritten by a callee. The direction flag must be clear at calls and on return.
+
+Output format: QBE intermediate language (the IL of the QBE compiler backend, c9x.me/compile). Write exactly one function, `export function l $xxh64(...)`, taking every argument as `l` (64-bit; pointers are `l` too) and returning `l`. QBE will compile it for the target above, so you do not handle registers or the ABI yourself. Remember: every block starts with an `@label`; temporaries are `%name`; comparisons such as `csltl`/`ceql` produce a `w` value; `jnz` tests a `w`; loads/stores are `loadl`/`storel`. No data definitions, no calls, no other functions. Output only the QBE code: no Markdown fences, no prose. QBE has no rotate instruction: rotl(x, r) = (x shl r) or (x shr (64 - r)) (`shr` is logical); `loadl`/`loadw` work on unaligned addresses; zero-extend a 32-bit load with `%v =l loaduw %q`; a 64-bit constant is written as a decimal integer (e.g. -7046029288634856825 for 0x9E3779B185EBCA87).
+
+Specification: Return the 64-bit xxHash (XXH64) of the n bytes at p (0 <= n <= 300) with the given seed. All arithmetic is on unsigned 64-bit values modulo 2^64; rotl(x, r) rotates left by r bits; read64(q) / read32(q) are little-endian unsigned loads of 8 / 4 bytes (p is only byte-aligned). Constants: P1 = 0x9E3779B185EBCA87, P2 = 0xC2B2AE3D27D4EB4F, P3 = 0x165667B19E3779F9, P4 = 0x85EBCA77C2B2AE63, P5 = 0x27D4EB2F165667C5. round(acc, x) = rotl(acc + x * P2, 31) * P1; merge(h, v) = (h ^ round(0, v)) * P1 + P4. (1) If n >= 32: v1 = seed + P1 + P2, v2 = seed + P2, v3 = seed, v4 = seed - P1; for each whole 32-byte stripe at q: v1 = round(v1, read64(q)), v2 = round(v2, read64(q+8)), v3 = round(v3, read64(q+16)), v4 = round(v4, read64(q+24)); then h = rotl(v1, 1) + rotl(v2, 7) + rotl(v3, 12) + rotl(v4, 18); h = merge(h, v1); h = merge(h, v2); h = merge(h, v3); h = merge(h, v4). Otherwise h = seed + P5. (2) h += n. (3) For the remaining bytes after the stripes (fewer than 32), in order: while at least 8 remain: h ^= round(0, read64(q)); h = rotl(h, 27) * P1 + P4; q += 8. If at least 4 remain: h ^= read32(q) * P1; h = rotl(h, 23) * P2 + P3; q += 4. For each remaining byte c: h ^= c * P5; h = rotl(h, 11) * P1. (4) h ^= h >> 33; h *= P2; h ^= h >> 29; h *= P3; h ^= h >> 32 (logical shifts); return h. Check values: xxh64("", 0, 0) = 0xEF46DB3751D8E999, xxh64("abc", 3, 0) = 0x44BC2CF5AD770999. Do not read outside p[0..n-1] (reads are checked) and do not write to memory.
+
+Your previous attempt was:
+<previous>
+export function l $xxh64(l %p, l %n, l %seed) {
+@start
+  %P1 =l copy -7046029288634856825
+  %P2 =l copy -4417276706812529889
+  %P3 =l copy 1609587929392839161
+  %P4 =l copy -8796714831421723037
+  %P5 =l copy 2870177457781317909
+  %lim =l add %p, %n
+  %ge32 =w csgel %n, 32
+  jnz %ge32, @large, @small
+@large
+  %v1a =l add %seed, %P1
+  %v1.init =l add %v1a, %P2
+  %v2.init =l add %seed, %P2
+  %v3.init =l copy %seed
+  %v4.init =l sub %seed, %P1
+  %q.init =l copy %p
+  jmp @loop32
+@loop32
+  %v1 =l phi @large %v1.init, @dostripe %v1.next
+  %v2 =l phi @large %v2.init, @dostripe %v2.next
+  %v3 =l phi @large %v3.init, @dostripe %v3.next
+  %v4 =l phi @large %v4.init, @dostripe %v4.next
+  %q =l phi @large %q.init, @dostripe %q.next
+  %left32 =l sub %lim, %q
+  %cmp32 =w csgel %left32, 32
+  jnz %cmp32, @dostripe, @after32
+@dostripe
+  %x1 =l loadl %q
+  %m1 =l mul %x1, %P2
+  %a1 =l add %v1, %m1
+  %s1 =l shl %a1, 31
+  %r1 =l shr %a1, 33
+  %o1 =l or %s1, %r1
+  %v1.next =l mul %o1, %P1
+  %q8a =l add %q, 8
+  %x2 =l loadl %q8a
+  %m2 =l mul %x2, %P2
+  %a2 =l add %v2, %m2
+  %s2 =l shl %a2, 31
+  %r2 =l shr %a2, 33
+  %o2 =l or %s2, %r2
+  %v2.next =l mul %o2, %P1
+  %q16a =l add %q, 16
+  %x3 =l loadl %q16a
+  %m3 =l mul %x3, %P2
+  %a3 =l add %v3, %m3
+  %s3 =l shl %a3, 31
+  %r3 =l shr %a3, 33
+  %o3 =l or %s3, %r3
+  %v3.next =l mul %o3, %P1
+  %q24a =l add %q, 24
+  %x4a =l loadl %q24a
+  %m4a =l mul %x4a, %P2
+  %a4 =l add %v4, %m4a
+  %s4 =l shl %a4, 31
+  %r4 =l shr %a4, 33
+  %o4 =l or %s4, %r4
+  %v4.next =l mul %o4, %P1
+  %q.next =l add %q, 32
+  jmp @loop32
+@after32
+  %u1 =l shl %v1, 1
+  %u2 =l shr %v1, 63
+  %rot1 =l or %u1, %u2
+  %u3 =l shl %v2, 7
+  %u4 =l shr %v2, 57
+  %rot2 =l or %u3, %u4
+  %u5 =l shl %v3, 12
+  %u6 =l shr %v3, 52
+  %rot3 =l or %u5, %u6
+  %u7 =l shl %v4, 18
+  %u8 =l shr %v4, 46
+  %rot4 =l or %u7, %u8
+  %u9 =l add %rot1, %rot2
+  %u10 =l add %u9, %rot3
+  %h0 =l add %u10, %rot4
+  %u11 =l mul %v1, %P2
+  %u12 =l shl %u11, 31
+  %u13 =l shr %u11, 33
+  %u14 =l or %u12, %u13
+  %u15 =l mul %u14, %P1
+  %u16 =l xor %h0, %u15
+  %u17 =l mul %u16, %P1
+  %h1 =l add %u17, %P4
+  %u18 =l mul %v2, %P2
+  %u19 =l shl %u18, 31
+  %u20 =l shr %u18, 33
+  %u21 =l or %u19, %u20
+  %u22 =l mul %u21, %P1
+  %u23 =l xor %h1, %u22
+  %u24 =l mul %u23, %P1
+  %h2 =l add %u24, %P4
+  %u25 =l mul %v3, %P2
+  %u26 =l shl %u25, 31
+  %u27 =l shr %u25, 33
+  %u28 =l or %u26, %u27
+  %u29 =l mul %u28, %P1
+  %u30 =l xor %h2, %u29
+  %u31 =l mul %u30, %P1
+  %h3 =l add %u31, %P4
+  %u32 =l mul %v4, %P2
+  %u33 =l shl %u32, 31
+  %u34 =l shr %u32, 33
+  %u35 =l or %u33, %u34
+  %u36 =l mul %u35, %P1
+  %u37 =l xor %h3, %u36
+  %u38 =l mul %u37, %P1
+  %h.large =l add %u38, %P4
+  jmp @remain_entry
+@small
+  %h.small =l add %seed, %P5
+  %q.small =l copy %p
+  jmp @remain_entry
+@remain_entry
+  %h =l phi @after32 %h.large, @small %h.small
+  %q.r =l phi @after32 %q, @small %q.small
+  %h.n =l add %h, %n
+  jmp @loop8
+@loop8
+  %h8 =l phi @remain_entry %h.n, @do8 %h8.next
+  %q8 =l phi @remain_entry %q.r, @do8 %q8.next
+  %left8 =l sub %lim, %q8
+  %cmp8 =w csgel %left8, 8
+  jnz %cmp8, @do8, @after8
+@do8
+  %x8 =l loadl %q8
+  %m8 =l mul %x8, %P2
+  %s8 =l shl %m8, 31
+  %r8 =l shr %m8, 33
+  %o8 =l or %s8, %r8
+  %rr8 =l mul %o8, %P1
+  %hx8 =l xor %h8, %rr8
+  %s27 =l shl %hx8, 27
+  %r27 =l shr %hx8, 37
+  %o27 =l or %s27, %r27
+  %hm8 =l mul %o27, %P1
+  %h8.next =l add %hm8, %P4
+  %q8.next =l add %q8, 8
+  jmp @loop8
+@after8
+  %left4 =l sub %lim, %q8
+  %cmp4 =w csgel %left4, 4
+  jnz %cmp4, @do4, @no4
+@do4
+  %x32 =l loaduw %q8
+  %m32 =l mul %x32, %P1
+  %hx4 =l xor %h8, %m32
+  %s23 =l shl %hx4, 23
+  %r23 =l shr %hx4, 41
+  %o23 =l or %s23, %r23
+  %hm4 =l mul %o23, %P2
+  %h4 =l add %hm4, %P3
+  %q4 =l add %q8, 4
+  jmp @join4
+@no4
+  jmp @join4
+@join4
+  %h.after4 =l phi @do4 %h4, @no4 %h8
+  %q.after4 =l phi @do4 %q4, @no4 %q8
+  jmp @loop1
+@loop1
+  %h1 =l phi @join4 %h.after4, @do1 %h1.next
+  %q1 =l phi @join4 %q.after4, @do1 %q1.next
+  %left1 =l sub %lim, %q1
+  %cmp1 =w csgtl %left1, 0
+  jnz %cmp1, @do1, @after1
+@do1
+  %c =l loadub %q1
+  %mc =l mul %c, %P5
+  %hxc =l xor %h1, %mc
+  %s11 =l shl %hxc, 11
+  %r11 =l shr %hxc, 53
+  %o11 =l or %s11, %r11
+  %h1.next =l mul %o11, %P1
+  %q1.next =l add %q1, 1
+  jmp @loop1
+@after1
+  %s33 =l shr %h1, 33
+  %hx33 =l xor %h1, %s33
+  %hm2 =l mul %hx33, %P2
+  %s29 =l shr %hm2, 29
+  %hx29 =l xor %hm2, %s29
+  %hm3 =l mul %hx29, %P3
+  %s32 =l shr %hm3, 32
+  %h.final =l xor %hm3, %s32
+  ret %h.final
+}
+</previous>
+It failed:
+<failure>
+65 of 65 test cases failed. First failures:
+  xxh64(p=bytes.fromhex(''), n=0, seed=0x0) [p % 8 = 0]: expected -1205034819632174695, got 7824488216950581593
+  xxh64(p=bytes.fromhex(''), n=0, seed=0x1) [p % 8 = 1]: expected -3049013831022690741, got 6349708638276987165
+  xxh64(p=bytes.fromhex('61'), n=1, seed=0x0) [p % 8 = 2]: expected -3292477735350538661, got 421856562008129213
+</failure>
+Write a corrected, complete version. Same output format; output only the code.
