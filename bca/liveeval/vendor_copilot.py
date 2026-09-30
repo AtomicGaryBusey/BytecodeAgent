@@ -161,6 +161,15 @@ def _sdk_entry() -> Path:
                 f"~/.local/opt/copilot/sdk-{COPILOT_SDK_VERSION}/node_modules/@github/copilot-sdk").expanduser()
 
 
+def _continuation(d) -> str:
+    """The reason of a runtime continuation telemetry event ('' if it is not one)."""
+    t = d.get("telemetry") if isinstance(d, dict) else None
+    if isinstance(t, dict) and t.get("event") == "model_turn_continuation":
+        props = t.get("properties") if isinstance(t.get("properties"), dict) else {}
+        return str(props.get("source") or "continuation")
+    return ""
+
+
 def _reasoning_item(d: dict) -> bool:
     """An assistant.message that only carries the model's encrypted reasoning: the Responses API returns
     it as a separate output item of the same model call (gpt-6-luna, seen 2026-09-29), with empty
@@ -232,6 +241,7 @@ class CopilotSubject(CliSubject):
             raise IsolationError(f"isolation: cannot set up the copilot home {home}: {e}") from e
         self._call.home = home
         self._call.events = []
+        self._call.partial = []  # streamed answer text, scored only if the output cap stops the call
 
     def argv(self, prompt: str, home: Path) -> list[str]:
         if not DRIVER.is_file() or not (_sdk_entry() / "dist/index.js").is_file():
@@ -268,6 +278,15 @@ class CopilotSubject(CliSubject):
         if typ not in COPILOT_EVENTS:
             if typ == "bca.permission_request":
                 bad(f"permission requested: {json.dumps(d)[:160]}")
+            elif typ == "model.telemetry" and _continuation(d):
+                # the call hit the output cap (seen: claude-sonnet-5.5, 32000 tokens, source
+                # thinking-exhausted-continuation) and the runtime would nudge the model into a second, injected
+                # turn. Stop here and score what the model wrote within the cap, as `claude -p` would score a
+                # max-token answer: no continuation, and no do-over either.
+                p.text = "".join(getattr(self._call, "partial", []))
+                p.notes.append(f"output cap reached ({_continuation(d)}): the runtime's continuation was stopped; "
+                               "the answer written within the cap is scored as it stands")
+                p.abort = True
             elif typ in ("model.turn_retry", "model.model_call_failure"):
                 # the runtime is about to call the model a second time (seen: reason streaming_error, a broken
                 # stream): one attempt must be one model call, so the attempt is void -- a transient error the
@@ -307,6 +326,8 @@ class CopilotSubject(CliSubject):
             bad(f"tools updated: {json.dumps(d)[:160]}")
         elif typ == "bca.prompt_transformed" and d.get("changed"):
             p.notes.append("the runtime's prompt prefix was removed (userPromptTransformed)")
+        elif typ == "assistant.message_delta" and isinstance(d.get("deltaContent"), str):
+            self._call.partial.append(d["deltaContent"])
         elif typ == "assistant.message":
             if d.get("toolRequests"):
                 bad(f"tool requests: {json.dumps(d.get('toolRequests'))[:160]}")

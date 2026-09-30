@@ -199,6 +199,33 @@ def test_a_failed_model_call_voids_the_attempt_as_transient(env, typ, data):
     assert not r.error.startswith("isolation:") and not _FATAL_RE.search(r.error)
 
 
+def test_output_cap_continuation_is_stopped_and_the_capped_answer_scored(env):
+    # seen live (claude-sonnet-5.5, vm_run.structured.aarch64, 2026-09-30): 32000 output tokens, then
+    # model.telemetry {event: model_turn_continuation, source: thinking-exhausted-continuation, outcome: nudged}; the
+    # runtime would inject a nudge and call the model again
+    rec = copy.deepcopy(load("luna"))
+    msgs = [k for k, e in enumerate(rec["events"]) if e["type"] == "assistant.message"]
+    rec["events"] = [e for k, e in enumerate(rec["events"])  # no final message yet; our own deltas only
+                     if k not in msgs and e["type"] != "assistant.message_delta"]
+    i = next(k for k, e in enumerate(rec["events"]) if e["type"] == "assistant.usage")
+    rec["events"][i:i] = [{"type": "assistant.message_delta", "data": {"messageId": "m", "deltaContent": "[{\"op\""}},
+                          {"type": "assistant.message_delta", "data": {"messageId": "m", "deltaContent": ": \"mov\""}}]
+    rec["events"].append({"type": "model.telemetry", "data": {"kind": "telemetry", "telemetry": {
+        "event": "model_turn_continuation", "properties": {"source": "thinking-exhausted-continuation",
+                                                           "outcome": "nudged", "model": "gpt-6-luna"}}}})
+    rec["events"].append({"type": "assistant.message", "data": {"content": "CONTINUED", "toolRequests": []}})
+    got = []
+    r = subject(env, rec, "gpt-6-luna", effort="low").complete(PROMPT, got.append)
+    assert r.ok, r.error
+    assert r.text == '[{"op": "mov"' and got == [r.text]  # the capped answer, never the continuation
+    assert any("output cap reached (thinking-exhausted-continuation)" in n for n in r.notes)
+    # any other telemetry event still fails closed
+    bad = copy.deepcopy(load("luna"))
+    bad["events"].insert(3, {"type": "model.telemetry", "data": {"kind": "telemetry", "telemetry": {"event": "x"}}})
+    r = subject(env, bad, "gpt-6-luna", effort="low").complete(PROMPT)
+    assert not r.ok and r.error.startswith("isolation:") and "model.telemetry" in r.error
+
+
 # -- fail closed ------------------------------------------------------------------------------------
 
 

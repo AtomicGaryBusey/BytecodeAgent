@@ -222,7 +222,7 @@ class Parsed:
     violations: list[str] = field(default_factory=list)
     refusal: str = ""  # the vendor's safety system blocked the answer: a scored refusal
     notes: list[str] = field(default_factory=list)
-    abort: bool = False  # the call is void (p.error says why, a transient error): stop the CLI now, score nothing
+    abort: bool = False  # stop the CLI now; with p.error the call is void (transient), without it p.text is scored
 
 
 class CliSubject(Subject):
@@ -411,7 +411,7 @@ class CliSubject(Subject):
                     raw.write(json.dumps({"bca_stderr": stderr[-2000:]}) + "\n")
             if not timer_fired.is_set():
                 try:  # verify the request even after an early abort (returncode None: we killed it)
-                    self.finish(p, None if killed else proc.returncode, stderr)
+                    self.finish(p, None if killed or p.abort else proc.returncode, stderr)
                 except Exception as e:  # noqa: BLE001 - an unverifiable call is not scored
                     p.violations.append(f"{self.vendor} request verification failed ({type(e).__name__}: {e})")
             if self.deliver_at_end and not timer_fired.is_set() and not p.violations and p.text:
@@ -421,7 +421,7 @@ class CliSubject(Subject):
                 if on_text is not None and on_text(p.text) is False:
                     stopped = True
             call_ok = (not timer_fired.is_set() and not p.violations and not p.error
-                       and (killed or proc.returncode == 0))
+                       and (killed or p.abort or proc.returncode == 0))  # an abort without an error: score p.text
         finally:
             if raw:
                 raw.close()
