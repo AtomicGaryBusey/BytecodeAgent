@@ -1,0 +1,164 @@
+Implement the function `int64_t packbits_encode(const uint8_t *src, int64_t n, uint8_t *out, int64_t cap)`.
+
+Target: AArch64 (ARMv8-A), Linux AAPCS64. Integer/pointer arguments in x0-x7; 64-bit result in x0. Callee-saved: x19-x28, x29 (frame pointer) and d8-d15 (restore them if you use them); x9-x15 are free scratch registers. sp must stay 16-byte aligned and be back to its entry value when you return with ret (return address in x30). More ABI facts: arguments beyond the eighth are passed on the stack (the 9th at [sp] at entry). A call (bl/blr) overwrites x30, so save x30 (e.g. stp x29, x30, [sp, #-16]!) before calling and restore it before ret. A call clobbers the caller-saved registers x0-x18, x30, v0-v7 and v16-v31 (and the upper halves of v8-v15) and the flags, so keep values that must survive a call in callee-saved registers x19-x28 (saved/restored by you) or in your own stack frame. sp must be 16-byte aligned at every call (and whenever it is used as a base register). Anything below sp may be overwritten by a callee.
+
+Output format: QBE intermediate language (the IL of the QBE compiler backend, c9x.me/compile). Write exactly one function, `export function l $packbits_encode(...)`, taking every argument as `l` (64-bit; pointers are `l` too) and returning `l`. QBE will compile it for the target above, so you do not handle registers or the ABI yourself. Remember: every block starts with an `@label`; temporaries are `%name`; comparisons such as `csltl`/`ceql` produce a `w` value; `jnz` tests a `w`; loads/stores are `loadl`/`storel`. No data definitions, no calls, no other functions. Output only the QBE code: no Markdown fences, no prose. Load a byte zero-extended with `%b =w loadub %p`; store one with `storeb %c, %p`.
+
+Specification: Compress the n bytes at src (0 <= n <= 600) with PackBits run-length encoding into out, which has room for cap bytes (0 <= cap <= 1200), and return the number of bytes written. The output is a sequence of packets: a repeat packet is the header byte 257 - r (i.e. -(r-1) as a signed byte) followed by one byte b, meaning r copies of b (3 <= r <= 128); a literal packet is the header byte L - 1 followed by L bytes copied verbatim (1 <= L <= 128). Encode greedily, left to right, exactly as follows. Let run(j) be the number of consecutive bytes equal to src[j] starting at j, capped at 128. At position i: if run(i) >= 3, emit a repeat packet with r = run(i) and b = src[i], and advance i by r. Otherwise emit a literal packet of the bytes src[i..j-1], where j starts at i and advances while j < n, j - i < 128 and run(j) < 3; then set i = j. (So a pair of equal bytes stays inside a literal; a literal stops just before a run of 3 or more.) Example: "abcccd" -> 01 'a' 'b' FE 'c' 00 'd' (7 bytes). If a whole packet does not fit in the remaining room, write none of it and return -1 immediately (earlier packets stay written). Read only src[0..n-1] (never look past src[n-1] when measuring a run) and write only out[0..cap-1] (both are checked).
+
+Your previous attempt was:
+<previous>
+export function l $packbits_encode(l %src, l %n, l %out, l %cap) {
+@entry
+  %i =l add 0, 0
+  %written =l add 0, 0
+  %outp =l add %out, 0
+  jmp @loop
+
+@loop
+  %i_lt_n =w csltl %i, %n
+  jnz %i_lt_n, @body
+  ret %written
+
+@body
+  %srcp =l add %src, %i
+  %b0 =w loadub %srcp
+  %run =w add 1, 0
+  %jrun =l add %i, 1
+
+@runloop
+  %jrun_lt_n =w csltl %jrun, %n
+  jnz %jrun_lt_n, @runcheck
+  jmp @runend
+
+@runcheck
+  %run_lt_128 =w csltl %run, 128
+  jnz %run_lt_128, @runeq
+  jmp @runend
+
+@runeq
+  %cp =l add %src, %jrun
+  %b1 =w loadub %cp
+  %eq =w ceql %b0, %b1
+  jnz %eq, @runinc
+  jmp @runend
+
+@runinc
+  %run =w add %run, 1
+  %jrun =l add %jrun, 1
+  jmp @runloop
+
+@runend
+  %run_lt_3 =w csltl %run, 3
+  jnz %run_lt_3, @literal
+  jmp @repeat
+
+@repeat
+  %need =l add %written, 2
+  %cap_lt_need =w csltl %cap, %need
+  jnz %cap_lt_need, @fail
+  %header =w sub 257, %run
+  %hdrp =l add %outp, 0
+  storeb %header, %hdrp
+  %datap =l add %hdrp, 1
+  storeb %b0, %datap
+  %outp =l add %outp, 2
+  %written =l add %written, 2
+  %i =l add %i, %run
+  jmp @loop
+
+@literal
+  %j =l add %i, 0
+  jmp @lscan
+
+@lscan
+  %j_lt_n =w csltl %j, %n
+  jnz %j_lt_n, @lcheck
+  jmp @lscan_done
+
+@lcheck
+  %delta =l sub %j, %i
+  %delta_lt_128 =w csltl %delta, 128
+  jnz %delta_lt_128, @lcheck_run
+  jmp @lscan_done
+
+@lcheck_run
+  %runj =w add 1, 0
+  %jp =l add %src, %j
+  %cj =w loadub %jp
+  %j1 =l add %j, 1
+
+@lrunloop
+  %j1_lt_n =w csltl %j1, %n
+  jnz %j1_lt_n, @lruncheck
+  jmp @lrunend
+
+@lruncheck
+  %runj_lt_128 =w csltl %runj, 128
+  jnz %runj_lt_128, @lruncmp
+  jmp @lrunend
+
+@lruncmp
+  %cp2 =l add %src, %j1
+  %cj2 =w loadub %cp2
+  %eq2 =w ceql %cj, %cj2
+  jnz %eq2, @lruninc
+  jmp @lrunend
+
+@lruninc
+  %runj =w add %runj, 1
+  %j1 =l add %j1, 1
+  jmp @lrunloop
+
+@lrunend
+  %runj_lt_3 =w csltl %runj, 3
+  jnz %runj_lt_3, @linclude
+  jmp @lscan_done
+
+@linclude
+  %j =l add %j, 1
+  jmp @lscan
+
+@lscan_done
+  %litlen =l sub %j, %i
+  %litpacket =l add %litlen, 1
+  %need2 =l add %written, %litpacket
+  %cap_lt_need2 =w csltl %cap, %need2
+  jnz %cap_lt_need2, @fail
+  %header2 =w sub %litlen, 1
+  %hptr2 =l add %outp, 0
+  storeb %header2, %hptr2
+  %k =l add 0, 0
+  jmp @litcopy
+
+@litcopy
+  %k_lt_len =w csltl %k, %litlen
+  jnz %k_lt_len, @litcopy_body
+  jmp @literal_done
+
+@litcopy_body
+  %srck =l add %src, %i
+  %srck2 =l add %srck, %k
+  %srcbyte =w loadub %srck2
+  %dstp =l add %hptr2, 1
+  %dstp2 =l add %dstp, %k
+  storeb %srcbyte, %dstp2
+  %k =l add %k, 1
+  jmp @litcopy
+
+@literal_done
+  %outp =l add %hptr2, %litpacket
+  %written =l add %written, %litpacket
+  %i =l add %j, 0
+  jmp @loop
+
+@fail
+  ret -1
+}
+</previous>
+It failed:
+<failure>
+Compilation failed at stage qbe:
+qbe:-:11: , expected, got newline instead
+</failure>
+Write a corrected, complete version. Same output format; output only the code.
