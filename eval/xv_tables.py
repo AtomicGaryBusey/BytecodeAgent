@@ -11,9 +11,11 @@ for f in sorted(glob.glob("eval/runs/*/**/results.jsonl", recursive=True) + glob
         subj = r.get("subject") or "opus"
         if subj.startswith(("codex_", "kimi_", "agy_", "grok_", "copilot_")):
             label = subj.replace("_", ":", 1).replace("kimi-code_", "kimi-code/")
+        elif subj.startswith("local_"): label = "local:" + (r.get("model") or subj[6:])
         elif subj.startswith("claude-"): label = subj
         else: label = r.get("model") or subj
         bat = r.get("battery") or ("round2" if "round2" in rd else "round1")
+        if bat == "apps": continue  # the app battery has its own tables
         recs[(label, bat, r["cell"])] = r
 names = {"claude-opus-5-5": "Claude Opus 5.5", "claude-fable-5-1": "Claude Fable 5.1", "grok:grok-4.7": "Grok 4.7",
  "grok:grok-4.7-build-fast": "Grok 4.7 build-fast", "kimi:kimi-code/k3": "Kimi K3", "kimi:kimi-code/kimi-for-coding": "Kimi K2.8 (for-coding)",
@@ -21,10 +23,13 @@ names = {"claude-opus-5-5": "Claude Opus 5.5", "claude-fable-5-1": "Claude Fable
  "codex:gpt-6-sol": "Codex GPT-6 Sol", "codex:gpt-5.5": "Codex GPT-5.5", "grok:grok-4.6": "Grok 4.6", "grok:grok-4.5": "Grok 4.5",
  "claude-sonnet-5": "Claude Sonnet 5", "codex:gpt-6-luna": "Codex GPT-6 Luna", "claude-haiku-4-5-20251001": "Claude Haiku 4.5",
  "claude-opus-4-8": "Claude Opus 4.8", "claude-sonnet-4-5-20250929": "Claude Sonnet 4.5",
- "agy:gemini-3.8-flash-high": "Gemini 3.8 Flash High (Antigravity)"}
+ "agy:gemini-3.8-flash-high": "Gemini 3.8 Flash High (Antigravity)",
+ "copilot:gpt-6-luna": "GPT-6 Luna via Copilot", "copilot:mai-code-1.1-flash": "Microsoft MAI-Code 1.1 Flash (Copilot)",
+ "local:qwen3:30b-a3b-instruct-2507-q8_0": "Qwen3-30B-A3B Instruct 2507 Q8 (local)", "local:qwen2.5:14b": "Qwen2.5-14B Q4 (local)"}
 # reviewed harness false rejects counted as first-attempt passes: label -> [(battery, path, n)]
 ADJ = {"codex:gpt-daybreak-blue-latest": [("adversarial", "stream", 1)],
-       "grok:grok-4.7-build-fast": [("long", "structured", 3)]}
+       "grok:grok-4.7-build-fast": [("long", "structured", 3)],
+       "copilot:gpt-6-luna": [("long", "stream", 1)]}  # keystone refused an AArch64 mov-with-shift alias GNU as takes
 bats = ["round1", "round2", "long", "adversarial"]; tot = {"round1": 48, "round2": 62, "long": 54, "adversarial": 60}
 agg = collections.defaultdict(lambda: collections.defaultdict(lambda: [0, 0, 0, 0.0]))
 pth = collections.defaultdict(lambda: collections.defaultdict(lambda: [0, 0]))

@@ -29,13 +29,14 @@ system and task prompts, and its CLI's default effort (as the Claude runs did). 
 | Codex Daybreak Blue | 45 | 55 | 42 | 59 | **201/224 (90%)** | 224/224 (100%) | 1.12 |
 | Claude Sonnet 5.5 | 47 | 56 | 45 | 53 | **201/224 (90%)** | 223/224 (100%) | 1.12 |
 | Grok 4.5 | 47 | 55 | 41 | 54 | **197/224 (88%)** | 222/224 (99%) | 1.16 |
+| GPT-6 Luna via Copilot | 42 | 53 | 31 | 50 | **176/224 (79%)** | 224/224 (100%) | 1.29 |
 | Claude Sonnet 5 | 40 | 49 | 41 | 45 | **175/224 (78%)** | 222/224 (99%) | 1.30 |
 | Claude Opus 4.8 | 35 | 48 | 49 | 43 | **175/224 (78%)** | 222/224 (99%) | 1.27 |
 | Codex GPT-6 Luna | 33 | 41 | 10 | 46 | **130/224 (58%)** | 209/224 (93%) | 1.71 |
 | Claude Haiku 4.5 | 30 | 34 | 17 | 35 | **116/224 (52%)** | 158/224 (71%) | 2.19 |
 
 Codex Daybreak Blue includes one reviewed harness false reject counted as a pass, Grok 4.7 build-fast
-three (see the false-reject review below). Still running (added when complete and reviewed): Kimi K2.8 (kimi-for-coding) and Gemini 3.8 Flash on Antigravity (quota-paced).
+three and GPT-6 Luna via Copilot one (see the false-reject review below). Still running (added when complete and reviewed): Kimi K2.8 (kimi-for-coding) and Gemini 3.8 Flash on Antigravity (quota-paced).
 
 ## By emission path (first-attempt passes, complete runs)
 
@@ -54,6 +55,7 @@ three (see the false-reject review below). Still running (added when complete an
 | Codex Daybreak Blue | 71/76 (93%) | 69/74 (93%) | 61/74 (82%) |
 | Claude Sonnet 5.5 | 73/76 (96%) | 68/74 (92%) | 60/74 (81%) |
 | Grok 4.5 | 73/76 (96%) | 71/74 (96%) | 53/74 (72%) |
+| GPT-6 Luna via Copilot | 67/76 (88%) | 61/74 (82%) | 48/74 (65%) |
 | Claude Sonnet 5 | 63/76 (83%) | 53/74 (72%) | 59/74 (80%) |
 | Claude Opus 4.8 | 63/76 (83%) | 66/74 (89%) | 46/74 (62%) |
 | Codex GPT-6 Luna | 60/76 (79%) | 45/74 (61%) | 25/74 (34%) |
@@ -82,6 +84,12 @@ three (see the false-reject review below). Still running (added when complete an
   edges out Sonnet 5.5 (90%) and far exceeds Sonnet 5 (78%); Opus 4.8 (78%) trails Opus 5.5 (96%) by 18
   points, mostly on QBE (46/74: 23 answers omit parameter types the prompt requires). Grok descends
   4.7 / 4.6 (94%) to 4.5 (88%); Codex GPT-6 Sol (95%) and GPT-5.5 (92%) sit between Astra and Luna.
+- **The front end matters as much as the effort label.** GPT-6 Luna scores 58% through Codex and 79% through
+  GitHub Copilot, with byte-identical prompts, zero tools and the same served effort (medium). Through Copilot
+  it reasoned 2.7x as many tokens on first attempts (3.4x on the long battery, where its passes tripled, 10 to
+  30); Codex's catalog defaults (low verbosity, priority tier) or the two services' budgets for "medium" differ.
+  Both are each CLI's own defaults, as the fairness contract requires: an effort label does not carry across
+  front ends.
 - **Fable 5.1's** one final failure is a refusal: Anthropic's cyber classifier blocked
   `fill_down.ir.x86_64` on all four attempts, even on the CVP account.
 
@@ -111,6 +119,9 @@ bytes); counted as a pass above. Second: grok 1.0.41's streaming output occasion
 Grok 4.7 build-fast answers reached the scorer beginning with a doubled `{"` the model never wrote (grok's own
 session record shows the real answer). Rescored with the duplicate removed they pass, and are counted as passes
 above (details in that run's `ADJUSTMENTS.md`); the adapter now scores grok's session record, not the stream.
+GPT-6 Luna via Copilot: one, `mat_pow.stream.aarch64` attempt 1, rejected at `mov x17, x20, lsl #3`, which keystone
+refuses outright but GNU as accepts (an alias of `orr x17, xzr, x20, lsl #3`); rescored with the recorded answer it
+passes, and it counts as a pass above (the stream path is being changed to take GNU as's bytes when keystone refuses).
 Kimi K3, Grok 4.7, Grok 4.6, Grok 4.5, Codex Astra, Sol and GPT-5.5, Claude Sonnet 4.5 and Opus 4.8: none
 (Astra's 227 attempts were all rescored and reproduced; 181 failed attempts reviewed across the last six).
 

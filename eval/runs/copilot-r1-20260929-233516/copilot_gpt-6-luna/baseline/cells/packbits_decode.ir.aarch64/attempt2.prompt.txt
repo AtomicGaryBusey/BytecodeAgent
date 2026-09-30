@@ -1,0 +1,153 @@
+Implement the function `int64_t packbits_decode(const uint8_t *src, int64_t n, uint8_t *out, int64_t cap)`.
+
+Target: AArch64 (ARMv8-A), Linux AAPCS64. Integer/pointer arguments in x0-x7; 64-bit result in x0. Callee-saved: x19-x28, x29 (frame pointer) and d8-d15 (restore them if you use them); x9-x15 are free scratch registers. sp must stay 16-byte aligned and be back to its entry value when you return with ret (return address in x30). More ABI facts: arguments beyond the eighth are passed on the stack (the 9th at [sp] at entry). A call (bl/blr) overwrites x30, so save x30 (e.g. stp x29, x30, [sp, #-16]!) before calling and restore it before ret. A call clobbers the caller-saved registers x0-x18, x30, v0-v7 and v16-v31 (and the upper halves of v8-v15) and the flags, so keep values that must survive a call in callee-saved registers x19-x28 (saved/restored by you) or in your own stack frame. sp must be 16-byte aligned at every call (and whenever it is used as a base register). Anything below sp may be overwritten by a callee.
+
+Output format: QBE intermediate language (the IL of the QBE compiler backend, c9x.me/compile). Write exactly one function, `export function l $packbits_decode(...)`, taking every argument as `l` (64-bit; pointers are `l` too) and returning `l`. QBE will compile it for the target above, so you do not handle registers or the ABI yourself. Remember: every block starts with an `@label`; temporaries are `%name`; comparisons such as `csltl`/`ceql` produce a `w` value; `jnz` tests a `w`; loads/stores are `loadl`/`storel`. No data definitions, no calls, no other functions. Output only the QBE code: no Markdown fences, no prose. Load a byte zero-extended with `%b =w loadub %p` or sign-extended with `%b =w loadsb %p`; store one with `storeb %c, %p`.
+
+Specification: Decompress PackBits data: src holds n bytes (0 <= n <= 600) of packets, decoded left to right into out, which has room for cap bytes (0 <= cap <= 1200). Each packet starts with a header byte h read as a signed byte: 0 <= h <= 127: a literal packet, the next h + 1 bytes are copied to the output; -127 <= h <= -1: a repeat packet, the next byte is written 1 - h times; h = -128: no operation (the packet is just that byte). Return the number of bytes written. Errors: if a packet needs more source bytes than remain in src[0..n-1] (checked when its header is read, before any of its output is written), return -2 (the output of earlier packets stays written). If the output would exceed cap bytes, write exactly the first cap bytes of the output (out[0..cap-1] completely filled) and return -1. Example: 01 'a' 'b' FE 'c' 00 'd' decodes to "abcccd" (returns 6); with cap = 4 it writes "abcc" and returns -1. Read only src[0..n-1] and write only out[0..cap-1] (both are checked: never write out[cap], even when cap is 0).
+
+Your previous attempt was:
+<previous>
+export function l $packbits_decode(l %src, l %n, l %out, l %cap) {
+@start
+    %posp =l alloc8 8
+    %writtenp =l alloc8 8
+    %countp =l alloc8 8
+    %kindp =l alloc8 8
+    %srcposp =l alloc8 8
+    %valuep =l alloc8 8
+    %amountp =l alloc8 8
+    %overflowp =l alloc8 8
+    %ip =l alloc8 8
+    storel 0, %posp
+    storel 0, %writtenp
+    jmp @packet
+
+@packet
+    %pos =l loadl %posp
+    %haspacket =w csltl %pos, %n
+    jnz %haspacket, @header, @done
+
+@header
+    %hp =l add %src, %pos
+    %h =w loadsb %hp
+    %hlong =l extsw %h
+    %posafter =l add %pos, 1
+    storel %posafter, %posp
+    %noop =w ceql %hlong, -128
+    jnz %noop, @packet, @classify
+
+@classify
+    %isrepeat =w csltl %hlong, 0
+    jnz %isrepeat, @repeat, @literal
+
+@literal
+    %litcount =l add %hlong, 1
+    %litavail =l sub %n, %posafter
+    %litsourceok =w cslel %litcount, %litavail
+    jnz %litsourceok, @literal_setup, @badsource
+
+@literal_setup
+    storel %litcount, %countp
+    storel 0, %kindp
+    storel %posafter, %srcposp
+    jmp @prepare
+
+@repeat
+    %repcount =l sub 1, %hlong
+    %repavail =w csltl %posafter, %n
+    jnz %repavail, @repeat_read, @badsource
+
+@repeat_read
+    %repp =l add %src, %posafter
+    %repvalue =w loadub %repp
+    storew %repvalue, %valuep
+    storel %repcount, %countp
+    storel 1, %kindp
+    storel 0, %srcposp
+    %posnext =l add %posafter, 1
+    storel %posnext, %posp
+    jmp @prepare
+
+@prepare
+    %count =l loadl %countp
+    %written =l loadl %writtenp
+    %remaining =l sub %cap, %written
+    %fits =w cslel %count, %remaining
+    jnz %fits, @prepare_full, @prepare_partial
+
+@prepare_full
+    storel %count, %amountp
+    storel 0, %overflowp
+    jmp @write_init
+
+@prepare_partial
+    storel %remaining, %amountp
+    storel 1, %overflowp
+    jmp @write_init
+
+@write_init
+    storel 0, %ip
+    jmp @write_loop
+
+@write_loop
+    %i =l loadl %ip
+    %amount =l loadl %amountp
+    %moreout =w csltl %i, %amount
+    jnz %moreout, @write_byte, @write_done
+
+@write_byte
+    %kind =l loadl %kindp
+    %isliteral =w ceql %kind, 0
+    jnz %isliteral, @write_literal, @write_repeat
+
+@write_literal
+    %srcpos =l loadl %srcposp
+    %readpos =l add %srcpos, %i
+    %readptr =l add %src, %readpos
+    %byte =w loadub %readptr
+    jmp @store_byte
+
+@write_repeat
+    %byte =w loadw %valuep
+    jmp @store_byte
+
+@store_byte
+    %writtennow =l loadl %writtenp
+    %outpos =l add %writtennow, %i
+    %outptr =l add %out, %outpos
+    storeb %byte, %outptr
+    %inext =l add %i, 1
+    storel %inext, %ip
+    jmp @write_loop
+
+@write_done
+    %overflow =w loadw %overflowp
+    jnz %overflow, @full_output, @packet_done
+
+@packet_done
+    %oldwritten =l loadl %writtenp
+    %packetcount =l loadl %countp
+    %newwritten =l add %oldwritten, %packetcount
+    storel %newwritten, %writtenp
+    jmp @packet
+
+@full_output
+    ret -1
+
+@badsource
+    ret -2
+
+@done
+    %result =l loadl %writtenp
+    ret %result
+}
+</previous>
+It failed:
+<failure>
+24 of 46 test cases failed. First failures:
+  packbits_decode(src=bytes.fromhex('0061'), n=2, out, cap=1) [decoded length 1]: expected 1, got -2
+  packbits_decode(src=bytes.fromhex('8080007a'), n=4, out, cap=1) [decoded length 1]: expected 1, got -2
+  packbits_decode(src=bytes.fromhex('016162fe630064'), n=7, out, cap=6) [decoded length 6]: expected 6, got -2; out[0..6) (memory [34, 40) of the block) after the call: expected [97, 98, 99, 99, 99, 100], got [97, 98, 47, 113, 117, 1]
+</failure>
+Write a corrected, complete version. Same output format; output only the code.

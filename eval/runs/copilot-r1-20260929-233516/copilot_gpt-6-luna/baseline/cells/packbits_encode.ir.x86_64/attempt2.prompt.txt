@@ -1,0 +1,218 @@
+Implement the function `int64_t packbits_encode(const uint8_t *src, int64_t n, uint8_t *out, int64_t cap)`.
+
+Target: x86-64, Linux System V ABI. Integer/pointer arguments in rdi, rsi, rdx, rcx, r8, r9; 64-bit result in rax. Callee-saved: rbx, rbp, r12, r13, r14, r15 (restore them if you use them); all other registers may be clobbered. rsp is 16-byte aligned before the call, so it is 8 mod 16 at entry; it must be back to its entry value when you return with ret. Never write to the caller's frame (at or above the return address). More ABI facts: arguments beyond the sixth are passed on the stack; at entry the return address is at [rsp], the 7th argument at [rsp+8], the 8th at [rsp+16]. A call clobbers the caller-saved registers rax, rcx, rdx, rsi, rdi, r8-r11, all xmm registers and the flags, so keep values that must survive a call in callee-saved registers (saved/restored by you) or in your own stack frame. rsp must be 16-byte aligned at every call instruction (at entry rsp is 8 mod 16, so an odd number of 8-byte pushes, or `sub rsp, 8` plus any multiple of 16, re-aligns it). Anything below rsp may be overwritten by a callee. The direction flag must be clear at calls and on return.
+
+Output format: QBE intermediate language (the IL of the QBE compiler backend, c9x.me/compile). Write exactly one function, `export function l $packbits_encode(...)`, taking every argument as `l` (64-bit; pointers are `l` too) and returning `l`. QBE will compile it for the target above, so you do not handle registers or the ABI yourself. Remember: every block starts with an `@label`; temporaries are `%name`; comparisons such as `csltl`/`ceql` produce a `w` value; `jnz` tests a `w`; loads/stores are `loadl`/`storel`. No data definitions, no calls, no other functions. Output only the QBE code: no Markdown fences, no prose. Load a byte zero-extended with `%b =w loadub %p`; store one with `storeb %c, %p`.
+
+Specification: Compress the n bytes at src (0 <= n <= 600) with PackBits run-length encoding into out, which has room for cap bytes (0 <= cap <= 1200), and return the number of bytes written. The output is a sequence of packets: a repeat packet is the header byte 257 - r (i.e. -(r-1) as a signed byte) followed by one byte b, meaning r copies of b (3 <= r <= 128); a literal packet is the header byte L - 1 followed by L bytes copied verbatim (1 <= L <= 128). Encode greedily, left to right, exactly as follows. Let run(j) be the number of consecutive bytes equal to src[j] starting at j, capped at 128. At position i: if run(i) >= 3, emit a repeat packet with r = run(i) and b = src[i], and advance i by r. Otherwise emit a literal packet of the bytes src[i..j-1], where j starts at i and advances while j < n, j - i < 128 and run(j) < 3; then set i = j. (So a pair of equal bytes stays inside a literal; a literal stops just before a run of 3 or more.) Example: "abcccd" -> 01 'a' 'b' FE 'c' 00 'd' (7 bytes). If a whole packet does not fit in the remaining room, write none of it and return -1 immediately (earlier packets stay written). Read only src[0..n-1] (never look past src[n-1] when measuring a run) and write only out[0..cap-1] (both are checked).
+
+Your previous attempt was:
+<previous>
+export function l $packbits_encode(l %src, l %n, l %out, l %cap) {
+@start
+    %i_slot =l alloc8 8
+    %o_slot =l alloc8 8
+    %p_slot =l alloc8 8
+    %r_slot =l alloc8 8
+    %b_slot =l alloc8 8
+    %j_slot =l alloc8 8
+    %q_slot =l alloc8 8
+    %rc_slot =l alloc8 8
+    %len_slot =l alloc8 8
+    %d_slot =l alloc8 8
+    %end_slot =l alloc8 8
+    storel 0, %i_slot
+    storel 0, %o_slot
+    jmp @outer
+
+@outer
+    %i0 =l loadl %i_slot
+    %more =w csltl %i0, %n
+    jnz %more, @measure_start, @done
+
+@measure_start
+    %p0 =l loadl %i_slot
+    storel %p0, %p_slot
+    %src_i =l add %src, %p0
+    %b0 =w loadub %src_i
+    storew %b0, %b_slot
+    storew 0, %r_slot
+    jmp @measure_check
+
+@measure_check
+    %p1 =l loadl %p_slot
+    %r1 =w loadw %r_slot
+    %in_bounds =w csltl %p1, %n
+    jnz %in_bounds, @measure_limit, @measure_done
+
+@measure_limit
+    %under_limit =w csltw %r1, 128
+    jnz %under_limit, @measure_read, @measure_done
+
+@measure_read
+    %src_p =l add %src, %p1
+    %b1 =w loadub %src_p
+    %b2 =w loadw %b_slot
+    %same =w ceqw %b1, %b2
+    jnz %same, @measure_match, @measure_done
+
+@measure_match
+    %p2 =l add %p1, 1
+    %r2 =w add %r1, 1
+    storel %p2, %p_slot
+    storew %r2, %r_slot
+    jmp @measure_check
+
+@measure_done
+    %r3 =w loadw %r_slot
+    %is_repeat =w csgew %r3, 3
+    jnz %is_repeat, @repeat_packet, @literal_start
+
+@repeat_packet
+    %r4 =w loadw %r_slot
+    %r4l =l extuw %r4
+    %packet_size =l add %r4l, 2
+    %o0 =l loadl %o_slot
+    %end0 =l add %o0, %packet_size
+    %fits0 =w cslel %end0, %cap
+    jnz %fits0, @repeat_write, @overflow
+
+@repeat_write
+    storel %end0, %end_slot
+    %hdr0 =w sub 257, %r4
+    %out0 =l add %out, %o0
+    storeb %hdr0, %out0
+    %out1 =l add %out0, 1
+    %b3 =w loadw %b_slot
+    storeb %b3, %out1
+    %i1 =l loadl %i_slot
+    %i2 =l add %i1, %r4l
+    storel %i2, %i_slot
+    storel %end0, %o_slot
+    jmp @outer
+
+@literal_start
+    %i3 =l loadl %i_slot
+    storel %i3, %j_slot
+    storew 0, %len_slot
+    jmp @literal_check
+
+@literal_check
+    %j0 =l loadl %j_slot
+    %j_in_bounds =w csltl %j0, %n
+    jnz %j_in_bounds, @literal_size_check, @literal_done
+
+@literal_size_check
+    %i4 =l loadl %i_slot
+    %literal_size =l sub %j0, %i4
+    %literal_room =w csltl %literal_size, 128
+    jnz %literal_room, @literal_run_start, @literal_done
+
+@literal_run_start
+    %j1 =l loadl %j_slot
+    storel %j1, %q_slot
+    storew 0, %rc_slot
+    %src_j =l add %src, %j1
+    %bj =w loadub %src_j
+    storew %bj, %b_slot
+    jmp @literal_run_check
+
+@literal_run_check
+    %q0 =l loadl %q_slot
+    %rc0 =w loadw %rc_slot
+    %q_in_bounds =w csltl %q0, %n
+    jnz %q_in_bounds, @literal_run_limit, @literal_run_finished
+
+@literal_run_limit
+    %rc_under_limit =w csltw %rc0, 3
+    jnz %rc_under_limit, @literal_run_read, @literal_run_finished
+
+@literal_run_read
+    %src_q =l add %src, %q0
+    %bq =w loadub %src_q
+    %bj2 =w loadw %b_slot
+    %q_same =w ceqw %bq, %bj2
+    jnz %q_same, @literal_run_match, @literal_run_finished
+
+@literal_run_match
+    %q1 =l add %q0, 1
+    %rc1 =w add %rc0, 1
+    storel %q1, %q_slot
+    storew %rc1, %rc_slot
+    jmp @literal_run_check
+
+@literal_run_finished
+    %rc2 =w loadw %rc_slot
+    %found_run =w csgew %rc2, 3
+    jnz %found_run, @literal_done, @literal_advance
+
+@literal_advance
+    %j2 =l loadl %j_slot
+    %j3 =l add %j2, 1
+    storel %j3, %j_slot
+    %len0 =w loadw %len_slot
+    %len1 =w add %len0, 1
+    storew %len1, %len_slot
+    jmp @literal_check
+
+@literal_done
+    %len2 =w loadw %len_slot
+    %len2l =l extuw %len2
+    %literal_packet_size =l add %len2l, 1
+    %o1 =l loadl %o_slot
+    %end1 =l add %o1, %literal_packet_size
+    %fits1 =w cslel %end1, %cap
+    jnz %fits1, @literal_write_start, @overflow
+
+@literal_write_start
+    storel %end1, %end_slot
+    %hdr1 =w sub %len2, 1
+    %out2 =l add %out, %o1
+    storeb %hdr1, %out2
+    %i5 =l loadl %i_slot
+    storel %i5, %p_slot
+    %d0 =l add %o1, 1
+    storel %d0, %d_slot
+    jmp @literal_copy_check
+
+@literal_copy_check
+    %p3 =l loadl %p_slot
+    %j4 =l loadl %j_slot
+    %copy_more =w csltl %p3, %j4
+    jnz %copy_more, @literal_copy, @literal_copy_done
+
+@literal_copy
+    %src_p2 =l add %src, %p3
+    %copy_byte =w loadub %src_p2
+    %d1 =l loadl %d_slot
+    %out_p =l add %out, %d1
+    storeb %copy_byte, %out_p
+    %p4 =l add %p3, 1
+    %d2 =l add %d1, 1
+    storel %p4, %p_slot
+    storel %d2, %d_slot
+    jmp @literal_copy_check
+
+@literal_copy_done
+    %j5 =l loadl %j_slot
+    storel %j5, %i_slot
+    %end2 =l loadl %end_slot
+    storel %end2, %o_slot
+    jmp @outer
+
+@overflow
+    ret -1
+
+@done
+    %result =l loadl %o_slot
+    ret %result
+}
+</previous>
+It failed:
+<failure>
+34 of 50 test cases failed. First failures:
+  packbits_encode(src=bytes.fromhex('616161'), n=3, out, cap=2) [the full encoding is 2 bytes]: expected 2, got -1; out[0..2) (memory [44, 46) of the block) after the call: expected [254, 97], got [85, 223]
+  packbits_encode(src=bytes.fromhex('616161626363'), n=6, out, cap=6) [the full encoding is 6 bytes]: expected 6, got -1; out[0..6) (memory [33, 39) of the block) after the call: expected [254, 97, 2, 98, 99, 99], got [254, 97, 221, 53, 4, 100]
+  packbits_encode(src=bytes.fromhex('616263636364'), n=6, out, cap=7) [the full encoding is 7 bytes]: expected 7, got -1; out[0..7) (memory [40, 47) of the block) after the call: expected [1, 97, 98, 254, 99, 0, 100], got [1, 97, 98, 211, 119, 41, 107]
+</failure>
+Write a corrected, complete version. Same output format; output only the code.
