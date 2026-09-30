@@ -1,0 +1,228 @@
+.globl _start
+
+.equ BUFSZ, 70000
+.equ MAXOPS, 70000
+
+.bss
+.balign 16
+inbuf:  .zero BUFSZ
+.balign 16
+opargs: .zero MAXOPS*4
+.balign 16
+bstack: .zero MAXOPS*4
+.balign 16
+opcode: .zero MAXOPS
+.balign 16
+tape:   .zero 30016
+.balign 16
+outbuf: .zero 65600
+
+.text
+_start:
+    lea r12, [rip + inbuf]
+    xor ebx, ebx
+read_loop:
+    mov edx, BUFSZ
+    sub rdx, rbx
+    jz read_done
+    xor eax, eax
+    xor edi, edi
+    lea rsi, [r12 + rbx]
+    syscall
+    test rax, rax
+    jle read_done
+    add rbx, rax
+    jmp read_loop
+read_done:
+    # rbx = n
+    xor ecx, ecx
+find_bang:
+    cmp rcx, rbx
+    jae no_bang
+    cmp byte ptr [r12 + rcx], 0x21
+    je got_bang
+    inc rcx
+    jmp find_bang
+no_bang:
+    lea r14, [r12 + rbx]
+    jmp set_end
+got_bang:
+    lea r14, [r12 + rcx + 1]
+set_end:
+    lea r15, [r12 + rbx]
+    mov r11, rcx                # program length
+
+    lea r13, [rip + opcode]
+    lea rdi, [rip + opargs]
+    lea rsi, [rip + bstack]
+    xor r8d, r8d                # op count
+    xor r9d, r9d                # bracket stack depth
+    xor ecx, ecx
+comp_loop:
+    cmp rcx, r11
+    jae comp_done
+    movzx eax, byte ptr [r12 + rcx]
+    inc rcx
+    cmp al, '+'
+    je c_plus
+    cmp al, '-'
+    je c_minus
+    cmp al, '>'
+    je c_right
+    cmp al, '<'
+    je c_left
+    cmp al, '.'
+    je c_out
+    cmp al, ','
+    je c_in
+    cmp al, '['
+    je c_open
+    cmp al, ']'
+    je c_close
+    jmp comp_loop
+c_plus:
+    mov edx, 1
+    xor eax, eax
+    jmp c_merge
+c_minus:
+    mov edx, -1
+    xor eax, eax
+    jmp c_merge
+c_right:
+    mov edx, 1
+    mov eax, 1
+    jmp c_merge
+c_left:
+    mov edx, -1
+    mov eax, 1
+c_merge:
+    test r8, r8
+    jz c_new
+    cmp byte ptr [r13 + r8 - 1], al
+    jne c_new
+    add dword ptr [rdi + r8*4 - 4], edx
+    jmp comp_loop
+c_new:
+    mov byte ptr [r13 + r8], al
+    mov dword ptr [rdi + r8*4], edx
+    inc r8
+    jmp comp_loop
+c_out:
+    mov byte ptr [r13 + r8], 2
+    inc r8
+    jmp comp_loop
+c_in:
+    mov byte ptr [r13 + r8], 3
+    inc r8
+    jmp comp_loop
+c_open:
+    mov dword ptr [rsi + r9*4], r8d
+    inc r9
+    mov byte ptr [r13 + r8], 4
+    mov dword ptr [rdi + r8*4], 0
+    inc r8
+    jmp comp_loop
+c_close:
+    test r9, r9
+    jz fail
+    dec r9
+    mov edx, dword ptr [rsi + r9*4]
+    mov byte ptr [r13 + r8], 5
+    lea eax, [edx + 1]
+    mov dword ptr [rdi + r8*4], eax
+    lea eax, [r8d + 1]
+    mov dword ptr [rdi + rdx*4], eax
+    inc r8
+    jmp comp_loop
+comp_done:
+    test r9, r9
+    jnz fail
+    mov byte ptr [r13 + r8], 6
+
+    # execute
+    mov r12, rdi                # args base
+    lea rbp, [rip + tape]
+    lea rdi, [rip + outbuf]
+    xor r10d, r10d
+    xor ebx, ebx
+run:
+    movzx eax, byte ptr [r13 + rbx]
+    mov edx, dword ptr [r12 + rbx*4]
+    inc rbx
+    test eax, eax
+    je r_add
+    cmp eax, 1
+    je r_move
+    cmp eax, 4
+    je r_jz
+    cmp eax, 5
+    je r_jnz
+    cmp eax, 2
+    je r_out
+    cmp eax, 3
+    je r_in
+    jmp r_end
+r_add:
+    add byte ptr [rbp], dl
+    jmp run
+r_move:
+    movsxd rdx, edx
+    add rbp, rdx
+    jmp run
+r_jz:
+    cmp byte ptr [rbp], 0
+    jne run
+    mov ebx, edx
+    jmp run
+r_jnz:
+    cmp byte ptr [rbp], 0
+    je run
+    mov ebx, edx
+    jmp run
+r_out:
+    mov al, byte ptr [rbp]
+    mov byte ptr [rdi + r10], al
+    inc r10
+    cmp r10, 65536
+    jb run
+    call flush
+    jmp run
+r_in:
+    xor eax, eax
+    cmp r14, r15
+    jae 1f
+    mov al, byte ptr [r14]
+    inc r14
+1:
+    mov byte ptr [rbp], al
+    jmp run
+r_end:
+    call flush
+    mov eax, 60
+    xor edi, edi
+    syscall
+
+flush:
+    push rdi
+    mov rsi, rdi
+    mov rdx, r10
+2:
+    test rdx, rdx
+    jz 3f
+    mov eax, 1
+    mov edi, 1
+    syscall
+    test rax, rax
+    jle 3f
+    add rsi, rax
+    sub rdx, rax
+    jmp 2b
+3:
+    xor r10d, r10d
+    pop rdi
+    ret
+
+fail:
+    mov eax, 60
+    mov edi, 1
+    syscall

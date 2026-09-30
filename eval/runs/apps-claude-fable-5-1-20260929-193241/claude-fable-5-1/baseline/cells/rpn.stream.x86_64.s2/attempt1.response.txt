@@ -1,0 +1,262 @@
+.equ INSZ, 65600
+.equ OUTSZ, 524288
+.equ STKSZ, 262144
+
+.text
+.globl _start
+_start:
+  lea rbx, [rip + inbuf]
+  mov r12, rbx
+read_loop:
+  lea rdx, [rip + inbuf + INSZ]
+  sub rdx, r12
+  jz read_done
+  xor eax, eax
+  xor edi, edi
+  mov rsi, r12
+  syscall
+  test rax, rax
+  jle read_done
+  add r12, rax
+  jmp read_loop
+read_done:
+  lea r15, [rip + outbuf]
+  lea rbp, [rip + stk]
+
+line_loop:
+  cmp rbx, r12
+  jae finish
+  xor r13d, r13d
+tok_loop:
+  cmp rbx, r12
+  jae line_end
+  movzx eax, byte ptr [rbx]
+  cmp al, 0x20
+  je skip_sep
+  cmp al, 0x09
+  je skip_sep
+  cmp al, 0x0A
+  je line_end
+  jmp tok_start
+skip_sep:
+  inc rbx
+  jmp tok_loop
+tok_start:
+  mov r8, rbx
+tok_scan:
+  inc rbx
+  cmp rbx, r12
+  jae tok_done
+  movzx eax, byte ptr [rbx]
+  cmp al, 0x20
+  je tok_done
+  cmp al, 0x09
+  je tok_done
+  cmp al, 0x0A
+  jne tok_scan
+tok_done:
+  mov r9, rbx
+  sub r9, r8
+  movzx eax, byte ptr [r8]
+  cmp r9, 1
+  jne parse_num
+  cmp al, 0x2B
+  je op_add
+  cmp al, 0x2D
+  je op_sub
+  cmp al, 0x2A
+  je op_mul
+  cmp al, 0x2F
+  je op_div
+  cmp al, 0x25
+  je op_mod
+parse_num:
+  xor r10d, r10d
+  cmp al, 0x2D
+  jne num_len
+  inc r10d
+  inc r8
+  dec r9
+num_len:
+  test r9, r9
+  jz error
+  cmp r9, 18
+  ja error
+  xor eax, eax
+num_digit:
+  movzx ecx, byte ptr [r8]
+  sub ecx, 0x30
+  cmp ecx, 9
+  ja error
+  imul rax, rax, 10
+  add rax, rcx
+  inc r8
+  dec r9
+  jnz num_digit
+  test r10d, r10d
+  jz num_push
+  neg rax
+num_push:
+  mov qword ptr [rbp + r13*8], rax
+  inc r13
+  jmp tok_loop
+
+op_add:
+  cmp r13, 2
+  jb error
+  dec r13
+  mov rax, qword ptr [rbp + r13*8]
+  add qword ptr [rbp + r13*8 - 8], rax
+  jmp tok_loop
+op_sub:
+  cmp r13, 2
+  jb error
+  dec r13
+  mov rax, qword ptr [rbp + r13*8]
+  sub qword ptr [rbp + r13*8 - 8], rax
+  jmp tok_loop
+op_mul:
+  cmp r13, 2
+  jb error
+  dec r13
+  mov rax, qword ptr [rbp + r13*8]
+  imul rax, qword ptr [rbp + r13*8 - 8]
+  mov qword ptr [rbp + r13*8 - 8], rax
+  jmp tok_loop
+op_div:
+  cmp r13, 2
+  jb error
+  dec r13
+  mov rcx, qword ptr [rbp + r13*8]
+  mov rax, qword ptr [rbp + r13*8 - 8]
+  test rcx, rcx
+  jz error
+  cmp rcx, -1
+  jne div_ok
+  mov rdx, 0x8000000000000000
+  cmp rax, rdx
+  je error
+div_ok:
+  cqo
+  idiv rcx
+  mov qword ptr [rbp + r13*8 - 8], rax
+  jmp tok_loop
+op_mod:
+  cmp r13, 2
+  jb error
+  dec r13
+  mov rcx, qword ptr [rbp + r13*8]
+  mov rax, qword ptr [rbp + r13*8 - 8]
+  test rcx, rcx
+  jz error
+  cmp rcx, -1
+  jne mod_ok
+  mov rdx, 0x8000000000000000
+  cmp rax, rdx
+  je error
+mod_ok:
+  cqo
+  idiv rcx
+  mov qword ptr [rbp + r13*8 - 8], rdx
+  jmp tok_loop
+
+line_end:
+  cmp r13, 1
+  jne error
+  mov rax, qword ptr [rbp]
+  test rax, rax
+  jns print_pos
+  mov byte ptr [r15], 0x2D
+  inc r15
+  neg rax
+print_pos:
+  lea rsi, [rip + numbuf + 24]
+  mov ecx, 10
+print_digit:
+  xor edx, edx
+  div rcx
+  add dl, 0x30
+  dec rsi
+  mov byte ptr [rsi], dl
+  test rax, rax
+  jnz print_digit
+  lea rax, [rip + numbuf + 24]
+print_copy:
+  mov dl, byte ptr [rsi]
+  mov byte ptr [r15], dl
+  inc r15
+  inc rsi
+  cmp rsi, rax
+  jb print_copy
+  mov byte ptr [r15], 0x0A
+  inc r15
+after_line:
+  cmp rbx, r12
+  jae flush_check
+  inc rbx
+flush_check:
+  lea rax, [rip + outbuf + OUTSZ - 64]
+  cmp r15, rax
+  jb line_loop
+  call flush
+  jmp line_loop
+
+error:
+  cmp rbx, r12
+  jae error_emit
+  cmp byte ptr [rbx], 0x0A
+  je error_emit
+  inc rbx
+  jmp error
+error_emit:
+  mov eax, dword ptr [rip + errmsg]
+  mov dword ptr [r15], eax
+  movzx eax, word ptr [rip + errmsg + 4]
+  mov word ptr [r15 + 4], ax
+  add r15, 6
+  jmp after_line
+
+finish:
+  call flush
+  mov eax, 231
+  xor edi, edi
+  syscall
+  jmp finish
+
+flush:
+  lea rsi, [rip + outbuf]
+  mov rdx, r15
+  sub rdx, rsi
+flush_loop:
+  test rdx, rdx
+  jle flush_done
+  mov eax, 1
+  mov edi, 1
+  syscall
+  test rax, rax
+  jle flush_done
+  add rsi, rax
+  sub rdx, rax
+  jmp flush_loop
+flush_done:
+  lea r15, [rip + outbuf]
+  ret
+
+.section .rodata
+errmsg:
+  .ascii "error\n"
+  .byte 0, 0
+
+.bss
+.balign 16
+inbuf:
+  .space INSZ
+.balign 16
+outbuf:
+  .space OUTSZ
+.balign 16
+stk:
+  .space STKSZ
+.balign 16
+numbuf:
+  .space 32
