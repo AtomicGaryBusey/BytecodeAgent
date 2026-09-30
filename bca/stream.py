@@ -607,9 +607,11 @@ class StreamAssembler:
 
     def _reset_state(self) -> None:
         self._code = bytearray()
-        # (line, keystone hex, GNU as hex, keystone text, GNU as text) for each statement whose
-        # same-size GNU as encoding replaced keystone's (see _run_crosscheck)
+        # (line, keystone hex, GNU as hex, keystone text, GNU as text) for each statement whose GNU as
+        # encoding replaced keystone's: a same-size disagreement (see _run_crosscheck), or a statement
+        # keystone refused and GNU as assembled (keystone hex and text empty; see _asm)
         self.substitutions: list[tuple[int, str, str, str | None, str | None]] = []
+        self._stmt_line = 0  # line of the statement being encoded (for substitution records)
         self._insns: list[Instruction] = []
         self._by_addr: dict[int, int] = {}
         self._labels: dict[str, int] = {}
@@ -731,9 +733,11 @@ class StreamAssembler:
                 "statement rejected", text, line)]  # fmt: skip
 
     def _process_statement(self, text: str, line: int, added: list[str]) -> list[Event]:
+        self._stmt_line = line
         addr = self.address
 
         def error(message: str) -> list[Event]:
+            self._drop_fallbacks(line)
             return [self._error_event(message, text, line)]
 
         if not text.isascii():
@@ -869,9 +873,11 @@ class StreamAssembler:
         return len(self._data.get(section, b""))
 
     def _process_program_statement(self, raw: str, line: int, added: list[str]) -> list[Event]:
+        self._stmt_line = line
         addr = self.address
 
         def error(message: str) -> list[Event]:
+            self._drop_fallbacks(line)
             return [self._error_event(message, raw, line)]
 
         if not raw.isascii():
@@ -1434,10 +1440,46 @@ class StreamAssembler:
         if not ok:
             if _KeystoneWorker.died(data):
                 raise _KeystoneDied(data)
-            raise AsmError(self._explain(data, text))
+            theirs, why = self._gas_fallback(text, addr)
+            if theirs is None:
+                raise AsmError(why or self._explain(data, text))
+            # keystone refuses a statement GNU as assembles (e.g. AArch64 `mov x17, x20, lsl #3`,
+            # GNU as's alias of `orr x17, xzr, x20, lsl #3`): GNU as is the reference, so its bytes
+            # are used. The caller's checks (single instruction, ISA level, operands) still apply,
+            # and the statement is cross-checked like any other.
+            self.substitutions.append((self._stmt_line, "", theirs.hex(), None,
+                                       self._disasm_text(theirs, addr)))
+            return theirs
         if not data:
             raise AsmError("assembler produced no bytes")
         return data
+
+    def _drop_fallbacks(self, line: int) -> None:
+        """Forget the keystone-refused substitutions of a statement that was rejected after all."""
+        self.substitutions = [sub for sub in self.substitutions if sub[0] != line or sub[1]]
+
+    def _gas_fallback(self, text: str, addr: int) -> tuple[bytes | None, str | None]:
+        """GNU as's bytes for a statement keystone refused, assembled at `addr` on its own (no
+        symbols: every label has been replaced by its value). (None, None) if GNU as rejects it
+        too or cannot run (keystone's error stands); (None, message) if GNU as's encoding is not
+        one instruction of the target (e.g. an x86 APX/EVEX-only form)."""
+        if not self._gas:
+            return None, None
+        try:
+            res = _gas_check(self._gas, self.isa, [_Check(text, addr, {}, cacheable=False)])
+        except Exception:  # noqa: BLE001 - no fallback; keystone's error stands
+            return None, None
+        if not res or res[0][1] or not res[0][0]:
+            return None, None
+        theirs = res[0][0]
+        if self._x86:
+            ins = iced_x86.Decoder(64, theirs, ip=addr).decode()
+            if ins.code == iced_x86.Code.INVALID or ins.len != len(theirs):
+                return None, (f"GNU as accepts `{text}` only as {theirs.hex()}, an encoding outside the "
+                              "target (e.g. APX/EVEX, which the prompt does not allow); use a supported form")
+        elif len(theirs) != 4 or self._disasm_text(theirs, addr) is None:
+            return None, f"GNU as encodes `{text}` as {theirs.hex()}, not one AArch64 instruction"
+        return theirs, None
 
     def _explain(self, message: str, text: str) -> str:
         """keystone's (often generic) message, plus GNU as's diagnostic when it has one."""

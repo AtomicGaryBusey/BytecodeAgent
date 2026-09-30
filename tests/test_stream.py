@@ -1615,3 +1615,54 @@ def test_same_size_encoding_disagreement_adopts_gnu_as():
     assert not [e for e in sa.events if e.kind == "error"], [e.message for e in sa.events]
     assert bytes(prog.code)[:4] == bytes.fromhex("e003022a")  # 2a0203e0 little-endian
     assert sa.substitutions and sa.substitutions[0][2] == "e003022a"
+
+
+@pytest.mark.parametrize("line,word", [
+    ("mov x17, x20, lsl #3", "f10f14aa"),  # GNU as alias of orr x17, xzr, x20, lsl #3
+    ("mov x17, x20, lsr #3", "f10f54aa"),
+    ("mov w1, w2, asr #5", "e117822a"),
+])
+def test_keystone_refusal_gnu_as_accepts_adopts_gnu_as(line, word):
+    """keystone refuses `mov Xd, Xm, <shift> #n` outright; GNU as assembles it as the orr alias. The
+    stream path must accept what GNU as accepts: it uses GNU as's bytes and records the substitution
+    (keystone hex empty). Found as a false reject in copilot:gpt-6-luna mat_pow.stream.aarch64."""
+    sa = StreamAssembler(AARCH64)
+    sa.feed(f"f:\n{line}\nret\n")
+    prog = sa.finish()
+    assert not [e for e in sa.events if e.kind == "error"], [e.message for e in sa.events]
+    assert bytes(prog.code)[:4] == bytes.fromhex(word)
+    assert [s[:4] for s in sa.substitutions] == [(2, "", word, None)]
+    assert sa.substitutions[0][4].startswith("orr ")
+
+
+def test_keystone_refusal_gnu_as_also_rejects_keeps_the_error():
+    sa = StreamAssembler(AARCH64)
+    sa.feed("f:\nmov x17, x20, lsl #99\nret\n")
+    sa.finish()
+    errs = [e.message for e in sa.events if e.kind == "error"]
+    assert errs and "GNU as: shift amount out of range" in errs[0]
+    assert sa.substitutions == []
+
+
+def test_gnu_as_apx_only_form_is_still_refused():
+    # `imul r10, r10, r11` (three registers) exists only as APX (EVEX): GNU as accepts it, the target
+    # does not, so it stays refused -- with a message that says why -- and nothing is recorded
+    sa = StreamAssembler(X86_64)
+    sa.feed("f:\nimul r10, r10, r11\nret\n")
+    sa.finish()
+    errs = [e.message for e in sa.events if e.kind == "error"]
+    assert errs and "only as 6254ac18afd3" in errs[0] and "APX" in errs[0]
+    assert sa.substitutions == []
+
+
+def test_recorded_luna_mat_pow_answer_passes_the_stream_pipeline():
+    """The whole recorded answer (rejected at `mov x17, x20, lsl #3` before the fix) now assembles
+    and passes the mat_pow differential test."""
+    from bca.liveeval.pipelines import attempt
+    from bca.liveeval.registry import known_tasks
+    from bca.liveeval.subject import FakeSubject
+
+    text = (Path(__file__).parent / "fixtures" / "stream" / "luna_mat_pow.aarch64.s").read_text()
+    task = known_tasks()["mat_pow"][0]
+    a = attempt(FakeSubject([text]), "stream", "aarch64", task, "(prompt not needed)")
+    assert a.ok, (a.category, a.failure)

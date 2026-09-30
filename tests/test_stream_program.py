@@ -563,3 +563,18 @@ lsl: .quad lt
     for image in (obj.link(), link_program(assemble_program(src, "aarch64"), "aarch64")):
         r = run_program(image, b"")
         assert (r.stdout, r.status, r.fault) == (b"true\n", 0, None)
+
+
+
+@pytest.mark.parametrize("shift,status", [("lsl", 40), ("lsr", 2), ("asr", 2)])
+def test_keystone_refused_gnu_as_accepted_mov_shift_runs(shift, status):
+    # keystone refuses `mov Xd, Xm, <shift> #n`; GNU as assembles the orr alias. Program mode uses
+    # GNU as's bytes, and the program behaves the same as on the asm path (exit status 10 <shift> 2)
+    src = (".globl _start\n.text\n_start:\n    mov x1, #10\n"
+           f"    mov x0, x1, {shift} #2\n    mov x8, #93\n    svc #0\n")
+    sa, obj = assemble("aarch64", src)
+    assert obj.ok, [e.message for e in obj.errors]
+    assert [s[1] for s in sa.substitutions] == [""] and sa.substitutions[0][4].startswith("orr")
+    for image in (obj.link(), link_program(assemble_program(src, "aarch64"), "aarch64")):
+        r = run_program(image, b"")
+        assert (r.status, r.fault) == (status, None)
