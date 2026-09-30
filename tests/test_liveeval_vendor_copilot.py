@@ -176,10 +176,27 @@ def test_a_runtime_turn_retry_voids_the_attempt_as_transient(env):
                                                                   "turn": 0, "reason": "streaming_error"}})
     r = subject(env, rec, "gpt-6-luna", effort="low").complete(PROMPT)
     assert not r.ok and r.text == "" and r.refusal == ""
-    assert r.error.startswith("copilot model turn retry (streaming_error)")
+    assert r.error.startswith("copilot turn retry (streaming_error)")
     assert not r.error.startswith("isolation:")
     from bca.liveeval.runner import _FATAL_RE
     assert not _FATAL_RE.search(r.error)  # transient: the runner retries the cell
+
+
+@pytest.mark.parametrize("typ,data", [
+    ("model.model_call_failure", {"kind": "model_call_failure", "turn": 0, "modelCall": {
+        "model": "gpt-6-luna", "error": "connection error: Connection timed out (os error 110) [ETIMEDOUT]"}}),
+    ("model.call_failure", {"model": "gpt-6-luna", "failureKind": "transport", "errorMessage": "ETIMEDOUT"}),
+])
+def test_a_failed_model_call_voids_the_attempt_as_transient(env, typ, data):
+    # seen live (mai-code-1.1-flash, rev_lines.stream.x86_64.s2, 2026-09-30): a transport timeout, which the runtime
+    # follows with a retry of the model call
+    rec = copy.deepcopy(load("luna"))
+    i = next(k for k, e in enumerate(rec["events"]) if e["type"] == "assistant.message")
+    rec["events"].insert(i, {"type": typ, "data": data})
+    r = subject(env, rec, "gpt-6-luna", effort="low").complete(PROMPT)
+    assert not r.ok and r.text == "" and "the attempt is void" in r.error
+    from bca.liveeval.runner import _FATAL_RE
+    assert not r.error.startswith("isolation:") and not _FATAL_RE.search(r.error)
 
 
 # -- fail closed ------------------------------------------------------------------------------------
