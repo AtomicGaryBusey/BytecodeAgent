@@ -9,7 +9,8 @@ the baseline rates (marked "baseline rate"), else DEFAULT_ATTEMPTS. A variant fl
 `conflicts_with_format` (a format-compliance probe, e.g. legacy_style) is assumed to use every
 attempt it has. Rates never cross batteries (their
 difficulty differs too much); they may cross models, which the "rate from" column marks. Cells already complete
-in the target run directory (cell.json) cost nothing: a run resumes them.
+in the target run directory (cell.json) cost nothing: a run resumes them. A sampled cell (every app
+cell: 3 samples by default) counts once per sample.
 """
 
 from __future__ import annotations
@@ -23,6 +24,9 @@ from bca.liveeval.registry import expected_model, is_format_probe, variant_max_a
 from bca.liveeval.runner import cell_id, group_dir
 
 DEFAULT_ATTEMPTS = 1.5  # no data: between round 1/2 opus (1.05) and a weak subject
+# No data for a battery that is much harder per cell: whole programs need more repairs (a guess until
+# the first app runs give real rates through --estimate-from).
+DEFAULT_ATTEMPTS_BY_BATTERY = {"apps": 2.5}
 MIN_SAMPLES = 3
 
 
@@ -56,7 +60,7 @@ class Rates:
                     elif variant != "baseline":
                         label += " (baseline rate)"
                     return statistics.mean(xs), f"{label} n={len(xs)}"
-        return DEFAULT_ATTEMPTS, "default"
+        return DEFAULT_ATTEMPTS_BY_BATTERY.get(battery, DEFAULT_ATTEMPTS), "default"
 
 
 def estimate(run_dir: Path | None, subjects: list[str], variants: list[str], cells, *, max_attempts: int,

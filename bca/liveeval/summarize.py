@@ -12,6 +12,12 @@ that compares subjects (or variants) uses only the cells completed by all of the
 aborted run can leave groups with different coverage), and says how many cells that excluded.
 Variants flagged `conflicts_with_format` in adversarial.VARIANT_INFO are labelled as
 format-compliance probes.
+
+App-battery cells (bca.liveeval.apps: whole programs, asm + stream paths, `<task>.<path>.<isa>.s<k>`
+samples) get their own tables (app_tables): pass@1 averaged over samples, pass@N = some sample
+passed on attempt 1 (N = samples per cell), pass within 4 averaged over samples, and mean
+attempts, per cell and by path, ISA, path x ISA and task. The function tables are computed from
+the function cells only, so a run without app cells summarizes exactly as before.
 """
 
 from __future__ import annotations
@@ -79,9 +85,29 @@ def summarize(run_dir: Path) -> str:
     return summarize_matrix(run_dir, groups)
 
 
+def is_app_record(r: dict) -> bool:
+    """A cell / attempt record of the app battery (task names never collide with function tasks)."""
+    from bca.liveeval.apps import APP_NAMES
+
+    return r.get("task") in APP_NAMES
+
+
 def summarize_group(run_dir: Path) -> str:
-    """The original tables for one flat run directory (or one subject/variant group)."""
+    """The original tables for one flat run directory (or one subject/variant group), and the app
+    tables for its app cells."""
     cells, atts = load(run_dir)
+    apps = [c for c in cells if is_app_record(c)]
+    if not apps:
+        return _function_tables(run_dir, cells, atts)
+    app_atts = [a for a in atts if is_app_record(a)]
+    fcells = [c for c in cells if not is_app_record(c)]
+    out = app_tables(run_dir, apps, app_atts)
+    if fcells:
+        out = _function_tables(run_dir, fcells, [a for a in atts if not is_app_record(a)]) + "\n" + out
+    return out
+
+
+def _function_tables(run_dir: Path, cells: list[dict], atts: list[dict]) -> str:
     by = {(c["task"], c["path"], c["isa"]): c for c in cells}
     TASKS = _ordered_tasks(cells)  # noqa: N806 - registry order
     out = []
@@ -117,7 +143,7 @@ def summarize_group(run_dir: Path) -> str:
     out += agg(lambda c: c["isa"], ISAS, "ISA")
     out += agg(lambda c: f"{c['path']} {c['isa']}", [f"{p} {i}" for p in PATHS for i in ISAS], "path × ISA")
     out += agg(lambda c: c["task"], [t.name for t in TASKS], "task")
-    infra = load_infra(run_dir)
+    infra = [r for r in load_infra(run_dir) if not is_app_record(r)]
     out += ["### Overall", "", f"cells: {len(cells)}; pass@1 {_rate([c['pass_at_1'] for c in cells])}; "
             f"pass@≤4 {_rate([c['pass_final'] for c in cells])}; attempts (calls) {len(atts)}"
             + (f"; infrastructure errors (retried calls, not attempts) {len(infra)}" if infra else ""), ""]
@@ -164,6 +190,154 @@ def summarize_group(run_dir: Path) -> str:
     out += [f"Models reported by the stream: {dict(models)}; reported cost (list price) {_cost_text(_cost(atts))}", ""]
     return "\n".join(out)
 
+
+
+# -- the app battery -----------------------------------------------------------------------------
+
+APP_PATH_ORDER = ("asm", "stream")
+
+
+def _units(cells: list[dict]) -> dict[tuple, list[dict]]:
+    """(task, path, isa [, run dir, subject, variant]) -> its sample cells."""
+    out: dict[tuple, list[dict]] = defaultdict(list)
+    for c in cells:
+        out[(c["task"], c["path"], c["isa"], c.get("run_dir"), c.get("subject"), c.get("variant"))].append(c)
+    return out
+
+
+def _pass_n_label(cells: list[dict]) -> str:
+    """"pass@3" when every (task, path, isa) has 3 samples, else "pass@k (k = samples)"."""
+    ns = {len(v) for v in _units(cells).values()}
+    return f"pass@{ns.pop()}" if len(ns) == 1 else "pass@k (k = samples)"
+
+
+def app_stats(cells: list[dict]) -> dict:
+    """pass@1 over samples, pass@N over (task, path, isa) units, pass within 4 over samples, mean
+    attempts, mean attempts to the first pass (passing samples only)."""
+    units = _units(cells)
+    passing = [c["attempts"] for c in cells if c["pass_final"]]
+    return {
+        "units": len(units), "samples": len(cells),
+        "p1": _rate([c["pass_at_1"] for c in cells]),
+        "pN": _rate([any(c["pass_at_1"] for c in cs) for cs in units.values()]),
+        "fin": _rate([c["pass_final"] for c in cells]),
+        "finN": _rate([any(c["pass_final"] for c in cs) for cs in units.values()]),
+        "att": f"{statistics.mean(c['attempts'] for c in cells):.2f}" if cells else "-",
+        "to_pass": f"{statistics.mean(passing):.2f}" if passing else "-",
+    }  # fmt: skip
+
+
+def _app_row_header(first: list[str], pn: str) -> list[str]:
+    return ["| " + " | ".join(first) + f" | cells | samples | pass@1 (mean over samples) | {pn} | "
+            "pass within 4 (mean over samples) | pass within 4, any sample | mean attempts | "
+            "mean attempts to pass |", "|" + "---|" * (len(first) + 8)]
+
+
+def _app_row(keys: list[str], cs: list[dict]) -> str:
+    st = app_stats(cs)
+    return ("| " + " | ".join(keys) + f" | {st['units']} | {st['samples']} | {st['p1']} | {st['pN']} | "
+            f"{st['fin']} | {st['finN']} | {st['att']} | {st['to_pass']} |")
+
+
+def _app_cell_text(cs: list[dict]) -> str:
+    """One (task, path, isa): attempt-1 passes / pass@N / passes within 4 / mean attempts."""
+    n = len(cs)
+    p1 = sum(c["pass_at_1"] for c in cs)
+    fin = sum(c["pass_final"] for c in cs)
+    return f"{p1}/{n} / {'✓' if p1 else '✗'} / {fin}/{n} / {statistics.mean(c['attempts'] for c in cs):.2f}"
+
+
+def app_cross_table(title: str, keys: list[str], cells: list[dict], keyfn, order, note: str = "") -> list[str]:
+    """An app-battery table over subjects / models (pass@N per run dir, subject and variant)."""
+    groups: dict[tuple, list[dict]] = defaultdict(list)
+    for c in cells:
+        groups[keyfn(c)].append(c)
+    rows = [f"### {title}", ""] + ([note, ""] if note else []) + _app_row_header(keys, _pass_n_label(cells))
+    rows += [_app_row([str(x) for x in k], groups[k]) for k in sorted(groups, key=order)]
+    return rows + [""]
+
+
+def app_tables(run_dir: Path, cells: list[dict], atts: list[dict]) -> str:
+    """The app-battery tables for one flat run directory or (subject, variant) group."""
+    paths = [p for p in APP_PATH_ORDER if any(c["path"] == p for c in cells)]
+    paths += list(dict.fromkeys(c["path"] for c in cells if c["path"] not in paths))
+    isas = [i for i in ISAS if any(c["isa"] == i for c in cells)]
+    tasks = [t.name for t in _ordered_tasks(cells)]
+    pn = _pass_n_label(cells)
+    by: dict[tuple, list[dict]] = defaultdict(list)
+    for c in cells:
+        by[(c["task"], c["path"], c["isa"])].append(c)
+    out = ["### App battery: per cell (attempt-1 passes over samples / " + pn + " / passes within 4 over "
+           "samples / mean attempts)", "", "| task | " + " | ".join(f"{p} {i}" for p in paths for i in isas) + " |",
+           "|" + "---|" * (1 + len(paths) * len(isas))]
+    for t in tasks:
+        row = [t]
+        for p in paths:
+            for i in isas:
+                cs = by.get((t, p, i))
+                row.append(_app_cell_text(cs) if cs else "not run")
+        out.append("| " + " | ".join(row) + " |")
+    out.append("")
+
+    def agg(label: str, key, values) -> list[str]:
+        rows = [f"### App battery by {label}", ""] + _app_row_header([label], pn)
+        for v in values:
+            cs = [c for c in cells if key(c) == v]
+            if cs:
+                rows.append(_app_row([v], cs))
+        return rows + [""]
+
+    out += agg("path", lambda c: c["path"], paths)
+    out += agg("ISA", lambda c: c["isa"], isas)
+    out += agg("path × ISA", lambda c: f"{c['path']} {c['isa']}", [f"{p} {i}" for p in paths for i in isas])
+    out += agg("task", lambda c: c["task"], tasks)
+    infra = [r for r in load_infra(run_dir) if is_app_record(r)]
+    st = app_stats(cells)
+    out += ["### App battery overall", "",
+            f"cells: {st['units']} (task × path × ISA), samples: {st['samples']}; pass@1 {st['p1']} (mean over "
+            f"samples); {pn} {st['pN']}; pass within 4 {st['fin']} (mean over samples), {st['finN']} with any "
+            f"sample; mean attempts {st['att']}; attempts (calls) {len(atts)}"
+            + (f"; infrastructure errors (retried calls, not attempts) {len(infra)}" if infra else ""), ""]
+    cats = defaultdict(Counter)
+    for a in atts:
+        if not a["ok"]:
+            cats[a["path"]][a["category"]] += 1
+    allc = sorted({k for c in cats.values() for k in c})
+    out += ["### App battery: failed attempts by category and path", "",
+            "| category | " + " | ".join(paths) + " | total |", "|---" * (len(paths) + 2) + "|"]
+    for k in allc:
+        out.append(f"| {k} | " + " | ".join(str(cats[p][k]) for p in paths) + f" | {sum(cats[p][k] for p in paths)} |")
+    first = Counter(a["category"] for a in atts if a["attempt"] == 1 and not a["ok"])
+    out += ["", "First-attempt failure categories: " + ", ".join(f"{k} {v}" for k, v in first.most_common()), ""]
+    med = lambda xs: f"{statistics.median(xs):.1f}" if xs else "-"  # noqa: E731
+    out += ["### App battery: latency and size (per attempt)", "", "| path | ISA | median wall s | median "
+            "first-text s | median response chars | median check s | median final code bytes |",
+            "|---|---|---|---|---|---|---|"]
+    for p in paths:
+        for i in isas:
+            aa = [a for a in atts if a["path"] == p and a["isa"] == i]
+            if not aa:
+                continue
+            sizes = [c["code_size"] for c in cells if c["path"] == p and c["isa"] == i and c["code_size"]]
+            out.append(f"| {p} | {i} | {med([a['wall_s'] for a in aa])} | "
+                       f"{med([a['first_text_s'] for a in aa if a.get('first_text_s') is not None])} | "
+                       f"{med([a['response_chars'] for a in aa if a.get('response_chars') is not None]).replace('.0', '')} | "
+                       f"{statistics.median([a['check_s'] for a in aa if a['check_s']] or [0]):.2f} | "
+                       f"{med(sizes).replace('.0', '')} |")
+    out.append("")
+    aborts = [a for a in atts if a.get("stream") and a["stream"].get("abort")]
+    if aborts:
+        out += ["### App battery: stream early aborts", "", "| cell | attempt | category | line | chars received | "
+                "insns committed | abort at s | offending text |", "|---|---|---|---|---|---|---|---|"]
+        for a in aborts:
+            ab = a["stream"]["abort"]
+            txt = ab["text"].strip().replace("|", "\\|")[:60]
+            out.append(f"| {a['cell']} | {a['attempt']} | {a['category']} | {ab['line']} | {ab['chars_received']} | "
+                       f"{ab['insns_committed']} | {ab['s']:.1f} | `{txt}` |")
+        out.append("")
+    models = Counter(_model_label(a) for a in atts)
+    out += [f"Models reported by the stream: {dict(models)}; reported cost (list price) {_cost_text(_cost(atts))}", ""]
+    return "\n".join(out)
 
 
 def _model_label(a: dict) -> str | None:
@@ -268,7 +442,7 @@ def _vlabel(v: str) -> str:
 
 
 def cell_key(c: dict) -> tuple:
-    return (c["task"], c["path"], c["isa"])
+    return (c["task"], c["path"], c["isa"]) + ((c["sample"],) if c.get("sample") else ())
 
 
 def common(cells: list[dict], who, key=cell_key) -> tuple[list[dict], int, int]:
@@ -351,6 +525,12 @@ def summarize_matrix(run_dir: Path, groups=None) -> str:
                       lambda c: (c["subject"], c["path"], c["isa"]), order, note=note)
         out += _table("By subject × battery (baseline variant)", ["subject", "battery"], bc,
                       lambda c: (c["subject"], c["battery"]), order, note=note)
+        abc = [c for c in bc if is_app_record(c)]
+        if abc:
+            out += app_cross_table("App battery by subject (baseline variant)", ["subject"], abc,
+                                   lambda c: (c["subject"],), order, note)
+            out += app_cross_table("App battery by subject × path × ISA (baseline variant)", ["subject", "path", "ISA"],
+                                   abc, lambda c: (c["subject"], c["path"], c["isa"]), order, note)
     else:
         out += ["_No baseline cells: the subject × path × ISA and subject × battery tables are omitted "
                 "(see the per-variant tables)._", ""]
@@ -460,8 +640,16 @@ def compare(run_dirs: list[Path]) -> str:
     if len(variants) > 1 or variants != ["baseline"]:
         out += pivot("pass@1 by model × variant", vcells, variants, lambda c: c["variant"], p1,
                      _common_note(vkept, vtotal, "model"), label=_vlabel)
-    out += pivot("pass@1 by model × path", bcells, list(PATHS), lambda c: c["path"], p1, note)
+    apaths = [p for p in APP_PATH_ORDER if p not in PATHS and any(c["path"] == p for c in bcells)]
+    out += pivot("pass@1 by model × path", bcells, [*PATHS, *apaths], lambda c: c["path"], p1, note)
     out += pivot("pass@1 by model × ISA", bcells, list(ISAS), lambda c: c["isa"], p1, note)
+    abc = [c for c in bcells if is_app_record(c)]
+    if abc:
+        out += app_cross_table("App battery by model (baseline variant)", ["model"], abc,
+                               lambda c: (c["subject_model"],), _order(models), note)
+        out += app_cross_table("App battery by model × path × ISA (baseline variant)", ["model", "path", "ISA"], abc,
+                               lambda c: (c["subject_model"], c["path"], c["isa"]),
+                               _order([*models, *APP_PATH_ORDER, *ISAS]), note)
     cats: dict[str, Counter] = defaultdict(Counter)
     for a in atts:
         if not a["ok"] and a["variant"] == "baseline":

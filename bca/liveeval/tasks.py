@@ -36,6 +36,7 @@ class Task:
     round: int = 1
     mem_elem: int = 8  # element size used to display memory in failure messages
     mem_signed: bool = True
+    sample: int = 0  # the sample of a sampled cell (runner.plan_cells with samples > 1); 0 = not sampled
 
     @property
     def na_paths(self) -> dict[str, str]:

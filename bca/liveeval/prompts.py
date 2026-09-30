@@ -170,6 +170,10 @@ def rules(path: str, isa: str, task: Task) -> str:
 
 def build_prompt(path: str, isa: str, task: Task, previous: tuple[str, str] | None = None) -> str:
     """The attempt prompt; `previous` = (code, failure description) for a repair round."""
+    if getattr(task, "is_app", False):  # the app battery (bca.liveeval.prompts_apps)
+        from bca.liveeval.prompts_apps import build_app_prompt
+
+        return build_app_prompt(path, isa, task, previous)
     if path in task.na_paths:
         raise ValueError(f"{task.name} is not applicable on the {path} path: {task.na_paths[path]}")
     parts = [

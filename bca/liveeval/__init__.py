@@ -2,7 +2,7 @@
 (streamed assembly, structured JSON, QBE IR) and the differential harness scores it.
 
     python -m bca.liveeval run --run-dir eval/runs/<stamp> --max-calls N
-        [--tasks round1|round2|long|adversarial|all|names] [--paths ...] [--isas ...]
+        [--tasks round1|round2|long|adversarial|apps|all|names] [--paths ...] [--isas ...] [--samples N]
         [--model opus | --subjects haiku,sonnet,opus] [--variant baseline,<name>...]
         [--effort low|medium|high|xhigh|max] [--timeout S] [--max-infra-errors N] [--infra-backoff S]
         [--dry-run [--estimate-from eval/runs/<earlier> ...]]
@@ -19,7 +19,13 @@ own cells only; the rest of the run continues.
 Without --model/--subjects and with only the baseline variant a run dir has the flat round-1
 layout; otherwise it is <run-dir>/<subject>/<variant>/ (runner.run_plan). --max-calls is one cap
 for the whole run dir (calls.log at its top), across subjects and variants and across processes;
-one live run per run dir (run.lock). The per-call timeout defaults to 180 s (long battery: 400 s).
+one live run per run dir (run.lock). The per-call timeout defaults to 180 s (long battery: 400 s,
+apps: 900 s).
+
+The app battery (`--tasks apps`, bca.liveeval.apps; not part of `all`) asks for whole static
+programs on the `asm` and `stream` paths, 3 samples per cell by default (`--samples`), cell ids
+`<task>.<path>.<isa>.s<k>`; the summaries report pass@1 averaged over samples, pass@3 and pass
+within 4 for it.
 Infrastructure errors (process failure, overload, auth, unknown model) are retried with back-off,
 never scored, and abort the run (exit 3) after --max-infra-errors in a row; re-running resumes,
 also inside a partially attempted cell.

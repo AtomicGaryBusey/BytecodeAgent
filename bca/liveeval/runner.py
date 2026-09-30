@@ -8,7 +8,7 @@ Layout of a run directory:
     results.jsonl                     one record per finished cell
     attempts.jsonl                    one record per attempt (a model answer that was scored)
     infra.jsonl                       one record per infrastructure failure (retried, not an attempt)
-    cells/<task>.<path>.<isa>/
+    cells/<task>.<path>.<isa>[.s<k>]/   (.s<k>: sample k of a sampled cell; app cells always are)
         attemptN.prompt.txt  attemptN.response.txt  attemptN.raw.jsonl  attemptN.verdict.json
         attemptN.infraK.response.txt / .raw.jsonl   (a failed call of attempt N, kept for debugging)
         final.disasm.txt  cell.json   (cell.json marks the cell complete: resume skips it)
@@ -38,9 +38,10 @@ import threading
 import time
 from collections.abc import Callable
 from concurrent.futures import ThreadPoolExecutor
+from dataclasses import replace
 from pathlib import Path
 
-from bca.liveeval.pipelines import Attempt, attempt, disassemble
+from bca.liveeval.pipelines import Attempt, attempt, code_base, disassemble
 from bca.liveeval.prompts import build_prompt
 from bca.liveeval.subject import Subject
 from bca.liveeval.tasks import Task
@@ -206,7 +207,16 @@ class InfraGuard:
 
 
 def cell_id(task: Task, path: str, isa: str) -> str:
-    return f"{task.name}.{path}.{isa}"
+    """`<task>.<path>.<isa>`, plus `.s<k>` for sample k of a sampled cell (e.g. wc.asm.x86_64.s2)."""
+    k = getattr(task, "sample", 0)
+    return f"{task.name}.{path}.{isa}" + (f".s{k}" if k else "")
+
+
+def _ids(task: Task, path: str, isa: str) -> dict:
+    """The identifying fields of a record: cell, task, path, isa (and sample when sampled)."""
+    k = getattr(task, "sample", 0)
+    return {"cell": cell_id(task, path, isa), "task": task.name, "path": path, "isa": isa,
+            **({"sample": k} if k else {})}
 
 
 def _summary(a: Attempt, n: int) -> dict:
@@ -315,7 +325,7 @@ def run_cell(subject: Subject, task: Task, path: str, isa: str, run_dir: Path, *
             k = _keep_infra_artifacts(cdir, n)
             err = a.response.error if a.response else a.failure
             _append(run_dir / "infra.jsonl", {
-                "cell": cid, "task": task.name, "path": path, "isa": isa, **meta, "attempt": n, "try": k,
+                **_ids(task, path, isa), **meta, "attempt": n, "try": k,
                 "error": err, "kind": infra_kind(err), "time": time.strftime("%Y-%m-%dT%H:%M:%S"),
                 "wall_s": round(a.wall_s, 3)}, lock)
             if guard is not None and guard.failed(err):
@@ -325,19 +335,19 @@ def run_cell(subject: Subject, task: Task, path: str, isa: str, run_dir: Path, *
         if guard is not None:
             guard.ok()
         s = _summary(a, n)
-        rec = {"cell": cid, "task": task.name, "path": path, "isa": isa, **meta, **s}
+        rec = {**_ids(task, path, isa), **meta, **s}
         # attempts.jsonl first, then the verdict file resume reads: a crash in between re-runs the
         # attempt, and summaries keep the last record per (cell, attempt).
         _append(run_dir / "attempts.jsonl", rec, lock)
         (cdir / f"attempt{n}.verdict.json").write_text(json.dumps(
             {**s, "code": a.code.hex() if a.code is not None else None,
-             "disasm": disassemble(isa, a.code)}, indent=2))
+             "disasm": disassemble(isa, a.code, code_base(task))}, indent=2))
         attempts.append(s)
         final_ok, final_code = a.ok, a.code
         previous = (a.code_text, a.failure)
         n += 1
     record = {
-        "cell": cid, "task": task.name, "path": path, "isa": isa, **meta,
+        **_ids(task, path, isa), **meta,
         "pass_at_1": bool(attempts and attempts[0]["ok"]),
         "pass_final": bool(attempts and final_ok),
         "attempts": len(attempts),
@@ -353,7 +363,7 @@ def run_cell(subject: Subject, task: Task, path: str, isa: str, run_dir: Path, *
         record["infra_errors"] = infra_errors
     if stop:
         record["stopped"] = stop
-    (cdir / "final.disasm.txt").write_text(disassemble(isa, final_code) if attempts else "")
+    (cdir / "final.disasm.txt").write_text(disassemble(isa, final_code, code_base(task)) if attempts else "")
     if stop:
         return record  # not marked complete: a later run resumes it from the next attempt
     done.write_text(json.dumps(record, indent=2))
@@ -388,13 +398,14 @@ def write_plan(run_dir: Path, groups: dict[str, list[str]]) -> None:
 def run_matrix(subject: Subject, tasks, paths, isas, run_dir: Path, *, jobs: int = 4,
                budget: Budget | None = None, max_attempts: int = MAX_ATTEMPTS,
                progress=print, timeout_for: Callable[[str], float | None] | None = None,
-               guard: InfraGuard | None = None, meta: dict | None = None) -> list[dict]:
+               guard: InfraGuard | None = None, meta: dict | None = None,
+               samples: int | None = None) -> list[dict]:
     """The flat (round-1) layout. `tasks` is [task] or [(task, battery)]; `timeout_for(battery)`
-    gives the per-call timeout."""
+    gives the per-call timeout; `samples` as in plan_cells."""
     run_dir.mkdir(parents=True, exist_ok=True)
     lock = threading.Lock()
     # Cells a pipeline cannot express (Task.na, e.g. SIMD on QBE) are skipped, not failed.
-    cells = plan_cells(tasks, paths, isas)
+    cells = plan_cells(tasks, paths, isas, samples)
     write_plan(run_dir, {".": [cell_id(t, p, i) for t, _b, p, i in cells]})
 
     def one(cell):
@@ -415,10 +426,55 @@ def group_dir(run_dir: Path, subject: str, variant: str) -> Path:
     return run_dir / subject / variant
 
 
-def plan_cells(tasks, paths, isas) -> list[tuple[Task, str, str, str]]:
-    """(task, battery, path, isa) for the feasible cells; `tasks` is [(task, battery)] or [task]."""
+APP_SAMPLES = 3  # default samples per app cell (design decision 2)
+
+
+def task_paths(task) -> tuple[str, ...]:
+    """The paths a task runs on by default: asm + stream for an app, the three function paths else."""
+    from bca.liveeval.prompts import PATHS
+
+    if getattr(task, "is_app", False):
+        from bca.liveeval.apps import APP_PATHS
+
+        return APP_PATHS
+    return PATHS
+
+
+def task_samples(task, samples: int | None) -> int:
+    """Samples per cell: `samples` if given, else APP_SAMPLES for an app and 1 for a function."""
+    if samples is not None:
+        return samples
+    return APP_SAMPLES if getattr(task, "is_app", False) else 1
+
+
+def plan_cells(tasks, paths, isas, samples: int | None = None) -> list[tuple[Task, str, str, str]]:
+    """(task, battery, path, isa) for the feasible cells; `tasks` is [(task, battery)] or [task].
+    `paths` None means each task's own paths (task_paths); a path a task does not have is skipped.
+    A sampled cell (an app, or any task when `samples` > 1) is planned once per sample, as a copy
+    of the task with `sample` = 1..N, sample-major: sample 1 of every cell, then sample 2, ... (a
+    call cap then leaves whole samples, not whole tasks, unrun). Unsampled cells keep their
+    historical order and ids."""
     pairs = [t if isinstance(t, tuple) else (t, "") for t in tasks]
-    return [(t, b, p, i) for t, b in pairs for p in paths for i in isas if p not in t.na_paths]
+    base = []
+    for t, b in pairs:
+        own = task_paths(t)
+        for p in (own if paths is None else paths):
+            if p not in own or p in t.na_paths:
+                continue
+            for i in isas:
+                base.append((t, b, p, i))
+    n_max = max((task_samples(t, samples) for t, _b, _p, _i in base), default=1)
+    out = []
+    for k in range(1, n_max + 1):
+        for t, b, p, i in base:
+            n = task_samples(t, samples)
+            sampled = getattr(t, "is_app", False) or n > 1
+            if not sampled:
+                if k == 1:
+                    out.append((t, b, p, i))
+            elif k <= n:
+                out.append((replace(t, sample=k), b, p, i))
+    return out
 
 
 def check_variants(variants: dict[str, Variant], cells) -> None:
@@ -462,14 +518,15 @@ def _write_group_meta(gdir: Path, info: dict) -> None:
 def run_plan(subjects: dict[str, Subject], variants: dict[str, Variant], tasks, paths, isas, run_dir: Path, *,
              jobs: int = 4, budget: Budget | None = None, max_attempts: int = MAX_ATTEMPTS, progress=print,
              models: dict[str, str] | None = None, timeout_for: Callable[[str], float | None] | None = None,
-             guard: InfraGuard | None = None) -> list[dict]:
+             guard: InfraGuard | None = None, samples: int | None = None) -> list[dict]:
     """Every (subject, variant, cell) in `<run>/<subject>/<variant>/`; one pool of at most `jobs`
     workers and one Budget (calls.log at the top of `run_dir`) for all of them. Work is interleaved
-    across (subject, variant) groups by cell index; the returned records are subject-major."""
+    across (subject, variant) groups by cell index; the returned records are subject-major.
+    `samples` as in plan_cells."""
     from bca.liveeval.registry import variant_max_attempts
 
     run_dir.mkdir(parents=True, exist_ok=True)
-    cells = plan_cells(tasks, paths, isas)
+    cells = plan_cells(tasks, paths, isas, samples)
     check_variants(variants, cells)
     lock = threading.Lock()
     groups = []

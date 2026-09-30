@@ -1,8 +1,8 @@
 """Batteries, variants and subjects: the dimensions of a live-eval plan.
 
-Batteries are task sets. round1/round2 live in this package's core modules; `long` and
-`adversarial` are separate modules (bca.liveeval.tasks_long, bca.liveeval.adversarial) that
-are imported lazily, so the CLI and the summaries keep working when one of them is missing
+Batteries are task sets. round1/round2 live in this package's core modules; `long`,
+`adversarial` and `apps` are separate modules (bca.liveeval.tasks_long, bca.liveeval.adversarial,
+bca.liveeval.apps) that are imported lazily, so the CLI and the summaries keep working when one of them is missing
 or broken; the error surfaces only when that battery (or one of its variants) is asked for.
 
 A variant rewrites a prompt: `variant(prompt, path, isa, task) -> str`. It is applied to every
@@ -40,9 +40,13 @@ MODEL_ALIASES = {
 BATTERY_MODULES: dict[str, str] = {
     "long": "bca.liveeval.tasks_long",
     "adversarial": "bca.liveeval.adversarial",
+    "apps": "bca.liveeval.apps",
 }
 CORE_BATTERIES: dict[str, tuple[Task, ...]] = {"round1": ROUND1, "round2": ROUND2}
-BATTERY_ORDER = ("round1", "round2", "long", "adversarial")
+BATTERY_ORDER = ("round1", "round2", "long", "adversarial", "apps")
+# Batteries `all` leaves out: the app battery (whole programs: other paths, 3 samples per cell, 900 s
+# calls) is asked for by name, so `--tasks all` keeps meaning the function batteries.
+NOT_IN_ALL = frozenset({"apps"})
 VARIANTS_MODULE = "bca.liveeval.adversarial"
 
 Variant = Callable[[str, str, str, Task], str]
@@ -72,7 +76,7 @@ def load_battery(name: str) -> tuple[Task, ...]:
         raise RegistryError(f"battery {name!r} is unavailable: importing {mod}.TASKS failed: "
                             f"{type(e).__name__}: {e}") from e
     tasks = tuple(tasks)
-    bad = [t for t in tasks if not isinstance(t, Task)]
+    bad = [t for t in tasks if not isinstance(t, Task) and not getattr(t, "is_app", False)]
     if bad:
         raise RegistryError(f"battery {name!r}: {mod}.TASKS has non-Task entries: {bad[:3]!r}")
     return tasks
@@ -99,12 +103,15 @@ def known_tasks() -> dict[str, tuple[Task, str]]:
 
 
 def select(spec: str) -> list[tuple[Task, str]]:
-    """`round1`, `round2`, `long`, `adversarial`, `all` (every battery) or task names, comma
-    separated and mixable. Returns (task, battery) pairs, deduplicated by task name."""
+    """`round1`, `round2`, `long`, `adversarial`, `apps`, `all` (every function battery: not
+    apps, see NOT_IN_ALL) or task names, comma separated and mixable. Returns (task, battery)
+    pairs, deduplicated by task name."""
     out: dict[str, tuple[Task, str]] = {}
     for part in (p.strip() for p in spec.split(",") if p.strip()):
         if part == "all":
             for b in battery_names():
+                if b in NOT_IN_ALL:
+                    continue
                 for t in load_battery(b):
                     out.setdefault(t.name, (t, b))
         elif part in CORE_BATTERIES or part in BATTERY_MODULES:
@@ -197,7 +204,8 @@ def variant_max_attempts(name: str, max_attempts: int) -> int:
 
 # Default per-call subject timeout (seconds) per battery; --timeout overrides all of them.
 DEFAULT_TIMEOUT = 180.0
-BATTERY_TIMEOUTS = {"long": 400.0}  # 2.5-8 KB answers (~60-250 instructions)
+BATTERY_TIMEOUTS = {"long": 400.0,  # 2.5-8 KB answers (~60-250 instructions)
+                    "apps": 900.0}  # whole programs: ~80 to ~1,500 instructions plus data
 
 
 def default_timeout(battery: str) -> float:
@@ -229,7 +237,8 @@ def expected_model(subject: str) -> str:
 
 
 __all__ = [
-    "BATTERY_MODULES", "BATTERY_ORDER", "CORE_BATTERIES", "MODEL_ALIASES", "RegistryError", "VARIANTS_MODULE",
+    "BATTERY_MODULES", "BATTERY_ORDER", "CORE_BATTERIES", "MODEL_ALIASES", "NOT_IN_ALL", "RegistryError",
+    "VARIANTS_MODULE",
     "available_batteries", "baseline", "battery_names", "battery_of", "expected_model", "known_tasks",
     "load_battery", "load_variants", "model_for", "safe_name", "select", "BATTERY_TIMEOUTS", "DEFAULT_TIMEOUT",
     "default_timeout", "is_format_probe", "variant_info", "variant_label", "variant_max_attempts",

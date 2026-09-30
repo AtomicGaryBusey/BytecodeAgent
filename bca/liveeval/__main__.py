@@ -6,6 +6,7 @@ import sys
 from pathlib import Path
 
 from bca.liveeval.prompts import ISAS, PATHS
+from bca.liveeval.prompts_apps import APP_PATHS
 from bca.liveeval.registry import (
     BATTERY_TIMEOUTS,
     DEFAULT_TIMEOUT,
@@ -18,7 +19,17 @@ from bca.liveeval.registry import (
     select,
     variant_max_attempts,
 )
-from bca.liveeval.runner import Budget, InfraGuard, RunDirBusy, RunLock, plan_cells, run_matrix, run_plan
+from bca.liveeval.runner import (
+    APP_SAMPLES,
+    Budget,
+    InfraGuard,
+    RunDirBusy,
+    RunLock,
+    cell_id,
+    plan_cells,
+    run_matrix,
+    run_plan,
+)
 from bca.liveeval.subject import CLI_DEFAULT_EFFORT, EFFORTS
 from bca.liveeval.vendors import VENDORS, all_efforts, make_subject
 from bca.liveeval.summarize import compare, summarize
@@ -46,9 +57,11 @@ def main(argv=None, *, subject_factory=None) -> int:
     r = sub.add_parser("run")
     r.add_argument("--run-dir", required=True, type=Path)
     r.add_argument("--tasks", default="round1",
-                   help="round1 (default), round2, long, adversarial, all (every battery), or task names; "
-                        "comma-separated, mixable")
-    r.add_argument("--paths", default=",".join(PATHS))
+                   help="round1 (default), round2, long, adversarial, apps, all (every function battery; "
+                        "not apps), or task names; comma-separated, mixable")
+    r.add_argument("--paths", default=None,
+                   help=f"comma-separated (default: each task's own: {','.join(PATHS)} for functions, "
+                        f"{','.join(APP_PATHS)} for apps); a path a task does not have is skipped for it")
     r.add_argument("--isas", default=",".join(ISAS))
     r.add_argument("--model", help=f"one subject: an alias ({', '.join(MODEL_ALIASES)}), a Claude model id, or "
                                   f"<vendor>:<model> for another vendor's CLI ({', '.join(VENDORS)})")
@@ -69,6 +82,9 @@ def main(argv=None, *, subject_factory=None) -> int:
                         + ") (default: not passed; recorded as "
                         f"{CLI_DEFAULT_EFFORT!r}). Recommended for multi-subject runs.")
     r.add_argument("--max-attempts", type=int, default=4)
+    r.add_argument("--samples", type=int, default=None,
+                   help=f"independent samples per cell, each its own cell <task>.<path>.<isa>.s<k> (default: "
+                        f"{APP_SAMPLES} for apps, 1 elsewhere; with 1 a function cell keeps its unsuffixed id)")
     r.add_argument("--max-infra-errors", type=int, default=5,
                    help="abort the run after this many consecutive infrastructure errors (process failure, "
                         "overload, rate limit); auth / unknown-model errors abort at once")
@@ -122,11 +138,20 @@ def _run(args, subject_factory) -> int:
     vnames = _split(args.variant) or ["baseline"]
     variants = load_variants(vnames)
     selected = select(args.tasks)
-    paths, isas = _split(args.paths), _split(args.isas)
-    bad = [p for p in paths if p not in PATHS] + [i for i in isas if i not in ISAS]
+    paths = _split(args.paths) if args.paths is not None else None
+    isas = _split(args.isas)
+    known = list(dict.fromkeys([*PATHS, *APP_PATHS]))
+    bad = [p for p in paths or [] if p not in known] + [i for i in isas if i not in ISAS]
     if bad:
-        raise RegistryError(f"unknown path/ISA {bad}; have {', '.join(PATHS)} / {', '.join(ISAS)}")
-    cells = plan_cells(selected, paths, isas)
+        raise RegistryError(f"unknown path/ISA {bad}; have {', '.join(known)} / {', '.join(ISAS)}")
+    if args.samples is not None and args.samples < 1:
+        raise RegistryError("--samples must be at least 1")
+    cells = plan_cells(selected, paths, isas, args.samples)
+    if not cells:
+        raise RegistryError(f"no cell to run: the selected tasks have none of the paths {paths}")
+    if any(getattr(t, "is_app", False) for t, _b, _p, _i in cells) and list(variants) != ["baseline"]:
+        raise RegistryError("prompt variants are defined for the function batteries only; run the app "
+                            "battery with --variant baseline")
     flat = not subjects and list(variants) == ["baseline"]  # the round-1/round-2 layout
     if len(subjects) > 1 and not args.effort:
         print(f"warning: {len(subjects)} subjects without --effort: each runs at its CLI default effort, which "
@@ -140,12 +165,12 @@ def _run(args, subject_factory) -> int:
     if args.dry_run:
         if flat:
             for t, _b, p, i in cells:
-                print(f"{t.name}.{p}.{i}")
+                print(cell_id(t, p, i))
         else:
             for sname in subjects:
                 for v in variants:
                     for t, _b, p, i in cells:
-                        print(f"{safe_name(sname)}/{safe_name(v)}/{t.name}.{p}.{i}")
+                        print(f"{safe_name(sname)}/{safe_name(v)}/{cell_id(t, p, i)}")
         n = len(cells) * len(subjects) * len(variants)
         vmax = {v: variant_max_attempts(v, args.max_attempts) for v in variants}
         most = len(cells) * len(subjects) * sum(vmax.values())
@@ -186,13 +211,13 @@ def _live(args, subject_factory, subjects, variants, selected, paths, isas, flat
         subj = make(None)
         recs = run_matrix(subj, selected, paths, isas, args.run_dir, jobs=min(args.jobs, 4), budget=budget,
                           max_attempts=args.max_attempts, progress=progress, timeout_for=timeout_for, guard=guard,
-                          meta=subj.describe() if hasattr(subj, "describe") else None)
+                          meta=subj.describe() if hasattr(subj, "describe") else None, samples=args.samples)
     else:
         subj = {safe_name(n): make(None if n == "default" else model_for(n)) for n in subjects}
         models = {safe_name(n): n for n in subjects}
         recs = run_plan(subj, {safe_name(k): v for k, v in variants.items()}, selected, paths, isas, args.run_dir,
                         jobs=min(args.jobs, 4), budget=budget, max_attempts=args.max_attempts, progress=progress,
-                        models=models, timeout_for=timeout_for, guard=guard)
+                        models=models, timeout_for=timeout_for, guard=guard, samples=args.samples)
     print(f"calls used in this run dir: {budget.used}/{budget.max_calls}", flush=True)
     if guard.total:
         print(f"infrastructure errors (retried, not counted as attempts): {guard.total}", flush=True)

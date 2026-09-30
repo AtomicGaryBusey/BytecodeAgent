@@ -19,6 +19,11 @@ differential verdict. Failure categories:
   refusal       the model (or its safety classifier) refused to answer: a scored attempt
   subject_timeout / subject_error   the model process timed out / failed
 
+The app battery (whole programs, paths `asm` and `stream`) has its own pipelines and categories
+in bca.liveeval.apps (link, wrong_output, wrong_status and the process runner's fault kinds);
+`attempt` dispatches there for app tasks, and `stream_collect` (the stream path's call with its
+early abort and repair cut) is shared by both.
+
 Categories come from `Mismatch.kind` (the EmulationError's `category`), not from message
 text; `classify_error` remains as the text fallback for mismatches without a kind.
 Failure messages quote the source line of the faulting pc when it is known (stream: the
@@ -451,6 +456,16 @@ def disasm_locator(isa_name: str, code: bytes, base: int = CODE_BASE) -> Locator
                           for i in _insns(isa_name, code, base))
 
 
+def code_base(task) -> int:
+    """The address a cell's final.disasm.txt is listed at: the linked .text of an app program,
+    the historical 0x100000 for a function."""
+    if getattr(task, "is_app", False):
+        from bca.image import TEXT_BASE
+
+        return TEXT_BASE
+    return 0x100000
+
+
 def disassemble(isa_name: str, code: bytes | None, base: int = 0x100000) -> str:
     if not code:
         return ""
@@ -487,6 +502,27 @@ def _call(subject: Subject, prompt: str, on_text, raw_path: str, timeout: float 
 def _stream_attempt(subject: Subject, isa: str, task: Task, prompt: str, raw_path: str,
                     timeout: float | None = None) -> Attempt:
     sa = StreamAssembler(ISAS[isa])
+    a = stream_collect(subject, sa, "stream", isa, task.name, prompt, raw_path, timeout)
+    if a.category is not None:
+        return a
+    st = a.stream
+    prog = sa.finish()
+    if prog.errors:
+        ev = prog.errors[0]
+        a.category = _stream_category(ev.message, ev.text, st)
+        a.failure = f"The assembler rejected the program: {ev.message}"
+        return a
+    a.code = prog.code
+    a.locate = stream_locator(prog)
+    return a
+
+
+def stream_collect(subject: Subject, sa: StreamAssembler, path: str, isa: str, name: str, prompt: str,
+                   raw_path: str, timeout: float | None = None) -> Attempt:
+    """The call of a stream-path attempt: every delta goes through `sa` as it arrives and the
+    call is stopped at the first rejected line. Returns the Attempt with its category set when
+    the attempt already failed (refusal, a rejected line with the repair text cut at it, a failed
+    call); category None means the whole answer was accepted and `sa.finish()` is next."""
     t0 = time.perf_counter()
     st: dict = {"first_insn_s": None, "abort": None, "chars_fed": 0, "insns_at_abort": None}
     halted: list = []
@@ -511,7 +547,7 @@ def _stream_attempt(subject: Subject, isa: str, task: Task, prompt: str, raw_pat
 
     resp = _call(subject, prompt, on_text, raw_path, timeout)
     wall = time.perf_counter() - t0
-    a = Attempt("stream", isa, task.name, False, None, "", resp.text, response=resp, wall_s=wall, stream=st)
+    a = Attempt(path, isa, name, False, None, "", resp.text, response=resp, wall_s=wall, stream=st)
     if resp.refusal:  # before anything else: text streamed before a refusal is not an answer
         a.category, a.failure = "refusal", f"the model refused to answer ({resp.refusal})"
         return a
@@ -537,14 +573,6 @@ def _stream_attempt(subject: Subject, isa: str, task: Task, prompt: str, raw_pat
         a.code_text = ""  # partial text exists only for streaming subjects: never shown, for parity
         a.failure = f"the model call failed: {resp.error}"
         return a
-    prog = sa.finish()
-    if prog.errors:
-        ev = prog.errors[0]
-        a.category = _stream_category(ev.message, ev.text, st)
-        a.failure = f"The assembler rejected the program: {ev.message}"
-        return a
-    a.code = prog.code
-    a.locate = stream_locator(prog)
     return a
 
 
@@ -623,6 +651,10 @@ def attempt(subject: Subject, path: str, isa: str, task: Task, prompt: str, *, r
             timeout: float | None = None) -> Attempt:
     """One call and its verdict. `timeout` (seconds) overrides the subject's own for this call when
     the subject's complete() takes a `timeout` keyword."""
+    if getattr(task, "is_app", False):  # the app battery: whole programs (bca.liveeval.apps)
+        from bca.liveeval.apps import app_attempt
+
+        return app_attempt(subject, path, isa, task, prompt, raw_path=raw_path, timeout=timeout)
     a = PIPELINES[path](subject, isa, task, prompt, raw_path, timeout)
     if a.code is not None and a.category is None:
         t0 = time.perf_counter()
