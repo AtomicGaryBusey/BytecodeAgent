@@ -1,6 +1,7 @@
 # Design: the app battery ("can a model write a whole program in machine code?")
 
-Status: approved 2026-09-29 (decisions below); being built. Every battery so far asks for **one function** of at most ~250 instructions,
+Status: **done (round 1)**, approved 2026-09-29 (decisions below); results in
+[live-model-eval-apps.md](live-model-eval-apps.md). Every battery so far asks for **one function** of at most ~250 instructions,
 called by the harness under Unicorn. An application is a different kind of task: several functions calling
 each other, data and read-only data, a zero-initialised buffer area, an entry point that the OS jumps to, and
 input/output through system calls, all of which must stay consistent across hundreds to a few thousand

@@ -90,6 +90,25 @@ SuperGrok, GitHub Copilot Pro (details in the methodology report). Full comparis
 [`reports/live-model-eval-cross-vendor.md`](reports/live-model-eval-cross-vendor.md); per-run write-ups in
 [`reports/`](reports/).
 
+### App battery (whole programs, 96 cells per model)
+
+Whole static Linux programs in machine code (no libc, raw syscalls): 8 tasks from `wc` to a Brainfuck
+interpreter and a JSON validator, asm and stream paths, both ISAs, 3 samples, up to 4 attempts
+(`--tasks apps`; tables from `eval/app_tables.py`).
+
+| Model | First attempt | Within 4 | Mean attempts |
+|---|---|---|---|
+| Codex GPT-6 Astra | **94/96 (98%)** | 96/96 (100%) | 1.02 |
+| Claude Opus 5.5 | **89/96 (93%)** | 96/96 (100%) | 1.07 |
+| Grok 4.7 build-fast | **89/96 (93%)** | 96/96 (100%) | 1.08 |
+| Claude Fable 5.1 | **84/96 (88%)** | 96/96 (100%) | 1.15 |
+| Claude Sonnet 5.5 | **84/96 (88%)** | 96/96 (100%) | 1.14 |
+| Microsoft MAI-Code 1.1 Flash (Copilot) | **23/96 (24%)** | 64/96 (67%) | 2.61 |
+
+Pending: Kimi K3 and the local models. The frontier models' most common first-attempt error is an AArch64
+`mov` of an immediate no single instruction can encode. Report, including the sandbox-escape fix and the
+asm/stream acceptance parity work: [`reports/live-model-eval-apps.md`](reports/live-model-eval-apps.md).
+
 ## Setup
 
 Python 3.12 with `keystone-engine`, `unicorn`, `iced-x86`, `capstone`, `wasmtime` and `pytest`, plus
