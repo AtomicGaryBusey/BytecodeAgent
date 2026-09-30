@@ -167,6 +167,21 @@ def test_a_reasoning_only_message_is_not_a_second_call(env):
         assert not r.ok and "2 assistant.message events" in r.error
 
 
+def test_a_runtime_turn_retry_voids_the_attempt_as_transient(env):
+    # seen live (mai-code-1.1-flash, reverse.ir.aarch64, 2026-09-30): model.turn_retry {reason: streaming_error}
+    # after model.call_finished; the runtime would call the model again inside the same attempt
+    rec = copy.deepcopy(load("luna"))
+    i = next(k for k, e in enumerate(rec["events"]) if e["type"] == "assistant.message")
+    rec["events"].insert(i, {"type": "model.turn_retry", "data": {"kind": "turn_retry", "model": "gpt-6-luna",
+                                                                  "turn": 0, "reason": "streaming_error"}})
+    r = subject(env, rec, "gpt-6-luna", effort="low").complete(PROMPT)
+    assert not r.ok and r.text == "" and r.refusal == ""
+    assert r.error.startswith("copilot model turn retry (streaming_error)")
+    assert not r.error.startswith("isolation:")
+    from bca.liveeval.runner import _FATAL_RE
+    assert not _FATAL_RE.search(r.error)  # transient: the runner retries the cell
+
+
 # -- fail closed ------------------------------------------------------------------------------------
 
 

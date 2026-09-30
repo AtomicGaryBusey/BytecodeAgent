@@ -222,6 +222,7 @@ class Parsed:
     violations: list[str] = field(default_factory=list)
     refusal: str = ""  # the vendor's safety system blocked the answer: a scored refusal
     notes: list[str] = field(default_factory=list)
+    abort: bool = False  # the call is void (p.error says why, a transient error): stop the CLI now, score nothing
 
 
 class CliSubject(Subject):
@@ -381,7 +382,7 @@ class CliSubject(Subject):
                     except Exception as e:  # noqa: BLE001 - a malformed event: the CLI changed; fail closed
                         p.violations.append(f"malformed {self.vendor} event ({type(e).__name__}: {e}): {s[:200]}")
                         got = None
-                    if p.violations:
+                    if p.violations or p.abort:
                         kill()
                         break
                     if got and not stopped:
@@ -397,7 +398,7 @@ class CliSubject(Subject):
                             # a whole-message CLI is done anyway: let it finish so its request is verified
             finally:
                 timer.cancel()
-                if killed or timer_fired.is_set() or p.violations:
+                if killed or timer_fired.is_set() or p.violations or p.abort:
                     kill()
                 try:
                     proc.wait(timeout=10)

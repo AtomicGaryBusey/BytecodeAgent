@@ -268,6 +268,13 @@ class CopilotSubject(CliSubject):
         if typ not in COPILOT_EVENTS:
             if typ == "bca.permission_request":
                 bad(f"permission requested: {json.dumps(d)[:160]}")
+            elif typ == "model.turn_retry":
+                # the runtime is about to call the model a second time (seen: reason streaming_error, a broken
+                # stream): one attempt must be one model call, so the attempt is void -- a transient error the
+                # runner retries -- never a second call inside it and never an isolation failure
+                p.error = p.error or (f"copilot model turn retry ({d.get('reason') if isinstance(d, dict) else d}); "
+                                      "the attempt is void")
+                p.abort = True
             elif typ == "session.model_change":
                 p.error = p.error or f"model rerouted: copilot switched models ({json.dumps(d)[:200]})"
                 p.refusal = ""
