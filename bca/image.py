@@ -122,7 +122,7 @@ def _refused_directive(name: str) -> str | None:
     return None
 
 
-def _check_source(source: str, isa_name: str) -> None:
+def _check_source(source: str, isa_name: str, prompt_rules: bool = True) -> None:
     masked = _MASK_RE[isa_name].sub(lambda m: re.sub(r"[^\n]", " ", m.group(0)), source)
     for m in _DIRECTIVE_RE.finditer(masked):
         why = _refused_directive(m.group(0))
@@ -134,6 +134,64 @@ def _check_source(source: str, isa_name: str) -> None:
         line = source.count("\n", 0, bs) + 1
         raise AsmError(f"line {line}: a backslash outside a string or character literal is not "
                        "allowed", line)
+    if prompt_rules:
+        _check_layout(masked, isa_name)
+
+
+_LABEL_PREFIX_RE = re.compile(r"\s*(?:[A-Za-z_.$][\w.$]*|\d+)\s*:(?!:)")
+_WORD_RE = re.compile(r"[A-Za-z_.$][\w.$]*")
+_PROMPT_SECTIONS = (".text", ".rodata", ".data", ".bss", ".note.GNU-stack")
+
+
+def _check_layout(masked: str, isa_name: str) -> None:
+    """The prompt's placement and constant rules, as the stream path enforces them (bca.stream
+    program mode): instructions only in .text; only alignment in .text besides instructions; only
+    .zero/.space/.skip and alignment in .bss; every constant defined before its first use."""
+    from bca.stream import _ASSIGN_RE, _data_width
+
+    x86 = isa_name == "x86_64"
+    data = {".ascii", ".asciz", ".string", ".zero", ".space", ".skip"}
+    fills = {".zero", ".space", ".skip"}
+    section, seen = ".text", set()
+    for n, raw in enumerate(masked.split("\n"), 1):
+        for stmt in raw.split(";"):
+            while m := _LABEL_PREFIX_RE.match(stmt):
+                seen.add(m.group(0).strip()[:-1].strip())
+                stmt = stmt[m.end():]
+            stmt = stmt.strip()
+            if not stmt:
+                continue
+            words = _WORD_RE.findall(stmt)
+            a = _ASSIGN_RE.fullmatch(re.sub(r"\s+", " ", stmt))
+            if a:
+                name = a[1] or a[2]
+                if name in seen:
+                    raise AsmError(f"line {n}: {name!r} was used before this definition; define "
+                                   "constants first", n)
+                seen.update(words)
+                continue
+            seen.update(words)
+            head = stmt.split(None, 1)[0].lower()
+            if head.startswith("."):
+                if head in (".text", ".data", ".bss"):
+                    section = head
+                elif head == ".section":
+                    section = (stmt.split(None, 1)[1:] or [""])[0].split(",")[0].strip()
+                    if section not in _PROMPT_SECTIONS:
+                        raise AsmError(f"line {n}: section {section!r} is not supported (use .text, "
+                                       ".rodata, .data or .bss)", n)
+                elif head in data or _data_width(x86, head) is not None:
+                    if section == ".note.GNU-stack":
+                        raise AsmError(f"line {n}: nothing may be placed in {section}", n)
+                    if section == ".text":
+                        raise AsmError(f"line {n}: {head} is not allowed in .text (only "
+                                       "instructions and alignment); put data in .data or .rodata", n)
+                    if section == ".bss" and head not in fills:
+                        raise AsmError(f"line {n}: {head} is not allowed in .bss (only "
+                                       ".zero/.space/.skip and alignment)", n)
+            elif section != ".text":
+                raise AsmError(f"line {n}: instructions belong in .text (the current section is "
+                               f"{section})", n)
 
 
 def _gas(isa_name: str) -> str:
@@ -153,14 +211,16 @@ def _limits() -> None:  # runs in the GNU as child
     resource.setrlimit(resource.RLIMIT_CPU, (cpu, cpu))
 
 
-def assemble_program(source: str, isa_name: str) -> bytes:
+def assemble_program(source: str, isa_name: str, *, prompt_rules: bool = True) -> bytes:
     """Assemble a whole program with GNU as; returns the relocatable ELF object.
 
     Raises AsmError with GNU as's diagnostics (line numbers are the source's own, 1-based).
+    prompt_rules=False skips the app prompt's placement and constant rules (the stream path's; for
+    linker tests); file inclusion, macros and the other refused directives are always refused.
     """
     if isa_name not in MACHINES:
         raise ValueError(f"unknown ISA {isa_name!r}")
-    _check_source(source, isa_name)
+    _check_source(source, isa_name, prompt_rules)
     header = [".intel_syntax noprefix"] if isa_name == "x86_64" else []
     text = "\n".join(header + [source]) + "\n"
     with tempfile.TemporaryDirectory(prefix="bca-prog-") as tmp:

@@ -17,7 +17,8 @@ pytestmark = pytest.mark.skipif(not ISAS, reason="GNU as not installed")
 
 
 def build(src: str, isa: str, **kw):
-    return link_program(assemble_program(src, isa), isa, **kw)
+    # the runner and linker tests use sections and layouts the app prompt does not allow
+    return link_program(assemble_program(src, isa, prompt_rules=False), isa, **kw)
 
 
 def fixture(name: str, isa: str):
@@ -637,3 +638,30 @@ def test_python_counter_fallback_matches_native():
                           env={**os.environ, **env}, check=True).stdout.split()
            for env in ({}, {"BCA_PROCESS_PY_COUNTER": "1"})]
     assert out[0] == out[1] and all(int(n) > 1000 for n in out[0])
+
+
+@both
+@pytest.mark.parametrize("bad,msg", [
+    ("_start: nop\n.ascii \"x\"\n", "not allowed in .text"),
+    ("_start: nop\n.zero 4\n", "not allowed in .text"),
+    (".bss\nb: .byte 1\n.text\n_start: nop\n", "not allowed in .bss"),
+    (".data\nnop\n", "instructions belong in .text"),
+    ('.section .text.util, "ax"\n_start: nop\n', "not supported"),
+    ("_start: nop\n.data\nd: .quad LEN\nLEN = 8\n", "used before this definition"),
+    (".equ K, 1\n.set K, 2\n_start: nop\n", "used before this definition"),
+])
+def test_asm_enforces_the_prompts_placement_and_constant_rules(isa, bad, msg):
+    # the stream path enforces these stated rules; the asm path must accept exactly the same
+    with pytest.raises(AsmError, match=msg):
+        assemble_program(".globl _start\n" + bad, isa)
+    if ".bss" not in bad:  # GNU as itself refuses data in .bss; the others it accepts
+        assemble_program(".globl _start\n" + bad, isa, prompt_rules=False)
+
+
+@both
+def test_asm_accepts_what_the_prompt_allows(isa):
+    mov = "mov rax, LEN" if isa == "x86_64" else "mov x0, #LEN"
+    src = (".globl _start\n.section .rodata\nmsg: .ascii \"hi\"\n  LEN = . - msg\n.equ K , 3\n"
+           ".data\n.balign 8\nd: .quad K, msg\n.bss\n.balign 16\nb: .zero 64\n.text\n"
+           f".balign 4\n_start: {mov}; 1: nop\n")
+    assemble_program(src, isa)
