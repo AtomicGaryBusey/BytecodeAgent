@@ -1,0 +1,220 @@
+vm_run:
+    push rbx
+    push rbp
+    push r12
+    push r13
+    push r14
+    push r15
+    sub rsp, 8                    # align stack to 16-byte boundary (rsp was 8 mod 16 before)
+    xor rax, rax                  # return value = 0 (default if stack empty)
+    xor r12, r12                  # pc register
+    xor r13, r13                  # stack depth d
+    mov rbp, rdx                  # base pointer for stack array (callee-saved)
+    mov rbx, rcx                  # cap (callee-saved)
+
+.Lloop:
+    cmp r12, rsi                  # pc == len?
+    jge .Ldone                    # if so, exit loop
+    mov rax, qword ptr [rdi + r12*8]  # fetch instruction at code[pc]
+    add r12, 1                    # advance pc by 1 (will adjust for ops with operands)
+    cmp rax, 0
+    je .Lop_halt
+    cmp rax, 1
+    je .Lop_push
+    cmp rax, 2
+    je .Lop_add
+    cmp rax, 3
+    je .Lop_sub
+    cmp rax, 4
+    je .Lop_mul
+    cmp rax, 5
+    je .Lop_dup
+    cmp rax, 6
+    je .Lop_swap
+    cmp rax, 7
+    je .Lop_drop
+    cmp rax, 8
+    je .Lop_over
+    cmp rax, 9
+    je .Lop_lt
+    cmp rax, 10
+    je .Lop_jz
+    cmp rax, 11
+    je .Lop_jmp
+    # default: just advance pc and continue (for invalid opcodes)
+    jmp .Lloop
+
+.Lop_halt:
+    jmp .Ldone
+
+.Lop_push:
+    mov rax, qword ptr [rdi + r12*8]  # load operand v at code[pc]
+    cmp r13, rbx                  # d >= cap?
+    jge .Ldone                    # stack overflow guard (shouldn't happen per spec, but safe)
+    mov qword ptr [rbp + r13*8], rax
+    inc r13                       # increment depth
+    add r12, 2                    # pc += 2 (skip opcode and operand)
+    jmp .Lloop
+
+.Lop_add:
+    cmp r13, 0
+    je .Ldone                     # no op if stack empty (per spec stack not underflowing but safe)
+    dec r13                       # d--
+    mov rcx, qword ptr [rbp + r13*8]  # b = stack[d]
+    cmp r13, 0
+    je .Ldone                     # one element left? (but spec guarantees valid ops so should have >=2)
+    dec r13                       # d--
+    mov rax, qword ptr [rbp + r13*8]  # a = stack[d]
+    add rax, rcx                  # a + b
+    mov qword ptr [rbp + r13*8], rax
+    inc r13                       # d++
+    jmp .Lloop
+
+.Lop_sub:
+    cmp r13, 0
+    je .Ldone
+    dec r13
+    mov rcx, qword ptr [rbp + r13*8]  # b
+    cmp r13, 0
+    je .Ldone
+    dec r13
+    mov rax, qword ptr [rbp + r13*8]  # a
+    sub rax, rcx                  # a - b
+    mov qword ptr [rbp + r13*8], rax
+    inc r13
+    jmp .Lloop
+
+.Lop_mul:
+    cmp r13, 0
+    je .Ldone
+    dec r13                       # top index = d-1
+    mov rcx, qword ptr [rbp + r13*8]  # b = stack[d-1]
+    cmp r13, 0
+    je .Ldone                     # need at least 2 elements (d >= 2)
+    dec r13                       # d-- -> index of a is now d
+    mov rax, qword ptr [rbp + r13*8]  # a = stack[d]
+    imul rax, rcx                 # rax = a * b
+    mov qword ptr [rbp + r13*8], rax
+    inc r13                       # d++ -> d = old d - 1
+    jmp .Lloop
+
+.Lop_dup:
+    cmp r13, 0
+    je .Ldone                     # dup of empty stack? spec guarantees not underflowing but for safety
+    mov rbx, qword ptr [rbp + (r13-1)*8]  # a = stack[d-1]
+    cmp r13, rbx                  # d+1 >= cap?
+    jge .Ldone
+    mov qword ptr [rbp + r13*8], rbx  # push a
+    inc r13                       # d++
+    jmp .Lloop
+
+.Lop_swap:
+    cmp r13, 0
+    je .Ldone
+    dec r13                       # top index = d-1
+    cmp r13, 0
+    je .Ldone                     # need at least 2 elements (d >= 2)
+    mov rcx, qword ptr [rbp + r13*8]      # top = stack[d-1]
+    mov rbx, qword ptr [rbp + (r13-1)*8]  # stack[d-2]
+    mov qword ptr [rbp + (r13-1)*8], rcx
+    mov qword ptr [rbp + r13*8], rbx
+    jmp .Lloop
+
+.Lop_drop:
+    cmp r13, 0
+    je .Ldone
+    dec r13                       # d--
+    xor rax, rax                  # clear register for zero store
+    mov qword ptr [rbp + r13*8], rax   # zero the dropped slot (spec says stack[d..cap-1] = 0 on return)
+    jmp .Lloop
+
+.Lop_over:
+    cmp r13, 0
+    je .Ldone
+    dec r13                       # top index = d - 1
+    cmp r13, 0
+    je .Ldone                     # need at least 2 entries (d >= 2)
+    mov rbx, qword ptr [rbp + (r13-1)*8]  # entry below top: stack[d-2]
+    cmp r13, rbx                  # d+1 >= cap? (d currently = current depth; after push will be d+1)
+    jge .Ldone
+    mov qword ptr [rbp + r13*8], rbx  # push copy of stack[d-2]
+    inc r13                       # d++
+    jmp .Lloop
+
+.Lop_lt:
+    cmp r13, 0
+    je .Ldone
+    dec r13                       # top = d-1
+    mov rcx, qword ptr [rbp + r13*8]      # b = stack[d-1]
+    dec r13                               # now index = d-2
+    mov rbx, qword ptr [rbp + r13*8]      # a = stack[d-2]
+    cmp rbx, rcx                          # a < b (signed)
+    setl al                               # al = 1 if true else 0
+    xor rax, rax                          # clear high bits of rax
+    movzx eax, al                         # zero extend to rax
+    mov qword ptr [rbp + r13*8], rax
+    inc r13                               # d++
+    jmp .Lloop
+
+.Lop_jz:
+    mov rax, qword ptr [rdi + r12*8]  # load operand at code[pc]
+    cmp r13, 0
+    je .Ldone                     # underflow? spec guarantees not but be safe
+    dec r13                       # pop top value
+    mov rbx, qword ptr [rbp + r13*8]      # v = stack[d]
+    test rbx, rbx                 # if (v == 0)
+    jne .Ladvance_pc              # if nonzero, skip target and continue normal flow
+    # else: pc = operand
+    mov r12, rax                  # set pc = target
+    jmp .Lloop
+
+.Ladvance_pc:
+    add r12, 2                    # pc += 2 (skip opcode and operand)
+    jmp .Lloop
+
+.Lop_jmp:
+    mov rax, qword ptr [rdi + r12*8]  # fetch operand at code[pc]
+    mov r12, rax                  # pc = target
+    add r12, 1                    # pc++ (will be incremented again at top of loop? No: loop increments by 1 for each op)
+    # Wait: spec says JMP t: pc = t. The next instruction will fetch at code[t]
+    # So we set pc=t and continue loop (loop body increments pc by 1, but JMP already consumed the operand word so pc should be t+1 before next fetch? Let's double-check.)
+    # Actually per spec: "JMP t: pc = t". The next iteration will start with that pc, and at top of loop we fetch code[pc] then increment pc by 1.
+    # So if we want to jump to target t, after consuming the operand word (at pc), pc should become t. But in our flow:
+    # - At top: r12 = current pc before fetch
+    # - Fetch at [rdi + r12*8], then r12++ (now pc points to next slot)
+    # - For JMP, operand is at [rdi + r12*8] (since we already incremented pc)
+    # So our code correctly reads operand after incrementing.
+    # Now per spec: "JMP t: pc = t". That means new pc equals the target. But if we set r12 = t, then next loop will fetch code[t], which is correct.
+    # So no extra increment needed here. But above for PUSH and others we did += 2 because they consume two words (opcode + operand).
+    # For JMP: opcode word consumed at top (r12++), then operand word read at new r12, so after reading, pc should be t+1? No:
+    # Let's simulate. Before loop iteration, say r12 = k, fetching code[k] which is JMP.
+    # We increment to k+1, then read operand at code[k+1], get target t. Then set r12 = t.
+    # Next loop: fetch at code[t]. That means the next instruction executed will be at t. So spec's "pc = t" matches.
+    jmp .Lloop
+
+.Ldone:
+    xor rbx, rbx                  # zero register for loop
+    mov rcx, r13                  # i = d (current depth)
+.Lclear:
+    cmp rcx, rbx                  # i >= cap?
+    jge .Lcleanup_done
+    xor rax, rax
+    mov qword ptr [rbp + rcx*8], rax   # stack[i] = 0 for i < cap
+    inc rcx                       # i++
+    jmp .Lclear
+
+.Lcleanup_done:
+    test r13, r13                 # if d > 0 get top element
+    je .Lfinalize                 # stack empty -> return 0
+    mov rax, qword ptr [rbp + (r13-1)*8]   # return stack[d-1]
+    jmp .Lfinalize
+
+.Lfinalize:
+    add rsp, 8                    # undo alignment adjustment (rsp was aligned before function)
+    pop r15
+    pop r14
+    pop r13
+    pop r12
+    pop rbp
+    pop rbx
+    ret

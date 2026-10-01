@@ -1,0 +1,170 @@
+export function l $qsort_pairs(l %a, l %n) {
+	%empty_check =l ceql %n, 0
+	jnz %empty_check, @end_return
+
+	%single_check =l ceql %n, 1
+	jnz %single_check, @end_return
+
+	// Allocate stack frame: 48 bytes (32 for partition state + 16 for alignment + saved regs)
+	subl rsp, 40
+
+	csltl w 0, w 0 // clear direction flag
+
+	// Save pivot selection: use middle element
+	%n_half =l shr %n, 1
+	%pivot_offset =l shl %n_half, 2 // *8 bytes per record => *2 words per record => *4? Wait: each record is 2*8=16 bytes; half records -> offset in dwords: n/2 * 16 = n*8; simpler: pivot_idx = n>>1; byte_offset = (n>>1)*16
+	%pivot_addr =l add %a, 0
+	storel %a, rsp+0 // save original a
+	storel %n, rsp+8 // save n
+
+	// compute mid point index
+	%n2 =l sub %n, 2
+	jnz %n2, @mid_found
+	%pivot_idx =l and %n, 1
+	jmp @pivot_offset_calc
+
+@mid_found:
+	%n3 =l shr %n, 1
+	% pivot_idx =l and %n3, 0x7fffffffffffffff
+@pivot_offset_calc:
+	%pivot_byte_off =l shl %pivot_idx, 4 // *16 bytes per record
+	%pivot_addr2 =l add %a, %pivot_byte_off
+
+	%pk1 =l loadl %pivot_addr2+0
+	%pval1 =l loadl %pivot_addr2+8
+	storel %pk1, rsp+16 // pivot key
+	storel %pval1, rsp+24 // pivot val
+
+	storel %a, rsp+32 // save i pointer (will be updated)
+	storel %n, rsp+40 // save j size
+
+	// initialize i and j pointers
+	%i_ptr =l add %a, 16 // start at first record after mid (index 1 in records, but after pivot record)
+	%j_off =l shl %n, 2 // n * 4? No: total bytes for all records = n*16. j starts at last record
+	%j_ptr =l add %a, 0
+	%j_ptr =l sub %j_ptr, 16 // start before the end (we'll increment first)
+	%total_bytes =l shl %n, 4 // *16
+	%j_ptr2 =l add %a, %total_bytes
+	jmp @outer_loop
+
+@outer_loop:
+	storel %i_ptr, rsp+32
+	storel %j_ptr2, rsp+40
+
+@inner_i_loop:
+	%i_val_key =l loadl %i_ptr+0
+	%pk =l loadl rsp+16
+	%lt_or_eq =csltl %pk, %i_val_key // pivot < ikey => ikey >= pivot
+	jnz %lt_or_eq, @i_done
+	storel %i_val_key, %i_val_key // placeholder
+	%i_val_val =l loadl %i_ptr+8
+	%pv =l loadl rsp+24
+	%eq_pivot_key =l ceql %i_val_key, %pk
+	jnz %eq_pivot_key, @check_i_val_lt
+	storel %i_val_val, %i_val_val // placeholder
+	%i_ge_pv =csltl %pv, %i_val_val // pivot val < i_val_val => i_val_val >= pivot val
+	jnz %i_ge_pv, @i_done
+
+@i_incr:
+	%i_ptr =l add %i_ptr, 16
+	storel %i_ptr, rsp+32
+	jmp @inner_i_loop
+
+@check_i_val_lt:
+	%lt_check =csltl %i_val_val, %pv
+	jnz %lt_check, @i_incr
+	jmp @i_done
+
+@i_done:
+	jmp @inner_j_loop
+
+@inner_j_loop:
+	storel %j_ptr2, rsp+40
+	%j_val_key =l loadl %j_ptr2+0
+	%pk2 =l loadl rsp+16
+	%gt_check =csltl %j_val_key, %pk2 // jkey > pivot => move left
+	jnz %gt_check, @j_decr
+	%eq_jk =l ceql %j_val_key, %pk2
+	jz %eq_jk, @check_j_val_eq
+
+@j_done:
+	storel %j_ptr2, rsp+40
+	jmp @partition_step2
+
+@check_j_val_eq:
+	%j_val_val =l loadl %j_ptr2+8
+	%pv2 =l loadl rsp+24
+	%gt_check2 =csltl %j_val_val, %pv2 // jval > pivot val => move left
+	jnz %gt_check2, @j_decr
+
+@j_decr:
+	%j_ptr2 =l sub %j_ptr2, 16
+	storel %j_ptr2, rsp+40
+	jmp @inner_j_loop
+
+@partition_step2:
+	%i_cur =l loadl rsp+32
+	%j_cur =l loadl rsp+40
+	%compare_ij =csltl %i_cur, %j_cur
+	jnz %compare_ij, @do_swap_needed
+	jmp @partition_done
+
+@do_swap_needed:
+	// swap *i and *j
+	%tmpk1 =l loadl %i_cur+0
+	%tmpk2 =l loadl %j_cur+0
+	storel %tmpk2, %i_cur+0
+	storel %tmpk1, %j_cur+0
+	%tmpv1 =l loadl %i_cur+8
+	%tmpv2 =l loadl %j_cur+8
+	storel %tmpv2, %i_cur+8
+	storel %tmpv1, %j_cur+8
+
+	%i_ptr =l add %i_ptr, 16
+	storel %i_ptr, rsp+32
+
+	%j_ptr2 =l sub %j_ptr2, 16
+	storel %j_ptr2, rsp+40
+
+	jmp @outer_loop
+
+@partition_done:
+	// After partitioning: i points to first >= pivot; j points to last < pivot
+	// Left part: [a, j+8], size = ((j+8) - a)/16 + 1? Let's compute count properly.
+	%j_final =l loadl rsp+40
+	%left_end =l add %j_final, 8 // last element of left part is j+8 (start of its value)
+	%left_size_ptr =l sub %left_end, %a
+	%left_size =l shr %left_size_ptr, 4 // /16 bytes per record
+
+	// Save sizes and addresses for recursive calls
+	storel %left_size, rsp+32
+	%right_start =l add %i_ptr, 0
+	storel %right_start, rsp+40
+
+	%total_count =l loadl rsp+8
+	%right_size_val =l sub %total_count, %left_size
+	storel %right_size_val, rsp+16
+
+	// Now recurse on the left and right parts
+
+	// Align stack for first recursive call: current rsp is (original_rsp-40) which is 8 mod 16 after original alignment
+	subl rsp, 8 // now aligned to 0 mod 16
+
+	storel %a, rsp+56
+	storel %left_size, rsp+64
+	%r_left =l call $qsort_pairs(l %a, l %left_size)
+
+	addl rsp, 8 // restore stack before next call (still 8 mod 16 after add 8? No: subtracting 8 made it 0; adding 8 brings to 8 again -> need sub 8 again before next call)
+	subl rsp, 8
+
+	%right_size =l loadl rsp+48
+	storel %right_start, rsp+56
+	storel %right_size, rsp+64
+	%r_right =l call $qsort_pairs(l %right_start, l %right_size)
+
+	addl rsp, 8 // restore stack
+
+@end_return:
+	storel 0, rsp+0 // no-op but ensures alignment remains correct if used later (but not needed)
+	ret 0
+}

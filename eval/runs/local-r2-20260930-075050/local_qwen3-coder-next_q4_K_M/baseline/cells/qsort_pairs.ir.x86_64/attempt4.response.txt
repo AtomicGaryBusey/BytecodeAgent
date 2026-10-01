@@ -1,0 +1,150 @@
+export function l $qsort_pairs(l %a, l %n) {
+	%empty_check =l ceql %n, 0
+	jnz %empty_check, @end_return
+
+	%single_check =l ceql %n, 1
+	jnz %single_check, @end_return
+
+	subl rsp, 56 // allocate frame: 48 for state + 8 alignment + saved rbx+rbp (16 total) but actually need 32+16=48 data + 8 align -> 56 ensures final rsp-56 is 0 mod 16 (entry was 8 mod 16, minus 56 => 8-56 = -48 = 0 mod 16)
+
+	// Save callee-saved registers we'll use
+	storel rbx, rsp+8
+	storel rbp, rsp+16
+
+	// Compute pivot index: mid = n>>1; each record is 2 words (16 bytes)
+	%mid_idx =l shr %n, 1
+	%poff =l shl %mid_idx, 4 // *16 per record
+	%pivot_ptr =l add %a, %poff
+
+	// Load pivot: key in [0], val in [8]
+	%pk =l loadl %pivot_ptr+0
+	%pv =l loadl %pivot_ptr+8
+
+	// Initialize pointers
+	%i_ptr =l add %a, 16 // i starts at second record (index 1)
+	%j_off =l shl %n, 4 // total bytes = n*16
+	%j_ptr =l add %a, %j_off // j starts just past last element
+	%j_ptr =l sub %j_ptr, 16 // now at last record
+
+	storel %i_ptr, rsp+24
+	storel %j_ptr, rsp+32
+	storel %pk, rsp+40
+	storel %pv, rsp+48
+
+@outer_loop:
+	// Move i forward while a[i] < pivot (or equal but smaller val)
+@store_i:
+	%curi_k =l loadl %i_ptr+0
+	%curi_v =l loadl %i_ptr+8
+	%cmp1 =csltl %pk, %curi_k // pk < curi_k => curi >= pivot key
+	jnz %cmp1, @i_done_key_check
+	// keys equal: check value
+	%eqkey =l ceql %curi_k, %pk
+	jz %eqkey, @check_i_val
+	%i_ptr =l add %i_ptr, 16
+	storel %i_ptr, rsp+24
+	jmp @store_i
+
+@check_i_val:
+	%cvi =csltl %pv, %curi_v // pv < curi_v => curi >= pivot val in tie
+	jnz %cvi, @i_done_key_check
+	%i_ptr =l add %i_ptr, 16
+	storel %i_ptr, rsp+24
+	jmp @store_i
+
+@i_done_key_check:
+	// Move j backward while a[j] > pivot (or equal but larger val)
+@store_j:
+	%curj_k =l loadl %j_ptr+0
+	%curj_v =l loadl %j_ptr+8
+	%cmp2 =csltl %curj_k, %pk // curj_k < pk => curj < pivot key => stop
+	jnz %cmp2, @j_done_key_check
+	%eqkey2 =l ceql %curj_k, %pk
+	jz %eqkey2, @check_j_val
+	%j_ptr =l sub %j_ptr, 16
+	storel %j_ptr, rsp+32
+	jmp @store_j
+
+@check_j_val:
+	%cvj =csltl %curj_v, %pv // curj_v < pv => curj < pivot val in tie => stop
+	jnz %cvj, @j_done_key_check
+	%j_ptr =l sub %j_ptr, 16
+	storel %j_ptr, rsp+32
+	jmp @store_j
+
+@j_done_key_check:
+	// Now check if i and j crossed
+	%i_cur =l loadl rsp+24
+	%j_cur =l loadl rsp+32
+	%xchng =csltl %i_cur, %j_cur // i < j => need swap
+	jz %xchng, @done_partition
+
+	// Swap *i and *j
+	%tmpk1 =l loadl %i_cur+0
+	%tmpv1 =l loadl %i_cur+8
+	%tmpk2 =l loadl %j_ptr+0
+	%tmpv2 =l loadl %j_ptr+8
+
+	storel %tmpk2, %i_cur+0
+	storel %tmpv2, %i_cur+8
+	storel %tmpk1, %j_ptr+0
+	storel %tmpv1, %j_ptr+8
+
+	// Advance i, retreat j
+	%i_ptr =l add %i_ptr, 16
+	storel %i_ptr, rsp+24
+	%j_ptr =l sub %j_ptr, 16
+	storel %j_ptr, rsp+32
+
+	jmp @outer_loop
+
+@done_partition:
+	// Restore j to last element of left part (j now points to first > pivot or crossed)
+	%j_final =l loadl rsp+32
+	// Left part is [a, j] inclusive => size = ((j - a)/16) + 1
+	%diff =l sub %j_final, %a
+	%left_size =l shr %diff, 4 // /16
+	%left_size_inc =l add %left_size, 1
+
+	// Right part starts at i (current position), count = n - left_size
+	%rstart =l loadl rsp+24
+	%n_val =l loadl %n
+	%right_size =l sub %n_val, %left_size_inc
+
+	// Now recurse if needed
+	// Align stack for call: current rsp is original-56; must be 0 mod 16 before call => it's already aligned (since 56 is multiple of 8 but not 16? Wait: entry was 8 mod 16, minus 56 => 8 - 56 = -48 ≡ 0 mod 16. Yes.)
+	// So no sub needed before call.
+
+	// Save arguments in case they get clobbered (not strictly necessary but safe)
+	storel %a, rsp+24
+	storel %left_size_inc, rsp+32
+
+	subl rsp, 8 // to ensure 0 mod 16 at time of call (rsp currently 0 mod 16; subtract 8 => 8 mod 16, which is required before call since ret addr pushed will make it 0 mod 16 in callee)
+	storel %a, rsp+56
+	storel %left_size_inc, rsp+64
+
+	%r_left =l call $qsort_pairs(l %a, l %left_size_inc)
+
+	addl rsp, 8 // restore stack (back to 0 mod 16)
+
+	// Now recurse right part: right_start = a + left_size * 16
+	%right_off =l shl %left_size_inc, 4 // left_size_inc * 16
+	%rstart2 =l add %a, %right_off
+
+	subl rsp, 8 // again align for call (0 mod 16 before subtraction; after sub: 8 mod 16)
+	storel %rstart2, rsp+56
+	storel %right_size, rsp+64
+
+	%r_right =l call $qsort_pairs(l %rstart2, l %right_size)
+
+	addl rsp, 8 // restore
+
+	// Restore callee-saved registers and stack
+	loadl rbx, rsp+8
+	loadl rbp, rsp+16
+	addl rsp, 56
+
+@end_return:
+	storel 0, rax
+	ret 0
+}

@@ -1,0 +1,264 @@
+Implement the function `uint64_t xxh64(const uint8_t *p, int64_t n, uint64_t seed)`.
+
+Target: AArch64 (ARMv8-A), Linux AAPCS64. Integer/pointer arguments in x0-x7; 64-bit result in x0. Callee-saved: x19-x28, x29 (frame pointer) and d8-d15 (restore them if you use them); x9-x15 are free scratch registers. sp must stay 16-byte aligned and be back to its entry value when you return with ret (return address in x30). More ABI facts: arguments beyond the eighth are passed on the stack (the 9th at [sp] at entry). A call (bl/blr) overwrites x30, so save x30 (e.g. stp x29, x30, [sp, #-16]!) before calling and restore it before ret. A call clobbers the caller-saved registers x0-x18, x30, v0-v7 and v16-v31 (and the upper halves of v8-v15) and the flags, so keep values that must survive a call in callee-saved registers x19-x28 (saved/restored by you) or in your own stack frame. sp must be 16-byte aligned at every call (and whenever it is used as a base register). Anything below sp may be overwritten by a callee.
+
+Output format: QBE intermediate language (the IL of the QBE compiler backend, c9x.me/compile). Write exactly one function, `export function l $xxh64(...)`, taking every argument as `l` (64-bit; pointers are `l` too) and returning `l`. QBE will compile it for the target above, so you do not handle registers or the ABI yourself. Remember: every block starts with an `@label`; temporaries are `%name`; comparisons such as `csltl`/`ceql` produce a `w` value; `jnz` tests a `w`; loads/stores are `loadl`/`storel`. No data definitions, no calls, no other functions. Output only the QBE code: no Markdown fences, no prose. QBE has no rotate instruction: rotl(x, r) = (x shl r) or (x shr (64 - r)) (`shr` is logical); `loadl`/`loadw` work on unaligned addresses; zero-extend a 32-bit load with `%v =l loaduw %q`; a 64-bit constant is written as a decimal integer (e.g. -7046029288634856825 for 0x9E3779B185EBCA87).
+
+Specification: Return the 64-bit xxHash (XXH64) of the n bytes at p (0 <= n <= 300) with the given seed. All arithmetic is on unsigned 64-bit values modulo 2^64; rotl(x, r) rotates left by r bits; read64(q) / read32(q) are little-endian unsigned loads of 8 / 4 bytes (p is only byte-aligned). Constants: P1 = 0x9E3779B185EBCA87, P2 = 0xC2B2AE3D27D4EB4F, P3 = 0x165667B19E3779F9, P4 = 0x85EBCA77C2B2AE63, P5 = 0x27D4EB2F165667C5. round(acc, x) = rotl(acc + x * P2, 31) * P1; merge(h, v) = (h ^ round(0, v)) * P1 + P4. (1) If n >= 32: v1 = seed + P1 + P2, v2 = seed + P2, v3 = seed, v4 = seed - P1; for each whole 32-byte stripe at q: v1 = round(v1, read64(q)), v2 = round(v2, read64(q+8)), v3 = round(v3, read64(q+16)), v4 = round(v4, read64(q+24)); then h = rotl(v1, 1) + rotl(v2, 7) + rotl(v3, 12) + rotl(v4, 18); h = merge(h, v1); h = merge(h, v2); h = merge(h, v3); h = merge(h, v4). Otherwise h = seed + P5. (2) h += n. (3) For the remaining bytes after the stripes (fewer than 32), in order: while at least 8 remain: h ^= round(0, read64(q)); h = rotl(h, 27) * P1 + P4; q += 8. If at least 4 remain: h ^= read32(q) * P1; h = rotl(h, 23) * P2 + P3; q += 4. For each remaining byte c: h ^= c * P5; h = rotl(h, 11) * P1. (4) h ^= h >> 33; h *= P2; h ^= h >> 29; h *= P3; h ^= h >> 32 (logical shifts); return h. Check values: xxh64("", 0, 0) = 0xEF46DB3751D8E999, xxh64("abc", 3, 0) = 0x44BC2CF5AD770999. Do not read outside p[0..n-1] (reads are checked) and do not write to memory.
+
+Your previous attempt was:
+<previous>
+export function l $xxh64(l %p, l %n, l %seed) {
+@entry
+%q =l add %p, 0
+%norig =l copy %n
+%seed_copy =l copy %seed
+%v1 =l copy %seed
+%v2 =l copy %seed
+%v3 =l copy %seed
+%v4 =l copy %seed
+%c32 =l copy %n
+%c8 =l copy 0
+%c4 =l copy 0
+%c1 =l copy 0
+%h =l copy %seed
+
+%check_head:  
+csltl %cmp_head, %norig, 32
+jnz %loop_body, %cmp_head
+@body_head
+
+%P1 =l copy -7046029288634856825
+%P2 =l copy -4542638004300531121
+%v1_init =l add %seed, %P1
+%v1_init =l add %v1_init, %P2
+%v2_init =l add %seed, %P2
+%v3_init =l copy %seed
+%n_neg =l sub 0, %P1
+%v4_init =l add %seed, %n_neg
+
+%v1 =l copy %v1_init
+%v2 =l copy %v2_init
+%v3 =l copy %v3_init
+%v4 =l copy %v4_init
+
+%loop_start:
+csltl %cmp_loop, %c32, 32
+jnz %after_loop, %cmp_loop
+
+% stripe processing
+%qstripe =l add %p, 0
+%c32_stripe =l copy %c32
+@loop_body_stripe
+%inner_check:
+csltl %inner_cmp, %c32_stripe, 32
+jnz %after_stripe_loop, %inner_cmp
+
+%qstripe_addr =l add %qstripe, 0
+%val1 =l loadl %qstripe_addr
+%val2 =l loadl 8(%qstripe)
+%val3 =l loadl 16(%qstripe)
+%val4 =l loadl 24(%qstripe)
+
+%r1 =l mul %val1, %P2
+%v1_tmp =l add %v1, %r1
+%rot1 =l rotl %v1_tmp, 31
+%v1_new =l mul %rot1, %P1
+
+%r2 =l mul %val2, %P2
+%v2_tmp =l add %v2, %r2
+%rot2 =l rotl %v2_tmp, 31
+%v2_new =l mul %rot2, %P1
+
+%r3 =l mul %val3, %P2
+%v3_tmp =l add %v3, %r3
+%rot3 =l rotl %v3_tmp, 31
+%v3_new =l mul %rot3, %P1
+
+%r4 =l mul %val4, %P2
+%v4_tmp =l add %v4, %r4
+%rot4 =l rotl %v4_tmp, 31
+%v4_new =l mul %rot4, %P1
+
+%v1 =l copy %v1_new
+%v2 =l copy %v2_new
+%v3 =l copy %v3_new
+%v4 =l copy %v4_new
+
+%qstripe =l add %qstripe, 32
+%c32_stripe =l sub %c32_stripe, 32
+jnz @loop_body_stripe, 1
+@after_stripe_loop
+
+%h_v1 =l rotl %v1, 1
+%h_v2 =l rotl %v2, 7
+%h_v3 =l rotl %v3, 12
+%h_v4 =l rotl %v4, 18
+%h_mid =l add %h_v1, %h_v2
+%h_mid =l add %h_mid, %h_v3
+%h_mid =l add %h_mid, %h_v4
+
+%P4 =l copy -8765619404506079357
+%tmp =l copy 0
+%tmp =l mul %tmp, %P2
+%tmp =l rotl %tmp, 31
+%tmp =l mul %tmp, %P1
+%h_mid =l xor %h_mid, %tmp
+%h_mid =l mul %h_mid, %P1
+%h_mid =l add %h_mid, %P4
+
+%tmp2 =l copy 0
+%tmp2 =l mul %tmp2, %P2
+%tmp2 =l rotl %tmp2, 31
+%tmp2 =l mul %tmp2, %P1
+%h_mid =l xor %h_mid, %v1
+%h_mid =l mul %h_mid, %P1
+%h_mid =l add %h_mid, %P4
+
+%tmp3 =l copy 0
+%tmp3 =l mul %tmp3, %P2
+%tmp3 =l rotl %tmp3, 31
+%tmp3 =l mul %tmp3, %P1
+%h_mid =l xor %h_mid, %v2
+%h_mid =l mul %h_mid, %P1
+%h_mid =l add %h_mid, %P4
+
+%tmp4 =l copy 0
+%tmp4 =l mul %tmp4, %P2
+%tmp4 =l rotl %tmp4, 31
+%tmp4 =l mul %tmp4, %P1
+%h_mid =l xor %h_mid, %v3
+%h_mid =l mul %h_mid, %P1
+%h_mid =l add %h_mid, %P4
+
+%tmp5 =l copy 0
+%tmp5 =l mul %tmp5, %P2
+%tmp5 =l rotl %tmp5, 31
+%tmp5 =l mul %tmp5, %P1
+%h =l xor %h_mid, %v4
+%h =l mul %h, %P1
+%h =l add %h, %P4
+
+jnz @after_head, 1
+
+@loop_body:
+%P5 =l copy -8273865409945709371
+%h =l add %h, %P5
+
+@after_head:
+
+%rem_bytes =l copy %c32
+%q_rem =l add %p, 0
+
+@loop8:
+csltl %cmp8, %rem_bytes, 8
+jnz @after_loop8, %cmp8
+
+%val8 =l loadl %q_rem
+%tmp8_1 =l mul %val8, %P2
+%tmp8_2 =l rotl %h, 31
+%tmp8_3 =l add %tmp8_2, %tmp8_1
+%tmp8_4 =l rotl %tmp8_3, 31
+%tmp8_5 =l mul %tmp8_4, %P1
+%h =l xor %h, %tmp8_5
+
+%h_rot =l rotl %h, 27
+%h =l mul %h_rot, %P1
+%h =l add %h, %P4
+
+%q_rem =l add %q_rem, 8
+%rem_bytes =l sub %rem_bytes, 8
+jnz @loop8, 1
+@after_loop8:
+
+@c4_check:
+csltl %cmp4, %rem_bytes, 4
+jnz @after_loop4, %cmp4
+
+%val4 =l loadw %q_rem
+%val4_64 =l copy %val4
+%tmp4_1 =l mul %val4_64, %P1
+%h =l xor %h, %tmp4_1
+%h_rot4 =l rotl %h, 23
+%h =l mul %h_rot4, %P2
+%h =l add %h, %P3
+
+%q_rem =l add %q_rem, 4
+%rem_bytes =l sub %rem_bytes, 4
+jnz @after_loop4, 0
+@loop4:
+; skipped due to above jump logic fix
+%val4 =l loadw %q_rem
+%val4_64 =l copy %val4
+%tmp4_1 =l mul %val4_64, %P1
+%h =l xor %h, %tmp4_1
+%h_rot4 =l rotl %h, 23
+%h =l mul %h_rot4, %P2
+%h =l add %h, %P3
+
+%q_rem =l add %q_rem, 4
+%rem_bytes =l sub %rem_bytes, 4
+jnz @loop4, 1
+@after_loop4:
+
+@c1_check:
+csltl %cmp1, %rem_bytes, 1
+jnz @after_loop1, %cmp1
+
+@loop1:
+csltl %byte_cmp, %rem_bytes, 1
+jnz @end_loop1, %byte_cmp
+
+%val1 =l loadb %q_rem
+%val1_64 =l copy %val1
+%tmp1_1 =l mul %val1_64, %P5
+%h =l xor %h, %tmp1_1
+%h_rot1 =l rotl %h, 11
+%h =l mul %h_rot1, %P1
+
+%q_rem =l add %q_rem, 1
+%rem_bytes =l sub %rem_bytes, 1
+jnz @loop1, 1
+@end_loop1:
+@after_loop1:
+
+@after_stripe_and_tail:
+
+%h ^= h >> 33
+%tmp_h1 =l shr %h, 33
+%h =l xor %h, %tmp_h1
+
+%h *= P2
+%h =l mul %h, %P2
+
+%tmp_h2 =l shr %h, 29
+%h =l xor %h, %tmp_h2
+
+%h *= P3
+%h =l mul %h, %P3
+
+%tmp_h3 =l shr %h, 32
+%h =l xor %h, %tmp_h3
+
+ret %h
+@after_loop:
+
+%P5 =l copy -8273865409945709371
+%h =l add %h, %P5
+jnz @after_head, 1
+
+@loop_body:
+; fallback for when head is <32 bytes (unreachable due to earlier jump)
+jnz @error_block, 0
+@end_error:
+
+@error_block:
+ret 0
+}
+</previous>
+It failed:
+<failure>
+Compilation failed at stage qbe:
+qbe:-:16: invalid character   (32)
+</failure>
+Write a corrected, complete version. Same output format; output only the code.
