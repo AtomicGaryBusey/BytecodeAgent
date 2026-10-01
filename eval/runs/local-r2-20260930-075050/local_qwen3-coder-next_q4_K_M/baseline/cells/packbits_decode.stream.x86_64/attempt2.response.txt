@@ -1,0 +1,97 @@
+packbits_decode:
+    push rbx
+    push rbp
+    push r12
+    push r13
+    push r14
+    push r15
+    sub rsp, 8
+    # At entry: src=rdi, n=rsi, out=rdx, cap=rcx
+    xor rax, rax          # output_bytes_written = 0 (returned value)
+    mov r8, rdi           # src pointer in r8
+    mov r9, rsi           # n in r9 (source length)
+    mov r10, rdx          # out pointer in r10
+    mov r11, rcx          # cap in r11 (destination capacity)
+    xor rbx, rbx          # src_index = 0
+    xor r12, r12          # dst_index = 0
+
+.Lloop:
+    cmp rbx, r9           # src_index >= n?
+    jae .Ldone            # no more source bytes to read; done successfully
+
+    movzx rcx, byte ptr [r8 + rbx]  # read header byte as unsigned
+    inc rbx               # advance past header
+    cmp cl, 0x80          # signed comparison: h >= 0? (cl < 128 means non-negative)
+    jae .Lrepeat          # if cl >= 128, it's negative (signed) -> repeat packet
+
+    # Literal packet (h in [0,127])
+    lea rdx, [rcx + 1]    # copy_count = h + 1
+    cmp rbx, r9           # src_index + copy_count > n?
+    ja .Lerror_no_src     # not enough source bytes remaining
+
+    # Check output capacity while copying
+.Lliteral_loop:
+    test rdx, rdx         # count == 0?
+    jz .Lloop             # done with this packet
+    cmp r12, r11          # dst_index >= cap?
+    ja .Ldone             # output full; stop writing but return -1 later
+    mov al, byte ptr [r8 + rbx]  # read source byte
+    inc rbx               # advance src index
+    cmp r12, r11          # dst_index >= cap? (after increment)
+    jae .Lnext_packet     # skip writing beyond cap
+    mov byte ptr [r10 + r12], al  # write to output
+    inc r12               # advance dst index
+    dec rdx               # decrement counter
+    jmp .Lliteral_loop
+
+.Lrepeat:
+    cmp cl, 0xff          # h == -1? (cl = 255 signed means -1)
+    je .Lrepeat_one
+    cmp cl, 0x80          # h == -128?
+    jz .Lnext_packet      # skip packet
+
+    # Repeat packet: count = 1 - h, where h is negative
+    mov dl, cl            # dl = h (signed byte)
+    neg dl                # dl = -h
+    inc dl                # dl = 1 - h = repeat count
+    cmp rbx, r9           # src_index >= n?
+    ja .Lerror_no_src     # need one more source byte
+
+.Lrepeat_loop:
+    test dl, dl           # count == 0?
+    jz .Lnext_packet      # done with this packet
+    cmp r12, r11          # dst_index >= cap?
+    ja .Ldone             # output full; stop writing but return -1 later
+    mov al, byte ptr [r8 + rbx]  # read repeat value
+    inc rbx               # advance src index
+    cmp r12, r11          # dst_index >= cap? (after increment)
+    jae .Lnext_packet     # skip writing beyond cap
+    mov byte ptr [r10 + r12], al  # write to output
+    inc r12               # advance dst index
+    dec dl                # decrement counter
+    jmp .Lrepeat_loop
+
+.Lrepeat_one:
+    cmp rbx, r9           # src_index >= n?
+    ja .Lerror_no_src     # need one more source byte
+    mov al, byte ptr [r8 + rbx]  # read repeat value
+    inc rbx               # advance src index
+    dec dl                # count = 256 (0xff + 1 = 256) or fix logic: h=-1 => count=2? No: spec says "1 - h": if h=-1, 1-(-1)=2. Wait.
+    # Correction: for repeat packet, spec says: "-1 <= h <= -1: the next byte is written 1 - h times"
+    # For h = -1: count = 1 - (-1) = 2
+    # For h = -127: count = 1 - (-127) = 128
+    # So our earlier conversion was wrong; we need to compute count = 1 - h (h negative)
+    # Let's recompute with DL holding h as unsigned, so actual h_signed = (dl >= 128 ? dl - 256 : dl)
+    # Then count = 1 - h_signed = 1 - (dl - 256) = 257 - dl for negative case.
+    # Alternatively: use movsx to get signed h, then compute count = 1 - h.
+    # But we already read cl as unsigned; re-read cl with sign extension.
+
+    # Actually fix: restart repeat logic correctly
+.Lrepeat_fixed:
+    cmp rbx, r9           # src_index >= n?
+    ja .Lerror_no_src     # need one more source byte
+    movsx rcx, byte ptr [r8 + rbx]  # h as signed byte (signed interpretation)
+    inc rbx               # advance past header byte
+    lea rdx, [1 - rcx]    # count = 1 - h (h negative)
+
+.L

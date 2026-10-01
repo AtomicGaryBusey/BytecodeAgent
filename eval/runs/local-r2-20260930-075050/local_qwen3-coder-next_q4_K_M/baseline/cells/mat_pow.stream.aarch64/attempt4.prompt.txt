@@ -1,0 +1,406 @@
+Implement the function `int64_t mat_pow(const int64_t *a, int64_t n, int64_t k, int64_t *out, int64_t *tmp)`.
+
+Target: AArch64 (ARMv8-A), Linux AAPCS64. Integer/pointer arguments in x0-x7; 64-bit result in x0. Callee-saved: x19-x28, x29 (frame pointer) and d8-d15 (restore them if you use them); x9-x15 are free scratch registers. sp must stay 16-byte aligned and be back to its entry value when you return with ret (return address in x30). More ABI facts: arguments beyond the eighth are passed on the stack (the 9th at [sp] at entry). A call (bl/blr) overwrites x30, so save x30 (e.g. stp x29, x30, [sp, #-16]!) before calling and restore it before ret. A call clobbers the caller-saved registers x0-x18, x30, v0-v7 and v16-v31 (and the upper halves of v8-v15) and the flags, so keep values that must survive a call in callee-saved registers x19-x28 (saved/restored by you) or in your own stack frame. sp must be 16-byte aligned at every call (and whenever it is used as a base register). Anything below sp may be overwritten by a callee.
+
+Output format: GNU assembler syntax for AArch64, e.g. `ldr x2, [x0, x1, lsl #3]`. Output ONLY the function's instructions and labels, one per line, starting with the label `mat_pow:` (the entry point). Labels are `name:` (letters, digits, _ and ., e.g. `.Lloop:`); every branch target (b, b.cond, cbz, cbnz, tbz, tbnz, bl, adr) must be a label, never a number. Comments start with `//`; do not use `;`. No directives of any kind (no .section/.align/.word/.quad), no literal pools (`ldr x0, =...`), no data, no calls to other functions. Each line under 120 characters. No Markdown fences, no prose before or after the code. Instruction set: ARMv8.0-A with floating point and Advanced SIMD (NEON). Not supported (rejected): CRC32, LSE atomics, dot product, half-precision, crypto (AES/SHA/PMULL) and SVE.
+
+Specification: a points to an n x n matrix of signed 64-bit integers in row-major order (element (i, j) at a[i*n + j]), 1 <= n <= 6. Compute the matrix power a^k (0 <= k <= 64; a^0 is the identity matrix) into out (n*n elements, row-major) and return 0. Matrix products use wrapping 64-bit arithmetic: (x*y)(i, j) = sum over t of x(i, t) * y(t, j), modulo 2^64. tmp points to 2*n*n elements of scratch space that you may use freely (e.g. for a copy of the base and a product), but on return every one of those 2*n*n elements must be 0 (the whole of out and tmp is checked; both start out as garbage). Any correct method is fine (k repeated multiplications, or square-and-multiply). a, out and tmp do not overlap. Do not write to a; read only a, out and tmp; write only out and tmp.
+
+Your previous attempt was:
+<previous>
+mat_pow:
+    stp x29, x30, [sp, #-16]!
+    mov x29, sp
+
+    // k == 0: return identity matrix and clear tmp
+    cmp x2, #0
+    b.eq .Lzero_power
+
+    // Copy input matrix a to tmp (first n*n elements)
+    mov x8, x1              // n
+    lsl x9, x8, #3          // n*8 (row stride in bytes)
+    mul x10, x8, x8         // n*n
+    lsl x10, x10, #3        // n*n*8 total bytes for matrix
+
+    // Copy a to tmp[0..n*n-1]
+    add x11, x4, x10        // tmp + n*n (end of first half)
+    mov x9, x0              // src = a
+.Lcopy_loop:
+    ldr x12, [x9], #8
+    str x12, [x4], #8       // store to tmp and advance dst
+    cmp x4, x11
+    b.lt .Lcopy_loop
+
+    // Reset dst back to start of tmp for multiplication result storage
+    sub x4, x4, x10         // x4 = tmp again (dst for product)
+
+    // Initialize out to identity matrix
+    mov x9, x3              // out base
+    lsl x12, x8, #3         // n*8 (row stride in bytes)
+    mul x10, x8, x8         // n*n
+    lsl x10, x10, #3        // total bytes = n*n*8
+    add x11, x9, x10        // end of out region
+
+.Linit_out:
+    str xzr, [x9], #8       // clear element
+    cmp x9, x11
+    b.lt .Linit_out
+
+    // Set diagonal to 1
+    mov x9, x3              // out base
+    mov x10, xzr            // row index = 0
+.Lset_diag:
+    add x12, x9, x10, lsl #3  // out[i,i] offset = i*8 + i*n*8
+    mov x14, #1
+    str x14, [x9, x12]
+    add x10, x10, #1
+    cmp x10, x8
+    b.lt .Lset_diag
+
+    // Prepare for exponentiation: copy identity to tmp (second half of tmp)
+    mov x5, x3              // out base
+    add x6, x4, x10, lsl #3 // tmp + n*n*8 (start of second half) but need to recompute n*n*8
+    lsl x12, x8, #3         // reuse n*8
+    mul x10, x8, x8         // n*n
+    lsl x10, x10, #3        // n*n*8
+    add x6, x4, x10         // second half start
+
+.Lcopy_id:
+    ldr x12, [x5], #8
+    str x12, [x6], #8
+    cmp x5, x3, lsl #0      // just use end marker
+    sub x7, x3, x10         // wrong approach, redo below
+
+// Redo identity copy properly:
+.Linit_end:
+    mov x9, x3              // out base again
+    add x6, x4, x10         // second half start = tmp + n*n (first half size)
+    lsl x12, x8, #3         // row stride in bytes
+    mul x7, x8, x8          // n*n
+    lsl x7, x7, #3          // total bytes for copy loop bound
+    add x10, x9, x7         // end of out region
+
+.Lcopy_id2:
+    ldr x12, [x9], #8
+    str x12, [x6], #8
+    cmp x9, x10
+    b.lt .Lcopy_id2
+
+    // Now x4 = tmp (base), x5 unused, x6 = base+size, prepare for loop
+
+    // Reset tmp pointer to beginning for multiplication result storage
+    mov x4, x4              // already correct? no, x4 still at tmp + size? restore it:
+
+.Lrestore_tmp:
+    // x10 holds n*n*8 from earlier. subtract to get back.
+    sub x4, x4, x10         // x4 = tmp base
+
+    // exponentiation by squaring: k iterations or better algorithm?
+    // Given small k (up to 64), do binary method.
+    mov x9, x2              // k
+    cbz x9, .Ldone          // if k==0, handled already but just in case
+
+.Lexp_loop:
+    tbnz x9, #0, .Lmultiply // if lsb of k is 1, multiply result by current base
+
+    // Square the base (tmp holds current power)
+    mov x5, x4              // src matrix A = tmp
+    add x6, x4, x10         // src matrix B = tmp + n*n (second half)
+                            // But we need two copies of base for multiplication
+                            // Let's use: dst=tmp (x4), srcA=base(x4), srcB=base(x4) same? no need distinct.
+
+    // We'll compute result in x4, read from x5 and x6
+    // To square, use tmp as both operands but store result in tmp+n*n (second half)
+    add x13, x4, x10        // dst = tmp + n*n
+
+    bl .Lmat_mul            // x4=tmp, x5=tmp, x6=tmp+n*n -> compute tmp * tmp into tmp+n*n
+    // After multiply: result is in x6 (dst), original base in x5 (srcA) and x4 (srcB)
+
+    // Swap pointers: now base is in second half, move it back to first half
+    add x8, x4, x10         // src = tmp + n*n
+.Lswap_copy:
+    ldr x9, [x8], #8
+    str x9, [x4], #8
+    cmp x4, x8
+    b.lt .Lswap_copy
+
+.Lsquare_done:
+    lsr x9, x9, #1          // k >>= 1
+    cbz x9, .Ldone
+    b .Lexp_loop
+
+.Lmultiply:
+    // multiply result (out) by current base (tmp)
+    mov x5, x4              // srcA = tmp (base)
+    add x6, x3, x0          // wrong, need out and temp
+    mov x5, x3              // srcA = out
+    add x6, x4, x10         // srcB = tmp + n*n (current base copy)
+    mov x7, x4              // dst = tmp
+
+    bl .Lmat_mul            // compute out * tmp into tmp
+
+    // Move result from tmp back to out
+    mov x5, x4              // src = tmp
+    add x6, x3, #0          // dst = out (x3)
+.Lmove_back:
+    ldr x7, [x5], #8
+    str x7, [x3], #8
+    cmp x5, x4, lsl #0      // loop until x5 reaches end? need bound
+
+.Lmul_done:
+    lsr x9, x9, #1          // k >>= 1
+    cbz x9, .Ldone
+    b .Lexp_loop
+
+// Instead of above flawed logic, implement clean binary exponentiation:
+
+// Re-initialize approach: copy original a to tmp (first n*n) and identity to out,
+// then for each bit in k from MSB? Or LSB.
+// Let's restart with clear plan.
+
+.Lclean_start:
+    // x4 = tmp, x10 = n*n*8
+
+    // Copy input to tmp
+    mov x9, x0              // a
+    add x11, x4, x10        // end of first half
+.Lcopy_a_to_tmp:
+    ldr x12, [x9], #8
+    str x12, [x4], #8
+    cmp x4, x11
+    b.lt .Lcopy_a_to_tmp
+
+    // Reset tmp for result storage
+    sub x4, x4, x10         // x4 = tmp (dst), x5/x6 as srcA/srcB
+
+    // Identity in out already set, now result = identity
+    mov x5, x3              // result base = out
+    add x6, x4, x10         // current_power = tmp + n*n (second half)
+    mov x7, x5              // dst for mult = result (out)
+
+.Linit_exp:
+    mov x9, x2              // k
+
+    cbz x9, .Lexit
+    cbnz x9, .Lexp_entry
+
+.Lzero_power:
+    mov x8, x1              // n
+    mul x10, x8, x8         // n*n
+    lsl x10, x10, #3        // total bytes
+    add x11, x3, x10        // end of out
+
+.Lclear_out_zero:
+    str xzr, [x3], #8       // clear element
+    cmp x3, x11
+    b.lt .Lclear_out_zero
+
+    // Reset tmp to zeros: total 2*n*n elements, so double size
+    add x10, x10, x10       // 2 * n*n*8 = 2*n*n*8 bytes for tmp area
+    add x11, x4, x10        // end of tmp region
+
+.Lclear_tmp_zero:
+    str xzr, [x4], #8
+    cmp x4, x11
+    b.lt .Lclear_tmp_zero
+
+    mov x0, #0
+    ldp x29, x30, [sp], #16
+    ret
+
+.Lexp_entry:
+    // Binary exponentiation: start with result=identity, base=original_a (in tmp)
+    // k bits from LSB to MSB. We need to process bits 0..63.
+
+    mov x5, x3              // result = out
+    add x6, x4, #0          // base = tmp (first half). Use x6 for base
+
+.Lexp_body:
+    tbnz x9, #0, .Ldo_mult
+    // square the base: base = base * base
+    mov x7, x4              // dst = tmp
+    add x8, x4, x10         // srcA = tmp
+    add x13, x4, x10        // srcB = tmp + n*n (need two copies)
+    // Actually need both operands in different places. Let's copy base to second half first
+
+.Lsquare_prep:
+    mov x7, x6              // src = base = tmp (x4)
+    add x8, x4, x10         // dst for square = second half
+.Lcopy_base_for_square:
+    ldr x9, [x7], #8
+    str x9, [x8], #8
+    cmp x7, x6, lsl #0      // loop until end? need bound. Use x10 = n*n*8
+
+    add x13, x6, x10        // srcB = base + size = second half copy
+    bl .Lmat_mul            // compute tmp * tmp into second_half (x4 + size)
+
+    // Now move result back to first half as new base
+    add x7, x4, x10         // src = second_half
+.Lcopy_back_base:
+    ldr x8, [x7], #8
+    str x8, [x6], #8        // dst = base
+    cmp x7, x6              // base was original + size? not robust. Use loop count.
+
+    // Use loop with counter n*n
+    mov x7, x6              // src base (base in tmp)
+    add x13, x7, x10        // end = base + size
+.Lcopy_base_to_tmp:
+    ldr x8, [x7], #8
+    str x8, [x4], #8        // to first half of tmp
+    cmp x7, x13
+    b.lt .Lcopy_base_to_tmp
+
+    sub x4, x4, x10         // reset dst back
+
+.Lsquaring_done:
+    lsr x9, x9, #1          // k >>= 1
+    cbz x9, .Lexit
+    b .Lexp_body
+
+.Ldo_mult:
+    // multiply result by base: result = result * base
+    mov x7, x5              // dst = result (out)
+    add x8, x6, #0          // srcA = result (x3 or out copy)
+    add x13, x4, x10        // srcB = base + size (second half of tmp)
+
+    bl .Lmat_mul            // compute result * base into dst
+
+    // move result back to result buffer (dst was out in mat_mul? check: dst=x7=out)
+    // Actually .Lmat_mul writes to its dst, so x5 is safe.
+
+.Lmult_done:
+    lsr x9, x9, #1          // k >>= 1
+    cbz x9, .Lexit
+    b .Lexp_body
+
+// .Lcopy_base_to_tmp will fail on bounds. Replace with loop using counter:
+
+// Final approach: use pure binary exponentiation with fixed scratch layout:
+// - tmp[0..n*n-1] = current base (A^m)
+// - tmp[n*n..2*n*n-1] = scratch
+// - out[] = result matrix
+
+// At start: copy a to tmp, identity to out
+.Lentry_start:
+    // x4=tmp, x5=out=x3
+    mov x8, x1              // n
+    mul x9, x8, x8          // n*n
+    lsl x9, x9, #3          // size in bytes
+
+    add x10, x4, x9         // end of tmp region (first half)
+.Lcopy_a:
+    ldr x11, [x0], #8
+    str x11, [x4], #8
+    cmp x4, x10
+    b.lt .Lcopy_a
+
+    sub x4, x4, x9          // restore tmp base
+
+    // init out = identity
+    add x10, x3, x9         // end of out region
+.Lclear_out:
+    str xzr, [x3], #8
+    cmp x3, x10
+    b.lt .Lclear_out
+
+    mov x5, xzr             // i = 0 (diagonal index)
+.Lset_diag_loop:
+    add x6, x3, x5, lsl #3   // out[i,i] = i*8 + i*n*8? no: row-major: offset=i*n*8+i*8
+    mul x7, x8, x5          // i*n
+    lsl x7, x7, #3          // (i*n)*8
+    add x6, x3, x7          // base + i*n*8
+    add x6, x6, x5, lsl #3  // + i*8 = out[i,i]
+    mov x7, #1
+    str x7, [x6]
+    add x5, x5, #1
+    cmp x5, x8
+    b.lt .Lset_diag_loop
+
+.Lexp_init:
+    mov x9, x2              // k
+    cbz x9, .Ldone_final     // k==0 handled above or here
+
+    // current base = tmp[0..n*n-1]
+    // result = out[0..n*n-1]
+
+.Lbin_loop:
+    tbnz x9, #0, .Lmultiply_result
+    // square the base: base = base * base
+    add x6, x4, x9          // wrong. Compute second half offset properly
+
+    // Use tmp2 as dst for square: tmp[n*n..2*n*n-1]
+    add x6, x4, x9, lsl #0  // still wrong.
+
+.Lsquare:
+    mov x5, x4              // srcA = tmp
+    add x7, x4, x9          // srcB = tmp + n*n (size in bytes = x9)
+
+    // dst = scratch, which is also second half: same as x7? yes.
+    bl .Lmat_mul            // computes tmp * tmp into tmp+n*n
+
+    // copy result back to first half
+    add x5, x4, x9          // src = tmp + n*n
+.Lcopy_to_tmp:
+    ldr x6, [x5], #8
+    str x6, [x4], #8
+    cmp x5, x4, lsl #0      // use loop count: we know it's x9 bytes. Use counter.
+
+    mov x13, x1             // n
+    mul x7, x13, x13        // n*n
+.Lcount_copy:
+    ldr x6, [x5], #8
+    str x6, [x4], #8
+    sub x7, x7, #1
+    cbnz x7, .Lcopy_to_tmp
+
+    sub x4, x4, x9          // reset tmp base (restore after copy loop)
+
+.Lsquaring_done2:
+    lsr x9, x9, #1
+    cbz x9, .Ldone_final
+    b .Lbin_loop
+
+.Lmultiply_result:
+    // result = result * base
+    mov x5, x3              // srcA = out
+    add x7, x4, x9          // srcB = tmp + n*n (second half)
+    bl .Lmat_mul            // dst = ? mat_mul writes to its dst arg (x4 in our call? check signature)
+
+// Actually we must be precise about .Lmat_mul's calling convention for arguments.
+// Since it's a nested function in same file, define .Lmat_mul:
+
+.Lmat_mul:
+    // x5 = srcA (n x n), x7 = srcB (n x n), dst in out? No: spec says mat_pow's tmp is 2*n*n scratch
+    // In our usage, we use out as dst for multiplication when multiplying result by base,
+    // and second half of tmp for squaring.
+    // So let's assume caller passes:
+    //   srcA in x5 (base), srcB in x7 (dst = x4 + size, or out? handle generically)
+    // but we need to pass dst as well.
+
+// Re-think: rewrite with clear argument handling for mat_mul:
+// We'll store dst in a fixed register, say x6 = destination.
+// But caller may vary. Instead, let's hardcode layout per call site.
+
+// For squaring: compute tmp * tmp -> tmp+n*n
+//   srcA = tmp (x4), srcB = tmp + size (x4+x9)
+//   dst = tmp + size (same as srcB) but then we clobber srcB.
+// So better use scratch space for dst, which is second half.
+
+// Final layout:
+//   tmp[0..n*n-1]     = srcA
+//   tmp[n*n..2*n*n-1] = srcB and result (dst)
+
+// That's fine if we overwrite srcB with result. We can reload srcB from first half before multiply.
+
+// So for squaring:
+//   copy tmp[0..n*n-1] to tmp[n*n..2*n*n-1] as srcB
+//   then compute dst=tmp[0..n*n-1], srcA=tmp[0..n*n-1], srcB=tmp[n*n..2*n*n-1]
+
+.Lsquare:
+</previous>
+It failed:
+<failure>
+The assembler rejected line 389 (``): aarch64: duplicate label '.Lsquare' (line 389: '')
+Generation was stopped at that line; the 193 instructions before it had been accepted.
+</failure>
+Write a corrected, complete version. Same output format; output only the code.

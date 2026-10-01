@@ -1,0 +1,220 @@
+mat_pow:
+    stp x29, x30, [sp, #-16]!
+    mov x29, sp
+
+    // Handle k == 0: set out to identity and clear tmp
+    cbz x2, .Lzero_power
+
+    // Load n and compute n*n*8 (size in bytes for one matrix)
+    mov x8, x1              // n
+    mul x9, x8, x8          // n*n
+    lsl x9, x9, #3          // size = n*n*8
+
+    // Copy input matrix a to tmp[0..n*n-1]
+    add x10, x4, x9         // end of first half of tmp
+.Lcopy_a_to_tmp:
+    ldr x11, [x0], #8
+    str x11, [x4], #8
+    cmp x4, x10
+    b.lt .Lcopy_a_to_tmp
+
+    // Restore tmp base for later use
+    sub x4, x4, x9          // x4 = tmp (first half)
+
+    // Initialize out to identity matrix
+    add x10, x3, x9         // end of out region
+.Linit_out_zeros:
+    str xzr, [x3], #8
+    cmp x3, x10
+    b.lt .Linit_out_zeros
+
+    // Set diagonal elements to 1
+    mov x10, xzr            // i = 0
+.Lset_diag:
+    mul x11, x8, x10        // i * n
+    lsl x11, x11, #3        // (i*n)*8
+    lsl x12, x10, #3        // i*8
+    add x11, x11, x12       // offset = i*n*8 + i*8
+    add x12, x3, x11        // &out[i][i]
+    mov x13, #1
+    str x13, [x12]
+    add x10, x10, #1
+    cmp x10, x8
+    b.lt .Lset_diag
+
+    // Copy tmp (first half) to second half as base for squaring
+    add x5, x4, x9          // src = tmp + size (second half start)
+.Lcopy_tmp_to_second:
+    ldr x6, [x4], #8
+    str x6, [x5], #8
+    cmp x4, x10              // x10 still holds end of first half? No: recompute
+    b.lt .Lcopy_tmp_to_second
+
+// Recompute bound properly for copy:
+.Lsetup_copy_second:
+    mov x5, x4              // base = tmp
+    add x6, x4, x9          // dst = tmp + size
+    lsl x7, x1, #3          // n*8
+    mul x8, x1, x1          // n*n
+    lsl x8, x8, #3          // size in bytes again
+    add x10, x6, x8         // end of second half
+.Lcopy_to_second:
+    ldr x7, [x5], #8
+    str x7, [x6], #8
+    cmp x6, x10
+    b.lt .Lcopy_to_second
+
+    sub x4, x4, x9          // restore tmp base (first half)
+
+    // Now prepare for binary exponentiation:
+    // result = out, base = first half of tmp
+    mov x5, x3              // result = out
+    mov x6, x4              // base = tmp
+
+.Lexp_loop:
+    cbz x2, .Ldone_final     // k == 0 handled earlier but safe check
+
+    tbnz x2, #0, .Lmultiply_result
+
+    // Square the base: base = base * base
+    // Use second half of tmp as dst for multiplication result
+    add x7, x6, x9          // srcB = tmp + size (base copy)
+    mov x8, x6              // dst = tmp (first half) - will overwrite base after multiply
+
+    bl .Lmat_mul            // computes dst=x6, srcA=x7, srcB=x7+size? No, see below
+
+.Lsquaring_done:
+    lsr x2, x2, #1
+    cbz x2, .Ldone_final
+    b .Lexp_loop
+
+.Lmultiply_result:
+    // result = result * base
+    mov x8, x5              // dst = result (out)
+    add x7, x6, x9          // srcB = tmp + size (base copy)
+
+    bl .Lmat_mul            // computes dst=x8, srcA=x5, srcB=x7
+
+.Lmult_done:
+    lsr x2, x2, #1
+    cbz x2, .Ldone_final
+    b .Lexp_loop
+
+// mat_mul: compute out = A * B where A is at x5, B at x6 (after adjust), result at x8
+// x9 = n, x10 = size, caller ensures proper layout
+.Lmat_mul:
+    // Save callee-saved registers we use
+    stp x19, x20, [sp, #-16]!
+    stp x21, x22, [sp, #16]
+
+    mov x19, x8             // dst base
+    mov x20, x5             // srcA base
+    mov x21, x6             // srcB base (will be adjusted to row/col)
+    mov x22, x9             // save n
+
+    // Clear dst matrix first
+    lsl x23, x22, #3        // n*8
+    mul x24, x22, x22       // n*n
+    lsl x24, x24, #3        // size in bytes
+    add x25, x19, x24       // end of dst region
+.Lmul_clear_dst:
+    str xzr, [x19], #8
+    cmp x19, x25
+    b.lt .Lmul_clear_dst
+
+    sub x19, x19, x24       // restore dst base
+
+    // Compute matrix multiplication: C[i][j] = sum_k A[i][k]*B[k][j]
+    mov x8, xzr             // i = 0
+.Lrow_loop:
+    cmp x8, x22
+    b.ge .Lmul_done_i       // all rows done
+
+    mul x10, x22, x8        // i*n (row offset in elements)
+    lsl x10, x10, #3        // (i*n)*8 = A row offset
+    add x11, x20, x10       // &A[i][0]
+
+    mov x9, xzr             // j = 0
+.Lcol_loop:
+    cmp x9, x22
+    b.ge .Lrow_next_col
+
+    mul x13, x22, x9        // j*n (B column offset in elements)
+    lsl x14, x13, #3        // (j*n)*8 = B column base offset per row
+    add x15, x21, x14       // &B[0][j] base
+
+    // Compute sum for C[i][j]
+    mov x7, xzr             // sum = 0
+    mov x16, xzr            // k = 0
+.Lsum_loop:
+    cmp x16, x22
+    b.ge .Lcol_done
+
+    // A[i][k] = *(A_row + k*8) = *(x11 + k*8)
+    lsl x17, x16, #3        // k*8
+    add x18, x11, x17       // &A[i][k]
+    ldr x0, [x18]           // A[i][k]
+
+    // B[k][j] = *(B_base + k*n*8 + j*8) = *(x15 + k*(n*8) + 0) but need per k
+    lsl x17, x16, #3        // k*8
+    add x17, x15, x17       // B[k][j] base for this k? No: offset per row is n*8
+
+    // Recompute: B[k][j] = B + (k*n + j)*8 = x21 + (k*n + j)*8
+    mul x17, x22, x16       // k*n
+    add x17, x17, x9        // k*n + j
+    lsl x17, x17, #3        // offset in bytes
+    add x17, x21, x17       // &B[k][j]
+    ldr x1, [x17]           // B[k][j]
+
+    mul x0, x0, x1          // A[i][k]*B[k][j]
+    add x7, x7, x0          // sum += product
+    add x16, x16, #1        // k++
+    b .Lsum_loop
+
+.Lcol_done:
+    lsl x10, x8, #3         // i*8
+    mul x12, x22, x10       // i*n*8? No: j offset first
+    add x10, x19, x10       // base + i*8
+
+    lsl x17, x9, #3         // j*8
+    add x17, x10, x17       // &C[i][j] = dst_base + i*8 + j*8
+
+    str x7, [x17]
+    add x9, x9, #1          // j++
+    b .Lcol_loop
+
+.Lrow_next_col:
+    add x8, x8, #1          // i++
+    b .Lrow_loop
+
+.Lmul_done_i:
+    ldp x19, x20, [sp], #16
+    ldp x21, x22, [sp], #16
+    ret
+
+.Lzero_power:
+    mov x8, x1              // n
+    mul x9, x8, x8          // n*n
+    lsl x9, x9, #3          // size = n*n*8
+    add x10, x3, x9         // end of out region
+
+.Lclear_out:
+    str xzr, [x3], #8
+    cmp x3, x10
+    b.lt .Lclear_out
+
+    sub x3, x3, x9          // restore out base
+
+    // Clear tmp: 2*n*n elements -> 2*size bytes
+    lsl x10, x9, #1         // 2 * n*n*8 = 2*n*n*8
+    add x11, x4, x10        // end of tmp region
+
+.Lclear_tmp:
+    str xzr, [x4], #8
+    cmp x4, x11
+    b.lt .Lclear_tmp
+
+.Ldone_final:
+    mov x0, #0
+    ldp x29, x30, [sp], #16
+    ret

@@ -1,0 +1,142 @@
+Implement the function `int64_t mp_mul(const uint64_t *a, int64_t na, const uint64_t *b, int64_t nb, uint64_t *r)`.
+
+Target: x86-64, Linux System V ABI. Integer/pointer arguments in rdi, rsi, rdx, rcx, r8, r9; 64-bit result in rax. Callee-saved: rbx, rbp, r12, r13, r14, r15 (restore them if you use them); all other registers may be clobbered. rsp is 16-byte aligned before the call, so it is 8 mod 16 at entry; it must be back to its entry value when you return with ret. Never write to the caller's frame (at or above the return address). More ABI facts: arguments beyond the sixth are passed on the stack; at entry the return address is at [rsp], the 7th argument at [rsp+8], the 8th at [rsp+16]. A call clobbers the caller-saved registers rax, rcx, rdx, rsi, rdi, r8-r11, all xmm registers and the flags, so keep values that must survive a call in callee-saved registers (saved/restored by you) or in your own stack frame. rsp must be 16-byte aligned at every call instruction (at entry rsp is 8 mod 16, so an odd number of 8-byte pushes, or `sub rsp, 8` plus any multiple of 16, re-aligns it). Anything below rsp may be overwritten by a callee. The direction flag must be clear at calls and on return.
+
+Output format: GNU assembler syntax, Intel flavour without register prefixes (as with `.intel_syntax noprefix`), e.g. `mov rax, qword ptr [rdi + rcx*8]`. Output ONLY the function's instructions and labels, one per line, starting with the label `mp_mul:` (the entry point). Labels are `name:` (letters, digits, _ and ., e.g. `.Lloop:`); every branch target must be a label, never a number. Comments start with `#`; do not use `;`. No directives of any kind (no .section/.align/.byte/.quad/.p2align), no data, no calls to other functions. Each line under 120 characters. No Markdown fences, no prose before or after the code. Instruction set: x86-64 with SSE up to SSE4.2 (including SSSE3, SSE4.1 and crc32), POPCNT, LZCNT, BMI1/BMI2 (andn, bextr, blsi, blsr, tzcnt, bzhi, mulx, pdep, pext, rorx, sarx, shlx, shrx), MOVBE, AES-NI and PCLMULQDQ. Not supported (rejected): AVX, AVX2, AVX-512, FMA, F16C and every other VEX/EVEX vector instruction, ADX (adcx/adox; use adc) and SHA.
+
+Specification: Multi-precision multiplication. a holds na and b holds nb 64-bit limbs (0 <= na, nb <= 8), each an unsigned number in little-endian limb order: A = a[0] + a[1]*2^64 + ... . Write the full product A*B to r[0..na+nb-1] (little-endian limbs, every one of the na+nb limbs written, including high zero limbs; r starts out as garbage and does not overlap a or b) and return the number of significant limbs: the smallest k such that r[k..na+nb-1] are all 0 (so 0 when the product is 0, e.g. when na or nb is 0). Limbs are full unsigned 64-bit values (up to 2^64 - 1): the schoolbook method needs the full 128-bit product of two limbs and carries that propagate. Example: a = {2^64-1}, b = {2^64-1} gives r = {1, 2^64-2} and returns 2. Read only a[0..na-1], b[0..nb-1] and r[0..na+nb-1]; write only r[0..na+nb-1] (all checked).
+
+Your previous attempt was:
+<previous>
+mp_mul:
+    push rbx
+    push rbp
+    push r12
+    push r13
+    push r14
+    push r15
+    sub rsp, 8
+    # Save arguments in callee-saved registers where convenient
+    mov r12, rdi        # a
+    mov r13, rsi        # na
+    mov r14, rdx        # b
+    mov r15, rcx        # nb
+    mov rbp, r8         # r
+
+    xor rax, rax        # will hold number of significant limbs (initially 0)
+    test r13, r13
+    jz .Lzero_result    # if na == 0, return 0
+    test r15, r15
+    jz .Lzero_result    # if nb == 0, return 0
+
+    mov rbx, rax        # carry = 0 (rbx)
+    xor rdx, rdx        # high part will be used for multiplication
+
+    lea r8, [r13 + r15] # total limbs = na + nb
+    dec r8              # last index = na+nb-1
+    mov r9, r8          # i+j loop max index (for outer loop)
+    xor rsi, rsi        # outer index i = 0
+
+.Louter_loop:
+    # Initialize carry and high for this row
+    xor rbx, rbx        # carry = 0
+    xor rdx, rdx        # hi = 0
+    mov rcx, rsi        # j = 0 (inner loop index)
+
+.Linner_loop:
+    mov rax, [r12 + rcx*8]   # a[j]
+    mov r10, [r14 + rsi*8]   # b[i]
+    mulx rax, rdx, r10       # rdx:rax = a[j]*b[i]
+    add rax, rbx             # add carry
+    adc rdx, 0               # propagate carry to high part
+
+    mov rbx, rdx             # new carry = high part
+
+    # Add product to r[ci] where ci = i+j
+    lea r11, [rsi + rcx]
+    cmp r11, r8
+    ja .Lskip_write          # skip if index out of range
+
+    add [rbp + r11*8], rax   # add low part to r[i+j]
+    jc .Lhandle_carry        # if carry in addition, propagate
+
+.Lnext_inner:
+    inc rcx
+    cmp rcx, r13             # continue while j < na
+    jb .Linner_loop
+    # End of row: store final carry (it may contribute to next rows)
+    # But since we're done with this row, and next row adds to different indices,
+    # we only need to check if carry > 0 at end of entire computation.
+
+    inc rsi                  # i++
+    cmp rsi, r15             # continue while i < nb
+    jb .Louter_loop
+
+    # Now compute significant limbs from top down
+.Lfind_sig:
+    dec r8                   # start from highest limb (na+nb-1) downwards
+    mov rax, [rbp + r8*8]
+    test rax, rax
+    jnz .Lfound_sig          # found non-zero limb at r8
+
+    test r8, r8
+    jnz .Lfind_sig           # continue downward
+
+    xor rax, rax             # all zero -> return 0
+    add rsp, 8
+    pop r15
+    pop r14
+    pop r13
+    pop r12
+    pop rbp
+    pop rbx
+    ret
+
+.Lfound_sig:
+    inc r8                   # because r8 points to last non-zero limb
+    mov rax, r8              # return na+nb limbs? no: we need count = index+1
+    add rax, 1               # count of significant limbs
+    add rsp, 8
+    pop r15
+    pop r14
+    pop r13
+    pop r12
+    pop rbp
+    pop rbx
+    ret
+
+.Lzero_result:
+    xor rax, rax             # return 0
+    add rsp, 8
+    pop r15
+    pop r14
+    pop r13
+    pop r12
+    pop rbp
+    pop rbx
+    ret
+
+.Lskip_write:
+    inc rcx
+    cmp rcx, r13             # continue while j < na
+    jb .Linner_loop
+    inc rsi                  # i++
+    cmp rsi, r15             # continue while i < nb
+    jb .Louter_loop
+    jmp .Lfind_sig
+
+.Lhandle_carry:
+    # carry occurred when adding to r[i+j], so need to propagate to next limb
+    lea r10, [rsi + rcx]     # original index i+j
+    mov rax, 1               # add 1 to high part
+    adc [rbp + r10*8 + 8], rax   # this may overflow again...
+    jmp .Lnext_inner
+</previous>
+It failed:
+<failure>
+44 of 45 test cases failed. First failures:
+  mp_mul(a=[0x0, 0x0], na=2, b=[0x0, 0x0, 0x0], nb=3, r): expected 0, but the run failed: x86_64: out-of-bounds read at 0x401020 (allowed [0x401010, 0x401020), [0x401038, 0x401050), [0x401058, 0x401080)) [the faulting instruction is line 37: `mov rax, [r12 + rcx*8]`]
+  mp_mul(a=[0x1], na=1, b=[0xffffffffffffffff, 0xffffffffffffffff, 0xffffffffffffffff, 0xffffffffffffffff, ... (8 elements)], nb=8, r): expected 8, but the run failed: x86_64: out-of-bounds read at 0x401018 (allowed [0x401010, 0x401018), [0x401030, 0x401070), [0x401090, 0x4010d8)) [the faulting instruction is line 37: `mov rax, [r12 + rcx*8]`]
+  mp_mul(a=[0x7, 0x0, 0x0], na=3, b=[0x0, 0x9, 0x0, 0x0], nb=4, r): expected 2, but the run failed: x86_64: out-of-bounds read at 0x401028 (allowed [0x401010, 0x401028), [0x401038, 0x401058), [0x401068, 0x4010a0)) [the faulting instruction is line 37: `mov rax, [r12 + rcx*8]`]
+</failure>
+Write a corrected, complete version. Same output format; output only the code.

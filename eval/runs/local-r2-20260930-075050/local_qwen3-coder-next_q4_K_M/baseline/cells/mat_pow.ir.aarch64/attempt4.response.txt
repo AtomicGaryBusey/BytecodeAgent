@@ -1,0 +1,251 @@
+export function l $mat_pow(l %a, l %n, l %k, l %out, l %tmp) {
+l %size, %i, %j, %t, %idx_in, %idx_out, %val1, %val2, %acc, %res_idx, %prod
+w %zero_w, %one_w, %k_zero, %k_odd
+
+@entry
+	%size = mul l %n, %n
+	%zero_w = csltl w 0, 1
+	%one_w = csltl w 1, 0
+
+	// Handle k == 0: set out to identity matrix
+	%k_zero = ceql w %k, 0
+	jnz %k_zero, @init_identity
+
+	// Initialize result as zero matrix in out
+	%i = mul l 0, %n
+@store_loop:
+	%j = mul l 0, %n
+@store_row:
+	%idx_out = mul l %i, %n
+	%idx_out = add l %idx_out, %j
+	storel %zero_w, %out+8*%idx_out
+	add %j, 1
+	cmp %j, %n
+	%in_j = csltl w %j, %n
+	jnz @store_row
+	add %i, 1
+	cmp %i, %n
+	%in_i = csltl w %i, %n
+	jnz @store_loop
+
+	// Set out[i][i] = 1 for identity
+	%i = mul l 0, %n
+@set_id_diag:
+	%res_idx = mul l %i, %n
+	%res_idx = add l %res_idx, %i
+	storel %one_w, %out+8*%res_idx
+	add %i, 1
+	cmp %i, %n
+	%in_i2 = csltl w %i, %n
+	jnz @set_id_diag
+
+	// Copy base matrix a into first half of tmp (tmp + 0)
+@store_base:
+	%idx_in = sub l %size, 1
+@copy_a_loop:
+	%val1 = loadl l %a+8*%idx_in
+	storel %val1, %tmp+8*%idx_in
+	sub %idx_in, 1
+	cmp %idx_in, -1
+	jnz @copy_a_loop
+
+	// Main exponentiation loop (square-and-multiply)
+@exp_start:
+	csltl w 0, %k
+	jz @done
+
+@mat_pow_loop:
+	// Check if k is odd
+	%k_odd = and l %k, 1
+	csltl w 1, %k_odd
+	jnz @multiply
+
+	// Square the base: tmp[0..size-1] = tmp * tmp
+	call @matrix_mult_base_sq
+
+	// Copy squared result back to tmp (overwrite same region)
+	%idx_in = sub l %size, 1
+@copy_sq_to_base:
+	%val2 = loadl l %tmp+8*%size+8*%idx_in
+	storel %val2, %tmp+8*%idx_in
+	sub %idx_in, 1
+	cmp %idx_in, -1
+	jnz @copy_sq_to_base
+
+	// k = k / 2 (right shift)
+	%k = srl l %k, 1
+	csltl w 0, %k
+	jnz @mat_pow_loop
+	jmp @exp_start
+
+@multiply:
+	// Multiply result (out) by base (tmp), store into tmp+size
+	call @matrix_mult
+
+	// Copy product from tmp+size to out
+	%idx_in = sub l %size, 1
+@copy_prod_to_out:
+	%val2 = loadl l %tmp+8*%size+8*%idx_in
+	storel %val2, %out+8*%idx_in
+	sub %idx_in, 1
+	cmp %idx_in, -1
+	jnz @copy_prod_to_out
+
+	// Square the base: tmp[0..size-1] = tmp * tmp
+	call @matrix_mult_base_sq
+
+	// Copy squared result back to tmp (overwrite same region)
+	%idx_in = sub l %size, 1
+@copy_sq_to_base2:
+	%val2 = loadl l %tmp+8*%size+8*%idx_in
+	storel %val2, %tmp+8*%idx_in
+	sub %idx_in, 1
+	cmp %idx_in, -1
+	jnz @copy_sq_to_base2
+
+	// k = k / 2 (right shift)
+	%k = srl l %k, 1
+	csltl w 0, %k
+	jnz @mat_pow_loop
+	jmp @exp_start
+
+@done:
+	// Clear tmp arrays as required: set all 2*n^2 elements of tmp to zero
+	%total_elems = mul l 2, %size
+	%idx_in = sub l %total_elems, 1
+@clear_tmp:
+	storel %zero_w, %tmp+8*%idx_in
+	sub %idx_in, 1
+	cmp %idx_in, -1
+	jnz @clear_tmp
+
+	lret l 0
+
+@init_identity:
+	// Initialize result as identity matrix in out
+	%i = mul l 0, %n
+@init_id_loop_i:
+	%j = mul l 0, %n
+@init_id_loop_j:
+	%res_idx = mul l %i, %n
+	%res_idx = add l %res_idx, %j
+	cmp %i, %j
+	%is_diag = ceql w %i, %j
+	jnz @init_id_is_diag
+	storel %zero_w, %out+8*%res_idx
+	jmp @init_id_next
+
+@init_id_is_diag:
+	storel %one_w, %out+8*%res_idx
+
+@init_id_next:
+	add %j, 1
+	cmp %j, %n
+	%in_j2 = csltl w %j, %n
+	jnz @init_id_loop_j
+
+	add %i, 1
+	cmp %i, %n
+	%in_i3 = csltl w %i, %n
+	jnz @init_id_loop_i
+
+	// Copy base matrix a into first half of tmp (tmp + 0)
+@store_base2:
+	%idx_in = sub l %size, 1
+@copy_a_loop2:
+	%val1 = loadl l %a+8*%idx_in
+	storel %val1, %tmp+8*%idx_in
+	sub %idx_in, 1
+	cmp %idx_in, -1
+	jnz @copy_a_loop2
+
+	jmp @exp_start
+
+@matrix_mult_base_sq:
+	// Square base matrix stored in tmp[0..size-1], output to tmp[size..2*size-1]
+	%outer_i = mul l 0, %n
+@sq_loop_i:
+	%inner_j = mul l 0, %n
+@sq_loop_j:
+	%acc = mul l 0, 0 // zero accumulator
+	%inner_t = mul l 0, %n
+@sq_loop_t:
+	// Load A[outer_i][inner_t]
+	%idx_row_t = mul l %outer_i, %n
+	%idx_row_t = add l %idx_row_t, %inner_t
+	%val1 = loadl l %tmp+8*%idx_row_t
+
+	// Load A[inner_t][inner_j]
+	%idx_col_t = mul l %inner_t, %n
+	%idx_col_t = add l %idx_col_t, %inner_j
+	%val2 = loadl l %tmp+8*%idx_col_t
+
+	%prod = mull l %val1, %val2
+	%acc = add l %acc, %prod
+
+	add %inner_t, 1
+	cmp %inner_t, %n
+	%in_t = csltl w %inner_t, %n
+	jnz @sq_loop_t
+
+	// Store result to tmp[size + outer_i * n + inner_j]
+	%res_idx = mul l %outer_i, %n
+	%res_idx = add l %res_idx, %inner_j
+	storel %acc, %tmp+8*%size+8*%res_idx
+
+	add %inner_j, 1
+	cmp %inner_j, %n
+	%in_j4 = csltl w %inner_j, %n
+	jnz @sq_loop_j
+
+	add %outer_i, 1
+	cmp %outer_i, %n
+	%in_i4 = csltl w %outer_i, %n
+	jnz @sq_loop_i
+
+	lret l 0
+
+@matrix_mult:
+	// Multiply out * tmp (base), store to tmp+size
+	%outer_i = mul l 0, %n
+@mult_loop_i:
+	%inner_j = mul l 0, %n
+@mult_loop_j:
+	%acc = mul l 0, 0 // zero accumulator
+	%inner_t = mul l 0, %n
+@mult_loop_t:
+	// Load out[outer_i][inner_t]
+	%idx_row_t = mul l %outer_i, %n
+	%idx_row_t = add l %idx_row_t, %inner_t
+	%val1 = loadl l %out+8*%idx_row_t
+
+	// Load tmp[inner_t][inner_j]
+	%idx_col_t = mul l %inner_t, %n
+	%idx_col_t = add l %idx_col_t, %inner_j
+	%val2 = loadl l %tmp+8*%idx_col_t
+
+	%prod = mull l %val1, %val2
+	%acc = add l %acc, %prod
+
+	add %inner_t, 1
+	cmp %inner_t, %n
+	%in_t2 = csltl w %inner_t, %n
+	jnz @mult_loop_t
+
+	// Store result to tmp[size + outer_i * n + inner_j]
+	%res_idx = mul l %outer_i, %n
+	%res_idx = add l %res_idx, %inner_j
+	storel %acc, %tmp+8*%size+8*%res_idx
+
+	add %inner_j, 1
+	cmp %inner_j, %n
+	%in_j5 = csltl w %inner_j, %n
+	jnz @mult_loop_j
+
+	add %outer_i, 1
+	cmp %outer_i, %n
+	%in_i5 = csltl w %outer_i, %n
+	jnz @mult_loop_i
+
+	lret l 0
+}

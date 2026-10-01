@@ -1,0 +1,118 @@
+Implement the function `int64_t packbits_decode(const uint8_t *src, int64_t n, uint8_t *out, int64_t cap)`.
+
+Target: AArch64 (ARMv8-A), Linux AAPCS64. Integer/pointer arguments in x0-x7; 64-bit result in x0. Callee-saved: x19-x28, x29 (frame pointer) and d8-d15 (restore them if you use them); x9-x15 are free scratch registers. sp must stay 16-byte aligned and be back to its entry value when you return with ret (return address in x30). More ABI facts: arguments beyond the eighth are passed on the stack (the 9th at [sp] at entry). A call (bl/blr) overwrites x30, so save x30 (e.g. stp x29, x30, [sp, #-16]!) before calling and restore it before ret. A call clobbers the caller-saved registers x0-x18, x30, v0-v7 and v16-v31 (and the upper halves of v8-v15) and the flags, so keep values that must survive a call in callee-saved registers x19-x28 (saved/restored by you) or in your own stack frame. sp must be 16-byte aligned at every call (and whenever it is used as a base register). Anything below sp may be overwritten by a callee.
+
+Output format: GNU assembler syntax for AArch64, e.g. `ldr x2, [x0, x1, lsl #3]`. Output ONLY the function's instructions and labels, one per line, starting with the label `packbits_decode:` (the entry point). Labels are `name:` (letters, digits, _ and ., e.g. `.Lloop:`); every branch target (b, b.cond, cbz, cbnz, tbz, tbnz, bl, adr) must be a label, never a number. Comments start with `//`; do not use `;`. No directives of any kind (no .section/.align/.word/.quad), no literal pools (`ldr x0, =...`), no data, no calls to other functions. Each line under 120 characters. No Markdown fences, no prose before or after the code. Instruction set: ARMv8.0-A with floating point and Advanced SIMD (NEON). Not supported (rejected): CRC32, LSE atomics, dot product, half-precision, crypto (AES/SHA/PMULL) and SVE.
+
+Specification: Decompress PackBits data: src holds n bytes (0 <= n <= 600) of packets, decoded left to right into out, which has room for cap bytes (0 <= cap <= 1200). Each packet starts with a header byte h read as a signed byte: 0 <= h <= 127: a literal packet, the next h + 1 bytes are copied to the output; -127 <= h <= -1: a repeat packet, the next byte is written 1 - h times; h = -128: no operation (the packet is just that byte). Return the number of bytes written. Errors: if a packet needs more source bytes than remain in src[0..n-1] (checked when its header is read, before any of its output is written), return -2 (the output of earlier packets stays written). If the output would exceed cap bytes, write exactly the first cap bytes of the output (out[0..cap-1] completely filled) and return -1. Example: 01 'a' 'b' FE 'c' 00 'd' decodes to "abcccd" (returns 6); with cap = 4 it writes "abcc" and returns -1. Read only src[0..n-1] and write only out[0..cap-1] (both are checked: never write out[cap], even when cap is 0).
+
+Your previous attempt was:
+<previous>
+packbits_decode:
+    stp x29, x30, [sp, #-16]!
+    mov x29, sp
+    sub sp, sp, #32
+    str x19, [sp, #8]
+    str x20, [sp, #16]
+    str x21, [sp, #24]
+    str x22, [sp, #28]
+    mov x19, x0          // src
+    mov x20, x1          // n
+    mov x21, x2          // out
+    mov x22, x3          // cap
+    eor x23, x23, x23    // written = 0 (output pointer)
+    eor x24, x24, x24    // i = 0 (source index)
+
+.Lloop:
+    cmp x24, x20
+    b.ge .Ldone
+
+    ldrb w9, [x19, x24]
+    add x24, x24, #1     // advance past header
+
+    cmp w9, #128
+    b.ge .Lrepeat_packet  // h >= 128 (only -128 remains in signed interpretation)
+
+    // Literal packet: copy h+1 bytes
+    add x25, x9, #1      // count = h + 1
+    cmp x24, x20
+    b.gt .Lerror_src_short
+
+    sub x26, x22, x23    // remaining output capacity
+    cmp x25, x26
+    ble .Lfull_literal_copy
+
+.Lwrite_partial_literal:
+    mov x9, x26          // write only up to capacity
+    add x10, x19, x24    // src_ptr = src + i
+    add x11, x21, x23    // out + written
+    add x12, x10, x9     // src_end for bounds check (to verify we don't read past n)
+    sub x14, x20, x24    // remaining source bytes after header
+    cmp x9, x14
+    b.gt .Lerror_src_short
+
+.Lliteral_partial_copy:
+    add x13, x10, x9     // end src pointer for partial copy
+.Lpartial_literal_loop:
+    cmp x10, x13
+    b.ge .Lpartial_literal_done
+    ldrb w8, [x10], #1
+    strb w8, [x21, x23]
+    add x23, x23, #1
+    b .Lpartial_literal_loop
+
+.Lpartial_literal_done:
+    b .Lerror_cap_exceeded
+
+.Lfull_literal_copy:
+    add x9, x19, x24     // src_ptr = src + i
+    mov x10, x23         // dst_ptr = written
+    add x11, x21, x10    // out + written
+    bl .Lmemcpy_part
+    add x23, x23, x25    // written += count
+    add x24, x24, x25    // i += count
+    cmp x23, x22
+    b.ge .Lerror_cap_exceeded
+    b .Lloop
+
+.Lrepeat_packet:
+    cmp w9, #128
+    beq .Lskip_nop       // h == -128 (0x80 as signed) -> no op
+    neg x25, x9          // count = 1 - h (since h is negative, e.g., -1 -> 2)
+    add x25, x25, #1     // actually: count = 1 - h, but h is signed; we need careful math
+
+.Lrepeat_prep:
+    cmp x24, x20
+    b.gt .Lerror_src_short
+    ldrb w10, [x19, x24]
+    add x24, x24, #1     // advance past data byte
+
+    sub x26, x22, x23    // remaining output capacity
+    cmp x25, x26
+    ble .Lfull_repeat_copy
+
+.Lwrite_partial_repeat:
+    mov x9, x26          // write only up to capacity
+    b .Lpartial_repeat_copy
+
+.Lfull_repeat_copy:
+    mov x9, x25
+    add x23, x23, x9     // advance written first (will be capped by cap in next loop check)
+
+.Lcheck_cap_after_repeat:
+    cmp x23, x22
+    b.gt .Lerror_cap_exceeded  // this shouldn't happen with proper logic but safety first
+
+.Lpartial_repeat_copy:
+    // write byte w10 for count = x9 times into out + written (x23)
+    add x10, x21, x23    // dst_ptr
+    cbz x9, .Lrepeat_done
+.Lrepeat_write_loop:
+    strb w10, [x10], #1
+</previous>
+It failed:
+<failure>
+The assembler rejected line 101 (`strb w10, [x10], #1`): aarch64: assembler produced no bytes (line 101: 'strb w10, [x10], #1')
+Generation was stopped at that line; the 68 instructions before it had been accepted.
+</failure>
+Write a corrected, complete version. Same output format; output only the code.

@@ -1,0 +1,191 @@
+mp_mul:
+    stp x29, x30, [sp, #-16]!
+    mov x29, sp
+    // Save callee-saved registers we use: x19-x24
+    stp x19, x20, [sp, #-16]!
+    stp x21, x22, [sp, #-16]!
+    stp x23, x24, [sp, #-16]!
+    sub sp, sp, #16 // align stack to 16 bytes after pushes
+
+    // Load arguments into local registers for convenience
+    mov x9, x0        // a pointer in x9
+    mov x10, x1       // na in x10
+    mov x11, x2       // b pointer in x11
+    mov x12, x3       // nb in x12
+    mov x13, x4       // r pointer in x13
+
+    // Handle edge cases: if na <= 0 or nb <= 0, result is zero limbs
+    cmp x10, #0
+    csel x19, xzr, x10, lt   // na = max(0,na)
+    mov x20, x12
+    cmp x20, #0
+    csel x12, xzr, x20, lt   // nb = max(0,nb)
+
+    cbz x19, .Lret_zero    // if na == 0 -> return 0
+    cbz x12, .Lret_zero    // if nb == 0 -> return 0
+
+    // Initialize carry accumulator for each limb of result: r[i]
+    mov x14, #0            // index i = 0 (result limb counter)
+    mov x15, #0            // j loop bound for inner loop
+    mov x21, xzr           // current limb of result being computed
+    mov x22, xzr           // carry into next multiplication
+
+.Louter_loop:
+    // i-th result limb: sum_{k=0..i} a[k] * b[i-k]
+    // But since limbs can overlap across outer loop iterations,
+    // we compute r[i] = sum_{j=0..min(i,na-1)} a[j]*b[i-j] + carry_in
+
+    // Reset inner-loop variables
+    mov x23, #0            // partial product accumulator
+    mov x24, #0            // high part of 64x64->128 (will hold high 64 bits)
+    clz x8, x19            // x8 = leading zeros in na (to compute max j for this i)
+
+    // Determine inner loop bounds: for given i, j runs from max(0,i-nb+1) to min(i,na-1)
+    // Simpler: iterate j from 0 while j < na and i-j < nb
+    mov x8, #0             // j = 0
+    cmp x14, x12           // i vs nb
+    ccmp x14, x10, #0, ge  // set flags for i >= na?
+    csinv x15, xzr, xzr, lt   // if i < min(na,nb) we use smaller as upper bound? Not needed.
+
+    // We'll do inner loop: j from max(0, i-nb+1) to min(i, na-1)
+    // Compute lower bound for j:
+    mov x6, #0
+    sub x7, x14, x12       // i - nb
+    add x7, x7, #1         // i - nb + 1
+    csel x7, xzr, x7, gt   // lower = max(0, i-nb+1)
+    mov x8, x7             // j = lower bound
+
+    cbz x12, .Linner_done  // if nb == 0 skip (already handled above but safe)
+
+.Linner_loop:
+    // Check j < na and i - j < nb
+    cmp x8, x19            // j < na?
+    b.ge .Linner_done
+
+    sub x7, x14, x8        // k = i - j (index into b)
+    cmp x7, x12            // k < nb?
+    b.ge .Lnext_j          // if not, skip this pair
+
+    // Now compute a[j] * b[k]
+    ldr x6, [x9, x8, lsl #3]  // a[j]
+    ldr x7, [x11, x7, lsl #3] // b[k]
+
+    umulh x20, x6, x7       // high = (a[j]*b[k]) >> 64
+    mul x25, x6, x7         // low = a[j]*b[k] & 0xffffffffffffffff
+
+    // Add to running sum with carry-in
+    adds x23, x23, x25      // add low parts
+    adc x24, x24, x20       // add high part + carry-out from low addition
+
+    // Next j
+.Lnext_j:
+    add x8, x8, #1          // j++
+    b .Linner_loop
+
+.Linner_done:
+    // Final carry out?
+    // We need to accumulate into current result limb and propagate carry
+    adds x21, x21, x23      // incorporate low part from products
+    adc x22, x22, x24       // incorporate high part + previous carry
+
+    // Store the result limb (r[i] = low)
+    str x21, [x13, x14, lsl #3]
+
+    // Prepare for next iteration: r[i+1] gets the accumulated high part
+    mov x21, xzr            // clear current low limb accumulator
+    mov x22, x22            // carry-in for next round is our high sum
+
+    add x14, x14, #1        // i++
+    cmp x14, x19            // compare i with na
+    ccmp x14, x12, #0, le   // and also consider nb (since result length = na+nb)
+    b.lt .Louter_loop
+
+    // Now we've processed all limbs up to max(na,nb)-1 but need full na+nb-1
+    // Actually the outer loop should run while i < na+nb? But specification says write r[0..na+nb-1]
+
+.Lextend_result:
+    mov x14, x19            // start from i = na
+    add x15, x19, x12       // total limbs = na + nb
+
+.Louter_loop_top:
+    cmp x14, x15           // i < total limbs?
+    b.ge .Lnormalize_start
+
+    mov x23, #0            // partial product accumulator
+    mov x24, #0            // high part of 64x64->128
+
+    // Determine inner loop bounds: j runs from max(0,i-nb+1) to min(i,na-1)
+    sub x7, x14, x12       // i - nb
+    add x7, x7, #1         // i - nb + 1
+    csel x7, xzr, x7, gt   // lower = max(0,i-nb+1)
+
+    mov x8, x7             // j = lower bound
+
+    cbz x12, .Linner_done_ext
+
+.Linner_loop_ext:
+    cmp x8, x19            // j < na?
+    b.ge .Lnext_j_ext
+
+    sub x7, x14, x8        // k = i - j
+    cmp x7, x12            // k < nb?
+    b.ge .Lnext_j_ext
+
+    ldr x6, [x9, x8, lsl #3]
+    ldr x7, [x11, x7, lsl #3]
+
+    umulh x20, x6, x7
+    mul x25, x6, x7
+
+    adds x23, x23, x25
+    adc x24, x24, x20
+
+.Lnext_j_ext:
+    add x8, x8, #1
+    b .Linner_loop_ext
+
+.Linner_done_ext:
+    // Final carry-in from previous round is in x22
+    adds x21, x21, x23     // incorporate product low part + any leftover
+    adc x22, x22, x24      // propagate high part and carry-out
+
+    str x21, [x13, x14, lsl #3]
+
+    mov x21, xzr           // clear for next limb
+    mov x22, x22           // keep carry
+
+    add x14, x14, #1
+    b .Louter_loop_top
+
+.Lnormalize_start:
+    // Now compute number of significant limbs: find highest non-zero limb from end backwards
+    sub x8, x15, #1        // start at last index = na+nb-1
+    cbz x15, .Lret_zero2   // if total length 0
+
+.Lscan:
+    ldr x9, [x13, x8, lsl #3]
+    cbnz x9, .Lfound_significant
+    subs x8, x8, #1
+    bge .Lscan
+    mov x0, #0             // all zero
+    b .Ldone
+
+.Lfound_significant:
+    add x0, x8, #1         // number of significant limbs = index+1
+
+.Ldone:
+    // Restore callee-saved and stack pointer
+    add sp, sp, #16        // undo local allocation
+    ldp x23, x24, [sp], #16
+    ldp x21, x22, [sp], #16
+    ldp x19, x20, [sp], #16
+    ldp x29, x30, [sp], #16
+    ret
+
+.Lret_zero:
+    mov x0, #0
+    b .Ldone
+
+.Lret_zero2:
+    mov x0, #0
+    b .Ldone

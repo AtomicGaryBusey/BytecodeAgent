@@ -1,0 +1,112 @@
+Implement the function `int64_t packbits_decode(const uint8_t *src, int64_t n, uint8_t *out, int64_t cap)`.
+
+Target: x86-64, Linux System V ABI. Integer/pointer arguments in rdi, rsi, rdx, rcx, r8, r9; 64-bit result in rax. Callee-saved: rbx, rbp, r12, r13, r14, r15 (restore them if you use them); all other registers may be clobbered. rsp is 16-byte aligned before the call, so it is 8 mod 16 at entry; it must be back to its entry value when you return with ret. Never write to the caller's frame (at or above the return address). More ABI facts: arguments beyond the sixth are passed on the stack; at entry the return address is at [rsp], the 7th argument at [rsp+8], the 8th at [rsp+16]. A call clobbers the caller-saved registers rax, rcx, rdx, rsi, rdi, r8-r11, all xmm registers and the flags, so keep values that must survive a call in callee-saved registers (saved/restored by you) or in your own stack frame. rsp must be 16-byte aligned at every call instruction (at entry rsp is 8 mod 16, so an odd number of 8-byte pushes, or `sub rsp, 8` plus any multiple of 16, re-aligns it). Anything below rsp may be overwritten by a callee. The direction flag must be clear at calls and on return.
+
+Output format: GNU assembler syntax, Intel flavour without register prefixes (as with `.intel_syntax noprefix`), e.g. `mov rax, qword ptr [rdi + rcx*8]`. Output ONLY the function's instructions and labels, one per line, starting with the label `packbits_decode:` (the entry point). Labels are `name:` (letters, digits, _ and ., e.g. `.Lloop:`); every branch target must be a label, never a number. Comments start with `#`; do not use `;`. No directives of any kind (no .section/.align/.byte/.quad/.p2align), no data, no calls to other functions. Each line under 120 characters. No Markdown fences, no prose before or after the code. Instruction set: x86-64 with SSE up to SSE4.2 (including SSSE3, SSE4.1 and crc32), POPCNT, LZCNT, BMI1/BMI2 (andn, bextr, blsi, blsr, tzcnt, bzhi, mulx, pdep, pext, rorx, sarx, shlx, shrx), MOVBE, AES-NI and PCLMULQDQ. Not supported (rejected): AVX, AVX2, AVX-512, FMA, F16C and every other VEX/EVEX vector instruction, ADX (adcx/adox; use adc) and SHA.
+
+Specification: Decompress PackBits data: src holds n bytes (0 <= n <= 600) of packets, decoded left to right into out, which has room for cap bytes (0 <= cap <= 1200). Each packet starts with a header byte h read as a signed byte: 0 <= h <= 127: a literal packet, the next h + 1 bytes are copied to the output; -127 <= h <= -1: a repeat packet, the next byte is written 1 - h times; h = -128: no operation (the packet is just that byte). Return the number of bytes written. Errors: if a packet needs more source bytes than remain in src[0..n-1] (checked when its header is read, before any of its output is written), return -2 (the output of earlier packets stays written). If the output would exceed cap bytes, write exactly the first cap bytes of the output (out[0..cap-1] completely filled) and return -1. Example: 01 'a' 'b' FE 'c' 00 'd' decodes to "abcccd" (returns 6); with cap = 4 it writes "abcc" and returns -1. Read only src[0..n-1] and write only out[0..cap-1] (both are checked: never write out[cap], even when cap is 0).
+
+Your previous attempt was:
+<previous>
+packbits_decode:
+    push rbx
+    push rbp
+    push r12
+    push r13
+    push r14
+    push r15
+    sub rsp, 8
+    # At entry: src=rdi, n=rsi, out=rdx, cap=rcx
+    xor rax, rax          # output_bytes_written = 0 (returned value)
+    mov r8, rdi           # src pointer in r8
+    mov r9, rsi           # n in r9 (source length)
+    mov r10, rdx          # out pointer in r10
+    mov r11, rcx          # cap in r11 (destination capacity)
+    xor rbx, rbx          # src_index = 0
+    xor r12, r12          # dst_index = 0
+
+.Lloop:
+    cmp rbx, r9           # src_index >= n?
+    jae .Ldone            # no more source bytes to read; done successfully
+
+    movzx rcx, byte ptr [r8 + rbx]  # read header byte as unsigned
+    inc rbx               # advance past header
+    cmp cl, 0x80          # signed comparison: h >= 0? (cl < 128 means non-negative)
+    jae .Lrepeat          # if cl >= 128, it's negative (signed) -> repeat packet
+
+    # Literal packet (h in [0,127])
+    lea rdx, [rcx + 1]    # copy_count = h + 1
+    cmp rbx, r9           # src_index + copy_count > n?
+    ja .Lerror_no_src     # not enough source bytes remaining
+
+    # Check output capacity while copying
+.Lliteral_loop:
+    test rdx, rdx         # count == 0?
+    jz .Lloop             # done with this packet
+    cmp r12, r11          # dst_index >= cap?
+    ja .Ldone             # output full; stop writing but return -1 later
+    mov al, byte ptr [r8 + rbx]  # read source byte
+    inc rbx               # advance src index
+    cmp r12, r11          # dst_index >= cap? (after increment)
+    jae .Lnext_packet     # skip writing beyond cap
+    mov byte ptr [r10 + r12], al  # write to output
+    inc r12               # advance dst index
+    dec rdx               # decrement counter
+    jmp .Lliteral_loop
+
+.Lrepeat:
+    cmp cl, 0xff          # h == -1? (cl = 255 signed means -1)
+    je .Lrepeat_one
+    cmp cl, 0x80          # h == -128?
+    jz .Lnext_packet      # skip packet
+
+    # Repeat packet: count = 1 - h, where h is negative
+    mov dl, cl            # dl = h (signed byte)
+    neg dl                # dl = -h
+    inc dl                # dl = 1 - h = repeat count
+    cmp rbx, r9           # src_index >= n?
+    ja .Lerror_no_src     # need one more source byte
+
+.Lrepeat_loop:
+    test dl, dl           # count == 0?
+    jz .Lnext_packet      # done with this packet
+    cmp r12, r11          # dst_index >= cap?
+    ja .Ldone             # output full; stop writing but return -1 later
+    mov al, byte ptr [r8 + rbx]  # read repeat value
+    inc rbx               # advance src index
+    cmp r12, r11          # dst_index >= cap? (after increment)
+    jae .Lnext_packet     # skip writing beyond cap
+    mov byte ptr [r10 + r12], al  # write to output
+    inc r12               # advance dst index
+    dec dl                # decrement counter
+    jmp .Lrepeat_loop
+
+.Lrepeat_one:
+    cmp rbx, r9           # src_index >= n?
+    ja .Lerror_no_src     # need one more source byte
+    mov al, byte ptr [r8 + rbx]  # read repeat value
+    inc rbx               # advance src index
+    dec dl                # count = 256 (0xff + 1 = 256) or fix logic: h=-1 => count=2? No: spec says "1 - h": if h=-1, 1-(-1)=2. Wait.
+    # Correction: for repeat packet, spec says: "-1 <= h <= -1: the next byte is written 1 - h times"
+    # For h = -1: count = 1 - (-1) = 2
+    # For h = -127: count = 1 - (-127) = 128
+    # So our earlier conversion was wrong; we need to compute count = 1 - h (h negative)
+    # Let's recompute with DL holding h as unsigned, so actual h_signed = (dl >= 128 ? dl - 256 : dl)
+    # Then count = 1 - h_signed = 1 - (dl - 256) = 257 - dl for negative case.
+    # Alternatively: use movsx to get signed h, then compute count = 1 - h.
+    # But we already read cl as unsigned; re-read cl with sign extension.
+
+    # Actually fix: restart repeat logic correctly
+.Lrepeat_fixed:
+    cmp rbx, r9           # src_index >= n?
+    ja .Lerror_no_src     # need one more source byte
+    movsx rcx, byte ptr [r8 + rbx]  # h as signed byte (signed interpretation)
+    inc rbx               # advance past header byte
+    lea rdx, [1 - rcx]    # count = 1 - h (h negative)
+</previous>
+It failed:
+<failure>
+The assembler rejected line 95 (`lea rdx, [1 - rcx]`): x86_64: invalid address expression '[1 - rcx]' (line 95: 'lea rdx, [1 - rcx]')
+Generation was stopped at that line; the 65 instructions before it had been accepted.
+</failure>
+Write a corrected, complete version. Same output format; output only the code.

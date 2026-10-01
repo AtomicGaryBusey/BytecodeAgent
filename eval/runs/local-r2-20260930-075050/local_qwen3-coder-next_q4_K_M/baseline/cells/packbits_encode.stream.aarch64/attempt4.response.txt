@@ -1,0 +1,107 @@
+packbits_encode:
+    stp x29, x30, [sp, #-16]!
+    mov x29, sp
+
+    mov x4, #0           // i = 0 (src index)
+    mov x5, #0           // out_pos = 0 (output position)
+
+.loop_start:
+    cmp x4, x1
+    b.ge .Ldone
+
+    // Compute run(i): count consecutive equal bytes from src[i], max 128
+    ldrb w6, [x0, x4]
+    mov x7, #1
+    add x9, x4, #1
+
+.check_run:
+    cmp x9, x1
+    b.ge .Lrun_end
+    ldrb w8, [x0, x9]
+    cmp w6, w8
+    b.ne .Lrun_end
+    add x7, x7, #1
+    add x9, x9, #1
+    cmp x7, #128
+    b.lt .check_run
+
+.Lrun_end:
+    // If run >= 3, emit repeat packet
+    cmp x7, #3
+    b.ge .Lemit_repeat
+
+    // Gather literal run: while j < n, length < 128, and run(j) < 3
+    mov x9, x4           // start of literal = i
+    add x10, x4, #1      // j = i + 1 (next position to check)
+
+.Lgather_literal:
+    cmp x10, x1          // j >= n?
+    b.ge .Lliteral_end_check
+
+    ldrb w8, [x0, x10]   // src[j]
+
+    // Check if run starting at j has length >= 3
+    mov x11, #1          // run count for position j
+    add x12, x10, #1     // next index
+
+.check_literal_run:
+    cmp x12, x1          // out of bounds?
+    b.ge .Lliteral_end_no_extend
+    ldrb w13, [x0, x12]  // src[j + 1]
+    cmp w8, w13          // equal to previous?
+    b.ne .Lliteral_end_no_extend
+    add x11, x11, #1     // run count++
+    add x12, x12, #1     // advance
+    cmp x11, #128        // max 128
+    b.ge .Lliteral_end_no_extend
+    cmp x11, #3          // run length >= 3?
+    b.lt .check_literal_run
+
+.Lliteral_end_no_extend:
+    cbz x11, .Lextend_literal_one
+    cmp x11, #3
+    b.ge .Lliteral_end_check  // stop if run >= 3
+
+.Lextend_literal_one:
+    add x9, x9, #1       // extend literal by one byte (j)
+    add x10, x10, #1     // j++
+    b .Lgather_literal
+
+.Lliteral_end_check:
+    sub x7, x9, x4       // literal_length = j - i
+    cbz x7, .loop_start  // skip if no literals gathered
+
+    // Check space: header + data <= remaining cap
+    add x8, x7, #1       // needed bytes
+    sub x12, x3, x5      // remaining = cap - out_pos
+    cmp x8, x12
+    b.gt .Lerror         // not enough space
+
+    // Encode literal: header = len - 1
+    mov x13, x7          // copy length
+    sub x13, x13, #1     // header = len - 1
+    strb w13, [x2, x5]   // out[out_pos] = header
+    add x5, x5, #1       // out_pos++
+
+    // Copy literal bytes: for (k = 0; k < len; k++) out[k] = src[i + k]
+    mov x8, #0           // offset k = 0
+
+.Lliteral_copy_loop:
+    cmp x8, x7
+    b.ge .Lliteral_done
+    add x13, x4, x8      // i + k
+    ldrb w9, [x0, x13]   // src[i+k]
+    strb w9, [x2, x5]    // out[out_pos] = byte
+    add x5, x5, #1       // out_pos++
+    add x8, x8, #1       // k++
+    b .Lliteral_copy_loop
+
+.Lliteral_done:
+    mov x4, x9           // i = j (advance past literal run)
+    b .loop_start
+
+// Emit repeat packet for r copies of byte b
+.Lemit_repeat:
+    // Check space: header (1) + data (1) <= remaining cap
+    add x8, #2           // needed bytes: 1 header + 1 data
+    sub

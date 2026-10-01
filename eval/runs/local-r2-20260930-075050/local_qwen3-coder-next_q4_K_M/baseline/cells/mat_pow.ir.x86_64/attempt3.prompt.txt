@@ -1,0 +1,172 @@
+Implement the function `int64_t mat_pow(const int64_t *a, int64_t n, int64_t k, int64_t *out, int64_t *tmp)`.
+
+Target: x86-64, Linux System V ABI. Integer/pointer arguments in rdi, rsi, rdx, rcx, r8, r9; 64-bit result in rax. Callee-saved: rbx, rbp, r12, r13, r14, r15 (restore them if you use them); all other registers may be clobbered. rsp is 16-byte aligned before the call, so it is 8 mod 16 at entry; it must be back to its entry value when you return with ret. Never write to the caller's frame (at or above the return address). More ABI facts: arguments beyond the sixth are passed on the stack; at entry the return address is at [rsp], the 7th argument at [rsp+8], the 8th at [rsp+16]. A call clobbers the caller-saved registers rax, rcx, rdx, rsi, rdi, r8-r11, all xmm registers and the flags, so keep values that must survive a call in callee-saved registers (saved/restored by you) or in your own stack frame. rsp must be 16-byte aligned at every call instruction (at entry rsp is 8 mod 16, so an odd number of 8-byte pushes, or `sub rsp, 8` plus any multiple of 16, re-aligns it). Anything below rsp may be overwritten by a callee. The direction flag must be clear at calls and on return.
+
+Output format: QBE intermediate language (the IL of the QBE compiler backend, c9x.me/compile). Write exactly one function, `export function l $mat_pow(...)`, taking every argument as `l` (64-bit; pointers are `l` too) and returning `l`. QBE will compile it for the target above, so you do not handle registers or the ABI yourself. Remember: every block starts with an `@label`; temporaries are `%name`; comparisons such as `csltl`/`ceql` produce a `w` value; `jnz` tests a `w`; loads/stores are `loadl`/`storel`. No data definitions, no calls, no other functions. Output only the QBE code: no Markdown fences, no prose.
+
+Specification: a points to an n x n matrix of signed 64-bit integers in row-major order (element (i, j) at a[i*n + j]), 1 <= n <= 6. Compute the matrix power a^k (0 <= k <= 64; a^0 is the identity matrix) into out (n*n elements, row-major) and return 0. Matrix products use wrapping 64-bit arithmetic: (x*y)(i, j) = sum over t of x(i, t) * y(t, j), modulo 2^64. tmp points to 2*n*n elements of scratch space that you may use freely (e.g. for a copy of the base and a product), but on return every one of those 2*n*n elements must be 0 (the whole of out and tmp is checked; both start out as garbage). Any correct method is fine (k repeated multiplications, or square-and-multiply). a, out and tmp do not overlap. Do not write to a; read only a, out and tmp; write only out and tmp.
+
+Your previous attempt was:
+<previous>
+export function l $mat_pow(l %a, l %n, l %k, l %out, l %tmp) {
+%init:
+	%zero = constl 0
+	%nval = copyl %n
+	%kval = copyl %k
+	%outptr = copyl %out
+	%tmp1ptr = copyl %tmp
+	%tmp2ptr = adjl %tmp, 64 ; tmp + n*n * 8 (since max n=6, n*n=36, but we allocate for safety: 6*6*8=288, use 64 as offset for n<=6 is safe)
+	%n_sq = mull %nval, %nval
+	%n_sq_bytes = mull %n_sq, constl 8
+
+@zero_all:
+	%i = constl 0
+	%total_bytes = mull %n_sq, constl 128 ; 2 * n*n * 8
+@zero_loop:
+	%c = ceql %i, %total_bytes
+	jcz %c, @done_zeroing
+	storel %zero, %outptr, %i
+	storel %zero, %tmp1ptr, %i
+	%i = addl %i, constl 8
+	jmp @zero_loop
+
+@done_zeroing:
+	; k == 0? return identity matrix in out
+	%c = ceql %kval, %zero
+	jnz %c, @identity_case
+
+	; copy base matrix to tmp1ptr
+	%i = constl 0
+@copy_base_loop:
+	%c = ceql %i, %n_sq_bytes
+	jcz %c, @base_copied
+	%val = loadl %a, %i
+	storel %val, %tmp1ptr, %i
+	%i = addl %i, constl 8
+	jmp @copy_base_loop
+
+@base_copied:
+	; result = identity matrix in out
+	%j = constl 0
+@store_identity:
+	%c = ceql %j, %n_sq
+	jcz %c, @exp_init_done
+	%irow = subl %j, %modl(%j, %nval)
+	%icol = %modl(%j, %nval)
+	%diag = ceql %irow, %icol
+	%one_or_zero = selectl %diag, constl 1, constl 0
+	storel %one_or_zero, %outptr, %mulsl(%j, 8)
+	%j = addl %j, constl 1
+	jmp @store_identity
+
+@exp_init_done:
+@main_loop:
+	%c = ceql %kval, %zero
+	jcz %c, @exp_done
+
+	; if (k & 1) result *= tmp1
+	%bit = andl %kval, constl 1
+	%c2 = ceql %bit, %zero
+	jnz %c2, @skip_mult
+
+	; copy out to tmp2ptr
+	%i = constl 0
+@copy_out_to_tmp2:
+	%c3 = ceql %i, %n_sq_bytes
+	jcz %c3, @copied_to_tmp2
+	%val = loadl %outptr, %i
+	storel %val, %tmp2ptr, %i
+	%i = addl %i, constl 8
+	jmp @copy_out_to_tmp2
+
+@copied_to_tmp2:
+	; multiply tmp1 * tmp2 -> tmp2 (output in tmp2)
+	call $matmul(l %tmp1ptr, l %tmp2ptr, l %nval, l %tmp2ptr)
+
+	; copy tmp2 back to out
+	%i = constl 0
+@copy_tmp2_to_out:
+	%c4 = ceql %i, %n_sq_bytes
+	jcz %c4, @copied_back
+	%val = loadl %tmp2ptr, %i
+	storel %val, %outptr, %i
+	%i = addl %i, constl 8
+	jmp @copy_tmp2_to_out
+
+@copied_back:
+	; zero tmp2 (first n*n part)
+	%zero_i = constl 0
+@zero_tmp2_loop:
+	%c5 = ceql %zero_i, %n_sq_bytes
+	jcz %c5, @tmp2_zeroed
+	storel %zero, %tmp2ptr, %zero_i
+	%zero_i = addl %zero_i, constl 8
+	jmp @zero_tmp2_loop
+
+@tmp2_zeroed:
+@skip_mult:
+
+	; square tmp1: tmp1 * tmp1 -> tmp2
+	call $matmul(l %tmp1ptr, l %tmp1ptr, l %nval, l %tmp2ptr)
+
+	; copy tmp2 to tmp1
+	%i = constl 0
+@copy_tmp2_to_tmp1:
+	%c6 = ceql %i, %n_sq_bytes
+	jcz %c6, @tmp1_squared
+	%val = loadl %tmp2ptr, %i
+	storel %val, %tmp1ptr, %i
+	%i = addl %i, constl 8
+	jmp @copy_tmp2_to_tmp1
+
+@tmp1_squared:
+	; zero tmp2 (first n*n part)
+	%zero_i = constl 0
+@zero_tmp2_2_loop:
+	%c7 = ceql %zero_i, %n_sq_bytes
+	jcz %c7, @tmp2_zeroed_2
+	storel %zero, %tmp2ptr, %zero_i
+	%zero_i = addl %zero_i, constl 8
+	jmp @zero_tmp2_2_loop
+
+@tmp2_zeroed_2:
+	; k >>= 1
+	%kval = shrl %kval, constl 1
+	jmp @main_loop
+
+@identity_case:
+	%j = constl 0
+@store_identity_id:
+	%c = ceql %j, %n_sq
+	jcz %c, @done_id
+	%irow = subl %j, %modl(%j, %nval)
+	%icol = %modl(%j, %nval)
+	%diag = ceql %irow, %icol
+	%one_or_zero = selectl %diag, constl 1, constl 0
+	storel %one_or_zero, %outptr, %mulsl(%j, 8)
+	%j = addl %j, constl 1
+	jmp @store_identity_id
+
+@done_id:
+@exp_done:
+	; zero entire tmp region (2 * n*n elements)
+	%i = constl 0
+	%total_tmp_bytes = mull %n_sq, constl 128 ; 2 * n*n * 8
+@final_zero_tmp:
+	%c = ceql %i, %total_tmp_bytes
+	jcz %c, @all_zeroed
+	storel %zero, %tmp, %i
+	%i = addl %i, constl 8
+	jmp @final_zero_tmp
+
+@all_zeroed:
+	%ret = constl 0
+	ret %ret
+}
+</previous>
+It failed:
+<failure>
+Compilation failed at stage qbe:
+qbe:-:2: label or } expected
+</failure>
+Write a corrected, complete version. Same output format; output only the code.

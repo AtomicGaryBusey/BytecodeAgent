@@ -1,0 +1,184 @@
+Implement the function `int64_t mat_pow(const int64_t *a, int64_t n, int64_t k, int64_t *out, int64_t *tmp)`.
+
+Target: AArch64 (ARMv8-A), Linux AAPCS64. Integer/pointer arguments in x0-x7; 64-bit result in x0. Callee-saved: x19-x28, x29 (frame pointer) and d8-d15 (restore them if you use them); x9-x15 are free scratch registers. sp must stay 16-byte aligned and be back to its entry value when you return with ret (return address in x30). More ABI facts: arguments beyond the eighth are passed on the stack (the 9th at [sp] at entry). A call (bl/blr) overwrites x30, so save x30 (e.g. stp x29, x30, [sp, #-16]!) before calling and restore it before ret. A call clobbers the caller-saved registers x0-x18, x30, v0-v7 and v16-v31 (and the upper halves of v8-v15) and the flags, so keep values that must survive a call in callee-saved registers x19-x28 (saved/restored by you) or in your own stack frame. sp must be 16-byte aligned at every call (and whenever it is used as a base register). Anything below sp may be overwritten by a callee.
+
+Output format: QBE intermediate language (the IL of the QBE compiler backend, c9x.me/compile). Write exactly one function, `export function l $mat_pow(...)`, taking every argument as `l` (64-bit; pointers are `l` too) and returning `l`. QBE will compile it for the target above, so you do not handle registers or the ABI yourself. Remember: every block starts with an `@label`; temporaries are `%name`; comparisons such as `csltl`/`ceql` produce a `w` value; `jnz` tests a `w`; loads/stores are `loadl`/`storel`. No data definitions, no calls, no other functions. Output only the QBE code: no Markdown fences, no prose.
+
+Specification: a points to an n x n matrix of signed 64-bit integers in row-major order (element (i, j) at a[i*n + j]), 1 <= n <= 6. Compute the matrix power a^k (0 <= k <= 64; a^0 is the identity matrix) into out (n*n elements, row-major) and return 0. Matrix products use wrapping 64-bit arithmetic: (x*y)(i, j) = sum over t of x(i, t) * y(t, j), modulo 2^64. tmp points to 2*n*n elements of scratch space that you may use freely (e.g. for a copy of the base and a product), but on return every one of those 2*n*n elements must be 0 (the whole of out and tmp is checked; both start out as garbage). Any correct method is fine (k repeated multiplications, or square-and-multiply). a, out and tmp do not overlap. Do not write to a; read only a, out and tmp; write only out and tmp.
+
+Your previous attempt was:
+<previous>
+export function l $mat_pow(l %a, l %n, l %k, l %out, l %tmp) {
+l %i, %j, %t, %size, %row, %col, %acc, %tmp1, %tmp2, %tmp3, %idx1, %idx2, %idx3
+w %zero, %one, %k_zero, %k_odd
+
+@entry
+	%size = mul l %n, %n
+	%zero = csltl w 0, 1
+	%one = csltl w 1, 0
+
+	// Handle k == 0: set out to identity matrix
+	%k_zero = ceql w %k, 0
+	jnz %k_zero, @init_identity
+
+	// Copy a into tmp (first n*n elements of tmp)
+	%idx1 = mul l %n, %size
+	storel %zero, %tmp
+@store_loop:
+	ld %row, %n
+	ld %col, %n
+	%idx2 = sub l %row, 1
+	%idx3 = mul l %idx2, %n
+	%idx3 = add l %idx3, %col
+	%idx3 = add l %idx3, 1
+	%tmp1 = loadl l %a+8*%idx3
+	storel %tmp1, %tmp+8*%idx3
+	cmp %row, 0
+	jnz @store_loop
+
+	// Initialize result as identity matrix in out
+@init_identity:
+	%zero_val = mul l 0, %n
+	%idx1 = mul l %size, 8
+@store_zero:
+	storel %zero, %out+8*%idx1
+	cmp %idx1, 0
+	jnz @store_zero
+
+	// Set out[i][i] = 1 for identity
+%row_i = sub l %n, 1
+@identity_loop_i:
+	%col_j = sub l %row_i, 1
+@identity_loop_j:
+	%is_diag = ceql w %row_i, %col_j
+	jnz %is_diag, @set_one
+	jmp @next_col
+@set_one:
+	%idx_diag = mul l %row_i, %n
+	%idx_diag = add l %idx_diag, %col_j
+	storel %one, %out+8*%idx_diag
+@next_col:
+	sub %col_j, 1
+	cmp %col_j, -1
+	jnz @identity_loop_j
+	sub %row_i, 1
+	cmp %row_i, -1
+	jnz @identity_loop_i
+
+	// Main exponentiation loop (square-and-multiply)
+@exp_start:
+	cmp %k, 0
+	jz @done
+	%tmp3 = mul l 2, %size // tmp3 = 2*n^2
+	mull l %tmp1, %tmp, %tmp3 // alias for product output
+	mull l %tmp2, %tmp, %size // alias for base matrix
+
+	// Copy initial base to tmp2 (already done above? assume tmp has base copied already)
+	%zero_idx = mul l 0, %size
+@store_base:
+	storel %zero, %tmp2+8*%zero_idx
+	cmp %zero_idx, 0
+	jnz @store_base
+
+	// Actually copy a to tmp2
+	%idx1 = sub l %size, 1
+@copy_a_to_tmp2:
+	%tmp1_val = loadl l %a+8*%idx1
+	storel %tmp1_val, %tmp2+8*%idx1
+	sub %idx1, 1
+	cmp %idx1, -1
+	jnz @copy_a_to_tmp2
+
+@mat_pow_loop:
+	// Check if k is odd
+	%k_odd = and w %k, 1
+	jz @even_step
+
+	// Multiply result by base: out = out * tmp2 -> store in tmp1 (first n^2 words of tmp1)
+	call @matrix_mult
+
+	// Copy result from tmp1 back to out
+	%idx3 = sub l %size, 1
+@copy_res_to_out:
+	%tmp_val = loadl l %tmp+8*%idx3
+	storel %tmp_val, %out+8*%idx3
+	sub %idx3, 1
+	cmp %idx3, -1
+	jnz @copy_res_to_out
+
+@even_step:
+	// Square the base: tmp2 = tmp2 * tmp2 -> store in tmp1
+	call @matrix_mult
+
+	// Copy squared result back to tmp2
+	%idx4 = sub l %size, 1
+@copy_sq_to_base:
+	%tmp_val = loadl l %tmp+8*%idx4
+	storel %tmp_val, %tmp2+8*%idx4
+	sub %idx4, 1
+	cmp %idx4, -1
+	jnz @copy_sq_to_base
+
+	// k = k / 2 (right shift)
+	%k = srl l %k, 1
+	cmp %k, 0
+	jnz @mat_pow_loop
+
+@done:
+	// Clear tmp arrays as required: set all 2*n^2 elements of tmp to zero
+	%total_elems = mul l 2, %size
+	%clear_idx = sub l %total_elems, 1
+@clear_tmp:
+	storel %zero, %tmp+8*%clear_idx
+	sub %clear_idx, 1
+	cmp %clear_idx, -1
+	jnz @clear_tmp
+
+	lret l 0
+
+@matrix_mult:
+	// Multiply matrices in tmp2 (first n^2) and out/tmp (second n^2) into tmp (third n^2)
+	%outer_i = sub l %n, 1
+@loop_i:
+	%inner_j = sub l %n, 1
+@loop_j:
+	%acc = mul l 0, 0 // zero accumulator
+	%inner_t = sub l %n, 1
+@loop_t:
+	%idx_row_t = mul l %outer_i, %n
+	%idx_row_t = add l %idx_row_t, %inner_t
+	%val1 = loadl l %tmp2+8*%idx_row_t
+
+	%idx_col_t = mul l %inner_t, %n
+	%idx_col_t = add l %idx_col_t, %inner_j
+	%val2 = loadl l %out+8*%idx_col_t
+
+	%prod = mull l %val1, %val2
+	%acc = add l %acc, %prod
+
+	sub %inner_t, 1
+	cmp %inner_t, -1
+	jnz @loop_t
+
+	// Store result to tmp+row*n + col
+	%res_idx = mul l %outer_i, %n
+	%res_idx = add l %res_idx, %inner_j
+	storel %acc, %tmp+8*%res_idx
+
+	sub %inner_j, 1
+	cmp %inner_j, -1
+	jnz @loop_j
+
+	sub %outer_i, 1
+	cmp %outer_i, -1
+	jnz @loop_i
+
+	lret l 0
+}
+</previous>
+It failed:
+<failure>
+Compilation failed at stage qbe:
+qbe:-:2: label or } expected
+</failure>
+Write a corrected, complete version. Same output format; output only the code.

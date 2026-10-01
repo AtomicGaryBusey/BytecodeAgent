@@ -1,0 +1,120 @@
+Implement the function `int64_t packbits_encode(const uint8_t *src, int64_t n, uint8_t *out, int64_t cap)`.
+
+Target: AArch64 (ARMv8-A), Linux AAPCS64. Integer/pointer arguments in x0-x7; 64-bit result in x0. Callee-saved: x19-x28, x29 (frame pointer) and d8-d15 (restore them if you use them); x9-x15 are free scratch registers. sp must stay 16-byte aligned and be back to its entry value when you return with ret (return address in x30). More ABI facts: arguments beyond the eighth are passed on the stack (the 9th at [sp] at entry). A call (bl/blr) overwrites x30, so save x30 (e.g. stp x29, x30, [sp, #-16]!) before calling and restore it before ret. A call clobbers the caller-saved registers x0-x18, x30, v0-v7 and v16-v31 (and the upper halves of v8-v15) and the flags, so keep values that must survive a call in callee-saved registers x19-x28 (saved/restored by you) or in your own stack frame. sp must be 16-byte aligned at every call (and whenever it is used as a base register). Anything below sp may be overwritten by a callee.
+
+Output format: GNU assembler syntax for AArch64, e.g. `ldr x2, [x0, x1, lsl #3]`. Output ONLY the function's instructions and labels, one per line, starting with the label `packbits_encode:` (the entry point). Labels are `name:` (letters, digits, _ and ., e.g. `.Lloop:`); every branch target (b, b.cond, cbz, cbnz, tbz, tbnz, bl, adr) must be a label, never a number. Comments start with `//`; do not use `;`. No directives of any kind (no .section/.align/.word/.quad), no literal pools (`ldr x0, =...`), no data, no calls to other functions. Each line under 120 characters. No Markdown fences, no prose before or after the code. Instruction set: ARMv8.0-A with floating point and Advanced SIMD (NEON). Not supported (rejected): CRC32, LSE atomics, dot product, half-precision, crypto (AES/SHA/PMULL) and SVE.
+
+Specification: Compress the n bytes at src (0 <= n <= 600) with PackBits run-length encoding into out, which has room for cap bytes (0 <= cap <= 1200), and return the number of bytes written. The output is a sequence of packets: a repeat packet is the header byte 257 - r (i.e. -(r-1) as a signed byte) followed by one byte b, meaning r copies of b (3 <= r <= 128); a literal packet is the header byte L - 1 followed by L bytes copied verbatim (1 <= L <= 128). Encode greedily, left to right, exactly as follows. Let run(j) be the number of consecutive bytes equal to src[j] starting at j, capped at 128. At position i: if run(i) >= 3, emit a repeat packet with r = run(i) and b = src[i], and advance i by r. Otherwise emit a literal packet of the bytes src[i..j-1], where j starts at i and advances while j < n, j - i < 128 and run(j) < 3; then set i = j. (So a pair of equal bytes stays inside a literal; a literal stops just before a run of 3 or more.) Example: "abcccd" -> 01 'a' 'b' FE 'c' 00 'd' (7 bytes). If a whole packet does not fit in the remaining room, write none of it and return -1 immediately (earlier packets stay written). Read only src[0..n-1] (never look past src[n-1] when measuring a run) and write only out[0..cap-1] (both are checked).
+
+Your previous attempt was:
+<previous>
+packbits_encode:
+    // Save frame pointer and return address
+    stp x29, x30, [sp, #-16]!
+    mov x29, sp
+
+    // Initialize i = 0 (index into src)
+    mov x4, xzr           // i = 0
+    mov x5, xzr           // out_pos = 0 (current position in output)
+
+    // n in x1, cap in x3, src base in x0, out base in x2
+
+.loop_start:
+    // Check if i >= n (end of input)
+    cmp x4, x1
+    b.ge .Ldone
+
+    // Compute run(i): count consecutive equal bytes from src[i], max 128
+    mov x6, x4            // j = i
+    ldrb w7, [x0, x4]     // b0 = src[i]
+    mov x8, #1            // run_length = 1
+
+.check_run:
+    add x9, x6, #1        // j+1
+    cmp x9, x1            // if j+1 >= n, stop
+    b.ge .Lrun_end
+    ldrb w10, [x0, x9]    // src[j+1]
+    cmp w7, w10           // src[j+1] == b0?
+    b.ne .Lrun_end
+    add x8, x8, #1        // run_length++
+    mov x6, x9            // j = j+1
+    cmp x8, #128          // run limited to 128
+    b.lt .check_run
+
+.Lrun_end:
+    // Now x8 holds run(i) (capped at 128)
+
+    // If run(i) >= 3, emit repeat packet
+    cmp x8, #3
+    b.ge .Lemit_repeat
+
+    // Otherwise: gather literal run starting at i, while run(j) < 3 and length < 128
+    mov x9, x4            // j = i (start of literal)
+    add x10, x4, #1       // end candidate
+
+.Lgather_literal:
+    cmp x10, x1           // if j+1 >= n, finalize
+    b.ge .Lliteral_end
+    ldrb w11, [x0, x10]   // src[j]
+    ldrb w12, [x0, x4]    // src[i], same as src[original i]
+
+.compare_with_prev:
+    cmp w11, w12          // check if new char equals current run's char
+    b.ne .Lliteral_end
+
+.check_next:
+    add x13, x10, #1      // j+2 for next run check
+    cmp x13, x1           // if out of bounds
+    b.ge .Lliteral_end_inc
+    ldrb w14, [x0, x13]   // src[j+1]
+    cmp w11, w14          // src[j+1] == src[j]?
+    beq .Lextend_run      // if equal, we need to check run length
+
+// if not run of 2 or more starting at j
+.Lliteral_end_inc:
+    add x9, x9, #1        // extend literal by 1 (j+1)
+    mov x6, x9            // current run pointer for next iteration
+    cmp x10, x1           // j < n?
+    b.ge .Lliteral_end    // done
+    mov x10, x6           // j = j+1 for next loop iteration
+    b .Lgather_literal
+
+.extend_run:
+    add x15, x13, #1      // j+2
+    cmp x15, x1           // out of bounds?
+    b.ge .Lliteral_end_inc
+    ldrb w14, [x0, x15]   // src[j+2]
+    cmp w11, w14          // run length at least 3?
+    beq .Lextend_run      // continue if still equal
+
+.Lliteral_end:
+    // literal_len = j - i
+    sub x8, x9, x4        // literal_length = j - i
+    cbz x8, .loop_start   // skip zero-length literals
+
+    // Check header + data fits in remaining capacity: (1 + literal_length) <= cap - out_pos
+    add x6, x8, #1        // needed bytes = 1 + len
+    sub x7, x3, x5        // remaining = cap - out_pos
+    cmp x6, x7
+    b.gt .Lerror          // not enough space
+
+    // Encode literal packet: header = literal_length - 1, then the data
+    mov x7, x8            // literal_len
+    sub x7, x7, #1        // header = len - 1
+    strb w7, [x2, x5]     // out[out_pos] = header
+    add x5, x5, #1        // out_pos++
+
+    // Copy the literal bytes
+    mov x6, xzr           // offset within literal
+
+.Lliteral_copy_loop:
+    cmp x6, x8            // while offset < len
+    b.ge .Lliteral_done
+    ldrb w7, [x0, x4, x6] // src[i + offset]
+</previous>
+It failed:
+<failure>
+The assembler rejected line 103 (`ldrb w7, [x0, x4, x6]`): aarch64: Unknown error; GNU as: shift operator expected at operand 2 -- `ldrb w7,[x0,x4,x6]' (line 103: 'ldrb w7, [x0, x4, x6]')
+Generation was stopped at that line; the 60 instructions before it had been accepted.
+</failure>
+Write a corrected, complete version. Same output format; output only the code.

@@ -1,0 +1,154 @@
+Implement the function `int64_t packbits_encode(const uint8_t *src, int64_t n, uint8_t *out, int64_t cap)`.
+
+Target: AArch64 (ARMv8-A), Linux AAPCS64. Integer/pointer arguments in x0-x7; 64-bit result in x0. Callee-saved: x19-x28, x29 (frame pointer) and d8-d15 (restore them if you use them); x9-x15 are free scratch registers. sp must stay 16-byte aligned and be back to its entry value when you return with ret (return address in x30). More ABI facts: arguments beyond the eighth are passed on the stack (the 9th at [sp] at entry). A call (bl/blr) overwrites x30, so save x30 (e.g. stp x29, x30, [sp, #-16]!) before calling and restore it before ret. A call clobbers the caller-saved registers x0-x18, x30, v0-v7 and v16-v31 (and the upper halves of v8-v15) and the flags, so keep values that must survive a call in callee-saved registers x19-x28 (saved/restored by you) or in your own stack frame. sp must be 16-byte aligned at every call (and whenever it is used as a base register). Anything below sp may be overwritten by a callee.
+
+Output format: GNU assembler syntax for AArch64, e.g. `ldr x2, [x0, x1, lsl #3]`. Output ONLY the function's instructions and labels, one per line, starting with the label `packbits_encode:` (the entry point). Labels are `name:` (letters, digits, _ and ., e.g. `.Lloop:`); every branch target (b, b.cond, cbz, cbnz, tbz, tbnz, bl, adr) must be a label, never a number. Comments start with `//`; do not use `;`. No directives of any kind (no .section/.align/.word/.quad), no literal pools (`ldr x0, =...`), no data, no calls to other functions. Each line under 120 characters. No Markdown fences, no prose before or after the code. Instruction set: ARMv8.0-A with floating point and Advanced SIMD (NEON). Not supported (rejected): CRC32, LSE atomics, dot product, half-precision, crypto (AES/SHA/PMULL) and SVE.
+
+Specification: Compress the n bytes at src (0 <= n <= 600) with PackBits run-length encoding into out, which has room for cap bytes (0 <= cap <= 1200), and return the number of bytes written. The output is a sequence of packets: a repeat packet is the header byte 257 - r (i.e. -(r-1) as a signed byte) followed by one byte b, meaning r copies of b (3 <= r <= 128); a literal packet is the header byte L - 1 followed by L bytes copied verbatim (1 <= L <= 128). Encode greedily, left to right, exactly as follows. Let run(j) be the number of consecutive bytes equal to src[j] starting at j, capped at 128. At position i: if run(i) >= 3, emit a repeat packet with r = run(i) and b = src[i], and advance i by r. Otherwise emit a literal packet of the bytes src[i..j-1], where j starts at i and advances while j < n, j - i < 128 and run(j) < 3; then set i = j. (So a pair of equal bytes stays inside a literal; a literal stops just before a run of 3 or more.) Example: "abcccd" -> 01 'a' 'b' FE 'c' 00 'd' (7 bytes). If a whole packet does not fit in the remaining room, write none of it and return -1 immediately (earlier packets stay written). Read only src[0..n-1] (never look past src[n-1] when measuring a run) and write only out[0..cap-1] (both are checked).
+
+Your previous attempt was:
+<previous>
+packbits_encode:
+    stp x29, x30, [sp, #-16]!
+    mov x29, sp
+
+    mov x4, xzr           // i = 0 (src index)
+    mov x5, xzr           // out_pos = 0 (output position)
+
+.loop_start:
+    cmp x4, x1            // i >= n?
+    b.ge .Ldone
+
+    // Compute run(i): count consecutive equal bytes from src[i], max 128
+    ldrb w6, [x0, x4]     // b0 = src[i]
+    mov x7, #1            // run_length = 1
+    add x9, x4, #1        // j = i + 1
+
+.check_run:
+    cmp x9, x1            // j >= n?
+    b.ge .Lrun_end
+    ldrb w8, [x0, x9]     // src[j]
+    cmp w6, w8            // equal?
+    b.ne .Lrun_end
+    add x7, x7, #1        // run_length++
+    add x9, x9, #1        // j++
+    cmp x7, #128          // run capped at 128?
+    b.lt .check_run
+
+.Lrun_end:
+    // Now x7 holds run(i) (capped at 128)
+
+    // If run(i) >= 3, emit repeat packet
+    cmp x7, #3
+    b.ge .Lemit_repeat
+
+    // Gather literal run: while j < n, length < 128, and run(j) < 3
+    mov x9, x4            // start of literal = i
+    add x10, x4, #1       // j = i + 1 (next position to check)
+
+.Lgather_literal:
+    cmp x10, x1           // j >= n?
+    b.ge .Lliteral_end_len
+
+    ldrb w8, [x0, x10]    // src[j]
+
+    // Check if run starting at j has length >= 3
+    mov x11, #1           // run count for position j
+    add x12, x10, #1      // next index
+
+.check_literal_run:
+    cmp x12, x1           // out of bounds?
+    b.ge .Lliteral_end_no_extend
+    ldrb w13, [x0, x12]   // src[j + 1]
+    cmp w8, w13           // equal to previous?
+    b.ne .Lliteral_end_no_extend
+    add x11, x11, #1      // run count++
+    add x12, x12, #1      // advance
+    cmp x11, #128         // max 128
+    b.ge .Lliteral_end_no_extend
+    cmp x11, #3           // run length >= 3?
+    b.lt .check_literal_run
+
+.Lliteral_end_no_extend:
+    cbz x11, .Lextend_literal_one
+    cmp x11, #3
+    b.ge .Lliteral_end_len  // stop if run >= 3
+
+.Lextend_literal_one:
+    add x9, x9, #1        // extend literal by one byte (j)
+    add x10, x10, #1      // j++
+    b .Lgather_literal
+
+.Lliteral_end_len:
+    sub x7, x9, x4        // literal_length = j - i
+    cbz x7, .loop_start   // skip if no literals gathered (should not happen but be safe)
+
+    // Check space: header + data <= remaining cap
+    add x8, x7, #1        // needed bytes
+    sub x12, x3, x5       // remaining = cap - out_pos
+    cmp x8, x12
+    b.gt .Lerror          // not enough space
+
+    // Encode literal: header = len - 1
+    mov x13, x7           // copy length
+    sub x13, x13, #1      // header = len - 1
+    strb w13, [x2, x5]    // out[out_pos] = header
+    add x5, x5, #1        // out_pos++
+
+    // Copy literal bytes: for (k = 0; k < len; k++) out[k] = src[i + k]
+    mov x8, xzr           // offset k = 0
+
+.Lliteral_copy_loop:
+    cmp x8, x7            // while k < len
+    b.ge .Lliteral_done
+    add x13, x4, x8       // i + k
+    ldrb w9, [x0, x13]    // src[i+k]
+    strb w9, [x2, x5]     // out[out_pos] = byte
+    add x5, x5, #1        // out_pos++
+    add x8, x8, #1        // k++
+    b .Lliteral_copy_loop
+
+.Lliteral_done:
+    mov x4, x9            // i = j (advance past literal run)
+    b .loop_start
+
+// Emit repeat packet for r copies of byte b
+.Lemit_repeat:
+    // Check space: header (1) + data (1) <= remaining cap
+    add x8, x7, #2        // needed bytes: 1 header + 1 data
+    sub x9, x3, x5        // remaining = cap - out_pos
+    cmp x8, x9
+    b.gt .Lerror          // not enough space
+
+    // Header byte = 257 - r (i.e., unsigned byte representation of -(r-1))
+    // For r=3: 257 - 3 = 254 (0xFE), matches example.
+    mov x10, #257
+    sub x10, x10, x7      // header = 257 - r
+
+    strb w10, [x2, x5]    // out[out_pos] = header
+    add x5, x5, #1        // out_pos++
+    strb w6, [x2, x5]     // out[out_pos] = b (src[i])
+    add x5, x5, #1        // out_pos++
+
+    add x4, x4, x7        // i += r
+    b .loop_start
+
+.Lerror:
+    mov x0, #-1
+    b .Lreturn
+
+.Ldone:
+    mov x0, x5            // return bytes written
+
+.Lreturn:
+    ldp x29, x30, [sp], #16
+    ret
+</previous>
+It failed:
+<failure>
+45 of 50 test cases failed. First failures:
+  packbits_encode(src=bytes.fromhex('61'), n=1, out, cap=2) [the full encoding is 2 bytes]: expected 2, but the run failed: aarch64: did not return within 2000000 instructions (stopped at pc=0x100014) [the faulting instruction is line 10: `b.ge .Ldone`]
+  packbits_encode(src=bytes.fromhex('61'), n=1, out, cap=0) [the full encoding is 2 bytes]: expected -1, but the run failed: aarch64: did not return within 2000000 instructions (stopped at pc=0x100014) [the faulting instruction is line 10: `b.ge .Ldone`]
+  packbits_encode(src=bytes.fromhex('61'), n=1, out, cap=1) [the full encoding is 2 bytes]: expected -1, but the run failed: aarch64: did not return within 2000000 instructions (stopped at pc=0x100014) [the faulting instruction is line 10: `b.ge .Ldone`]
+</failure>
+Write a corrected, complete version. Same output format; output only the code.
