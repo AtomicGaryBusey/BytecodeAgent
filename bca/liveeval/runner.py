@@ -458,12 +458,15 @@ def plan_cells(tasks, paths, isas, samples: int | None = None) -> list[tuple[Tas
     of the task with `sample` = 1..N, sample-major: sample 1 of every cell, then sample 2, ... (a
     call cap then leaves whole samples, not whole tasks, unrun). Unsampled cells keep their
     historical order and ids."""
+    from bca.liveeval.prompts import EXTRA_PATHS
+
     pairs = [t if isinstance(t, tuple) else (t, "") for t in tasks]
     base = []
     for t, b in pairs:
         own = task_paths(t)
+        allowed = own if getattr(t, "is_app", False) else (*own, *EXTRA_PATHS)  # opt-in paths: explicit only
         for p in (own if paths is None else paths):
-            if p not in own or p in t.na_paths:
+            if p not in allowed or p in t.na_paths:
                 continue
             for i in isas:
                 base.append((t, b, p, i))

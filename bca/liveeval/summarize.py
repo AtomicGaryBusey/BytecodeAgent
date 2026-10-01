@@ -27,7 +27,7 @@ import statistics
 from collections import Counter, defaultdict
 from pathlib import Path
 
-from bca.liveeval.prompts import ISAS, PATHS
+from bca.liveeval.prompts import EXTRA_PATHS, ISAS, PATHS
 from bca.liveeval.tasks2 import ALL_TASKS
 
 
@@ -107,8 +107,15 @@ def summarize_group(run_dir: Path) -> str:
     return out
 
 
+def _fpaths(cells) -> list[str]:
+    """The function paths to tabulate: the default ones, plus an opt-in path (hex) only when a cell ran on
+    it, so the tables of runs without it are unchanged."""
+    return [*PATHS, *(p for p in EXTRA_PATHS if any(c["path"] == p for c in cells))]
+
+
 def _function_tables(run_dir: Path, cells: list[dict], atts: list[dict]) -> str:
     by = {(c["task"], c["path"], c["isa"]): c for c in cells}
+    PATHS = _fpaths(cells)  # noqa: N806 - the default paths, plus an opt-in path when it was run
     TASKS = _ordered_tasks(cells)  # noqa: N806 - registry order
     out = []
     # Matrix
@@ -488,7 +495,7 @@ def summarize_matrix(run_dir: Path, groups=None) -> str:
     subjects = list(dict.fromkeys(c["subject"] for c in cells))
     variants = list(dict.fromkeys(["baseline", *(c["variant"] for c in cells)]))
     vset = set(variants)
-    order = _order([*subjects, *variants, *_battery_order(), *PATHS, *ISAS])
+    order = _order([*subjects, *variants, *_battery_order(), *_fpaths(cells), *ISAS])
     lab = lambda x: _vlabel(x) if x in vset else str(x)  # noqa: E731
     out = [f"## Run {run_dir}", ""]
     # Subjects, variants and coverage
@@ -641,7 +648,7 @@ def compare(run_dirs: list[Path]) -> str:
         out += pivot("pass@1 by model × variant", vcells, variants, lambda c: c["variant"], p1,
                      _common_note(vkept, vtotal, "model"), label=_vlabel)
     apaths = [p for p in APP_PATH_ORDER if p not in PATHS and any(c["path"] == p for c in bcells)]
-    out += pivot("pass@1 by model × path", bcells, [*PATHS, *apaths], lambda c: c["path"], p1, note)
+    out += pivot("pass@1 by model × path", bcells, [*_fpaths(bcells), *apaths], lambda c: c["path"], p1, note)
     out += pivot("pass@1 by model × ISA", bcells, list(ISAS), lambda c: c["isa"], p1, note)
     abc = [c for c in bcells if is_app_record(c)]
     if abc:

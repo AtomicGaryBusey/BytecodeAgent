@@ -12,6 +12,9 @@ from bca.liveeval.tasks import Task
 from bca.structured import input_schemas, tool_definitions
 
 PATHS = ("stream", "structured", "ir")
+# Opt-in paths (`--paths hex`): not in the default set, so plans, prompts and tables of runs that do
+# not ask for them are unchanged.
+EXTRA_PATHS = ("hex",)
 ISAS = ("x86_64", "aarch64")
 
 ABI = {
@@ -79,6 +82,42 @@ IR_RULES = (
     "No data definitions, no calls, no other functions. Output only the QBE code: no "
     "Markdown fences, no prose."
 )
+
+
+HEX_RULES = {
+    "aarch64": (
+        "Output format: raw AArch64 machine code, which you encode yourself: there is no assembler and no "
+        "encoder, and your bytes run exactly as you write them. Write one instruction per line as its "
+        "32-bit instruction word in hexadecimal, exactly 8 hex digits (an optional 0x prefix is allowed), "
+        "e.g. `8b010000` is `add x0, x0, x1` and `d65f03c0` is `ret`. The words are stored little-endian, "
+        "one after another: the first line is the entry point at byte offset 0, the next at offset 4, and "
+        "so on. There are no labels or symbols: every branch and PC-relative field (b, b.cond, bl, cbz, "
+        "cbnz, tbz, tbnz, adr) holds the byte offset from the address of that instruction itself, divided "
+        "by 4 where the encoding says so, which you compute. You may end a line with a comment starting "
+        "with `//` or `;` (e.g. `8b010000 // add x0, x0, x1`); comments and blank lines are ignored. No "
+        "directives, no data words, no calls to other functions. No Markdown fences, no prose before or "
+        "after the code."
+    ),
+    "x86_64": (
+        "Output format: raw x86-64 machine code, which you encode yourself: there is no assembler and no "
+        "encoder, and your bytes run exactly as you write them. Write one instruction per line as its bytes "
+        "in memory order, each byte as two hex digits, separated by spaces, e.g. `48 01 f0` is `add rax, "
+        "rsi` and `c3` is `ret`. The lines are placed one after another: the first line is the entry point "
+        "at byte offset 0. There are no labels or symbols: every relative branch or call displacement "
+        "(jmp, jcc, call rel8/rel32) is the signed byte distance from the end of that instruction (the "
+        "address of the next one) to the target, little-endian, which you compute. You may end a line "
+        "with a comment starting with `//` or `;` (e.g. `48 01 f0 ; add rax, rsi`); comments and blank "
+        "lines are ignored. No directives, no data bytes, no calls to other functions. No Markdown fences, "
+        "no prose before or after the code."
+    ),
+}
+_HEX_CALLS = {
+    "self": {"x86_64": "calls only to your own entry point (a call rel32 whose target is offset 0) for the "
+                       "recursion",
+             "aarch64": "calls only to your own entry point (a bl whose target is offset 0) for the recursion"},
+    "callback": {"x86_64": "the only call is through the function-pointer argument (e.g. call r12, `41 ff d4`)",
+                 "aarch64": "the only call is through the function-pointer argument (e.g. blr x19, `d63f0260`)"},
+}
 
 
 # Round 2 adds the ABI facts its tasks depend on (round-1 prompts are unchanged).
@@ -158,6 +197,11 @@ def rules(path: str, isa: str, task: Task) -> str:
         if task.calls:
             text += "\n" + _STRUCTURED_CALLS[task.calls][isa]
         return text
+    if path == "hex":
+        text = HEX_RULES[isa]
+        if task.calls:
+            text = text.replace(_NO_CALLS, _HEX_CALLS[task.calls][isa])
+        return text + " " + ISA_LEVEL[isa]
     if path == "ir":
         text = IR_RULES
         if task.calls:

@@ -1,4 +1,4 @@
-"""The three pipelines (stream / structured / ir) and the differential checker.
+"""The pipelines (stream / structured / ir, and the opt-in hex path) and the differential checker.
 
 `attempt(subject, path, isa, task, prompt)` asks the subject once and returns an `Attempt`:
 the code the pipeline produced (or the failure it caught) and, if code was produced, the
@@ -644,7 +644,56 @@ def _ir_attempt(subject: Subject, isa: str, task: Task, prompt: str, raw_path: s
     return a
 
 
-PIPELINES = {"stream": _stream_attempt, "structured": _structured_attempt, "ir": _ir_attempt}
+def _hex_listing_note(listing: str) -> str:
+    return ("\n\nYour machine code, as written, decodes as (offset from the entry point, your line, the hex, "
+            "the disassembly):\n" + listing)
+
+
+def _hex_attempt(subject: Subject, isa: str, task: Task, prompt: str, raw_path: str,
+                 timeout: float | None = None) -> Attempt:
+    """The model writes the machine code as hex (bca.liveeval.hexpath): the bytes run exactly as
+    written, nothing re-encodes them."""
+    from bca.liveeval import hexpath
+
+    t0 = time.perf_counter()
+    resp = _call(subject, prompt, None, raw_path, timeout)
+    a = Attempt("hex", isa, task.name, False, None, "", resp.text, response=resp,
+                wall_s=time.perf_counter() - t0)
+    if resp.refusal:  # before anything else: text streamed before a refusal is not an answer
+        a.category, a.failure = "refusal", f"the model refused to answer ({resp.refusal})"
+        return a
+    if not resp.ok:
+        a.category = "subject_timeout" if resp.timed_out else "subject_error"
+        a.code_text = ""  # partial text exists only for streaming subjects: never shown, for parity
+        a.failure = f"the model call failed: {resp.error}"
+        return a
+    src = strip_fences(resp.text)
+    a.code_text = src
+    try:
+        code, lines = hexpath.parse(isa, src)
+    except hexpath.HexError as exc:
+        bad = src.splitlines()[exc.line - 1].strip() if 0 < exc.line <= len(src.splitlines()) else ""
+        first = next((ln.strip() for ln in src.splitlines() if ln.strip()), "")
+        prose = bad and bad == first and _PROSE_RE.match(bad)
+        a.category = "format" if prose or exc.category == "format" else "encoding"
+        a.failure = f"The machine code is malformed: {exc}"
+        return a
+    note = _hex_listing_note(hexpath.listing(isa, code, lines, CODE_BASE))
+    try:
+        hexpath.check(isa, lines, CODE_BASE)
+    except hexpath.HexError as exc:
+        a.category = exc.category
+        a.failure = f"The machine code was rejected before running: {exc}" + note
+        return a
+    a.code = code
+    a.hex_note = note  # not a dataclass field (not recorded): appended to a runtime failure by attempt()
+    a.locate = _range_locator((CODE_BASE + hl.offset, len(hl.data), f"line {hl.line}: `{hl.text.strip()}`")
+                              for hl in lines)
+    return a
+
+
+PIPELINES = {"stream": _stream_attempt, "structured": _structured_attempt, "ir": _ir_attempt,
+             "hex": _hex_attempt}
 
 
 def attempt(subject: Subject, path: str, isa: str, task: Task, prompt: str, *, raw_path: str = "",
@@ -663,6 +712,7 @@ def attempt(subject: Subject, path: str, isa: str, task: Task, prompt: str, *, r
             a.check_s = time.perf_counter() - t0
             a.verdict = Verdict(False, "requirement", message=req)
             a.ok, a.category, a.failure = False, "requirement", req
+            a.failure += getattr(a, "hex_note", "")
             return a
         v = check(task, isa, a.code, locate=a.locate)
         a.check_s = time.perf_counter() - t0
@@ -670,4 +720,7 @@ def attempt(subject: Subject, path: str, isa: str, task: Task, prompt: str, *, r
         a.ok, a.category = v.ok, v.category
         if not v.ok:
             a.failure = v.message
+    note = getattr(a, "hex_note", "")
+    if note and not a.ok and not a.failure.endswith(note):
+        a.failure += note
     return a

@@ -5,7 +5,7 @@ import json
 import sys
 from pathlib import Path
 
-from bca.liveeval.prompts import ISAS, PATHS
+from bca.liveeval.prompts import EXTRA_PATHS, ISAS, PATHS
 from bca.liveeval.prompts_apps import APP_PATHS
 from bca.liveeval.registry import (
     BATTERY_TIMEOUTS,
@@ -61,7 +61,8 @@ def main(argv=None, *, subject_factory=None) -> int:
                         "not apps), or task names; comma-separated, mixable")
     r.add_argument("--paths", default=None,
                    help=f"comma-separated (default: each task's own: {','.join(PATHS)} for functions, "
-                        f"{','.join(APP_PATHS)} for apps); a path a task does not have is skipped for it")
+                        f"{','.join(APP_PATHS)} for apps; opt-in for functions: {','.join(EXTRA_PATHS)}); a path a task "
+                        "does not have is skipped for it")
     r.add_argument("--isas", default=",".join(ISAS))
     r.add_argument("--model", help=f"one subject: an alias ({', '.join(MODEL_ALIASES)}), a Claude model id, or "
                                   f"<vendor>:<model> for another vendor's CLI ({', '.join(VENDORS)})")
@@ -140,7 +141,7 @@ def _run(args, subject_factory) -> int:
     selected = select(args.tasks)
     paths = _split(args.paths) if args.paths is not None else None
     isas = _split(args.isas)
-    known = list(dict.fromkeys([*PATHS, *APP_PATHS]))
+    known = list(dict.fromkeys([*PATHS, *APP_PATHS, *EXTRA_PATHS]))
     bad = [p for p in paths or [] if p not in known] + [i for i in isas if i not in ISAS]
     if bad:
         raise RegistryError(f"unknown path/ISA {bad}; have {', '.join(known)} / {', '.join(ISAS)}")
