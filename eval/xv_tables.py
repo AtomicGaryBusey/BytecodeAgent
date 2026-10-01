@@ -27,6 +27,7 @@ names = {"claude-opus-5-5": "Claude Opus 5.5", "claude-fable-5-1": "Claude Fable
  "claude-opus-4-8": "Claude Opus 4.8", "claude-sonnet-4-5-20250929": "Claude Sonnet 4.5",
  "agy:gemini-3.8-flash-high": "Gemini 3.8 Flash High (Antigravity)",
  "copilot:gpt-6-luna": "GPT-6 Luna via Copilot", "copilot:mai-code-1.1-flash": "Microsoft MAI-Code 1.1 Flash (Copilot)",
+ "copilot:claude-sonnet-5.5": "Claude Sonnet 5.5 via Copilot",
  "local:qwen3:30b-a3b-instruct-2507-q8_0": "Qwen3-30B-A3B Instruct 2507 Q8 (local)", "local:qwen2.5:14b": "Qwen2.5-14B Q4 (local)",
  "local:qwen3-coder-next:q4_K_M": "Qwen3-Coder-Next Q4 (local)",
  "local:qwen3.6:35b-a3b-q8_0@nothink": "Qwen3.6-35B-A3B Q8, thinking off (local)",
@@ -34,7 +35,11 @@ names = {"claude-opus-5-5": "Claude Opus 5.5", "claude-fable-5-1": "Claude Fable
 # reviewed harness false rejects counted as first-attempt passes: label -> [(battery, path, n)]
 ADJ = {"codex:gpt-daybreak-blue-latest": [("adversarial", "stream", 1)],
        "grok:grok-4.7-build-fast": [("long", "structured", 3)],
-       "copilot:gpt-6-luna": [("long", "stream", 1)]}  # keystone refused an AArch64 mov-with-shift alias GNU as takes
+       "copilot:gpt-6-luna": [("long", "stream", 1)],  # keystone refused an AArch64 mov-with-shift alias GNU as takes
+       # +1 mat_pow.structured.x86_64: the encoder read a jump to the program's own label `cl` as register cl;
+       # -1 vm_run.structured.aarch64: passed on a fresh re-run after the pre-fix output-cap abort; under the
+       #    current rule the capped answer is scored, and it fails (format)
+       "copilot:claude-sonnet-5.5": [("long", "structured", 1), ("long", "structured", -1)]}
 bats = ["round1", "round2", "long", "adversarial"]; tot = {"round1": 48, "round2": 62, "long": 54, "adversarial": 60}
 agg = collections.defaultdict(lambda: collections.defaultdict(lambda: [0, 0, 0, 0.0]))
 pth = collections.defaultdict(lambda: collections.defaultdict(lambda: [0, 0]))
