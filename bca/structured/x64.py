@@ -630,6 +630,14 @@ def assemble(instructions, *, base: int = 0x100000, allow_undefined: bool = Fals
     end_ip = _IP_BASE + _IP_STEP * (len(real) + 1)
     for it in items:
         if isinstance(it, Label):
+            if it.name.lower() in REGISTERS:
+                # The jump schema says register names are not usable as labels: jmp/call read a register
+                # name as that register (an indirect jump), and GNU as does the same in Intel syntax
+                # (`jmp cl` is an operand-size error there, not a branch to label cl). Refuse the
+                # definition itself, so the message points at the cause rather than at a later jump.
+                errors.append(InsnError(it.index, "label", f"label name {it.name!r} is a register name; register "
+                                        "names are not usable as labels (a jump or call to it would read the "
+                                        "register): rename the label", it.raw))
             pending_labels.append(it)
         else:
             for lab in pending_labels:
