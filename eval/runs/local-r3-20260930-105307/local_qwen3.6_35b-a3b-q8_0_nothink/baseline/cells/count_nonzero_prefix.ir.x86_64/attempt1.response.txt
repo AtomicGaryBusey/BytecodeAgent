@@ -1,0 +1,116 @@
+```qbe
+export function l $count_nonzero_prefix(l %a, l %n) {
+    @check_zero
+        %n_is_zero = ceql %n, 0
+        jnz %n_is_zero, @done
+    @loop
+        %ptr = addl %a, 0
+        %idx = andl %n, -1          ; preserve sign if needed, but n>=0 here. Actually just use %n as counter.
+        ; We need to track the current index to stop at n.
+        ; Let's use a loop that decrements n and checks elements.
+        ; However, we must not read past bounds.
+        
+        ; Load element at current pointer
+        %val = loadl [%ptr]
+        %is_zero = ceql %val, 0
+        jnz %is_zero, @return_idx
+        
+        ; Advance pointer
+        %a_next = addl %ptr, 8
+        storel [$tmp_ptr], %a_next   ; Can't store to local easily without alloc. Let's use a temporary variable approach or just keep updating a register-like variable? QBE doesn't have explicit registers for loop vars like that directly in IR except via alloc.
+        
+        ; Better: Use a simple loop with an index.
+    }
+}
+```
+
+Let me rewrite this cleanly using proper QBE syntax and variables.
+
+```qbe
+export function l $count_nonzero_prefix(l %a, l %n) {
+    @entry
+        %idx = alloc l
+        *%idx = 0
+    
+    @loop
+        %i = loadl [%idx]
+        %is_done = csltl %i, %n      ; if i < n continue loop
+        jz %is_done, @return
+        
+        %ptr = addl %a, %i           ; offset in bytes? No, %i is index. ptr = a + i*8
+        %ptr = addl %a, 0
+        %offset = mull %i, 8         ; assuming 64-bit pointers/integers
+        %addr = addl %ptr, %offset
+        %val = loadl [%addr]
+        
+        %is_zero = ceql %val, 0
+        jnz %is_zero, @found_zero
+        
+        %new_idx = addl %i, 1
+        storel [%idx], %new_idx
+        jump @loop
+    
+    @found_zero
+        jump @return
+    
+    @return
+        %final_idx = loadl [%idx]
+        ret %final_idx l
+}
+```
+
+Wait, QBE doesn't have `mull` for immediate multiplication in that way typically, and pointers are just integers. Also `csltl` compares signed less. Let's check standard QBE ops.
+QBE has:
+- Arithmetic: `addl`, `subl`, `mull` (multiplication).
+- Comparisons: `ceql` (equal), `csltl` (signed less), etc. Produce `w`.
+- Jumps: `jnz %w, @label`.
+
+The issue with pointers: `%a` is a pointer. Adding an index requires multiplying by 8. QBE doesn't have shift-by-immediate for general values easily? It has `slll` maybe? Or just multiply by 8.
+Actually, in many QBE backends, you can do `mull %i, 8`.
+
+Let's refine. Also, ensure we don't read past the end. The check `i < n` ensures we only access indices `0..n-1`.
+
+One correction: `addl %a, %offset` works if `%a` is treated as an integer pointer offset arithmetic, which is valid in C and QBE for pointers.
+
+Final check on logic:
+1. Initialize index to 0.
+2. While index < n:
+   a. Load value at `a[index]`.
+   b. If value != 0, increment index, repeat.
+   c. If value == 0, break.
+3. Return index (which is the count of nonzero prefix).
+
+This returns the first index that is zero, or n if all are non-zero. Correct.
+
+One detail: `loadl` syntax is `loadl [address]`.
+
+```qbe
+export function l $count_nonzero_prefix(l %a, l %n) {
+    @entry
+        %idx = alloc l
+        *%idx = 0
+    
+    @loop
+        %i = loadl [%idx]
+        %cond = csltl %i, %n
+        jz %cond, @done
+        
+        %off = mull %i, 8
+        %addr = addl %a, %off
+        %val = loadl [%addr]
+        
+        %not_zero = ceql %val, 0
+        jnz %not_zero, @found
+        
+        %next_i = addl %i, 1
+        storel [%idx], %next_i
+        jump @loop
+    
+    @found
+        jump @done
+    
+    @done
+        %result = loadl [%idx]
+        ret %result l
+}
+```

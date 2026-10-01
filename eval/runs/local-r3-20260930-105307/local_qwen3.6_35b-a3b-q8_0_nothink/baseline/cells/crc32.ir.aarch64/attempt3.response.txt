@@ -1,0 +1,328 @@
+export function l $crc32(l %p, l %n) {
+@head
+  %empty = icmp eq %n, 0l
+  jnz @return_zero, @loop
+
+@return_zero
+  ret l, 0w
+
+@loop
+  %cnt = subu l, %n, 1l
+  %p_inc = add l, %p, 1l
+  
+  ; Load byte and extend to w (32-bit unsigned logic handled by masking/shifting later)
+  %b_w = extuw (loadub %p)
+  
+  ; Initialize CRC if this is the first byte? 
+  ; The algorithm says crc ^= byte. It assumes crc starts at 0xFFFFFFFF.
+  ; We need to track if it's the first iteration or just xor against previous.
+  ; Since we don't have a persistent variable across loop iterations easily without stack/register spill,
+  let's use a register for CRC and pass it in a tail call? No, QBE doesn't support tail calls directly like that easily with state.
+  We need to store CRC in a temporary or register. Let's assume the compiler keeps %crc_w in a register if we don't clobber it.
+  But we need to initialize it.
+  
+  ; Better strategy: Unroll or use a specific label for initialization?
+  ; Or just use a stack variable.
+  
+  storel @stack_crc, %empty
+
+@process_byte
+  ; Load current CRC from stack (or initial value if empty)
+  %is_empty = loadl @stack_crc
+  jnz @has_crc, @init_crc
+  
+@init_crc
+  %crc_w = -1w
+  jmp @do_crc_step
+
+@has_crc
+  %crc_w = loadw @stack_crc
+
+@do_crc_step
+  ; crc ^= byte
+  %crc_w = xor w, %crc_w, %b_w
+  
+  ; Inner loop 8 times
+  storel @stack_cnt, 7l
+
+@bit_loop
+  %cnt = loadl @stack_cnt
+  jnz @continue_bits, @end_bits
+
+@continue_bits
+  ; Check LSB
+  %lsb = and w, %crc_w, 1w
+  
+  ; If lsb is set: crc = (crc >> 1) ^ POLY
+  ; If lsb is zero: crc = crc >> 1
+  
+  ; QBE >> on w is arithmetic. We need logical shift right.
+  ; To simulate logical shift right of unsigned 32-bit int X by 1:
+  ; val >>= 1; if (original_val & 0x80000000) set bit 31? No, that's not how it works.
+  ; Logical shift brings in 0. Arithmetic shifts in sign bit.
+  ; So if we want logical, we must clear the sign bit after arithmetic shift IF the original was negative?
+  ; Example: -1 (all 1s) >> 1 arith = -1 (all 1s). Logical = 0x7FFFFFFF.
+  ; So: temp = val >> 1; if (val < 0) temp &= 0x7FFFFFFF? 
+  ; Wait, 0x8000... >> 1 arith = 0xC000... (sign extended). Logical = 0x4000...
+  ; So: temp = val >> 1; if (val < 0) temp &= 0x7FFFFFFF is INCORRECT because it kills the bit that shifted into pos 30 from pos 31? No, pos 31 becomes 0.
+  ; Correct sim: temp = val >> 1; mask = 0x7FFFFFFF; if (val < 0) temp |= 0x80000000? NO.
+  
+  ; Easiest way in QBE without LSR instruction assumption:
+  ; Use 64-bit logic.
+  
+  %crc_l = extuw %crc_w
+  %lsb_l = and l, %crc_l, 1l
+  
+  jnz @bit_is_one, @bit_is_zero
+
+@bit_is_one
+  ; crc = (crc >> 1) ^ POLY
+  ; We do logical shift on the whole 64-bit register then mask to 32 bits?
+  ; No, we want to operate on the 32-bit value logically.
+  %poly_l = -333923440l ; 0xEDB88320 as signed positive 64-bit int (since high bit of 32-bit val is not sign bit for 64-bit)
+  
+  ; Logical shift right of 64-bit value: QBE >> on l is logical? 
+  ; Usually LSR is logical. Let's assume `>>` on `l` (unsigned long) is logical.
+  ; If so, we can just do crc_l >>= 1; then xor with poly (zero extended).
+  
+  %crc_l >>= 1
+  %poly_ext = extuw -333923440w
+  %crc_l = xor l, %crc_l, %poly_ext
+  
+  jmp @update_crc
+
+@bit_is_zero
+  %crc_l >>= 1
+  jmp @update_crc
+
+@update_crc
+  ; Mask back to 32 bits just in case (though LSR keeps it clean if input was clean)
+  %crc_w = extuw %crc_l
+  ; Actually extuw truncates.
+  
+  storew @stack_crc, %crc_w
+  
+  %new_cnt = subu l, %cnt, 1l
+  storel @stack_cnt, %new_cnt
+  jmp @bit_loop
+
+@end_bits
+  storew @stack_crc, %crc_w
+  ; Continue to next byte or finish
+  jnz @loop_body_next, @return_final
+
+@loop_body_next
+  ; We need to go back to `@loop` but with updated n and p?
+  ; Actually, the structure above was: load b, process bytes.
+  ; The loop label should decrement n and check if n>0.
+  ; My previous loop structure was flawed. Let's rewrite properly.
+
+; REWRITE FOR CLARITY AND CORRECTNESS
+; Using explicit stack for CRC state to survive loop branches cleanly in QBE IL which lacks complex register allocation hints.
+
+@header
+  jnz @return_zero, @main_loop
+
+@return_zero
+  ret l, 0w
+
+@main_loop
+  ; Store current n
+  storel @n_mem, %n
+  
+  ; Load byte
+  %byte_val = loadub %p
+  
+  ; Get CRC from stack
+  %crc_w = loadw @crc_mem
+  
+  ; If it's the first iteration (n == original size?), we need to know if CRC is init.
+  ; Let's init CRC in a separate block called once? Or just handle it inside.
+  ; Since n decreases, we can check if n == %n_orig? No, we only have current %n.
+  ; We'll assume the first time we enter main_loop, we initialize CRC.
+  ; How to detect "first time"? 
+  ; Let's use a separate initialization block before the loop.
+
+@init_crc
+  storew @crc_mem, -1w
+  jmp @process_first_byte
+
+@process_bytes_loop
+  ; If n <= 0, break
+  %cnt = loadl @n_mem
+  jnz @check_n_zero, @exit_loop
+  
+@check_n_zero
+  jz @exit_loop, @process_current_byte
+
+@process_current_byte
+  storel @n_mem, %cnt
+  ; Load byte at current p
+  %b = extuw (loadub %p)
+  
+  ; Update CRC with this byte
+  %crc_w = loadw @crc_mem
+  %crc_w = xor w, %crc_w, %b
+  
+  ; Bit loop for this byte
+  storel @bit_cnt, 7l
+
+@inner_bit_loop
+  %bcnt = loadl @bit_cnt
+  jnz @do_bit, @next_byte
+
+@do_bit
+  ; Check LSB of crc_w
+  %lsb = and w, %crc_w, 1w
+  
+  ; We need logical shift right.
+  ; Convert to l for safe shifting if we assume l>> is logical? 
+  ; Or simulate. Let's use `l` with logical shift assumption.
+  
+  %crc_l = extuw %crc_w
+  %lsb_l = and l, %crc_l, 1l
+  
+  jnz @shift_xor, @shift_only
+
+@shift_xor
+  ; crc >>= 1; crc ^= POLY
+  %crc_l >>= 1
+  %poly = -333923440l
+  %crc_l = xor l, %crc_l, %poly
+  jmp @save_crc_w
+
+@shift_only
+  %crc_l >>= 1
+
+@save_crc_w
+  %crc_w = extuw %crc_l
+  storew @crc_mem, %crc_w
+  
+  ; Decrement bit counter
+  %nb = subu l, %bcnt, 1l
+  storel @bit_cnt, %nb
+  jmp @inner_bit_loop
+
+@next_byte
+  ; Advance pointer and decrement byte counter
+  %new_n = subu l, %cnt, 1l
+  %new_p = add l, %p, 1l
+  
+  ; Jump back to main loop with new p and n
+  ; QBE doesn't support tail calls easily with variable args. 
+  ; We must restructure as a standard loop.
+
+; RESTRUCTURE: Single block loop checking condition at start.
+
+@start
+  %cond = icmp sltu %n, 1l
+  jnz @done, @body
+
+@body
+  ; Load byte
+  %byte_ext = extuw (loadub %p)
+  
+  ; Initialize CRC if n == original_n? 
+  ; We can't track original_n easily without saving it.
+  ; Let's save it.
+  
+  ; To simplify: Unroll the "first byte" logic or assume CRC is in register and init outside.
+  ; But QBE functions are linear.
+  
+  ; Let's use a flag on stack? No.
+  ; Just handle initialization inside body if n equals some constant? No, n varies.
+  
+  ; Trick: Initialize CRC to -1 before loop. 
+  ; Inside loop: crc ^= byte.
+  ; This works for all bytes.
+  
+  ; So we just need to persist `crc` across iterations.
+  
+  ; Let's write the code properly with a loop that updates n, p, and crc.
+
+; Final attempt structure:
+
+@entry
+  storew @crc, -1w
+  storel @n_tmp, %n
+  jmp @loop_test
+
+@loop_test
+  %cur_n = loadl @n_tmp
+  jnz @loop_body, @calc_final
+
+@loop_body
+  ; Load byte
+  %b_w = extuw (loadub %p)
+  
+  ; Update CRC
+  %c_w = loadw @crc
+  %c_w = xor w, %c_w, %b_w
+  
+  ; Process 8 bits
+  storel @bit_i, 7l
+
+@bit_proc
+  %i = loadl @bit_i
+  jnz @do_bit_op, @end_bits_byte
+
+@do_bit_op
+  %lsb = and w, %c_w, 1w
+  jnz @xor_poly_shift, @shift_only
+
+@xor_poly_shift
+  ; Logical shift right of c_w. 
+  ; Use 64-bit reg for logical shift safety.
+  %c_l = extuw %c_w
+  %c_l >>= 1
+  %poly_u = -333923440l
+  %c_l = xor l, %c_l, %poly_u
+  %c_w = extuw %c_l
+  jmp @update_bit_cnt
+
+@shift_only
+  %c_l = extuw %c_w
+  %c_l >>= 1
+  %c_w = extuw %c_l
+
+@update_bit_cnt
+  %ni = subu l, %i, 1l
+  storel @bit_i, %ni
+  jmp @bit_proc
+
+@end_bits_byte
+  ; Save CRC
+  storew @crc, %c_w
+  
+  ; Advance p and n
+  %cn = loadl @n_tmp
+  %nn = subu l, %cn, 1l
+  %np = add l, %p, 1l
+  
+  ; Update state (simulate tail call by jumping back with new args)
+  ; But we need to pass new p and n. We can't change %p and %n register args easily if they are used later?
+  ; They are local now. We just jump.
+  
+  ; QBE requires `ret` at end. We can't goto registers.
+  ; We must reload from stack or keep in locals.
+  ; Since we updated stack, next iteration will load from stack.
+  ; But p and n were args. We need to update them for the next iteration check.
+  ; We can store new p/n on stack too.
+  
+  storel @n_tmp, %nn
+  storel @p_tmp, %np
+  
+  jmp @loop_test
+
+@calc_final
+  %final = loadw @crc
+  %result = xor w, %final, -1w
+  ret l, %result
+
+; Data section equivalent in QBE is not allowed "No data definitions". 
+; So we must use stack variables or registers.
+; Stack variables: sp - offset.
+; We need to allocate stack space.
+
+; Let's write the final valid QBE IL.
+}

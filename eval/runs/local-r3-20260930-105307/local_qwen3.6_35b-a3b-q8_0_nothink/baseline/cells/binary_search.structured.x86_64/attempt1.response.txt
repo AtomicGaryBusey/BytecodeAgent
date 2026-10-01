@@ -1,0 +1,334 @@
+{
+  "instructions": [
+    {
+      "op": "cmp",
+      "dst": {"imm": 0},
+      "src": [{"reg": "rsi"}],
+      "comment": "if n == 0, key not found"
+    },
+    {
+      "label": "empty_array",
+      "op": "je",
+      "target": "not_found"
+    },
+    {
+      "op": "mov",
+      "dst": {"reg": "r8"},
+      "src": [{"imm": -1}]
+    },
+    {
+      "op": "movsx",
+      "dst": {"reg": "rax"},
+      "src": [{"reg": "esi"}],
+      "comment": "n into rax (zero-extended to 64-bit is fine since n >= 0)"
+    },
+    {
+      "op": "dec",
+      "dst": {"reg": "rax"}
+    },
+    {
+      "label": "lo",
+      "op": "mov",
+      "dst": {"reg": "r10"},
+      "src": [{"imm": 0}]
+    },
+    {
+      "op": "mov",
+      "dst": {"reg": "r9"},
+      "src": [{"reg": "rax"}]
+    },
+    {
+      "label": "loop",
+      "op": "cmp",
+      "dst": {"reg": "r10"},
+      "src": [{"reg": "r9"}]
+    },
+    {
+      "op": "jg",
+      "target": "not_found"
+    },
+    {
+      "label": "mid_calc",
+      "op": "sub",
+      "dst": {"reg": "r9"},
+      "src": [{"reg": "r10"}]
+    },
+    {
+      "op": "movsx",
+      "dst": {"reg": "rdx"},
+      "src": [{"reg": "r8d"}],
+      "comment": "sign extend r8 for shift if needed, but we use logical shift"
+    },
+    {
+      "op": "shr",
+      "dst": {"reg": "r9"},
+      "src": [{"imm": 1}]
+    },
+    {
+      "label": "mid_addr",
+      "op": "add",
+      "dst": {"reg": "r9"},
+      "src": [{"reg": "r10"}]
+    },
+    {
+      "op": "imul",
+      "dst": {"reg": "rdx"},
+      "src": [{"reg": "r9"}, {"imm": 8}]
+    },
+    {
+      "op": "lea",
+      "dst": {"reg": "rdi"},
+      "src": [{"mem": {"base": "rdi", "index": "rdx", "scale": 1, "disp": 0, "size": 8}}]
+    },
+    {
+      "label": "compare",
+      "op": "mov",
+      "dst": {"reg": "rax"},
+      "src": [{"mem": {"base": "rdi", "index": "rdx", "scale": 1, "disp": 0, "size": 8}}]
+    },
+    {
+      "op": "cmp",
+      "dst": {"reg": "rax"},
+      "src": [{"reg": "rdx"}],
+      "comment": "This is wrong, let's redo the comparison properly. rax was overwritten by load. Let's reload key into rcx."
+    }
+  ]
+}
+
+Wait, I need to be more careful with register clobbering and logic. Let me restart the sequence carefully.
+
+1. `rdi` = a, `rsi` = n, `rdx` = key.
+2. Check if `n == 0`. If so, return -1.
+3. Initialize `lo = 0`, `hi = n - 1`.
+4. Loop while `lo <= hi`:
+   - `mid = lo + (hi - lo) / 2`
+   - Load `a[mid]` into a register.
+   - Compare `a[mid]` with `key`.
+   - If `a[mid] == key`, return `mid`.
+   - If `a[mid] < key`, `lo = mid + 1`.
+   - Else, `hi = mid - 1`.
+5. Return -1.
+
+Registers:
+- `rdi`: base pointer `a` (callee-saved or just don't clobber it until we read from it, but we need to compute address). Actually `rdi` is argument. I should save it if I need it later, or use `r12` for base. Let's use `r12` for base pointer `a`.
+- `rsi`: `n` (argument). Save to `r13`.
+- `rdx`: `key` (argument). Save to `r14`.
+- `r8`: `lo`
+- `r9`: `hi`
+- `r10`: `mid` or temp for address calc.
+
+Steps:
+1. `push rbp; mov rbp, rsp` (standard prologue, but rsp must be aligned). `sub rsp, 8` to align if needed? No, caller sets 16-byte alignment. `rsp % 16 == 8`. `push rdi` would make it `rsp % 16 == 0`. But I shouldn't clobber `rdi` unless saved.
+   Let's save `r12-r15` if used? No, they are callee-saved, so I must restore them.
+   Let's use:
+   `r12` = base `a`
+   `r13` = `n`
+   `r14` = `key`
+   `r8` = `lo`
+   `r9` = `hi`
+
+Prologue:
+- Save callee-saved registers I use. I'll use `r12`, `r13`, `r14`. So `push r14; push r13; push r12`.
+  `rsp` goes from `8 mod 16` to `5 mod 16`? No. `rsp` is 8 bytes below return address.
+  Entry: `rsp` is 8 mod 16.
+  `push r12`: `rsp` becomes (rsp-8) % 16 == 0. Aligned.
+  `push r13`: `rsp` becomes (rsp-8) % 16 == 8.
+  `push r14`: `rsp` becomes (rsp-8) % 16 == 0. Aligned.
+  This works for calls if I had any, but I don't have calls. The alignment rule is mainly for call instructions. Since there are no calls, strict alignment isn't strictly enforced by ABI for the body, but `ret` expects original `rsp`. So I must restore `r12-r14` and adjust `rsp`.
+
+Epilogue:
+- `pop r12; pop r13; pop r14; ret`.
+
+Logic:
+- `mov r12, rdi` (base)
+- `mov r13, rsi` (n)
+- `mov r14, rdx` (key)
+- `cmp r13, 0`
+- `je .not_found`
+- `lea r9, [r13 - 1]` (hi = n - 1)
+- `xor r8, r8` (lo = 0)
+
+Loop:
+- `.loop`:
+  - `cmp r8, r9`
+  - `jg .not_found` (lo > hi)
+  
+  - Calculate mid. `mid = (lo + hi) / 2`.
+    - `mov rax, r12` (load a[0] address? No, need index).
+    - Let's compute offset. `offset = (lo + hi) * 4` (shift right 2 for division by 4? No, element is 8 bytes, so shift right 3 for /8).
+    - Actually, simpler: `mid_idx = lo + ((hi - lo) >> 1)`
+    - `mov rax, r9`
+    - `sub rax, r8`
+    - `shr rax, 1`
+    - `add rax, r8` -> `rax` is `mid`.
+    
+  - Load value: `a[mid]`.
+    - `lea rsi, [r12 + rax * 8]` (address of a[mid]). Wait, `rsi` is modified. I saved `n` in `r13`, but I didn't save `rsi`'s original content other than `n`.
+    - The prompt says `a` is in `rdi`. So `lea rsi, [rdi + rax * 8]`? But `rdi` is `a`.
+    - Let's just use `r12` for base `a`.
+    - `mov rbx, [r12 + rax * 8]` (load value). Use `rbx`? `rbx` is callee-saved. I must save/restore it.
+    - Alternatively, don't save `rbx` if I don't use it. But I need to store the loaded value. Let's use `r10` for loaded value. `r10` is caller-saved, so I don't need to save it.
+
+  - Comparison:
+    - `cmp r10, r14` (value vs key)
+    - `je .found`
+    - `jl .lo_incr`
+    - `dec r9`
+    - `jmp .loop`
+  
+  - `.lo_incr`:
+    - `inc r8`
+    - `jmp .loop`
+
+  - `.found`:
+    - `mov rax, rax` (mid is in rax? No, I calculated mid in `rax`. Yes.)
+    - `pop ...`? No, return value in `rax`.
+    
+  - `.not_found`:
+    - `mov rax, -1`
+
+  - Epilogue:
+    - `pop r14; pop r13; pop r12; ret`
+
+Let's refine the register usage to minimize saving.
+- `r12` = base `a` (callee-saved) -> Must push/pop.
+- `r13` = `n` (argument in `rsi`) -> Not callee-saved, but I'm modifying it? No, I move `rsi` to `r13`. `r13` is callee-saved. So I must push/pop `r13`.
+- `r14` = `key` (argument in `rdx`) -> `r14` is callee-saved. Must push/pop.
+- `r8`, `r9`, `rax` are caller-saved, free to use.
+
+So I need to save `r12`, `r13`, `r14`.
+
+Revised plan:
+1. `push r14`
+2. `push r13`
+3. `push r12`
+4. `mov r12, rdi`
+5. `mov r13, rsi`
+6. `mov r14, rdx`
+7. `cmp r13, 0`
+8. `je .L_not_found`
+9. `lea r9, [r13 - 1]` (hi)
+10. `xor r8, r8` (lo)
+11. `.L_loop`:
+12.   `cmp r8, r9`
+13.   `jg .L_not_found`
+14.   `mov rax, r9`
+15.   `sub rax, r8`
+16.   `shr rax, 1`
+17.   `add rax, r8` (mid in rax)
+18.   `mov rbx, [r12 + rax * 8]` -> Wait, `rbx` is callee-saved. Don't use it as a temporary without saving.
+    Use `rcx`? `rcx` is caller-saved. But I might call something? No calls.
+    Let's use `rcx`.
+19.   `mov rcx, [r12 + rax * 8]` (load value into rcx)
+20.   `cmp rcx, r14`
+21.   `je .L_found`
+22.   `jl .L_lo_incr`
+23.   `dec r9`
+24.   `jmp .L_loop`
+25. `.L_lo_incr`:
+26.   `inc r8`
+27.   `jmp .L_loop`
+28. `.L_found`:
+29.   `ret` (mid is in rax)
+30. `.L_not_found`:
+31.   `mov rax, -1`
+32.   `pop r12`
+33.   `pop r13`
+34.   `pop r14`
+35.   `ret`
+
+Wait, at step 29 `.L_found`, I haven't popped the registers yet! The epilogue must happen before return.
+So `.L_found` should go to epilogue code or duplicate it. Or just have one exit point.
+
+Let's merge exits:
+`.L_exit`:
+- `pop r12`
+- `pop r13`
+- `pop r14`
+- `ret`
+
+`.L_found`:
+- `mov rax, rax` (mid is already in rax)
+- `jmp .L_exit`
+
+`.L_not_found`:
+- `mov rax, -1`
+- `jmp .L_exit`
+
+This looks clean.
+
+One detail: `lea r9, [r13 - 1]` works if `r13 >= 1`. Since we checked `n > 0`, `n >= 1` for signed integers? The problem says `0 <= n <= 200`. If `n=0`, we jump to `.L_not_found`. So `n >= 1` at that point. Correct.
+
+Let's double check ABI alignment.
+Entry `rsp % 16 == 8`.
+`push r14`: `rsp -= 8`. `rsp % 16 == 0`.
+`push r13`: `rsp -= 8`. `rsp % 16 == 8`.
+`push r12`: `rsp -= 8`. `rsp % 16 == 0`.
+All good.
+
+Final check on registers:
+- `rdi`: base `a`. Copied to `r12`.
+- `rsi`: `n`. Copied to `r13`.
+- `rdx`: `key`. Copied to `r14`.
+- `r8`: `lo`. Caller-saved.
+- `r9`: `hi`. Caller-saved.
+- `rax`: mid calculation and return. Caller-saved.
+- `rcx`: value load. Caller-saved.
+- `rbx`, `r10-r15` unused/callee-saved (restored).
+
+The code seems solid.
+
+```json
+{
+  "instructions": [
+    {"op": "push", "src": [{"reg": "r14"}]},
+    {"op": "push", "src": [{"reg": "r13"}]},
+    {"op": "push", "src": [{"reg": "r12"}]},
+    {"op": "mov", "dst": {"reg": "r12"}, "src": [{"reg": "rdi"}]},
+    {"op": "mov", "dst": {"reg": "r13"}, "src": [{"reg": "rsi"}]},
+    {"op": "mov", "dst": {"reg": "r14"}, "src": [{"reg": "rdx"}]},
+    {"op": "cmp", "dst": {"reg": "r13"}, "src": [{"imm": 0}]},
+    {"op": "je", "target": "L_not_found"},
+    {"op": "lea", "dst": {"reg": "r9"}, "src": [{"mem": {"base": "r13", "index": null, "scale": 1, "disp": -1, "size": 8}}]},
+    {"label": "L_loop"},
+    {"op": "cmp", "dst": {"reg": "r8"}, "src": [{"reg": "r9"}]},
+    {"op": "jg", "target": "L_not_found"},
+    {"op": "mov", "dst": {"reg": "rax"}, "src": [{"reg": "r9"}]},
+    {"op": "sub", "dst": {"reg": "rax"}, "src": [{"reg": "r8"}]},
+    {"op": "shr", "dst": {"reg": "rax"}, "src": [{"imm": 1}]},
+    {"op": "add", "dst": {"reg": "rax"}, "src": [{"reg": "r8"}]},
+    {"op": "mov", "dst": {"reg": "rcx"}, "src": [{"mem": {"base": "r12", "index": "rax", "scale": 8, "disp": 0, "size": 8}}]},
+    {"op": "cmp", "dst": {"reg": "rcx"}, "src": [{"reg": "r14"}]},
+    {"op": "je", "target": "L_found"},
+    {"op": "jl", "target": "L_lo_incr"},
+    {"op": "dec", "dst": {"reg": "r9"}},
+    {"op": "jmp", "target": "L_loop"},
+    {"label": "L_lo_incr"},
+    {"op": "inc", "dst": {"reg": "r8"}},
+    {"op": "jmp", "target": "L_loop"},
+    {"label": "L_found"},
+    {"op": "mov", "dst": {"reg": "rax"}, "src": [{"reg": "rax"}]},
+    {"op": "jmp", "target": "L_exit"},
+    {"label": "L_not_found"},
+    {"op": "mov", "dst": {"reg": "rax"}, "src": [{"imm": -1}]},
+    {"label": "L_exit"},
+    {"op": "pop", "dst": {"reg": "r12"}},
+    {"op": "pop", "dst": {"reg": "r13"}},
+    {"op": "pop", "dst": {"reg": "r14"}},
+    {"op": "ret"}
+  ]
+}
+```
+
+Wait, `lea r9, [r13 - 1]` syntax in the JSON schema for `lea`:
+`"src": [{"mem": ...}]`. The memory object requires `base`, optionally `index`, `scale`, `disp`.
+`[r13 - 1]` is `[base + disp]`.
+So:
+`{"op": "lea", "dst": {"reg": "r9"}, "src": [{"mem": {"base": "r13", "index": null, "scale": 1, "disp": -1, "size": 8}}]}`.
+Wait, the schema says `index` is optional? "properties: base..., index...". It doesn't say required. But in the example it might be implied. Usually if index is not used, it's omitted or null. The schema definition for mem has `index` as a property of `additionalProperties: false`? No, `additionalProperties: false` is on the `mem` object itself relative to its children? No, `additionalProperties: false` is on the object that contains `base`, `index`, etc.
+Let's look at: `{"properties":{"mem":...,"required":["mem"],...}}`. Inside mem: `"properties":{"base":...,"index":...,"scale":...,"disp":...,"size":...}`. It does NOT have `required` for the fields inside `mem` in the snippet provided?
+Wait, looking closely at the schema provided in the prompt:
+```json
+"mem":{"type":"object","description":"...","properties":{"base":{"$ref":"#/$defs/reg64"},"index":{"$ref":"#/$defs/reg64"},"scale":{"type":"integer",...},"disp":{"type":"integer"},"size":{"type":"integer",...}},"additionalProperties":false}
+```
+It does not list `required` keys inside the `mem` definition. However, standard JSON schema behavior with `additionalProperties: false` means you can only specify the listed properties. If a property is not `required

@@ -1,0 +1,433 @@
+Implement the function `int64_t fib(int64_t n)`.
+
+Target: AArch64 (ARMv8-A), Linux AAPCS64. Integer/pointer arguments in x0-x7; 64-bit result in x0. Callee-saved: x19-x28, x29 (frame pointer) and d8-d15 (restore them if you use them); x9-x15 are free scratch registers. sp must stay 16-byte aligned and be back to its entry value when you return with ret (return address in x30).
+
+Output format: QBE intermediate language (the IL of the QBE compiler backend, c9x.me/compile). Write exactly one function, `export function l $fib(...)`, taking every argument as `l` (64-bit; pointers are `l` too) and returning `l`. QBE will compile it for the target above, so you do not handle registers or the ABI yourself. Remember: every block starts with an `@label`; temporaries are `%name`; comparisons such as `csltl`/`ceql` produce a `w` value; `jnz` tests a `w`; loads/stores are `loadl`/`storel`. No data definitions, no calls, no other functions. Output only the QBE code: no Markdown fences, no prose.
+
+Specification: Return the n-th Fibonacci number with fib(0) = 0, fib(1) = 1, fib(k) = fib(k-1) + fib(k-2), computed iteratively with wrapping 64-bit arithmetic (modulo 2^64). 0 <= n <= 90.
+
+Your previous attempt was:
+<previous>
+```qbe
+export function l $fib(l n) {
+@start
+    %cmp = ceql n, #0
+    jnz @base_zero
+
+    %cmp1 = ceql n, #1
+    jnz @base_one
+
+@loop
+    %a = loadl [sp]       ; Load fib(i-2), initially 0 (saved in stack)
+    %b = loadl [sp + 8]   ; Load fib(i-1), initially 1 (saved in stack)
+    %sum = addl %a, %b
+    
+@check_done
+    %cmp_n = ceql n, #2
+    jnz @update
+
+@update
+    storel [%sp + 8], %sum    ; fib(i-1) becomes the new sum
+    subl n, n, #1             ; decrement counter (we processed one step towards base)
+    ; Actually, let's rethink the iterative loop structure for clarity and correctness within QBE constraints.
+    ; We need to handle n > 1 iteratively.
+    ; Let's restart with a cleaner state setup.
+}
+```
+
+Wait, the prompt asks for exactly one function in QBE IL. I need to make sure the logic is correct. `n` is up to 90. Iterative approach:
+fib(0) = 0
+fib(1) = 1
+fib(2) = 1
+fib(3) = 2
+
+Let's use two registers/stack slots for `a` (fib(i-2)) and `b` (fib(i-1)).
+Initialize: if n=0 return 0. If n=1 return 1.
+For n >= 2:
+a = 0, b = 1
+Loop from i=2 to n:
+  c = a + b
+  a = b
+  b = c
+  i++
+return b
+
+QBE doesn't have local variables declared at top level easily without frame offsets. We can use the stack or just rely on QBE's register allocator if we map it to temps. However, QBE's IR is SSA-ish but allows loops. Since I cannot use memory stores/loads for everything (slow) and registers are handled by QBE, I should structure this so QBE can allocate registers `x` and `y` for `a` and `b`.
+
+Actually, the prompt says "QBE will compile it for the target... you do not handle registers". So I just write high-level loop IR.
+
+```qbe
+export function l $fib(l n) {
+@start
+    %is_zero = ceql n, #0
+    jnz @return_zero
+    
+    %is_one = ceql n, #1
+    jnz @return_one
+    
+    ; For n >= 2
+    %a = #0       ; fib(i-2)
+    %b = #1       ; fib(i-1)
+    %i = #2       ; current index we are computing towards
+    
+@loop
+    %done = cselg %i, n ; if i > n, branch to return
+    jnz @return_b
+    
+    %sum = addl %a, %b
+    %na = %b          ; next a is current b
+    %nb = %sum        ; next b is sum
+    %ni = addl %i, #1 ; next i
+    
+    ; Update variables. In QBE SSA, we must rename or use jumps to block with new values.
+    %a = %na
+    %b = %nb
+    n = %ni           ; Wait, can we modify argument? No, arguments are inputs. 
+                      ; We should use a local temp for loop counter.
+    
+    j @loop
+
+; The above structure is invalid in QBE because `a`, `b`, `i` are defined multiple times in SSA form without proper phi nodes or block re-entry with new temps.
+; Standard QBE loop handling:
+}
+```
+
+Let's do this properly with QBE's control flow graph.
+
+```qbe
+export function l $fib(l n) {
+@start
+    %c0 = ceql n, #0
+    jnz @ret0
+    
+    %c1 = ceql n, #1
+    jnz @ret1
+    
+    ; Initial values for loop: a=0, b=1. We start computing fib(2).
+    %a = #0
+    %b = #1
+    %i = #2
+    
+@loop_header
+    %cmp = cselg %i, n
+    jnz @ret_b
+
+    %sum = addl %a, %b
+    %new_a = %b
+    %new_b = %sum
+    %next_i = addl %i, #1
+    
+    ; Branch back to loop header with new values. 
+    ; In QBE, this is done by jumping to a label where these temps are defined? 
+    ; No, QBE is SSA. We need to use the fact that blocks define their outputs or we just pass them via arguments? No.
+    ; Correct QBE loop pattern:
+}
+```
+
+Actually, simpler approach: since n <= 90, the values fit in int64_t (signed) with wrapping (undefined behavior technically for overflow, but standard 2's complement wrap is what's asked).
+
+Let's use a `while` style structure.
+
+```qbe
+export function l $fib(l n) {
+@start
+    %cmp0 = ceql n, #0
+    jnz @return_0
+    
+    %cmp1 = ceql n, #1
+    jnz @return_1
+    
+    ; a = 0, b = 1
+    %a = #0
+    %b = #1
+    %i = #2
+    
+@loop
+    %cond = csltl %n, %i   ; if n < i (should be n >= i to continue), wait. 
+                           ; We want to loop while i <= n.
+                           ; So if i > n, exit.
+    jnz @return_b
+    
+    %c = addl %a, %b
+    %a = %b
+    %b = %c
+    %i = addl %i, #1
+    j @loop
+
+@return_0
+    ret #0
+
+@return_1
+    ret #1
+
+@return_b
+    ret %b
+}
+```
+Wait, `jnz` takes a `w` result from comparison. `csltl` produces `w`.
+If `n < i`, we want to STOP? No.
+We want to continue if `i <= n`.
+So if `i > n` (which is `n < i`), we stop.
+`%cond = csltl %n, %i` -> true if n < i.
+If true (`jnz @return_b`), we exit. Correct.
+
+One issue: `%a`, `%b`, `%i` are redefined in the loop. In QBE's SSA IR, you cannot reassign a temp. You must define new temps and branch to a block that expects them? Or use `phi`?
+QBE does not have explicit `phi` nodes like LLVM. It relies on the fact that a label can be reached from multiple places, but temps are local to their definition site.
+Actually, in QBE, if you jump back to a label, you typically don't redefine the same temp name. You define new ones. But how do you use them?
+
+Correct QBE pattern for loops:
+```qbe
+@head
+    ; conditions
+    jnz @end
+    
+    ; body computations -> new temps
+    %new_a = ...
+    %new_b = ...
+    %new_i = ...
+    
+    j @body_step
+
+@body_step
+    ; Assign old temps to new temps? 
+    ; No, you can't. 
+```
+
+Actually, QBE handles this by having the loop body compute new values and then jumping back to the head, but the head's block must accept these as implicit inputs? No.
+The standard way in QBE is:
+```qbe
+@start
+    %a = #0
+    %b = #1
+    %i = #2
+    
+@loop
+    %cmp = csltl %n, %i
+    jnz @return_b
+    
+    %c = addl %a, %b
+    %new_a = %b
+    %new_b = %c
+    %new_i = addl %i, #1
+    
+    ; We need to "update" a, b, i. 
+    ; We can't do `a = new_a`.
+    ; We can jump to a label that *uses* new_a, etc.
+    
+    j @loop_update
+
+@loop_update
+    %a = %new_a
+    %b = %new_b
+    %i = %new_i
+    j @loop
+```
+But `jnz` in `@loop` is at the top. This works if we separate the check and the update.
+
+However, `@loop` is reached from start and `@loop_update`.
+When coming from `start`, `%a`, `%b`, `%i` are defined.
+When coming from `@loop_update`, `%a`, `%b`, `%i` are defined by the load from new temps? No, in QBE you can't "load" a temp. You just use the temp name. But SSA requires definitions to be unique per variable instance unless handled by Phi.
+QBE actually *does* have implicit phi behavior for loop headers if you define them at the top of the block? No, QBE is strict SSA regarding temps.
+
+Let's look at a standard QBE loop:
+```qbe
+%ptr = start
+while {
+    %cmp = eq %ptr, #0
+    jnz end
+    %new_ptr = addl %ptr, #1
+    %ptr = %new_ptr ; This is NOT allowed in strict SSA if ptr was already defined.
+}
+```
+
+QBE allows re-defining temps if the control flow graph forms a loop? No, QBE uses a register allocator that handles this *after* IR construction, but the IR must be valid SSA or use specific constructs. Actually, QBE's IR is not strictly SSA in the LLVM sense; it allows variables to be assigned multiple times **provided** the compiler can prove it's safe or via explicit phi? No, QBE does not support reassignment of the same temporary name across a branch join unless it's the start of the block?
+
+Actually, the easiest way in QBE is to use the stack for state if registers are hard, or realize that QBE's `j` and labels handle this.
+If I do:
+```qbe
+@loop
+    %cmp = ...
+    jnz @done
+    
+    %next_a = %b
+    %next_b = %sum
+    %next_i = addl %i, #1
+    j @update
+@update
+    %a = %next_a
+    %b = %next_b
+    %i = %next_i
+    j @loop
+```
+This is valid SSA because `%a`, `%b`, `%i` in `@update` are *new* definitions? No, they reuse names. QBE will likely flag this as redefinition of local value `%a`.
+
+Let's check QBE docs. "Temperaries are %name". "You can assign to a temp once".
+So I must use different names or structure it so there is no join on the definition of `%a` unless using a block argument? QBE doesn't have block arguments.
+
+Alternative: Tail recursion or iterative loop where we jump back to a label that *only* defines the new values and then jumps to the check, but the check needs the old values?
+
+Let's try this structure which is SSA-compliant:
+```qbe
+@start
+    %a = #0
+    %b = #1
+    %i = #2
+    
+@check
+    %cond = csltl %n, %i
+    jnz @return_b
+    
+@compute_and_update
+    %c = addl %a, %b
+    %na = %b
+    %nb = %c
+    %ni = addl %i, #1
+    j @check_from_update
+
+@check_from_update
+    ; Here we need to set a,b,i for the next check.
+    ; We can't reassign a,b,i.
+    ; So we just jump back to @check? But @check uses %a, %b, %i which are not defined in this path's scope if we consider strict SSA scoping per block entry?
+    
+```
+
+Actually, QBE handles loops by having the loop header define its values based on predecessors? No.
+Let's look at a working QBE example online.
+QBE supports "local variables" that can be assigned multiple times if the compiler infers it's a loop header? No, typically you use `phi` in LLVM, but QBE hides this.
+If I write:
+```qbe
+%a = #0
+...
+@loop
+    %cond = ...
+    jnz @end
+    %next_a = ...
+    j @loop
+```
+This fails because `%a` is not defined in `@loop` scope if we jump there?
+
+Actually, the correct QBE idiom for a loop with state variables that update is to NOT reuse the name. But how do you use them in the next iteration? You don't "update" them, you just create new ones and the logic flows forward.
+But `@check` needs `%a`. If I jump from `start` to `@check`, `%a` exists. If I jump from `compute` to `@check`, `%a` does NOT exist (it's out of scope).
+
+So we must ensure `@check` is only entered once? No, it's a loop.
+Therefore, we must put the definitions *inside* the label block `@check` so they are always defined upon entry?
+```qbe
+@check
+    %cond = csltl %n, %i  ; Error: %i not defined here if entered from compute step unless %i is loaded from somewhere?
+```
+
+We can use the stack for `%a`, `%b`, `%i`. It's safer and guaranteed to work with QBE's SSA model without complex phis. The prompt says "Integer/pointer arguments in x0-x7... sp must stay 16-byte aligned". Using the stack is perfectly valid.
+
+```qbe
+export function l $fib(l n) {
+@start
+    %cmp0 = ceql n, #0
+    jnz @return_0
+    
+    %cmp1 = ceql n, #1
+    jnz @return_1
+    
+    ; Setup stack frame for local vars: a, b, i
+    ; sp is 16-byte aligned. 
+    storel [%sp], #0   ; fib(i-2) -> stack offset 0
+    storel [%sp + 8], #1 ; fib(i-1) -> stack offset 8
+    
+    ; We can keep i in a temp or stack. Let's keep i in register-like temps if possible, but loop update needs to save it.
+    ; Actually, let's just keep everything on stack to be safe with SSA.
+    storel [%sp + 16], #2 ; i -> stack offset 16
+
+@loop_header
+    %val_i = loadl [%sp + 16]
+    %cmp_n_i = csltl %n, %val_i
+    jnz @return_b
+
+    %val_a = loadl [%sp]
+    %val_b = loadl [%sp + 8]
+    
+    %sum = addl %val_a, %val_b
+    
+    ; Update a = b
+    storel [%sp], %val_b
+    
+    ; Update b = sum
+    storel [%sp + 8], %sum
+    
+    ; Update i = i + 1
+    %new_i = addl %val_i, #1
+    storel [%sp + 16], %new_i
+
+    j @loop_header
+
+@return_0
+    ret #0
+
+@return_1
+    ret #1
+
+@return_b
+    %final_b = loadl [%sp + 8]
+    ret %final_b
+}
+```
+This is valid QBE IL. It uses stack memory, which is allowed. It respects the ABI (callee-saved not touched, sp aligned). It computes correctly.
+
+One optimization: `return 0` and `return 1` are immediate returns. The loop updates in place on stack.
+
+Let's double check `csltl`. "csltl" compares signed less than. Arguments are `l` (signed 64-bit). This is correct for indices (positive).
+
+Final code structure:
+
+```qbe
+export function l $fib(l n) {
+@start
+    %is_zero = ceql n, #0
+    jnz @ret_zero
+    
+    %is_one = ceql n, #1
+    jnz @ret_one
+    
+    ; Save a=0, b=1, i=2 to stack
+    storel [%sp], #0
+    storel [%sp + 8], #1
+    storel [%sp + 16], #2
+
+@loop
+    %i = loadl [%sp + 16]
+    %cond = csltl %n, %i
+    jnz @ret_b
+    
+    %a = loadl [%sp]
+    %b = loadl [%sp + 8]
+    
+    %sum = addl %a, %b
+    
+    ; a becomes old b
+    storel [%sp], %b
+    
+    ; b becomes sum
+    storel [%sp + 8], %sum
+    
+    ; i increments
+    %next_i = addl %i, #1
+    storel [%sp + 16], %next_i
+    
+    j @loop
+
+@ret_zero
+    ret #0
+
+@ret_one
+    ret #1
+
+@ret_b
+    %res = loadl [%sp + 8]
+    ret %res
+}
+```
+</previous>
+It failed:
+<failure>
+Compilation failed at stage qbe:
+qbe:-:1: unknown keyword n
+</failure>
+Write a corrected, complete version. Same output format; output only the code.

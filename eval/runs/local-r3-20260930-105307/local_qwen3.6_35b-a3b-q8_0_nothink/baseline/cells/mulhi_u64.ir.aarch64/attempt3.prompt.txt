@@ -1,0 +1,136 @@
+Implement the function `uint64_t mulhi_u64(uint64_t a, uint64_t b)`.
+
+Target: AArch64 (ARMv8-A), Linux AAPCS64. Integer/pointer arguments in x0-x7; 64-bit result in x0. Callee-saved: x19-x28, x29 (frame pointer) and d8-d15 (restore them if you use them); x9-x15 are free scratch registers. sp must stay 16-byte aligned and be back to its entry value when you return with ret (return address in x30). More ABI facts: arguments beyond the eighth are passed on the stack (the 9th at [sp] at entry). A call (bl/blr) overwrites x30, so save x30 (e.g. stp x29, x30, [sp, #-16]!) before calling and restore it before ret. A call clobbers the caller-saved registers x0-x18, x30, v0-v7 and v16-v31 (and the upper halves of v8-v15) and the flags, so keep values that must survive a call in callee-saved registers x19-x28 (saved/restored by you) or in your own stack frame. sp must be 16-byte aligned at every call (and whenever it is used as a base register). Anything below sp may be overwritten by a callee.
+
+Output format: QBE intermediate language (the IL of the QBE compiler backend, c9x.me/compile). Write exactly one function, `export function l $mulhi_u64(...)`, taking every argument as `l` (64-bit; pointers are `l` too) and returning `l`. QBE will compile it for the target above, so you do not handle registers or the ABI yourself. Remember: every block starts with an `@label`; temporaries are `%name`; comparisons such as `csltl`/`ceql` produce a `w` value; `jnz` tests a `w`; loads/stores are `loadl`/`storel`. No data definitions, no calls, no other functions. Output only the QBE code: no Markdown fences, no prose. QBE has no high-multiply instruction: build the 128-bit product from 32-bit halves (`and`, `shr` (logical), `mul`, `add`) with explicit carries.
+
+Specification: Return the high 64 bits of the full 128-bit product a * b, where a and b are unsigned 64-bit values (any value from 0 to 2^64 - 1). Example: mulhi_u64(2^64 - 1, 2^64 - 1) = 2^64 - 2.
+
+Your previous attempt was:
+<previous>
+```qbe
+export function l $mulhi_u64(l %a, l %b) {
+    @start
+        %a_lo = andl %a, 4294967295
+        %a_hi = shrli %a, 32
+        %b_lo = andl %b, 4294967295
+        %b_hi = shrli %b, 32
+
+        %p0 = mull %a_lo, %b_lo
+        %p1 = mull %a_lo, %b_hi
+        %p2 = mull %a_hi, %b_lo
+        %p3 = mull %a_hi, %b_hi
+
+        %p1_hi = shrli %p1, 32
+        %p2_hi = shrli %p2, 32
+        
+        ; Calculate sum of high parts: p3 + p1_hi + p2_hi
+        %sum_h = addl %p3, %p1_hi
+        %c1_w = csltl %sum_h, %p3
+        
+        %sum_h2 = addl %sum_h, %p2_hi
+        %c2_w = csltl %sum_h2, %sum_h
+
+        ; Calculate low 64-bit part: p0 + (p1_lo << 32) + (p2_lo << 32)
+        %p1_lo = andl %p1, 4294967295
+        %p2_lo = andl %p2, 4294967295
+        
+        ; To avoid potential overflow in shifting if we were working with larger types, 
+        ; here a & mask is < 2^32, so << 32 fits in 64 bits.
+        %s_p1_lo = slli %p1_lo, 32
+        %s_p2_lo = slli %p2_lo, 32
+        
+        %sum_s = addl %s_p1_lo, %s_p2_lo
+        %c_s_w = csltl %sum_s, %s_p1_lo
+        
+        %low_total = addl %p0, %sum_s
+        %c_low_w = csltl %low_total, %p0
+
+        ; Carry into high 64 bits is (c_s OR c_low) because if either addition overflows, 
+        ; it produces a carry into the next higher 32-bit block. Since p1_hi/p2_hi are at bit 32 offset relative to low parts' lower halves?
+        ; Let's re-verify the structure.
+        ; Product = (a_hi * 2^32 + a_lo) * (b_hi * 2^32 + b_lo)
+        ;         = a_hi*b_hi * 2^64 
+        ;           + (a_hi*b_lo + a_lo*b_hi) * 2^32 
+        ;           + a_lo*b_lo
+        
+        ; Let M1 = a_hi*b_lo, M2 = a_lo*b_hi.
+        ; Middle term is (M1 + M2) * 2^32.
+        ; Let Low = a_lo*b_lo.
+        
+        ; Low 64 bits of product come from: Low + ((M1_low + M2_low) << 32).
+        ; Wait, M1 and M2 are 64-bit products of 32x32. 
+        ; M1 = mull %a_hi, %b_lo. This is 64 bits.
+        ; We split M1 into M1_hi (high 32) and M1_lo (low 32).
+        ; Similarly M2.
+        
+        ; The term (M1 + M2) * 2^32 shifts the sum by 32 bits.
+        ; So bits 0-31 of product come from Low.
+        ; Bits 32-63 of product come from (Low >> 32) + M1_lo + M2_lo.
+        ; Bits 64-95 of product come from (M1_hi + M2_hi) + Carry_from_above + (High part of sum above?).
+        
+        ; Let's stick to the standard 4-product decomposition for high word:
+        ; Result[64..127] = a_hi*b_hi 
+        ;                   + (a_hi*b_lo >> 32) 
+        ;                   + (a_lo*b_hi >> 32) 
+        ;                   + Carry from lower parts.
+        
+        ; Lower parts sum: S_low = p0 + (p1 & 0xFFFFFFFF) << 32? No.
+        ; p1 is a_lo * b_hi. p1 contains bits at position 0..63.
+        ; In the full expansion:
+        ; Term 1: p3 << 64
+        ; Term 2: p2 << 32   (where p2 = a_hi*b_lo)
+        ; Term 3: p1 << 0    ?? No. 
+        ; Expansion: a_hi*2^32 * b_hi*2^32 + a_hi*2^32 * b_lo + a_lo * b_hi*2^32 + a_lo * b_lo
+        ;           = p3<<64 + p2<<32 + p1<<32? No. 
+        ;           = p3<<64 + (a_hi*b_lo)<<32 + (a_lo*b_hi)<<0? 
+        ;           Wait: a_lo is at 0..31. b_hi is at 32..63. Product p1 is at 32..95.
+        ;           So p1 contributes to bits 32+.
+        ;           Similarly p2 = a_hi (32..63) * b_lo (0..31) contributes to bits 32+.
+        ;           p0 = a_lo(0..31) * b_lo(0..31) contributes to bits 0..63.
+        
+        ; So:
+        ; Low 32 bits of result: p0[0:31]
+        ; Mid 32 bits of result (bits 32-63): p0[32:63] + p1[0:31] + p2[0:31] + Carry?
+        ; High 32+ bits of result (bits 64+): p3 + p1[32:63] + p2[32:63] + Carry_from_mid.
+
+        ; Let's compute Mid 64 bits first to get carry to High.
+        %p0_lo = andl %p0, 4294967295
+        %p1_lo = andl %p1, 4294967295
+        %p2_lo = andl %p2, 4294967295
+        
+        ; Mid part sum: (p0 >> 32) + p1_lo + p2_lo
+        %p0_hi = shrli %p0, 32
+        
+        %sum_mid = addl %p0_hi, %p1_lo
+        %c_mid1_w = csltl %sum_mid, %p0_hi
+        
+        %sum_mid2 = addl %sum_mid, %p2_lo
+        %c_mid_w = csltl %sum_mid2, %sum_mid
+        
+        ; This carry c_mid_w is the carry into bit 64 from the middle section.
+        
+        ; Now compute High part: p3 + p1_hi + p2_hi + c_mid_w
+        %p1_hi = shrli %p1, 32
+        %p2_hi = shrli %p2, 32
+        
+        %sum_high = addl %p3, %p1_hi
+        %c_h1_w = csltl %sum_high, %p3
+        
+        %sum_high2 = addl %sum_high, %p2_hi
+        %c_h2_w = csltl %sum_high2, %sum_high
+        
+        %result = addl %sum_high2, %c_mid_w
+        ; Note: The carry from adding c_mid_w to sum_high2 is ignored because we only want 64 bits of the high part.
+        
+        ret %result
+    }
+}
+```
+</previous>
+It failed:
+<failure>
+Compilation failed at stage qbe:
+qbe:-:3: unknown keyword andl
+</failure>
+Write a corrected, complete version. Same output format; output only the code.

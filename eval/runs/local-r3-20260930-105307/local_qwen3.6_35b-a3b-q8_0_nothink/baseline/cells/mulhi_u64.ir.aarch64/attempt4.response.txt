@@ -1,0 +1,220 @@
+export function l $mulhi_u64(l %a, l %b) {
+    @start
+        ; Split operands into 32-bit halves
+        ; lo = and with 0xFFFFFFFF
+        ; hi = shr by 32
+        %a_lo = andl %a, 4294967295
+        %a_hi = shrli %a, 32
+        
+        %b_lo = andl %b, 4294967295
+        %b_hi = shrli %b, 32
+
+        ; Compute partial products
+        ; p0 = a_lo * b_lo (64 bits)
+        ; p1 = a_lo * b_hi (64 bits)
+        ; p2 = a_hi * b_lo (64 bits)
+        ; p3 = a_hi * b_hi (64 bits)
+
+        %p0 = mull %a_lo, %b_lo
+        %p1 = mull %a_lo, %b_hi
+        %p2 = mull %a_hi, %b_lo
+        %p3 = mull %a_hi, %b_hi
+
+        ; Extract lower 32 bits of p1 and p2 to shift into upper half
+        %p1_l32 = andl %p1, 4294967295
+        %p2_l32 = andl %p2, 4294967295
+
+        ; Extract upper 32 bits of p1 and p2 to add into high part directly
+        %p1_h32 = shrli %p1, 32
+        %p2_h32 = shrli %p2, 32
+
+        ; Shift lower parts of p1/p2 into bit positions 32-63 of the result low word
+        %s_p1_l32 = slli %p1_l32, 32
+        %s_p2_l32 = slli %p2_l32, 32
+
+        ; Compute sum of shifted low parts: S = (p1[31..0] << 32) + (p2[31..0] << 32)
+        %sum_s = addl %s_p1_l32, %s_p2_l32
+        
+        ; Determine carry from this addition into bit 64 (which will propagate to high 64 bits)
+        ; c_s is 1 if sum_s < s_p1_l32 (unsigned overflow), else 0
+        %c_s_w = csltl %sum_s, %s_p1_l32
+
+        ; Add p0 to this sum to form the final low 64 bits of the product
+        ; We also need to add the carry from the shifted sums if any.
+        ; Let's do it in steps to track carries accurately.
+        
+        ; Low result = p0 + S
+        %low_res = addl %p0, %sum_s
+        
+        ; Carry into high part from low addition (carry into bit 64)
+        ; This is the carry out of (p0 + sum_s)
+        %c_low_w = csltl %low_res, %p0
+
+        ; The total carry into the high 64-bit word is:
+        ; carry_from_S OR carry_from_p0_addition
+        ; Because S is composed of shifted values, its MSB (bit 63) contributes to potential overflow.
+        ; Actually, let's look at bits 32-63.
+        ; p1[31..0] and p2[31..0] are added in the upper 32 bits of a 64-bit register.
+        ; If their sum overflows 64 bits, that carry goes to bit 64.
+        ; If p0 + (p1_low_shifted + p2_low_shifted) overflows 64 bits, that carry goes to bit 64.
+        
+        ; Let %c_sum be the carry out of adding S components.
+        ; Let %c_prod be the carry out of adding p0 + S.
+        ; Total carry into high word is %c_sum | %c_prod? 
+        ; Wait, if S overflows (c_s=1), it means bit 64 is set in S (conceptually).
+        ; Then p0 + S will definitely have a carry out from bit 63 to 64 IF c_s was 1?
+        ; No. Let's trace bits.
+        ; Bits 0-31 of result come from p0[0-31] + ... no carries into low 32 from high?
+        ; p1_l32 and p2_l32 are shifted to 32. They only affect bits 32+.
+        ; So bits 0-31 of result = p0[0-31]. 
+        ; Bits 32-63 depend on:
+        ;   p0[32-63] + p1_l32 (shifted) + p2_l32 (shifted).
+        
+        ; Let's refine the calculation of the high part directly.
+        ; High 64 bits consist of:
+        ; 1. p3 (full 64 bits)
+        ; 2. p1_h32 (which is effectively p1[63..32])
+        ; 3. p2_h32 (which is effectively p2[63..32])
+        ; 4. Carry from the lower part calculation.
+
+        ; Let's calculate the "middle" contribution to the high part and the carry into it.
+        ; The value added to the high 64 bits from the low/middle cross terms is:
+        ;   (p1[63..32] + p2[63..32]) + Carry_from_(p0_upper_32 + p1_lower_shifted + p2_lower_shifted)
+        
+        ; Let's compute `mid_sum = p1_h32 + p2_h32`
+        %mid_sum = addl %p1_h32, %p2_h32
+        %c_mid_w = csltl %mid_sum, %p1_h32
+
+        ; Now we need the carry into the high word from the low 64-bit accumulation.
+        ; The low 64-bit sum is L = p0 + (p1_l32 << 32) + (p2_l32 << 32).
+        ; We already computed `low_res` and `%c_low_w` (carry out of this entire 64-bit addition? No, just last step).
+        
+        ; Let's re-evaluate carry logic carefully.
+        ; A = p0 + (p1_l32 << 32) + (p2_l32 << 32).
+        ; Let S_shifted = (p1_l32 << 32) + (p2_l32 << 32).
+        ; We computed sum_s = (p1_l32 << 32) + (p2_l32 << 32).
+        ; Carry from this addition is %c_s_w. This carry goes to bit 64? 
+        ; No, S_shifted can be up to approx 2^65 - epsilon. So yes, it can have a bit 64 set.
+        ; However, in 64-bit arithmetic, sum_s wraps around. %c_s_w is 1 if bit 64 is set.
+        
+        ; Then we add p0 to sum_s.
+        ; low_res = p0 + sum_s (wrapped).
+        ; %c_low_w is 1 if there was a carry out of bit 63 in this addition (i.e., result > max uint64).
+        
+        ; The true 128-bit value of the lower part has a carry into bits 64+ equal to:
+        ; c_total_low = %c_s_w | (%c_low_w if p0 + sum_s_wrapped didn't account for c_s_w properly?)
+        
+        ; Actually, let's look at it as:
+        ; Total Low Part = p0 + S_shifted.
+        ; S_shifted = q_s * 2^64 + r_s, where r_s = sum_s, q_s = %c_s_w.
+        ; Total Low = p0 + r_s + q_s * 2^64.
+        ; Let s1 = p0 + r_s.
+        ; If s1 >= 2^64, then there is a carry c1 from this addition (c1 = %c_low_w).
+        ; And the remainder is low_res = s1 - 2^64.
+        ; So Total Low = (low_res) + (q_s * 2^64) + (c1 * 2^64)?
+        ; No, if c1=1, then p0+r_s = low_res + 2^64.
+        ; So Total Low = low_res + 2^64 + q_s * 2^64 = low_res + (q_s + c1) * 2^64.
+        ; The carry into the high 64 bits from the lower section is q_s + c1.
+        ; Since q_s and c1 are 0 or 1, the carry is (%c_s_w | %c_low_w). It can be at most 2? 
+        ; If both are 1, carry is 2?
+        ; Let's check if both can be 1.
+        ; q_s=1 means sum_s >= 2^64.
+        ; c1=1 means p0 + r_s >= 2^64.
+        ; If sum_s >= 2^64, then r_s = sum_s - 2^64 (approximately).
+        ; p0 is up to 2^64-1.
+        ; It is possible for both to be 1. E.g. p0 large, sum_s large.
+        ; So carry_in_high = %c_s_w + %c_low_w ? No, QBE doesn't add flags.
+        ; But wait, if q_s=1, we added 2^64 already in the conceptual expansion.
+        ; The standard logic for mulhi usually involves:
+        ; Low = (p0 & 0xFFFFFFFF) ... no, this is 64-bit split.
+        
+        ; Let's use a simpler accumulation for the carry into the high word.
+        ; Carry to High = c(p1_hi + p2_hi + c_low_part_addition).
+        
+        ; We established:
+        ; Value added to High from cross terms (p1, p2) is:
+        ;   p1_h32 + p2_h32 + carry_from_(p0_low_64_accumulation).
+        
+        ; Let's calculate `c_in_high` precisely.
+        ; c_in_high = %c_s_w | %c_low_w ?
+        ; If %c_s_w is 1, it means sum_s overflowed 64 bits. That 1 goes into bit 64.
+        ; Then we add p0 to sum_s.
+        ; If that addition also overflows 64 bits (%c_low_w=1), that's another 1 into bit 65?
+        ; No, the overflow from sum_s (bit 64) plus p0 might generate a carry into bit 65?
+        ; We only care about bits 64-127 for the result.
+        ; The "High Part" of the 128-bit product is Bits 64-127.
+        
+        ; Let H be the high 64 bits.
+        ; H = p3 + p1_h32 + p2_h32 + c_cross, where c_cross is the carry into bit 64 from the lower sum.
+        
+        ; Lower Sum L = p0 + (p1_l32 << 32) + (p2_l32 << 32).
+        ; Let S' = (p1_l32 << 32) + (p2_l32 << 32).
+        ; c_s is carry from p1_l32<<32 + p2_l32<<32. This is a carry into bit 64? 
+        ; Yes, because max value is ~2^65. So c_s is the bit 64 of S'.
+        ; Now L = p0 + S'.
+        ; If we write S' = S_rem + (c_s * 2^64).
+        ; L = p0 + S_rem + c_s * 2^64.
+        ; Let T = p0 + S_rem.
+        ; If T >= 2^64, let T = T_rem + (c_t * 2^64), where c_t=1.
+        ; Then L = T_rem + (c_s + c_t) * 2^64.
+        ; The term multiplying 2^64 is the carry into the high part from the lower bits.
+        ; So c_cross = c_s + c_t.
+        ; Since c_s and c_t are booleans, c_cross can be 0, 1, or 2.
+        
+        ; So we must add (c_s + c_t) to the high part accumulation.
+        ; %carry_val = %c_s_w | %c_low_w might be wrong if both are 1 (should be 2).
+        ; QBE doesn't support adding w to l directly in a way that preserves "2" unless we convert.
+        ; But wait, can c_s and c_t both be 1?
+        ; c_s=1 => S_rem + 2^64 was the true sum of shifted parts? No, S' = S_rem if no overflow, else S_rem - 2^64 + ...?
+        ; QBE `addl` wraps. `csltl` sets carry if unsigned overflow.
+        ; sum_s = (p1<<32 + p2<<32) mod 2^64.
+        %sum_s = addl %s_p1_l32, %s_p2_l32
+        %c_s_w = csltl %sum_s, %s_p1_l32
+        
+        ; low_acc = (p0 + sum_s) mod 2^64
+        %low_acc = addl %p0, %sum_s
+        %c_t_w = csltl %low_acc, %p0
+        
+        ; Now we need to add (c_s | c_t) or (c_s + c_t) to the high part?
+        ; If both are 1, we add 2. If one is 1, we add 1. If 0, add 0.
+        ; We can do: %carry_sum = addl %c_s_w, %c_t_w (as 64-bit values)
+        %c_s_l = zextw2l %c_s_w
+        %c_t_l = zextw2l %c_t_w
+        %carry_to_high = addl %c_s_l, %c_t_l
+        
+        ; Now compute the high part:
+        ; High = p3 + p1_h32 + p2_h32 + carry_to_high
+        
+        %sum_h = addl %p3, %p1_h32
+        %c_h1_w = csltl %sum_h, %p3
+        %sum_h_ext = zextw2l %c_h1_w
+        %sum_h_plus_p2 = addl %sum_h, %p2_h32
+        
+        ; We need to handle the carry from p3 + p1_h32 into the addition of p2_h32?
+        ; Actually, we can just chain them.
+        ; Let's accumulate all high parts: P3, P1_H32, P2_H32, Carry_From_Low.
+        
+        %acc = addl %p3, %p1_h32
+        %c_acc_w = csltl %acc, %p3
+        %acc = addl %acc, %p2_h32
+        %c_acc2_w = csltl %acc, %p2_h32
+        
+        ; Now add the carry from low part.
+        ; First, restore/clear acc? No, acc holds p3+p1+p2 (mod 2^64).
+        ; The carries %c_acc_w and %c_acc2_w are internal to this chunk.
+        ; They effectively mean: True_Sum_High = P3 + P1_H32 + P2_H32 + Carry_From_Low.
+        ; We need to add Carry_From_Low to this sum.
+        
+        ; Wait, did we incorporate the internal carries of the high part addition correctly?
+        ; Yes, `addl` wraps. The "true" value is wrapped_sum + (internal_carries * 2^64).
+        ; But we only care about bits 64-127. The internal carries from adding three 64-bit numbers stay within the high part or go to bit 128?
+        ; P3, P1_H32, P2_H32 are all < 2^64. Their sum is < 3*2^64.
+        ; So internal carries only go to bits 64-127 (specifically, bit 128 max).
+        ; The `addl` chain loses the carry out of the final `addl` (bit 128), which we can ignore as result is 64-bit.
+        
+        ; So: High = acc + Carry_From_Low.
+        %final_high = addl %acc, %carry_to_high
+        
+        ret %final_high
+    }
+}

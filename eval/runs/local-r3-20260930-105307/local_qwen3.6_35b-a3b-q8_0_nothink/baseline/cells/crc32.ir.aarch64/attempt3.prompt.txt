@@ -1,0 +1,118 @@
+Implement the function `int64_t crc32(const uint8_t *p, int64_t n)`.
+
+Target: AArch64 (ARMv8-A), Linux AAPCS64. Integer/pointer arguments in x0-x7; 64-bit result in x0. Callee-saved: x19-x28, x29 (frame pointer) and d8-d15 (restore them if you use them); x9-x15 are free scratch registers. sp must stay 16-byte aligned and be back to its entry value when you return with ret (return address in x30). More ABI facts: arguments beyond the eighth are passed on the stack (the 9th at [sp] at entry). A call (bl/blr) overwrites x30, so save x30 (e.g. stp x29, x30, [sp, #-16]!) before calling and restore it before ret. A call clobbers the caller-saved registers x0-x18, x30, v0-v7 and v16-v31 (and the upper halves of v8-v15) and the flags, so keep values that must survive a call in callee-saved registers x19-x28 (saved/restored by you) or in your own stack frame. sp must be 16-byte aligned at every call (and whenever it is used as a base register). Anything below sp may be overwritten by a callee.
+
+Output format: QBE intermediate language (the IL of the QBE compiler backend, c9x.me/compile). Write exactly one function, `export function l $crc32(...)`, taking every argument as `l` (64-bit; pointers are `l` too) and returning `l`. QBE will compile it for the target above, so you do not handle registers or the ABI yourself. Remember: every block starts with an `@label`; temporaries are `%name`; comparisons such as `csltl`/`ceql` produce a `w` value; `jnz` tests a `w`; loads/stores are `loadl`/`storel`. No data definitions, no calls, no other functions. Output only the QBE code: no Markdown fences, no prose. Load a byte zero-extended with `%b =w loadub %p` (or `=l loadub`); 32-bit operations use the `w` class (`%c =w xor %c, %b`, `%c =w shr %c, 1`); extend a `w` to `l` with `extuw`.
+
+Specification: Return the standard CRC-32 (as used by zlib/PNG/Ethernet) of the n bytes at p (0 <= n <= 300), as a value in [0, 2^32) (the upper 32 bits of the result must be 0). Compute it bitwise without a table: crc = 0xFFFFFFFF; for each byte: crc ^= byte; then 8 times: if (crc & 1) crc = (crc >> 1) ^ 0xEDB88320 else crc >>= 1; finally return crc ^ 0xFFFFFFFF. All arithmetic is on unsigned 32-bit values. Example: the 9 bytes "123456789" give 0xCBF43926. Do not read outside p[0..n-1] and do not write to memory.
+
+Your previous attempt was:
+<previous>
+export function l $crc32(l %p, l %n) {
+@init
+  %zero = icmp eq %n, 0
+  jnz @ret_zero, @loop_byte
+
+@ret_zero
+  ret l, 0w
+
+@loop_byte
+  %cmp = icmp sltu %n, 1
+  jnz @done_bytes, @do_byte
+
+@do_byte
+  %b =w loadub %p
+  %crc_w = extuw %crc32_val
+  %crc_w = xor w, %crc_w, %b
+  
+  %i = subu l, 8, 1
+  jle @bit_loop_end, @bit_loop
+
+@bit_loop
+  %lsb = and w, %crc_w, 1w
+  %is_set = icmp ne %lsb, 0w
+  jnz @bit_is_set, @bit_is_zero
+
+@bit_is_set
+  %poly = xor w, %crc_w, -333923440w ; 0xEDB88320
+  %crc_w >>= 1
+  %crc_w = extuw %poly
+  %crc_w = or w, %crc_w, 805306368w ; Set MSB (1<<31) effectively if we treated as logical shift right of LSB 1 result?
+  ; Correct logic for CRC: 
+  ; if (lsb) crc = (crc >> 1) ^ POLY
+  ; else crc = crc >> 1
+  ; We need logical shift right. QBE `>>` on w is arithmetic.
+  ; To do logical shift right of 32-bit value in signed 32-bit int:
+  ; val >>= 1; if (original_val < 0) val |= 0x80000000? No, that's not right for CRC.
+  ; CRC treats value as unsigned. 
+  ; Let's use the standard trick: 
+  ; If we are at bit_is_set, LSB was 1. crc >> 1 is equivalent to (crc - 1) / 2.
+  ; But let's stick to simple arithmetic shifts and mask if necessary? 
+  ; Actually, since we XOR with POLY *before* shifting in some implementations or after?
+  ; Spec says: if (crc & 1) crc = (crc >> 1) ^ 0xEDB88320 else crc >>= 1.
+  ; This implies arithmetic shift right if CRC is kept as signed int with MSB 0? 
+  ; No, initial CRC is -1 (all 1s).
+  ; If we use `>>` on signed int -1, we get -1 (arithmetic). We want logical.
+  ; To emulate logical right shift of unsigned 32-bit int X by 1 in signed 32-bit int S:
+  ; Temp = S >> 1; if (X & 0x80000000) then Temp |= 0x80000000? No, MSB shifts in from left.
+  ; Logical shift right brings in 0s at the top.
+  ; Arithmetic shift sign extends.
+  ; So if we want logical, we must ensure high bit is 0 or clear it.
+  ; Since POLY has high bit 1 (0xED...), XORing might set high bit.
+  
+  ; Let's rewrite the inner loop using a temporary that is zero-extended to 64 bits? No, let's just use masks.
+  ; Correct unsigned logical shift right in 32-bit signed arithmetic:
+  ; val >>= 1; if (original_val < 0 && !(val & 0x80000000)) val |= 0x80000000? 
+  ; Easier: just use the fact that QBE `shr` might be logical? The prompt doesn't specify.
+  ; Standard QBE `>>` is arithmetic for signed, logical for unsigned? 
+  ; `w` in QBE is 32-bit, usually treated as signed/unsigned depending on op. 
+  `subu`, `and`, `xor`, `or` are bitwise/unary.
+  Let's assume `>>` on `w` is arithmetic (sign extending). 
+  To get logical shift right of `crc_w`:
+  `tmp = crc_w >> 1`
+  `if (crc_w & 0x80000000) tmp |= 0x80000000`? No, that's logical left?
+  Logical right shifts 0 into MSB. Arithmetic shifts sign bit into MSB.
+  So if we want logical, we must clear the sign bit after shift if it was set by arithmetic extension?
+  No: `-1 >> 1` is `-1`. Logical would be `0x7FFFFFFF`.
+  So: `tmp = crc_w >> 1; if (crc_w < 0) tmp &= 0x7FFFFFFF`? 
+  Wait, `0xCBF4...` is positive in signed 32-bit? No, > 2^31-1.
+  
+  Let's use a simpler approach for the inner loop to avoid shift ambiguity:
+  Check LSB. If set, XOR with POLY. Then Shift Right Logical.
+  Since we don't have LSR, we can simulate it:
+  `new_val = (val >> 1) & 0x7FFFFFFF` ? No, that clears the bit that came from pos 30.
+  
+  Actually, let's just assume the QBE backend handles `>>` on `w` as logical if we treat data as unsigned? 
+  Or better: use 64-bit arithmetic for the shift to guarantee logic, then mask back.
+  
+  Let's restart inner loop with l64 arithmetic to be safe, then mask.
+
+  %crc64 = extuw %crc_w
+  %lsb64 = and l, %crc64, 1l
+  jnz @bit_xor64, @bit_shift64
+
+@bit_shift64
+  %crc64 >>= 1
+  jmp @bit_check_end
+
+@bit_xor64
+  %crc64 = xor l, %crc64, -333923440l ; Wait, -333923440 is signed. 0xEDB88320 is unsigned.
+  ; 0xEDB88320 as signed 64-bit is positive 3961043856.
+  %crc64 >>= 1
+  jmp @bit_check_end
+
+@bit_check_end
+  %i = subu l, %i, 1
+  jle @loop_byte, @bit_loop
+
+@done_bytes
+  %final_w = xor w, %crc_w, -1w
+  ret l, %final_w
+}
+</previous>
+It failed:
+<failure>
+Compilation failed at stage qbe:
+qbe:-:3: unknown keyword icmp
+</failure>
+Write a corrected, complete version. Same output format; output only the code.

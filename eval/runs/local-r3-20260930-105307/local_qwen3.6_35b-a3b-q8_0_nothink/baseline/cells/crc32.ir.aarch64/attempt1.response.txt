@@ -1,0 +1,140 @@
+export function l $crc32(l %p, l %n) {
+%z = icmp eq %n, 0
+jnz %ret_zero, %init
+
+%init:
+%crc = subu l, -1, 0
+jmp %byte_loop
+
+%byte_loop:
+%idx = icmp ult %n, 1
+jnz %end_byte_loop, %do_byte
+
+%done_byte:
+%n_dec = subu l, %n, 1
+%p_inc = add l, %p, 1
+%n_ret = %n_dec
+%p_ret = %p_inc
+jmp %check_done
+
+@end_byte_loop:
+%result = xor l, %crc, -1
+%crc_high = and l, %result, -4294967296l ; upper 32 bits
+%is_zero = icmp eq %crc_high, 0
+jnz %ret_zero_final, %ret_full
+
+%ret_full:
+ret l, %result
+
+%ret_zero:
+storel 0, %p ; dead store to satisfy no memory read? No, just return 0.
+%zero_result = subu l, 0, 0
+ret l, %zero_result
+
+%ret_zero_final:
+ret l, 0
+
+$do_byte:
+%b = loadub %p
+%crc32w = extuw %crc ; get lower 32 bits of crc (which is -1 initially or accumulated)
+; Actually crc is l. We need to work in w for the bit operations.
+; Let's keep a local %crc_w as w.
+
+; Wait, QBE doesn't have separate register classes like x0:w/x0:l easily in IL unless specified?
+; The prompt says: "Integer/pointer arguments... 64-bit result in x0".
+; But the output format is QBE IL. In QBE, types are `l` (64-bit) and `w` (33-bit/partial).
+; Instructions like `subu l` operate on `l`. `and l` operates on `l`.
+%crc_w = extuw %crc ; This promotes to w? No, extuw is usually sign/zero extend.
+; To get lower 32 bits as w: cast or just use it? QBE has implicit narrowing?
+; Better to maintain %crc as l and mask, but operations are easier in w.
+
+; Let's restart the logic inside QBE IL strictly following the types.
+; We need a loop for 8 bits per byte.
+
+; Correct approach:
+; 1. Load byte.
+; 2. XOR with crc (lower 32 bits). Store back to crc l (upper bits 0 or preserved? CRC is 32-bit value, so upper 32 of accumulator should be 0).
+; Let's use a register %cw for the working CRC as w.
+
+%loop_entry:
+; We need to convert current %crc (l) to w if it hasn't been used as w.
+; Since we start with -1, which is all 1s, let's just track it in l and mask when needed?
+; Or keep it in w and zero-extend when returning.
+
+; Let's rewrite the function structure to handle the bit loop correctly.
+
+$func:
+%z = icmp eq %n, 0
+jnz $ret_zero, $init
+
+$init:
+%cw = xor w, -1w, -1w ; Wait, -1w is all 1s in 32-bit? Yes.
+; Actually, crc = 0xFFFFFFFF. In signed 32-bit int, this is -1.
+; In QBE `w` is 33 bits (signed/unsigned). `-1w` is all 1s.
+%cw = subu w, 0w, 1w ; -1 as w
+jmp $byte_loop_head
+
+$byte_loop_head:
+%check_n = icmp sle %n, 0
+jnz $final_xor, $do_byte_body
+
+$do_byte_body:
+%b = loadub %p
+%cw ^= %b ; XOR crc with byte. Note: %b is w? loadub returns w if used in w context? 
+; Prompt says `%b =w loadub`. So yes.
+; But wait, standard CRC32: crc = crc ^ byte.
+; The CRC is 32-bit.
+
+; Inner loop for 8 bits
+%i = subu l, 8, 1
+jmp $bit_loop_head
+
+$bit_loop_head:
+%check_i = icmp sle %i, 0
+jnz $bit_done, $process_bit
+
+$process_bit:
+%lsb = and w, %cw, 1w
+%cmp_lsb = icmp ne %lsb, 0w
+jnz $shift_xor, $shift_only
+
+$shift_xor:
+%cw = xor w, %cw, -572832064w ; 0xEDB88320 is 3961043856 unsigned. 
+; -572832064? Let's check. 
+; 0xEDB88320 = 3961043856.
+; Signed 32-bit: 3961043856 - 2^32 = 3961043856 - 4294967296 = -333923440.
+%cw = xor w, %cw, -333923440w 
+%cw >>= 1 ; Logical shift right? QBE `>>` is usually arithmetic. For unsigned CRC, we need logical.
+; QBE IL doesn't have explicit logical shift for signed types unless we mask.
+; However, the prompt says "All arithmetic is on unsigned 32-bit values".
+; If we treat %cw as unsigned, we need logical shift.
+; In QBE, `shr` is usually logical? Let's assume standard behavior or use a trick if needed.
+; Actually, QBE's `shr` on `w` (which is effectively signed/unsigned depending on op) might be arithmetic.
+; To be safe with unsigned logic in 32-bit:
+; If we use `subu w`, it's unsigned arithmetic. 
+; But shift direction matters. CRC algorithm relies on LSB shifting out.
+%i = subu l, %i, 1
+jmp $bit_loop_head
+
+$shift_only:
+%cw >>= 1 ; Assuming logical or high bit is already 0 due to previous ops?
+%i = subu l, %i, 1
+jmp $bit_loop_head
+
+$bit_done:
+%n_dec = subu l, %n, 1
+%p_inc = add l, %p, 1
+%n = %n_dec
+%p = %p_inc
+jmp $byte_loop_head
+
+$final_xor:
+%crc_final = xor w, %cw, -1w ; crc ^ 0xFFFFFFFF
+%res_l = extuw %crc_final
+ret l, %res_l
+
+$ret_zero:
+storel 0, %p ; Just to avoid empty basic block issues or similar if required by QBE version? No.
+%zero = subu l, 0, 0
+ret l, %zero
+}

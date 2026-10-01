@@ -1,0 +1,73 @@
+```qbe
+export function l $mulhi_u64(l %a, l %b) {
+    @start
+        %a_lo = andl %a, 4294967295
+        %a_hi = shrli %a, 32
+        %b_lo = andl %b, 4294967295
+        %b_hi = shrli %b, 32
+
+        %p0 = mull %a_lo, %b_lo
+        %p1 = mull %a_lo, %b_hi
+        %p2 = mull %a_hi, %b_lo
+        %p3 = mull %a_hi, %b_hi
+
+        ; Extract 32-bit halves of partial products
+        %p1_lo = andl %p1, 4294967295
+        %p1_hi = shrli %p1, 32
+        
+        %p2_lo = andl %p2, 4294967295
+        %p2_hi = shrli %p2, 32
+
+        ; Compute low part: p0 + (p1_lo << 32) + (p2_lo << 32)
+        ; We need the carry out of the 64-bit addition of these parts to add to the high section.
+        
+        ; Shift p1_lo and p2_lo into the upper 32 bits of a 64-bit word
+        %s_p1 = slli %p1_lo, 32
+        %s_p2 = slli %p2_lo, 32
+
+        ; Add shifted parts
+        %sum_s = addl %s_p1, %s_p2
+        %c_s_w = csltl %sum_s, %s_p1
+
+        ; Add p0 to the sum of shifted parts
+        %low_with_carry_in_maybe = addl %p0, %sum_s
+        %c_low_w = csltl %low_with_carry_in_maybe, %p0
+
+        ; The carry into the high 64 bits is (c_s OR c_low) if we consider bitwise logic,
+        ; but actually:
+        ; Total Low = p0 + (p1_lo * 2^32) + (p2_lo * 2^32)
+        ; If p0 + (shifted parts) overflows 64 bits, that's a carry.
+        ; Did the addition of shifted parts overflow 64 bits? Yes, if c_s is true.
+        ; But wait, p1_lo and p2_lo are 32-bit. Their sum fits in 33 bits.
+        ; Shifted, they occupy bits 32-62 (if sum < 2^32) or bit 63 + wrap around?
+        ; No, slli %p1_lo, 32 puts bits at [32, 63].
+        ; Adding two such values: max value is (2^32-1)*2 + 2^64... wait.
+        ; p1_lo < 2^32. s_p1 < 2^64. specifically s_p1 >= 2^32.
+        ; sum_s = s_p1 + s_p2. Max sum_s approx 2 * (2^64 - 2^32) which doesn't fit in 64 bits easily without carry out of bit 63.
+        ; c_s_w indicates if sum_s >= 2^64. This is extremely rare/impossible for 32-bit sources? 
+        ; Max p1_lo = 0xFFFFFFFF. s_p1 = 0xFFFFFFFF00000000.
+        ; Sum = 0x1FEFFFFFFE00000000. This fits in 65 bits? No, 64 bits max is FFFFFFFFFFFFFFFF.
+        ; 0x1FE... requires 65 bits? 
+        ; 2^64 is 1 followed by 64 zeros.
+        ; 0xFFFF_FFFF_0000_0000 * 2 = 0x1FF FF FF FF E000_0000? No.
+        ; Let's check max sum_s:
+        ; (2^32 - 1) * 2^32 + (2^32 - 1) * 2^32 = (2^64 - 2^32) + (2^64 - 2^32) = 2^65 - 2^33.
+        ; This definitely overflows 64 bits. So c_s_w can be true.
+        
+        ; However, QBE `addl` is modulo 2^64. `csltl` detects unsigned overflow (carry).
+        %carry_into_high = orw %c_s_w, %c_low_w
+
+        ; Compute high part: p3 + p1_hi + p2_hi + carry_into_high
+        %sum_h = addl %p3, %p1_hi
+        %c_h1_w = csltl %sum_h, %p3
+        
+        %sum_h2 = addl %sum_h, %p2_hi
+        %c_h2_w = csltl %sum_h2, %sum_h
+        
+        %high_part = addl %sum_h2, %carry_into_high
+        ; Ignore any carry out of the final addition as we only want 64 bits.
+
+        ret %high_part
+    }
+}
+```

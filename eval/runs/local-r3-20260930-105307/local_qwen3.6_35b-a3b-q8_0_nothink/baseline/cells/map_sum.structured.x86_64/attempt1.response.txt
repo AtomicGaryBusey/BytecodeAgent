@@ -1,0 +1,263 @@
+```json
+{
+  "instructions": [
+    {"op": "test", "dst": {"reg": "rsi"}, "src": [{"imm": 0}], "comment": "Check if n == 0"},
+    {"op": "je", "target": "done", "comment": "If n == 0, result is 0"},
+    {"op": "mov", "dst": {"reg": "r12"}, "src": [{"reg": "rdi"}], "comment": "r12 = a (pointer to current element)"},
+    {"op": "mov", "dst": {"reg": "r13"}, "src": [{"reg": "rsi"}], "comment": "r13 = n (counter, will decrement)"},
+    {"op": "xor", "dst": {"reg": "rax"}, "src": [], "comment": "rax = 0 (accumulator for sum)"},
+    {"label": "loop_start"},
+    {"op": "push", "src": [{"reg": "rdi"}], "comment": "Save rdi (arg1 for f) since we need it for next iteration's array access, but wait: rdi is caller-saved and overwritten by call. We need to pass 'a[i]' to f. The pointer to current element is in r12. So we should move [r12] into a caller-saved register for the argument."},
+    {"op": "pop", "src": [{"reg": "rdi"}], "comment": "Restore rdi (not needed actually, let's restructure)"},
+    
+    /* Let's restart logic more cleanly */
+  ]
+}
+```
+
+Wait, I need to produce the final single JSON block. The previous thought was just planning. Here is the optimized plan:
+
+1. `n` is in `rsi`. If `n == 0`, return 0 (`xor rax, rax`; `ret`).
+2. We need to iterate `n` times.
+3. Array pointer `a` is in `rdi`.
+4. Function pointer `f` is in `rdx`.
+5. Callee-saved registers: `rbx`, `r12-r15` must be preserved if used. `rcx`, `rsi`, `rdx`, `r8-r11`, `rax`, `rsp` are caller-saved (clobbered by call).
+6. We need to store the current element pointer or index. Let's use `rbx` for the array pointer (callee-saved) or `r12`. Let's use `r12` for the array pointer.
+7. Let's use `r8` for the remaining count? No, `rsi` holds `n`. We can modify `rsi` since it's caller-saved and we don't need the original `n` after the loop start (except for termination). But wait, we must preserve callee-saved registers. `rsi` is NOT callee-saved. So we can clobber `rsi`.
+8. Loop structure:
+   - Check `rsi <= 0`, if so exit.
+   - Load `a[i]` into a register (say `rcx`). This will be the argument to `f`.
+   - Call `f` (`rdx`). The result is in `rax`.
+   - Add `rax` to accumulator (in `r9`, callee-saved).
+   - Increment array pointer.
+   - Decrement count.
+   - Jump back if count > 0.
+
+Refined Register Usage:
+- `rdi`: `a` (input, callee-saved? No, caller-saved. But we need to keep the base or current ptr across calls). Let's save `a` in `r12` (callee-saved).
+- `rsi`: `n` (input, caller-saved). We can modify it.
+- `rdx`: `f` (input, callee-saved? No, caller-saved. Save in `r13`).
+- `rcx`: Argument to `f`. Caller-saved. Overwritten by call. That's fine, we load a new value each iteration.
+- `rax`: Result of `f` and final sum. Caller-saved. Fine.
+- Accumulator: We can use `r8`? No, `r8` is caller-saved. We must use callee-saved for the accumulator that survives the `call f`. Let's use `rbx` or `r14`. Let's use `r14` as the accumulator.
+
+Wait, `call f` clobbers `rax`, `rcx`, `rdx`, `rsi`, `rdi`, `r8-r11`.
+It does NOT clobber `rbx`, `rbp`, `r12-r15`.
+So:
+- `r12`: Current pointer to array element (`a`). Initialize with `rdi`.
+- `r13`: Function pointer `f`. Initialize with `rdx`.
+- `r14`: Accumulator. Initialize with 0.
+- `rsi`: Counter `n`.
+
+Algorithm:
+1. If `rsi` (n) is 0, jump to done.
+2. `mov r12, rdi` (save array base)
+3. `mov r13, rdx` (save function ptr)
+4. `xor r14, r14` (init sum)
+5. Loop:
+   - `cmp rsi, 0`
+   - `jle done`
+   - `mov rcx, [r12]` (load element into argument register `rcx`)
+   - `call r13` (call f(rcx); result in rax)
+   - `add r14, rax` (sum += result)
+   - `add r12, 8` (advance pointer)
+   - `dec rsi` (decrement count)
+   - `jmp loop`
+6. Done:
+   - `mov rax, r14` (return sum)
+   - `ret`
+
+We need to preserve callee-saved registers we use: `r12`, `r13`, `r14`.
+Standard prologue/epilogue needed.
+
+Stack alignment:
+Entry: `rsp % 16 == 8`.
+Before `call f`: `rsp % 16` must be `0`.
+The call instruction itself pushes 8 bytes, so the callee sees `rsp - 8`. If we want `rsp` to be 16-byte aligned *before* the call inside the function body, we typically adjust `rsp` in the prologue.
+However, `f` is a tail-call? No, we add to sum after return.
+Inside `call f`:
+Caller must have `rsp % 16 == 0`.
+At loop start, if we haven't changed `rsp`, it's still 8 mod 16.
+So before `call r13`, we must push something or `sub rsp, 8`?
+But wait, the standard calling convention requires 16-byte alignment at the *point of call*.
+If we are in a loop, we need to ensure alignment every time we call.
+Actually, we can maintain a frame pointer or just adjust stack.
+Simplest way: Prologue `push rbp; mov rbp, rsp; sub rsp, 16`?
+Original `rsp` is 8 mod 16.
+`push rbp`: `rsp` becomes 0 mod 16.
+`sub rsp, 16`: `rsp` remains 0 mod 16 (or effectively -16).
+This saves caller's frame state and aligns stack.
+Inside loop: `call f` sees aligned stack.
+After return from `f`, we continue. Stack is still aligned.
+Next iteration, stack is still aligned.
+Exit: restore stack and return.
+
+Let's verify registers again.
+We use `r12`, `r13`, `r14`. They are callee-saved. We must push them in prologue and pop in epilogue.
+Prologue:
+`push r15` (optional, if used)
+`push r14`
+`push r13`
+`push r12`
+`mov r12, rdi`
+`mov r13, rdx`
+...
+
+Actually, simpler prologue/epilogue:
+Just save the registers we use at entry and restore them.
+Since `rsp` starts 8 mod 16, pushing one register makes it 0 mod 16. Pushing another makes it 8 mod 16.
+We need `rsp` 0 mod 16 before call.
+If we push `r12`, `rsp` is 0 mod 16.
+Then we can use `r13` and `r14` without touching stack alignment, provided we save/restore them to the stack or just rely on the fact that they are callee-saved? No, *we* must save/callee-save registers if we modify them. Since `f` clobbers caller-saved, but `r12-15` are callee-saved, `f` will preserve `r12-15`.
+Wait! The ABI says: **Callee-saved** registers (`rbx`, `rbp`, `r12-r15`) must be preserved by the called function. So if we put our state in `r12`, `r13`, `r14`, `f` will NOT clobber them. We do not need to save/restore them on the stack!
+This is a huge simplification.
+
+New Plan:
+1. Save nothing? No, we must preserve the original values of callee-saved registers if the caller expects them unchanged. Yes, we must preserve `r12`, `r13`, `r14` *if* they held any data for the caller? No, the function can use callee-saved registers freely as long as it restores their initial values before returning. Since we are overwriting `r12-r14` with our locals, and `f` preserves them, we just need to make sure we don't leak garbage if we return early? We aren't returning early except for n=0.
+Wait, if `n=0`, we return 0. We must ensure `rsp` is restored and any registers we modified are restored to their entry values? No, callee-saved registers must be restored to the value they had *at entry*.
+So yes, we MUST save `r12`, `r13`, `r14` on stack if we use them as locals?
+No. The ABI requires that at `ret`, the callee-saved registers contain the same values they did at entry.
+If we use `r12` as a local, we must push it at start and pop it before return.
+
+So:
+Prologue:
+`push r14`
+`push r13`
+`push r12`
+(Note: 3 pushes. `rsp` was 8 mod 16. After 3 pushes, `rsp` is 5 mod 16? No. 8 + 3*8 = 32. 32 mod 16 = 0. So stack is aligned!)
+
+Logic:
+1. Test `rsi` (n). If 0, jump to epilogue (return rax=0? No, rax might be garbage from previous frame if we don't clear it? We should clear rax before returning 0).
+2. Move `rdi` -> `r12` (current array pointer).
+3. Move `rdx` -> `r13` (function ptr).
+4. `xor r14, r14` (accumulator).
+5. Loop:
+   - Decrement `rsi`. If `rsi` < 0? No, use compare and branch.
+   - Or better: `test rsi, rsi`; `jle done`.
+   - Load `[r12]` -> `rcx`.
+   - Call `r13`. (`rax` has result).
+   - `add r14, rax`.
+   - `add r12, 8`.
+   - Decrement `rsi`.
+   - Jump to loop start.
+6. Done:
+   - `mov rax, r14`.
+
+Epilogue:
+`pop r12`
+`pop r13`
+`pop r14`
+`ret`
+
+One detail: `test rsi, rsi; jle done` handles n=0 and n<0 (though spec says 0<=n).
+If n=0, we skip loop, go to done, return 0.
+
+Let's double check alignment.
+Entry: `rsp % 16 == 8`.
+Push 3 regs: `rsp -= 24`. `8 - 24 = -16`. `-16 % 16 == 0`. Aligned.
+Inside loop, we do `call r13`. Stack is aligned. Call pushes return address (rsp-8). Callee expects 16-byte alignment at entry (which is rsp-8? No, the callee is entered with `rsp` pointing to return address. The ABI requires that the stack pointer *upon entry* to the called function is 16-byte aligned?
+Actually, the rule is: "The end of the input argument area shall be aligned on a 16-byte boundary." i.e., at the time of the `call` instruction, `rsp` must be a multiple of 16. The callee will then subtract 8 (for ret addr) and have 8 mod 16? No.
+The callee expects that the stack *after* the call's push is aligned for local variable usage?
+Let's re-read: "rsp is 16-byte aligned before the call".
+Yes. So when we execute `call`, `rsp` must be `% 16 == 0`.
+Our prologue ensures `rsp % 16 == 0`.
+Inside the loop, we haven't changed `rsp`. So `rsp % 16 == 0`.
+So `call f` is valid.
+
+Is there any other callee-saved register we touch? No.
+Registers clobbered by loop body but not saved: `rcx`, `rax`, `rsi`, `rdi`. All caller-saved (except `rdi` which is arg1, but we saved base in `r12`). We don't use `rdi` inside the loop except maybe for setup? No.
+We load from `r12`.
+
+One small thing: `n` can be 0.
+If `n=0`, `test rsi, rsi` is true (zero). `jle done` jumps to done.
+At done, `rax` contains whatever was in `rax` before? No, we didn't set it.
+We should set `rax = 0` if n=0, or ensure `r14` is the accumulator and we move it to `rax` at the end.
+If we jump to done early, `r14` contains 0 (from initialization? No, initialization happens *after* the check in my logic above).
+
+Correct Order:
+1. `push r14`, `push r13`, `push r12`.
+2. `mov r12, rdi`.
+3. `mov r13, rdx`.
+4. `xor r14, r14`. (Init sum)
+5. `test rsi, rsi`.
+6. `jle done`. (If n=0, jump to done)
+7. Label loop:
+   - `mov rcx, [r12]`
+   - `call r13`
+   - `add r14, rax`
+   - `add r12, 8`
+   - `dec rsi`
+   - `jg loop` (if remaining > 0, continue. Wait, `dec` sets flags. If it was 1, it becomes 0, ZF=1. We want to process the element we just did? No, we processed the *current* element which was at start. Then we advanced. The counter should count down from n-1 to 0?
+   Let's trace: `n=1`.
+   - `test rsi` -> non-zero.
+   - Loop:
+     - load `a[0]`
+     - call f
+     - add sum
+     - `add r12, 8`
+     - `dec rsi` (becomes 0)
+     - `jg loop` (0 is not > 0). Exit.
+   - Done: `mov rax, r14`. Correct.
+
+   What if `n=2`.
+   - Loop 1: process `a[0]`, `dec` to 1. `jg` taken.
+   - Loop 2: process `a[1]`, `dec` to 0. `jg` not taken.
+   - Done. Correct.
+
+One edge case: `n` is large. No overflow issues for 64-bit counter on x86-64.
+
+Final JSON construction.
+
+```json
+{
+  "instructions": [
+    {"op": "push", "src": [{"reg": "r14"}]},
+    {"op": "push", "src": [{"reg": "r13"}]},
+    {"op": "push", "src": [{"reg": "r12"}]},
+    {"op": "mov", "dst": "r12", "src": [{"reg": "rdi"}]},
+    {"op": "mov", "dst": "r13", "src": [{"reg": "rdx"}]},
+    {"op": "xor", "dst": "r14", "src": []},
+    {"op": "test", "dst": "rsi", "src": [{"reg": "rsi"}]},
+    {"op": "jle", "target": "done"},
+    {"label": "loop"},
+    {"op": "mov", "dst": {"mem": {"base": "r12", "size": 8}}, "src": []}, 
+    {"op": "call", "target": "r13"},
+    {"op": "add", "dst": "r14", "src": [{"reg": "rax"}]},
+    {"op": "add", "dst": "r12", "src": [{"imm": 8}]},
+    {"op": "dec", "dst": "rsi"},
+    {"op": "jg", "target": "loop"},
+    {"label": "done"},
+    {"op": "mov", "dst": "rax", "src": [{"reg": "r14"}]},
+    {"op": "pop", "dst": "r12"},
+    {"op": "pop", "dst": "r13"},
+    {"op": "pop", "dst": "r14"},
+    {"op": "ret"}
+  ]
+}
+```
+
+Wait, `mov` syntax for memory src: `{"mem": {...}}`. The schema says `src` is array of `{reg}` or `{imm}` or `{mem}`.
+For `mov dst, [mem]`, `dst` is reg, `src` is mem.
+Correct.
+
+One detail: `dec rsi` uses 64-bit register `rsi`. The tool accepts `rsi` as a valid reg string? Yes, in `$defs/reg64` or `reg`. The schema for `shift`/`unary` allows `dst` to be reg or mem. `dec dst`.
+
+One check: `jle` vs `jl`.
+If `n=0`, `test` makes ZF=1. `jle` (ZF=1 or SF!=OF) jumps. Correct.
+If `n<0` (invalid per spec but possible), `test` might set SF. Signed 64-bit integer. If negative, `SF != OF` (usually). `jle` handles signed <= 0.
+
+Is `r13` a valid callee-saved register? Yes.
+Is `r12` a valid callee-saved register? Yes.
+Is `r14` a valid callee-saved register? Yes.
+
+The code looks solid.
+
+One tiny optimization/style check: The prompt asks for "exactly the code... and nothing else".
+I will output only the JSON.
+
+Double check the memory operand syntax in `mov`.
+`{"mem": {"base": "r12", "size": 8}}`. Index/scale/disp optional? "size (bytes) is required when no register operand implies it". Here there is no register operand for src, so size is required. Base is r12. Disp 0 implied.
+
+Final sanity check on registers clobbered:
+`rdi`, `rsi`, `rdx`, `rcx`, `rax`, `r8-r11` are caller-saved.
+We use `rdi` to init `r12`. `rsi` to loop. `rdx` to init `r13`. `rcx` for arg
