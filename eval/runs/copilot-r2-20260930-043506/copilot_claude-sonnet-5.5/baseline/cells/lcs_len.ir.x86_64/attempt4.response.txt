@@ -1,0 +1,97 @@
+The error at line 5 comes from the phi syntax: `phi @start, 0` is invalid because QBE needs the form `phi @blk, val, ...` with `%j1` defined later, and the real problem is that `@start` must not be followed directly by a jump into a block containing a phi. It is also unclear whether the literal `0` is accepted in that position, so I avoided the question.
+
+I rewrote the function so the loop-carried values sit in stack slots instead of phis, which avoids the syntax risk. `alloc8` in the start block gives one slot for each of `j`, `i`, `k` and `diag`. The row update reads `left` from `row[k-1]`, which the loop has already updated for this row, matching the spec.
+
+The `x[i]` byte is reloaded in the inner loop so no value has to live across blocks in a phi. QBE's SSA form requires a definition to dominate its uses. `%xb` is defined in `@obody`, which dominates the inner blocks, so that would be fine, but reloading keeps it simple.
+
+Block details:
+- `@icont` reloads `k` and increments it.
+- `@yes` computes `diag + 1` and jumps to `@store`.
+- `@no` computes the max through a slot instead of a phi, so `@store` needs no phi.
+- The result `%v` is written to a slot `%vs` in each branch.
+
+export function l $lcs_len(l %x, l %m, l %y, l %n, l %row) {
+@start
+	%js =l alloc8 8
+	%is =l alloc8 8
+	%ks =l alloc8 8
+	%ds =l alloc8 8
+	%vs =l alloc8 8
+	storel 0, %js
+	jmp @initc
+@initc
+	%j =l loadl %js
+	%c =w cslel %j, %n
+	jnz %c, @initb, @outs
+@initb
+	%o =l shl %j, 3
+	%p =l add %row, %o
+	storel 0, %p
+	%j1 =l add %j, 1
+	storel %j1, %js
+	jmp @initc
+@outs
+	storel 0, %is
+	jmp @outer
+@outer
+	%i =l loadl %is
+	%c2 =w csltl %i, %m
+	jnz %c2, @obody, @done
+@obody
+	storel 1, %ks
+	storel 0, %ds
+	jmp @inner
+@inner
+	%k =l loadl %ks
+	%c3 =w cslel %k, %n
+	jnz %c3, @ibody, @oend
+@ibody
+	%i5 =l loadl %is
+	%xp =l add %x, %i5
+	%xb =w loadub %xp
+	%ko =l shl %k, 3
+	%rp =l add %row, %ko
+	%up =l loadl %rp
+	%yo =l add %y, %k
+	%yp =l sub %yo, 1
+	%yb =w loadub %yp
+	%eq =w ceqw %xb, %yb
+	jnz %eq, @yes, @no
+@yes
+	%dg =l loadl %ds
+	%v1 =l add %dg, 1
+	storel %v1, %vs
+	jmp @store
+@no
+	%lp =l sub %rp, 8
+	%left =l loadl %lp
+	%gt =w csgtl %left, %up
+	jnz %gt, @l, @u
+@l
+	storel %left, %vs
+	jmp @store
+@u
+	storel %up, %vs
+	jmp @store
+@store
+	%v =l loadl %vs
+	%rp2 =l add %row, %ko
+	%up2 =l loadl %rp2
+	storel %v, %rp2
+	storel %up2, %ds
+	%k2 =l add %k, 1
+	storel %k2, %ks
+	jmp @inner
+@oend
+	%i6 =l loadl %is
+	%i2 =l add %i6, 1
+	storel %i2, %is
+	jmp @outer
+@done
+	%no =l shl %n, 3
+	%np =l add %row, %no
+	%r =l loadl %np
+	ret %r
+}
+
+Wait: in `@store`, reloading `up2` from `row[k]` after the update is wrong, because `row[k]` has not been written yet at that point. The load happens before the `storel %v, %rp2` line, so it still sees the old value, which is the correct `diag` for the next column. The code is therefore correct as written.
