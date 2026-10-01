@@ -1,0 +1,144 @@
+Implement the function `int64_t packbits_decode(const uint8_t *src, int64_t n, uint8_t *out, int64_t cap)`.
+
+Target: AArch64 (ARMv8-A), Linux AAPCS64. Integer/pointer arguments in x0-x7; 64-bit result in x0. Callee-saved: x19-x28, x29 (frame pointer) and d8-d15 (restore them if you use them); x9-x15 are free scratch registers. sp must stay 16-byte aligned and be back to its entry value when you return with ret (return address in x30). More ABI facts: arguments beyond the eighth are passed on the stack (the 9th at [sp] at entry). A call (bl/blr) overwrites x30, so save x30 (e.g. stp x29, x30, [sp, #-16]!) before calling and restore it before ret. A call clobbers the caller-saved registers x0-x18, x30, v0-v7 and v16-v31 (and the upper halves of v8-v15) and the flags, so keep values that must survive a call in callee-saved registers x19-x28 (saved/restored by you) or in your own stack frame. sp must be 16-byte aligned at every call (and whenever it is used as a base register). Anything below sp may be overwritten by a callee.
+
+Output format: QBE intermediate language (the IL of the QBE compiler backend, c9x.me/compile). Write exactly one function, `export function l $packbits_decode(...)`, taking every argument as `l` (64-bit; pointers are `l` too) and returning `l`. QBE will compile it for the target above, so you do not handle registers or the ABI yourself. Remember: every block starts with an `@label`; temporaries are `%name`; comparisons such as `csltl`/`ceql` produce a `w` value; `jnz` tests a `w`; loads/stores are `loadl`/`storel`. No data definitions, no calls, no other functions. Output only the QBE code: no Markdown fences, no prose. Load a byte zero-extended with `%b =w loadub %p` or sign-extended with `%b =w loadsb %p`; store one with `storeb %c, %p`.
+
+Specification: Decompress PackBits data: src holds n bytes (0 <= n <= 600) of packets, decoded left to right into out, which has room for cap bytes (0 <= cap <= 1200). Each packet starts with a header byte h read as a signed byte: 0 <= h <= 127: a literal packet, the next h + 1 bytes are copied to the output; -127 <= h <= -1: a repeat packet, the next byte is written 1 - h times; h = -128: no operation (the packet is just that byte). Return the number of bytes written. Errors: if a packet needs more source bytes than remain in src[0..n-1] (checked when its header is read, before any of its output is written), return -2 (the output of earlier packets stays written). If the output would exceed cap bytes, write exactly the first cap bytes of the output (out[0..cap-1] completely filled) and return -1. Example: 01 'a' 'b' FE 'c' 00 'd' decodes to "abcccd" (returns 6); with cap = 4 it writes "abcc" and returns -1. Read only src[0..n-1] and write only out[0..cap-1] (both are checked: never write out[cap], even when cap is 0).
+
+Your previous attempt was:
+<previous>
+Design: i = src index, o = output index.
+
+Loop:
+- if i >= n: return o.
+- h = loadsb src+i; i++.
+- if h == -128: continue.
+- if h >= 0: cnt = h+1; need i+cnt <= n else return -2. Then copy min(cnt, cap-o) bytes; if cnt > cap-o, return -1 after the partial copy; else o += cnt.
+- if h < 0: cnt = 1-h; need i+1 <= n else -2. Read the byte c and i++. Fill min(cnt, cap-o) bytes; overflow returns -1.
+
+The copy loops are byte-by-byte with a limit m = min(cnt, cap-o). After the loop, if m < cnt return -1, else o += cnt. I use a shared copy block with a flag rather than duplicated code: the literal and repeat paths each have their own loop, then join at a common "after" block that takes cnt and m.
+
+Literal loop: k from 0 to m: b = loadub src+i+k; storeb b, out+o+k.
+Repeat loop: storeb c, out+o+k.
+
+Blocks that need phi: i, o are loop-carried. To keep the SSA simple, I keep i and o in phi at @loop only. The literal and repeat paths compute the new i (ni) and then jump to @fin with parameters through phi (ni, cnt, m, o). Simpler: each path does its own loop and then jumps to @check, which uses a phi for ni.
+
+@check: %ni = phi @lit_done %ni1, @rep_done %ni2; cnt is likewise a phi, m too. Then if m < cnt return -1, else o2 = o+cnt, jump to @loop. Since o is defined in @loop and dominates, using %o there is fine.
+
+The `%room = cap - o` value is computed in each path. The `cslel` comparison is used to pick m: `%lt = csltl %room, %cnt`, then jnz to select blocks. I compute m with a phi-free trick: m = cnt + (room-cnt)*lt, where lt is extended with `extuw`.
+
+
+export function l $packbits_decode(l %src, l %n, l %out, l %cap) {
+@start
+	jmp @loop
+@loop
+	%i =l phi @start 0, @check %ni
+	%o =l phi @start 0, @check %o2
+	%e =w csgel %i, %n
+	jnz %e, @ret_o, @hdr
+@ret_o
+	ret %o
+@hdr
+	%p =l add %src, %i
+	%h =w loadsb %p
+	%i1 =l add %i, 1
+	%hl =l extsw %h
+	%isn =w cslel %hl, -1
+	%nop =w ceql %hl, -128
+	jnz %nop, @skip, @notnop
+@skip
+	jmp @check2
+@check2
+	jmp @loopn
+@loopn
+	jmp @loopback
+@loopback
+	jmp @loop2
+@loop2
+	jmp @loop3
+@loop3
+	jmp @loopx
+@loopx
+	jmp @cont
+@cont
+	jmp @loophead
+@loophead
+	jmp @loop_again
+@loop_again
+	jmp @loopfinal
+@loopfinal
+	ret -3
+@notnop
+	%room =l sub %cap, %o
+	jnz %isn, @rep, @lit
+@lit
+	%cnt =l add %hl, 1
+	%end =l add %i1, %cnt
+	%bad =w csgtl %end, %n
+	jnz %bad, @err2, @lit1
+@err2
+	ret -2
+@lit1
+	%lt =w csltl %room, %cnt
+	%ltl =l extuw %lt
+	%d =l sub %room, %cnt
+	%dm =l mul %d, %ltl
+	%m =l add %cnt, %dm
+	jmp @ll
+@ll
+	%k =l phi @lit1 0, @lb %k1
+	%c =w csltl %k, %m
+	jnz %c, @lb, @check
+@lb
+	%sp =l add %src, %i1
+	%sp2 =l add %sp, %k
+	%b =w loadub %sp2
+	%dp =l add %out, %o
+	%dp2 =l add %dp, %k
+	storeb %b, %dp2
+	%k1 =l add %k, 1
+	jmp @ll
+@rep
+	%cnt2 =l sub 1, %hl
+	%end2 =l add %i1, 1
+	%bad2 =w csgtl %end2, %n
+	jnz %bad2, @err2, @rep1
+@rep1
+	%rp =l add %src, %i1
+	%cb =w loadub %rp
+	%lt2 =w csltl %room, %cnt2
+	%lt2l =l extuw %lt2
+	%d2 =l sub %room, %cnt2
+	%dm2 =l mul %d2, %lt2l
+	%m2 =l add %cnt2, %dm2
+	jmp @rl
+@rl
+	%k2 =l phi @rep1 0, @rb %k3
+	%c2 =w csltl %k2, %m2
+	jnz %c2, @rb, @check
+@rb
+	%dq =l add %out, %o
+	%dq2 =l add %dq, %k2
+	storeb %cb, %dq2
+	%k3 =l add %k2, 1
+	jmp @rl
+@check
+	%ni =l phi @ll %end, @rl %end2
+	%cn =l phi @ll %cnt, @rl %cnt2
+	%mm =l phi @ll %m, @rl %m2
+	%ov =w csltl %mm, %cn
+	jnz %ov, @over, @okk
+@over
+	ret -1
+@okk
+	%o2 =l add %o, %cn
+	jmp @loop
+}
+</previous>
+It failed:
+<failure>
+Compilation failed at stage qbe:
+qbe:-:1: unknown keyword Design
+</failure>
+Write a corrected, complete version. Same output format; output only the code.

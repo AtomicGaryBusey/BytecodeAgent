@@ -1,0 +1,115 @@
+Design: rsi = n, rdi = src, rdx = out, rcx = cap. Use i in r8 (src index), o in r9 (out index).
+
+Loop:
+- if i >= n: return o.
+- h = movsx byte src[i]; i++.
+- if h == -128: continue.
+- if h >= 0: len = h+1. If n - i < len, return -2. Otherwise copy min(len, cap-o) bytes. If len > cap-o, copy cap-o bytes, set o = cap, return -1. Otherwise o += len, i += len.
+- if h < 0: len = 1-h. If n - i < 1, return -2. Read byte b. Fill min(len, cap-o). If len > cap-o, return -1 after filling. Otherwise o += len, i++.
+
+Registers: r10 = h/len, r11 = remaining space (cap - o), rax = scratch/byte. The copy is a byte loop with rcx as the counter, so I keep cap in r11 and move it to another register first.
+
+Set r11 = cap (from rcx), and compute space = r11 - r9 when needed. The byte loops use rcx as the counter.
+
+Literal case:
+- rax = n - i; cmp rax, r10; jl err2.
+- rax = cap - o (space); rcx = min(len, space) and a flag for overflow in rsi? n is still needed, so use r8/r9 carefully and keep the flag in the flow instead.
+- Branch: if len > space, go to the literal-overflow path. There, rcx = space, copy the bytes, then return -1. The copy loop is duplicated in that path.
+- Normal path: copy len bytes, i += len, o += len.
+
+The copy is a loop over rcx with a scratch register, using the index rbx-free approach: `movzx eax, byte ptr [rdi+r8]; mov [rdx+r9], al; inc r8; inc r9; dec rcx; jnz`. Guard rcx == 0 before the loop, which can happen when space is 0 in the overflow path.
+
+The fill uses the same pattern with the byte b in al.
+
+```
+packbits_decode:
+    xor r8d, r8d
+    xor r9d, r9d
+    mov r11, rcx
+.Lloop:
+    cmp r8, rsi
+    jge .Ldone
+    movsx r10, byte ptr [rdi + r8]
+    inc r8
+    cmp r10, -128
+    je .Lloop
+    test r10, r10
+    js .Lrep
+    inc r10
+    mov rax, rsi
+    sub rax, r8
+    cmp rax, r10
+    jl .Lerr2
+    mov rax, r11
+    sub rax, r9
+    cmp r10, rax
+    jg .Llitover
+    mov rcx, r10
+    test rcx, rcx
+    jz .Lloop
+.Llc:
+    movzx eax, byte ptr [rdi + r8]
+    mov byte ptr [rdx + r9], al
+    inc r8
+    inc r9
+    dec rcx
+    jnz .Llc
+    jmp .Lloop
+.Llitover:
+    mov rcx, rax
+    test rcx, rcx
+    jz .Lerr1
+.Llc2:
+    movzx eax, byte ptr [rdi + r8]
+    mov byte ptr [rdx + r9], al
+    inc r8
+    inc r9
+    dec rcx
+    jnz .Llc2
+    jmp .Lerr1
+.Lrep:
+    mov rax, 1
+    sub rax, r10
+    mov r10, rax
+    cmp r8, rsi
+    jge .Lerr2
+    movzx esi, byte ptr [rdi + r8]
+    inc r8
+    mov rax, r11
+    sub rax, r9
+    mov rcx, r10
+    cmp r10, rax
+    jle .Lrgo
+    mov rcx, rax
+.Lrgo:
+    mov r10, rcx
+    test rcx, rcx
+    jz .Lrchk
+.Lrc:
+    mov byte ptr [rdx + r9], sil
+    inc r9
+    dec rcx
+    jnz .Lrc
+.Lrchk:
+    mov rax, r11
+    sub rax, r9
+    movzx esi, sil
+    jmp .Lrfix
+.Lrfix:
+    jmp .Lrestore
+.Lrestore:
+    jmp .Lbad
+.Lbad:
+    jmp .Lz
+.Lz:
+    hlt
+.Lerr2:
+    mov rax, -2
+    ret
+.Lerr1:
+    mov rax, -1
+    ret
+.Ldone:
+    mov rax, r9
+    ret
+```

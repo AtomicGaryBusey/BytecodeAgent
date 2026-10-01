@@ -1,0 +1,122 @@
+Plan: keep i (input index) and o (output index) in temporaries. QBE requires SSA form, so every mutable variable is set in a phi at the loop head.
+
+Main loop (`@loop`): if i >= n, return o. Otherwise compute run(i) with an inner loop, capped at 128 and bounded by n.
+
+run computation: r=1; while i+r<n and r<128 and src[i+r]==src[i]: r++.
+
+If r>=3: need o+2<=cap, else return -1. Store the header (257-r) as a byte (storeb truncates), store src[i], then i+=r and o+=2.
+
+Otherwise it is a literal: j=i; loop while j<n and j-i<128 and run(j)<3. run(j)<3 means not (j+2<n and src[j+1]==src[j] and src[j+2]==src[j]). Since run is capped at 128 and only compared against 3, checking three equal bytes is enough. After the loop, L=j-i. L>=1 is guaranteed because run(i)<3 at the start, so j advances at least once. Need o+1+L<=cap, else return -1. Store the header L-1 at out+o, copy L bytes with a copy loop, then set i=j and o+=1+L.
+
+Phi nodes: the loop head needs i and o, defined as `%i =l phi @start, 0, @next1, %i1 ...`. To keep the phi sources simple, both packet paths jump to a common `@loop` block from separate blocks, so the phi has three sources: start, the repeat end, and the literal end.
+
+Run loop: `@rl` with phi %r (from @loop with 1, from @rlb with %r2). Check the conditions in sequence: k=i+r; if k>=n exit; if r>=128 exit; compare bytes; loop.
+
+Literal scan `@sl`: phi %j (from @lit with i, from @slb with %j2). Checks: j<n, j-i<128, then whether j+2<n. If so, load b0, b1, b2; if b1==b0 and b2==b0, stop. Otherwise j++.
+
+Copy loop `@cl`: phi %c from 0.
+
+
+export function l $packbits_encode(l %src, l %n, l %out, l %cap) {
+@start
+	jmp @loop
+@loop
+	%i =l phi @start, 0, @rep, %i1, @litend, %j
+	%o =l phi @start, 0, @rep, %o1, @litend, %o2
+	%c0 =w csltl %i, %n
+	jnz %c0, @body, @done
+@done
+	ret %o
+@body
+	%p =l add %src, %i
+	%b =w loadub %p
+	jmp @rl
+@rl
+	%r =l phi @body, 1, @rlb, %r2
+	%k =l add %i, %r
+	%c1 =w csltl %k, %n
+	jnz %c1, @rl2, @rend
+@rl2
+	%c2 =w csltl %r, 128
+	jnz %c2, @rl3, @rend
+@rl3
+	%q =l add %src, %k
+	%bb =w loadub %q
+	%c3 =w ceqw %bb, %b
+	jnz %c3, @rlb, @rend
+@rlb
+	%r2 =l add %r, 1
+	jmp @rl
+@rend
+	%c4 =w csltl %r, 3
+	jnz %c4, @lit, @repc
+@repc
+	%need =l add %o, 2
+	%c5 =w cslel %need, %cap
+	jnz %c5, @rep, @fail
+@fail
+	ret -1
+@rep
+	%h =l sub 257, %r
+	%po =l add %out, %o
+	storeb %h, %po
+	%po1 =l add %po, 1
+	storeb %b, %po1
+	%i1 =l add %i, %r
+	%o1 =l add %o, 2
+	jmp @loop
+@lit
+	jmp @sl
+@sl
+	%j =l phi @lit, %i, @slb, %j2
+	%d1 =w csltl %j, %n
+	jnz %d1, @sl2, @slend
+@sl2
+	%dd =l sub %j, %i
+	%d2 =w csltl %dd, 128
+	jnz %d2, @sl3, @slend
+@sl3
+	%j2s =l add %j, 2
+	%d3 =w csltl %j2s, %n
+	jnz %d3, @sl4, @slb
+@sl4
+	%pj =l add %src, %j
+	%x0 =w loadub %pj
+	%pj1 =l add %pj, 1
+	%x1 =w loadub %pj1
+	%pj2 =l add %pj, 2
+	%x2 =w loadub %pj2
+	%e1 =w ceqw %x0, %x1
+	%e2 =w ceqw %x0, %x2
+	%e =w and %e1, %e2
+	jnz %e, @slend, @slb
+@slb
+	%j2 =l add %j, 1
+	jmp @sl
+@slend
+	%L =l sub %j, %i
+	%o2 =l add %o, %L
+	%o2 =l add %o2, 1
+	%c6 =w cslel %o2, %cap
+	jnz %c6, @lw, @fail
+@lw
+	%pl =l add %out, %o
+	%hl =l sub %L, 1
+	storeb %hl, %pl
+	jmp @cl
+@cl
+	%cc =l phi @lw, 0, @clb, %cn
+	%c7 =w csltl %cc, %L
+	jnz %c7, @clb, @litend
+@clb
+	%sp =l add %src, %i
+	%sp2 =l add %sp, %cc
+	%v =w loadub %sp2
+	%dp =l add %pl, 1
+	%dp2 =l add %dp, %cc
+	storeb %v, %dp2
+	%cn =l add %cc, 1
+	jmp @cl
+@litend
+	jmp @loop
+}
