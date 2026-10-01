@@ -1,4 +1,4 @@
-# `edit`: a terminal text editor written by a model in AArch64 machine code
+# `edit`: a terminal text editor written by a model in AArch64 assembly (encoded to machine code by GNU as)
 
 `edit` is a small full-screen text editor (kilo-style) for Linux on AArch64. All of its code was written by
 **Codex GPT-6 Astra** as one assembly file, `edit.s`, from the specification in [`SPEC.md`](SPEC.md).

@@ -114,7 +114,7 @@ Pending: Kimi K3 (local models do not run the app battery, by decision). The fro
 `mov` of an immediate no single instruction can encode. Report, including the sandbox-escape fix and the
 asm/stream acceptance parity work: [`reports/live-model-eval-apps.md`](reports/live-model-eval-apps.md).
 
-## Demo: a text editor written by a model in machine code
+## Demo: a text editor written by a model in AArch64 assembly
 
 [`demo/editor/`](demo/editor/README.md) holds `edit`, a kilo-style terminal text editor for AArch64 Linux.
 Codex GPT-6 Astra wrote all of it as one assembly file, on the first attempt:
@@ -155,5 +155,5 @@ bca/liveeval/                     live-model eval: tasks, prompts, pipelines, ru
 eval/runs/                        recorded runs (prompts, responses, raw streams, verdicts)
 reports/                          research report and eval write-ups
 examples/stream_demo.py           the stream path end to end
-demo/editor/                      a model-written text editor in AArch64 machine code, with its sandbox tests
+demo/editor/                      a model-written text editor (AArch64 assembly -> GNU as -> static ELF), sandbox tests
 ```
