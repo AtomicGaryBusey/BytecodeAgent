@@ -32,14 +32,14 @@ system and task prompts, and its CLI's default effort (as the Claude runs did). 
 | GPT-6 Luna via Copilot | 42 | 53 | 31 | 50 | **176/224 (79%)** | 224/224 (100%) | 1.29 |
 | Claude Sonnet 5 | 40 | 49 | 41 | 45 | **175/224 (78%)** | 222/224 (99%) | 1.30 |
 | Claude Opus 4.8 | 35 | 48 | 49 | 43 | **175/224 (78%)** | 222/224 (99%) | 1.27 |
-| Claude Sonnet 5.5 via Copilot | 45 | 55 | 20 | 51 | **171/224 (76%)** | 219/224 (98%) | 1.35 |
+| Claude Sonnet 5.5 via Copilot | 45 | 55 | 19 | 51 | **170/224 (76%)** | 219/224 (98%) | 1.35 |
 | Codex GPT-6 Luna | 33 | 41 | 10 | 46 | **130/224 (58%)** | 209/224 (93%) | 1.71 |
 | Claude Haiku 4.5 | 30 | 34 | 17 | 35 | **116/224 (52%)** | 158/224 (71%) | 2.19 |
 | Microsoft MAI-Code 1.1 Flash (Copilot) | 26 | 34 | 12 | 35 | **107/224 (48%)** | 151/224 (67%) | 2.29 |
 
 Codex Daybreak Blue includes one reviewed harness false reject counted as a pass, Grok 4.7 build-fast
-three and GPT-6 Luna via Copilot one; Claude Sonnet 5.5 via Copilot nets to zero (+1 false reject, -1 for a
-pre-fix do-over; see the false-reject review below). Still running (added when complete and reviewed): Kimi K2.8 (kimi-for-coding) and Gemini 3.8 Flash on Antigravity (quota-paced).
+three and GPT-6 Luna via Copilot one; Claude Sonnet 5.5 via Copilot is one lower than recorded (a pre-fix
+output-cap do-over counted as the failure it would be now; see the false-reject review below). Still running (added when complete and reviewed): Kimi K2.8 (kimi-for-coding) and Gemini 3.8 Flash on Antigravity (quota-paced).
 
 ## By emission path (first-attempt passes, complete runs)
 
@@ -61,7 +61,7 @@ pre-fix do-over; see the false-reject review below). Still running (added when c
 | GPT-6 Luna via Copilot | 67/76 (88%) | 61/74 (82%) | 48/74 (65%) |
 | Claude Sonnet 5 | 63/76 (83%) | 53/74 (72%) | 59/74 (80%) |
 | Claude Opus 4.8 | 63/76 (83%) | 66/74 (89%) | 46/74 (62%) |
-| Claude Sonnet 5.5 via Copilot | 61/76 (80%) | 63/74 (85%) | 47/74 (64%) |
+| Claude Sonnet 5.5 via Copilot | 61/76 (80%) | 62/74 (84%) | 47/74 (64%) |
 | Codex GPT-6 Luna | 60/76 (79%) | 45/74 (61%) | 25/74 (34%) |
 | Claude Haiku 4.5 | 61/76 (80%) | 54/74 (73%) | 1/74 (1%) |
 | Microsoft MAI-Code 1.1 Flash (Copilot) | 59/76 (78%) | 44/74 (59%) | 4/74 (5%) |
@@ -95,7 +95,7 @@ pre-fix do-over; see the false-reject review below). Still running (added when c
   30); Codex's catalog defaults (low verbosity, priority tier) or the two services' budgets for "medium" differ.
   Both are each CLI's own defaults, as the fairness contract requires: an effort label does not carry across
   front ends. **The direction depends on the model:** Claude Sonnet 5.5 goes the other way, 90% through `claude -p`
-  and 76% through Copilot (171/224; long battery 45 to 20), again with byte-identical prompts and no tools.
+  and 76% through Copilot (170/224; long battery 45 to 19), again with byte-identical prompts and no tools.
   Through Copilot it opens 39 of 224 first answers with a prose plan ("Plan:", "Design:", "Register plan:")
   against 1 through `claude -p`, and 9 first answers carry stray tool-call markup (`<invoke ...>`,
   `</parameter>`) although the request has no tools; those account for most of its 42 cells that flip to a
@@ -142,12 +142,10 @@ above (details in that run's `ADJUSTMENTS.md`); the adapter now scores grok's se
 GPT-6 Luna via Copilot: one, `mat_pow.stream.aarch64` attempt 1, rejected at `mov x17, x20, lsl #3`, which keystone
 refuses outright but GNU as accepts (an alias of `orr x17, xzr, x20, lsl #3`); rescored with the recorded answer it
 passes, and it counts as a pass above (fixed in c1c1df7f: the stream path takes GNU as's bytes when keystone refuses).
-Claude Sonnet 5.5 via Copilot: two false rejects in the structured encoder, which reads a jump target that
-names a register (`cl`, `ch`) as that register even when the program defines a label of that name
-(`mat_pow.structured.x86_64` attempt 1 and `base64_encode.structured.x86_64` attempt 2 pass with the label
-renamed). The first counts as a pass above; the second changes no score (its cell had already failed attempt 1
-genuinely). The encoder should resolve a defined label first; no other run has a register-named label. Also,
-`vm_run.structured.aarch64` passed on a fresh re-run after the pre-fix output-cap abort (the runtime's
+Claude Sonnet 5.5 via Copilot: none. Two answers define x86 labels named like registers (`cl`, `ch`) and jump to
+them; the encoder refused the jump. That is genuine: the x86 jump schema in the prompt says register names are not
+usable as labels, and GNU as also rejects `jmp cl` with a label `cl` defined (d7df9dda now refuses such a label at
+its definition, with a clearer message; no verdict changes). Also, `vm_run.structured.aarch64` passed on a fresh re-run after the pre-fix output-cap abort (the runtime's
 continuation event stopped the subject); under the current rule the capped 34,574-character answer (ending in a
 run of repeated characters) is scored, and it fails as `format`, so that cell counts as a first-attempt failure.
 Kimi K3, Grok 4.7, Grok 4.6, Grok 4.5, Codex Astra, Sol and GPT-5.5, Claude Sonnet 4.5, Opus 4.8 and MAI-Code: none

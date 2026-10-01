@@ -39,7 +39,7 @@ ADJ = {"codex:gpt-daybreak-blue-latest": [("adversarial", "stream", 1)],
        # +1 mat_pow.structured.x86_64: the encoder read a jump to the program's own label `cl` as register cl;
        # -1 vm_run.structured.aarch64: passed on a fresh re-run after the pre-fix output-cap abort; under the
        #    current rule the capped answer is scored, and it fails (format)
-       "copilot:claude-sonnet-5.5": [("long", "structured", 1), ("long", "structured", -1)]}
+       "copilot:claude-sonnet-5.5": [("long", "structured", -1)]}  # vm_run output-cap do-over (pre-929d4577), scored as capped
 bats = ["round1", "round2", "long", "adversarial"]; tot = {"round1": 48, "round2": 62, "long": 54, "adversarial": 60}
 agg = collections.defaultdict(lambda: collections.defaultdict(lambda: [0, 0, 0, 0.0]))
 pth = collections.defaultdict(lambda: collections.defaultdict(lambda: [0, 0]))
