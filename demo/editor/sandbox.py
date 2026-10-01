@@ -39,6 +39,15 @@ def build(source: str, out: Path) -> None:
             raise BuildError(f"The linker rejected the program:\n{(r.stderr or r.stdout).strip()[:1500]}")
 
 
+def docker_command(work: Path | str, names: list[str] | None = None) -> list[str]:
+    """The sandbox: no network, read-only root, an unprivileged user, no capabilities, CPU/memory/process limits;
+    the only writable places are /tmp (tmpfs) and the scratch directory mounted at /work."""
+    return ["docker", "run", "--rm", "--network", "none", "--read-only", "--tmpfs", "/tmp",
+            "-v", f"{work}:/work", "-w", "/work", "--user", f"{os.getuid()}:{os.getgid()}",
+            "--cpus", "1", "--memory", "256m", "--pids-limit", "64", "--cap-drop", "ALL",
+            "--security-opt", "no-new-privileges", IMAGE, "python3", "/work/driver.py", *(names or [])]
+
+
 def run_scenarios(binary: Path, names: list[str] | None = None, timeout: float = 300) -> list[dict]:
     with tempfile.TemporaryDirectory(prefix="edit-sandbox-") as tmp:
         work = Path(tmp)
@@ -49,10 +58,7 @@ def run_scenarios(binary: Path, names: list[str] | None = None, timeout: float =
         (work / "run").mkdir()
         os.chmod(work, 0o777)
         os.chmod(work / "run", 0o777)
-        cmd = ["docker", "run", "--rm", "--network", "none", "--read-only", "--tmpfs", "/tmp",
-               "-v", f"{work}:/work", "-w", "/work", "--user", f"{os.getuid()}:{os.getgid()}",
-               "--cpus", "1", "--memory", "256m", "--pids-limit", "64", "--cap-drop", "ALL",
-               "--security-opt", "no-new-privileges", IMAGE, "python3", "/work/driver.py", *(names or [])]
+        cmd = docker_command(work, names)
         r = subprocess.run(cmd, capture_output=True, text=True, timeout=timeout)
         if r.returncode != 0:
             raise RuntimeError(f"sandbox failed (exit {r.returncode}): {r.stderr.strip()[-800:]}")
