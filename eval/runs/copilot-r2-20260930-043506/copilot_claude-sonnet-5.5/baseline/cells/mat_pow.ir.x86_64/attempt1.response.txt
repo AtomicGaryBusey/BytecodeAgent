@@ -1,0 +1,187 @@
+Plan: tmp has 2*n*n elements: base B at tmp[0..nn), product P at tmp[nn..2nn).
+
+- Set out = identity and B = copy of a.
+- Loop while k > 0:
+  - If k&1: P = out*B, copy P to out.
+  - k >>= 1. If k is still nonzero: P = B*B, copy P to B.
+- At the end, zero tmp[0..2nn) and return 0.
+
+To keep the code small, I use a matmul routine written inline with a loop and a "mode" variable. Since QBE has no calls to other functions here, the multiply is inlined via a state machine. The state is a variable `op` (0 means out*B, 1 means B*B), and after computing into P, the copy target is chosen by `op`.
+
+Matmul(X, Y) → P: for i, j: sum over t of X[i*n+t] * Y[t*n+j], stored at P[i*n+j]. Then copy P to the destination (out if op=0, B if op=1), then go back to the step logic.
+
+Blocks:
+- start: compute nn = n*n and B = tmp, P = tmp + nn*8. Zero out (loop over nn), then set the diagonal. Copy a to B.
+- loop: if k == 0, go to finish. Otherwise test the low bit; if set, set X=out, Y=B, dst=out, and go to mul with the next state "after1". Otherwise go to after1.
+- after1: k >>= 1. If k == 0, go to finish. Otherwise X=B, Y=B, dst=B, and go to mul with the next state "loop".
+
+I use a `st` variable: st=0 means return to after1, st=1 means return to loop. Temporaries are assigned multiple times, which is not SSA, so I keep mutable values in stack slots (alloc8) to avoid phis. All variables live in slots to keep this simple.
+
+
+export function l $mat_pow(l %a, l %n, l %k, l %out, l %tmp) {
+@start
+	%vi =l alloc8 8
+	%vj =l alloc8 8
+	%vt =l alloc8 8
+	%vs =l alloc8 8
+	%vk =l alloc8 8
+	%vx =l alloc8 8
+	%vy =l alloc8 8
+	%vd =l alloc8 8
+	%vst =l alloc8 8
+	%nn =l mul %n, %n
+	%nb =l mul %nn, 8
+	%P =l add %tmp, %nb
+	storel %k, %vk
+	storel 0, %vi
+@z
+	%i =l loadl %vi
+	%c =w csltl %i, %nn
+	jnz %c, @zb, @zd
+@zb
+	%o =l mul %i, 8
+	%p =l add %out, %o
+	storel 0, %p
+	%q =l add %tmp, %o
+	%s =l add %a, %o
+	%v =l loadl %s
+	storel %v, %q
+	%i2 =l add %i, 1
+	storel %i2, %vi
+	jmp @z
+@zd
+	storel 0, %vi
+@dg
+	%i =l loadl %vi
+	%c =w csltl %i, %n
+	jnz %c, @dgb, @loop
+@dgb
+	%m =l mul %i, %n
+	%m2 =l add %m, %i
+	%o =l mul %m2, 8
+	%p =l add %out, %o
+	storel 1, %p
+	%i2 =l add %i, 1
+	storel %i2, %vi
+	jmp @dg
+@loop
+	%k1 =l loadl %vk
+	%c =w cnel %k1, 0
+	jnz %c, @l2, @fin
+@l2
+	%b =l and %k1, 1
+	%c2 =w cnel %b, 0
+	jnz %c2, @dom, @after
+@dom
+	storel %out, %vx
+	storel %tmp, %vy
+	storel %out, %vd
+	storel 0, %vst
+	jmp @mul
+@after
+	%k2 =l loadl %vk
+	%k3 =l shr %k2, 1
+	storel %k3, %vk
+	%c =w cnel %k3, 0
+	jnz %c, @dosq, @fin
+@dosq
+	storel %tmp, %vx
+	storel %tmp, %vy
+	storel %tmp, %vd
+	storel 1, %vst
+	jmp @mul
+@mul
+	storel 0, %vi
+@mi
+	%i =l loadl %vi
+	%c =w csltl %i, %n
+	jnz %c, @mj0, @cp0
+@mj0
+	storel 0, %vj
+@mj
+	%j =l loadl %vj
+	%c =w csltl %j, %n
+	jnz %c, @mt0, @min
+@mt0
+	storel 0, %vt
+	storel 0, %vs
+@mt
+	%t =l loadl %vt
+	%c =w csltl %t, %n
+	jnz %c, @mtb, @mst
+@mtb
+	%i =l loadl %vi
+	%j =l loadl %vj
+	%x =l loadl %vx
+	%y =l loadl %vy
+	%r1 =l mul %i, %n
+	%r1 =l add %r1, %t
+	%r1 =l mul %r1, 8
+	%r1 =l add %x, %r1
+	%xv =l loadl %r1
+	%r2 =l mul %t, %n
+	%r2 =l add %r2, %j
+	%r2 =l mul %r2, 8
+	%r2 =l add %y, %r2
+	%yv =l loadl %r2
+	%pr =l mul %xv, %yv
+	%s =l loadl %vs
+	%s2 =l add %s, %pr
+	storel %s2, %vs
+	%t2 =l add %t, 1
+	storel %t2, %vt
+	jmp @mt
+@mst
+	%i =l loadl %vi
+	%j =l loadl %vj
+	%s =l loadl %vs
+	%r =l mul %i, %n
+	%r =l add %r, %j
+	%r =l mul %r, 8
+	%r =l add %P, %r
+	storel %s, %r
+	%j2 =l add %j, 1
+	storel %j2, %vj
+	jmp @mj
+@min
+	%i =l loadl %vi
+	%i2 =l add %i, 1
+	storel %i2, %vi
+	jmp @mi
+@cp0
+	storel 0, %vi
+@cp
+	%i =l loadl %vi
+	%c =w csltl %i, %nn
+	jnz %c, @cpb, @ret
+@cpb
+	%o =l mul %i, 8
+	%s =l add %P, %o
+	%v =l loadl %s
+	%d =l loadl %vd
+	%p =l add %d, %o
+	storel %v, %p
+	%i2 =l add %i, 1
+	storel %i2, %vi
+	jmp @cp
+@ret
+	%st =l loadl %vst
+	%c =w ceql %st, 0
+	jnz %c, @after, @loop
+@fin
+	%nn2 =l mul %nn, 2
+	storel 0, %vi
+@fz
+	%i =l loadl %vi
+	%c =w csltl %i, %nn2
+	jnz %c, @fzb, @end
+@fzb
+	%o =l mul %i, 8
+	%p =l add %tmp, %o
+	storel 0, %p
+	%i2 =l add %i, 1
+	storel %i2, %vi
+	jmp @fz
+@end
+	ret 0
+}
