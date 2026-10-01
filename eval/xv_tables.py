@@ -54,15 +54,35 @@ for m, d in agg.items():
     P = sum(v[0] for v in d.values()); F = sum(v[1] for v in d.values()); N = sum(v[2] for v in d.values())
     rows.append((N == 224, P / N, m, d, P, F, N, sum(v[3] for v in d.values()) / N))
 rows.sort(key=lambda x: (-x[0], -x[1]))
-print("| Model | Round 1 (48) | Round 2 (62) | Long (54) | Adversarial (60) | Pass@1 | Within 4 | Mean attempts |")
-print("|---|---|---|---|---|---|---|---|")
-for full, _, m, d, P, F, N, A in rows:
-    cells = " | ".join(str(d[b][0]) if d[b][2] == tot[b] else (f"{d[b][0]}/{d[b][2]}" if d[b][2] else "—") for b in bats)
-    tag = "" if full else " †"
-    print(f"| {names.get(m, m)}{tag} | {cells} | **{P}/{N} ({100*P/N:.0f}%)** | {F}/{N} ({100*F/N:.0f}%) | {A:.2f} |")
+
+
+def main_table(rows):
+    print("| Model | Round 1 (48) | Round 2 (62) | Long (54) | Adversarial (60) | Pass@1 | Within 4 | Mean attempts |")
+    print("|---|---|---|---|---|---|---|---|")
+    for full, _, m, d, P, F, N, A in rows:
+        cells = " | ".join(str(d[b][0]) if d[b][2] == tot[b] else (f"{d[b][0]}/{d[b][2]}" if d[b][2] else "—") for b in bats)
+        tag = "" if full else " †"
+        print(f"| {names.get(m, m)}{tag} | {cells} | **{P}/{N} ({100*P/N:.0f}%)** | {F}/{N} ({100*F/N:.0f}%) | {A:.2f} |")
+
+
+def path_table(rows, partial_ok=False):
+    print("| Model | Stream | Structured | IR (QBE) |"); print("|---|---|---|---|")
+    for full, _, m, d, *_ in rows:
+        if not full and not partial_ok: continue
+        q = pth[m]
+        tag = "" if full else " †"
+        print(f"| {names.get(m, m)}{tag} | " + " | ".join(
+            f"{q[k][0]}/{q[k][1]} ({100*q[k][0]/q[k][1]:.0f}%)" if q[k][1] else "—" for k in ("stream", "structured", "ir")) + " |")
+
+
+# Vendor models first (complete runs; partial ones marked †), then local open-weight models in their own tables:
+# their quantised weights on one shared DGX Spark GPU are not the same kind of subject.
+vendor = [r for r in rows if not r[2].startswith("local:")]
+local = [r for r in rows if r[2].startswith("local:")]
+main_table(vendor)
 print()
-print("| Model | Stream | Structured | IR (QBE) |"); print("|---|---|---|---|")
-for full, _, m, d, *_ in rows:
-    if not full: continue
-    q = pth[m]
-    print(f"| {names.get(m, m)} | " + " | ".join(f"{q[k][0]}/{q[k][1]} ({100*q[k][0]/q[k][1]:.0f}%)" for k in ("stream", "structured", "ir")) + " |")
+path_table(vendor)
+print()
+main_table(local)
+print()
+path_table(local, partial_ok=True)

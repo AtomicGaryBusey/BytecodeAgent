@@ -113,6 +113,45 @@ output-cap do-over counted as the failure it would be now; see the false-reject 
 - **Fable 5.1's** one final failure is a refusal: Anthropic's cyber classifier blocked
   `fill_down.ir.x86_64` on all four attempts, even on the CVP account.
 
+## Local open-weight models (DGX Spark)
+
+Open-weight models served on this machine, an NVIDIA DGX Spark (GB10, 128 GB unified memory), by Ollama 0.30.10
+(`local:<model>`; setup and isolation in [cross-vendor-methodology.md](cross-vendor-methodology.md#local-models-localmodel)).
+Same prompts, same zero-tool contract, same per-call time limits and attempts as every vendor subject; each model's
+own Modelfile sampling; `num_ctx` set explicitly to the native window or 65536, whichever is smaller. Weights are
+quantised (Q4_K_M or Q8_0) and every model shares the one GPU with calls serialised, so the time limits count only
+a call's own model time, but recorded latencies include queue waits and are not comparable with the vendor runs.
+These results say what such a desktop setup can do, not what the same models do at full precision elsewhere.
+
+| Model | Round 1 (48) | Round 2 (62) | Long (54) | Adversarial (60) | Pass@1 | Within 4 | Mean attempts |
+|---|---|---|---|---|---|---|---|
+| Qwen3-Coder-Next Q4 (local) | 5 | 5 | 0 | 2 | **12/224 (5%)** | 31/224 (14%) | 3.73 |
+| Qwen3-30B-A3B Instruct 2507 Q8 (local) † | 5 | 1 | 0/5 | — | **6/115 (5%)** | 13/115 (11%) | 3.75 |
+| Qwen2.5-14B Q4 (local) † | 1 | 2 | 0/4 | — | **3/114 (3%)** | 5/114 (4%) | 3.89 |
+
+| Model | Stream | Structured | IR (QBE) |
+|---|---|---|---|
+| Qwen3-Coder-Next Q4 (local) | 12/76 (16%) | 0/74 (0%) | 0/74 (0%) |
+| Qwen3-30B-A3B Instruct 2507 Q8 (local) † | 5/40 (12%) | 1/38 (3%) | 0/37 (0%) |
+| Qwen2.5-14B Q4 (local) † | 2/40 (5%) | 1/38 (3%) | 0/36 (0%) |
+
+† partial, by decision (2026-10-01): local runs were trimmed to save days of GPU time once it was clear they score
+in single digits. Qwen3-Coder-Next ran all four batteries; Qwen3-30B-A3B and Qwen2.5-14B stopped early in the long
+battery (115 and 114 of 224 cells); Qwen3.6-35B-A3B (thinking off and on) is running round1 and round2 only and is
+added when done. No local model runs the app battery.
+
+- **Open coding models with strong published scores fail at tool-less machine code.** Qwen3-Coder-Next, Qwen's
+  dedicated agentic coding model, passes 12/224 first try (5%), all on the stream path; 0/74 structured and 0/74
+  QBE. The older Qwen3-30B-A3B and Qwen2.5-14B do no better on the cells they ran (5% and 3%).
+- **Typical errors:** invalid QBE (missing result classes, invented operators, `@label:` with a colon); invented
+  mnemonics (`cdiv`, `srsl`) and `x31` as a register name; structured operands written `{"reg": "rdi"}`, which
+  the schema does not allow, and malformed JSON; ABI and runtime errors; and on the long battery, structured answers
+  of ~23 KB that run out the 400 s limit on every attempt (Qwen3-30B-A3B at ~50 tokens/s).
+- **False-reject review:** every failed attempt was replayed through the current pipeline. Qwen3-Coder-Next and
+  Qwen3-30B-A3B: none. Qwen2.5-14B: 6 stream attempts on AArch64 (3 cells) were stopped at a line keystone refused
+  but GNU as accepts (fixed since in c1c1df7f); the answers were cut off there, so they cannot be rescored. Its
+  first-attempt count could be at most one higher; details in the run's `ADJUSTMENTS.md`.
+
 ## Adversarial prompt variants
 
 | Model | baseline | misleading_hint | terse |
