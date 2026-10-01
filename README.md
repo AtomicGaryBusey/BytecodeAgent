@@ -85,7 +85,7 @@ its plan quota is spent.
 
 Still running (added when complete and reviewed): Kimi K2.8 (kimi-for-coding) and Gemini 3.8 Flash on Antigravity (quota-paced).
 Local open-weight models (Qwen3-Coder-Next, Qwen3-30B-A3B, Qwen2.5-14B, Qwen3.6 on this DGX Spark) score
-3-5% first try and are reported separately: [Local open-weight models](reports/live-model-eval-cross-vendor.md#local-open-weight-models-dgx-spark).
+3-8% first try and are reported separately: [Local open-weight models](reports/live-model-eval-cross-vendor.md#local-open-weight-models-dgx-spark).
 
 Raw assembly is easy for nearly
 every model; the QBE IR path separates them most. The Claude account is enrolled in Anthropic's Cyber
@@ -110,7 +110,7 @@ interpreter and a JSON validator, asm and stream paths, both ISAs, 3 samples, up
 | Claude Sonnet 5.5 | **84/96 (88%)** | 96/96 (100%) | 1.14 |
 | Microsoft MAI-Code 1.1 Flash (Copilot) | **23/96 (24%)** | 64/96 (67%) | 2.61 |
 
-Pending: Kimi K3 and the local models. The frontier models' most common first-attempt error is an AArch64
+Pending: Kimi K3 (local models do not run the app battery, by decision). The frontier models' most common first-attempt error is an AArch64
 `mov` of an immediate no single instruction can encode. Report, including the sandbox-escape fix and the
 asm/stream acceptance parity work: [`reports/live-model-eval-apps.md`](reports/live-model-eval-apps.md).
 

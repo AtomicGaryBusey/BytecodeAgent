@@ -126,23 +126,33 @@ These results say what such a desktop setup can do, not what the same models do 
 | Model | Round 1 (48) | Round 2 (62) | Long (54) | Adversarial (60) | Pass@1 | Within 4 | Mean attempts |
 |---|---|---|---|---|---|---|---|
 | Qwen3-Coder-Next Q4 (local) | 5 | 5 | 0 | 2 | **12/224 (5%)** | 31/224 (14%) | 3.73 |
+| Qwen3.6-35B-A3B Q8, thinking on (local) † | 4 | 5 | — | — | **9/110 (8%)** | 15/110 (14%) | 3.68 |
 | Qwen3-30B-A3B Instruct 2507 Q8 (local) † | 5 | 1 | 0/5 | — | **6/115 (5%)** | 13/115 (11%) | 3.75 |
+| Qwen3.6-35B-A3B Q8, thinking off (local) † | 1 | 3 | — | — | **4/110 (4%)** | 15/110 (14%) | 3.77 |
 | Qwen2.5-14B Q4 (local) † | 1 | 2 | 0/4 | — | **3/114 (3%)** | 5/114 (4%) | 3.89 |
 
 | Model | Stream | Structured | IR (QBE) |
 |---|---|---|---|
 | Qwen3-Coder-Next Q4 (local) | 12/76 (16%) | 0/74 (0%) | 0/74 (0%) |
+| Qwen3.6-35B-A3B Q8, thinking on (local) † | 5/38 (13%) | 4/36 (11%) | 0/36 (0%) |
 | Qwen3-30B-A3B Instruct 2507 Q8 (local) † | 5/40 (12%) | 1/38 (3%) | 0/37 (0%) |
+| Qwen3.6-35B-A3B Q8, thinking off (local) † | 3/38 (8%) | 1/36 (3%) | 0/36 (0%) |
 | Qwen2.5-14B Q4 (local) † | 2/40 (5%) | 1/38 (3%) | 0/36 (0%) |
 
 † partial, by decision (2026-10-01): local runs were trimmed to save days of GPU time once it was clear they score
 in single digits. Qwen3-Coder-Next ran all four batteries; Qwen3-30B-A3B and Qwen2.5-14B stopped early in the long
-battery (115 and 114 of 224 cells); Qwen3.6-35B-A3B (thinking off and on) is running round1 and round2 only and is
-added when done. No local model runs the app battery.
+battery (115 and 114 of 224 cells); Qwen3.6-35B-A3B ran round1 and round2 only (110 cells), once with thinking off
+and once with thinking on (`local:<model>@nothink` / `@think`, Ollama's `think` field). No local model runs the app
+battery.
 
 - **Open coding models with strong published scores fail at tool-less machine code.** Qwen3-Coder-Next, Qwen's
   dedicated agentic coding model, passes 12/224 first try (5%), all on the stream path; 0/74 structured and 0/74
   QBE. The older Qwen3-30B-A3B and Qwen2.5-14B do no better on the cells they ran (5% and 3%).
+- **Qwen3.6-35B-A3B, the newest Qwen MoE, is no better.** Thinking on: 9/110 first try (8%); thinking off:
+  4/110 (4%); both 15/110 within four attempts. With thinking on, 376 of its 405 attempts ran out the 180 s
+  function limit (374 before writing any answer text): at ~45 tokens/s it reasons for 12-14 K characters even on
+  round 1's easiest tasks. Thinking off never returned reasoning (the adapter fails closed if it does) and answers
+  in seconds, but wrongly: 144 QBE compile failures, 120 syntax and 42 format rejects, 43 wrong results.
 - **Typical errors:** invalid QBE (missing result classes, invented operators, `@label:` with a colon); invented
   mnemonics (`cdiv`, `srsl`) and `x31` as a register name; structured operands written `{"reg": "rdi"}`, which
   the schema does not allow, and malformed JSON; ABI and runtime errors; and on the long battery, structured answers
@@ -151,6 +161,13 @@ added when done. No local model runs the app battery.
   Qwen3-30B-A3B: none. Qwen2.5-14B: 6 stream attempts on AArch64 (3 cells) were stopped at a line keystone refused
   but GNU as accepts (fixed since in c1c1df7f); the answers were cut off there, so they cannot be rescored. Its
   first-attempt count could be at most one higher; details in the run's `ADJUSTMENTS.md`.
+  Qwen3.6-35B-A3B (both modes, 790 failed attempts): none; the one `crosscheck` reject (`lea r9, [r13 - r13]`) is
+  refused by GNU as too.
+- **Conclusion.** No open-weight model that runs on this desktop machine writes tool-less machine code usefully:
+  the best manage 5-8% first try and about 14% within four attempts, almost all of it on easy stream cells; no local model
+  passes a single QBE cell on the first try, and structured passes are a handful. Published agentic-coding scores
+  (Qwen3-Coder-Next, Qwen3.6) do not transfer to this task; the gap to the weakest frontier model here (Claude
+  Haiku 4.5, 52%) is an order of magnitude.
 
 ## Adversarial prompt variants
 
