@@ -55,8 +55,9 @@ samples passed on its first attempt.
 | Claude Sonnet 5.5 | **84/96 (88%)** | 96/96 (100%) | 1.14 | 29/32 | 28/32 | 27/32 | 32/32 |
 | Microsoft MAI-Code 1.1 Flash (Copilot) | **23/96 (24%)** | 64/96 (67%) | 2.61 | 6/32 | 7/32 | 10/32 | 15/32 |
 
-Pending: **Kimi K3** (Kimi's 7-day plan window reopens 2026-10-03) and the local models (Qwen3-30B-A3B,
-Qwen2.5-14B; app runs follow their function runs on the DGX Spark).
+Pending: **Kimi K3** (Kimi's 7-day plan window reopens 2026-10-03). The local open-weight models do not run
+the app battery (decision 2026-10-01: at 3-8% first-attempt on the function batteries, days of 900 s app attempts
+would not change the picture; see the local section of the cross-vendor report).
 
 ### Per task (first-attempt passes, 12 cells each)
 

@@ -122,7 +122,7 @@ these tools on `PATH`: `qbe`, `clang` and/or `tcc`, `x86_64-linux-gnu-as` and `a
 
 ```sh
 python3 -m venv .venv && .venv/bin/pip install keystone-engine unicorn iced-x86 capstone wasmtime pytest
-.venv/bin/python -m pytest -q          # ~1900 tests, no network or model calls
+.venv/bin/python -m pytest -q          # ~2000 tests, no network or model calls
 ```
 
 The live eval additionally needs each vendor's CLI installed and logged in (`claude`, `codex`, `kimi`,

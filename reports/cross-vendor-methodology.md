@@ -17,11 +17,11 @@ keys, and no second account for any vendor.
 | Vendor / CLI | Plan | Safety program | Limits seen in these runs |
 |---|---|---|---|
 | Anthropic / Claude Code | **Claude Max 20x** | Cyber Verification Program (relaxed cyber safeguards) | none hit |
-| OpenAI / Codex CLI | **ChatGPT Plus** | Daybreak, Blue tier (no Red / `*-cyber` models) | none hit (per-model 5-hour allowances, e.g. GPT-6 Astra ~5-45 calls) |
-| Moonshot / Kimi Code | **Kimi Allegretto** | none known | a 5-hour window (~125-160 calls) and a 7-day window on Code usage; monthly credits |
+| OpenAI / Codex CLI | **ChatGPT Plus** | Daybreak, Blue tier (no Red / `*-cyber` models) | the 5-hour window, once (Astra's app battery); weekly not reached |
+| Moonshot / Kimi Code | **Kimi Allegretto** | none known | a 5-hour window (~125-160 calls) and a 7-day window on Code usage (reached 100% 2026-09-29); monthly credits |
 | Google / Antigravity | **Google AI Plus (2 TB)** | none known | ~75 calls per week, per account (not per model) |
-| xAI / Grok Build | **SuperGrok** | none known | none hit |
-| GitHub / Copilot CLI | **GitHub Copilot Pro** (1,500 AI credits a month, billed per token) | none known | none hit |
+| xAI / Grok Build | **SuperGrok** | none known | weekly included usage ~70% at most (app calls cost ~0.4% each); not exceeded, no paid credits used |
+| GitHub / Copilot CLI | **GitHub Copilot Pro** (1,500 AI credits a month, billed per token) | none known | the September credits, spent 2026-09-30 (overage off; resumed after the monthly reset) |
 
 Plan tier matters: it decides which models are available (e.g. Kimi's high-speed model needs a higher tier)
 and how quickly a full battery can run, and the safety programs change refusal behaviour. Results describe
@@ -104,6 +104,25 @@ models do at full precision on a provider's servers.
   comparison against the same model on its own vendor's CLI, not a new model. MAI-Code (`mai-code-1.1-flash`,
   Microsoft) is the one model only Copilot serves. On Copilot Pro, Opus, Fable, GPT-6 Astra / Sol and GPT-5.5
   are not selectable (Pro+ and up).
+- Copilot's runtime does things the other CLIs do not, each handled so that one attempt stays one model call
+  with nothing injected:
+  - With the Responses API (GPT models) the model's encrypted reasoning arrives as a separate, empty
+    `assistant.message` beside the answer, in the same call; it is recognised and neither scored nor counted.
+    The reasoning itself is authenticated ciphertext under a provider-held key and cannot be read (examined
+    locally only; replaying it to the model to recover the reasoning was deliberately not attempted).
+  - After a broken stream or a failed model call (`model.turn_retry`, `model.call_failure`,
+    `model.model_call_failure`) the runtime would call the model again; the attempt is voided at once as a
+    transient error and the runner retries the cell.
+  - At its 32,000-token output cap the runtime would nudge the model into a continuation
+    (`model.telemetry` `model_turn_continuation`); the call is stopped there and the text written within the
+    cap is scored as it stands, as `claude -p` scores a max-token answer: no continuation and no do-over. Any
+    other telemetry event still fails closed.
+- The front end matters as much as the model: with byte-identical prompts, no tools and the same served
+  effort, GPT-6 Luna scores 58% through Codex and 79% through Copilot (Copilot's route reasoned 2.7x more), and
+  Claude Sonnet 5.5 90% through `claude -p` but 76% through Copilot (more prose plans before the code and stray
+  tool-call markup). Both are each CLI's own defaults; an effort label does not carry across front ends.
+- Local models share one GPU and their calls are serialised; a cell's time limit counts only the model's own
+  time, but the recorded wall time includes the wait for the server, so local latencies are not comparable.
 
 ## Plan quotas and interruptions
 
@@ -126,6 +145,16 @@ only, and the others keep running; the same command resumes it later. Seen so fa
   the runs. Each result records its CLI version, and the no-fallback setting was re-verified on 2.1.285.
 - **Grok:** xAI prompt caching covers shared prompt text in 256-token blocks beyond its 1152-token server
   prefix, so the adapter bounds total input tokens rather than the cached part.
+- **ChatGPT Plus 5-hour window:** the app battery's whole-program calls exhausted it after 12 Astra cells; the
+  run waited for the window (the CLI's own "try again at" time) and finished in one go afterwards.
+- **GitHub Copilot Pro credits** (1,500 token-based AI credits a month, overage off): spent on 2026-09-30 at
+  203/224 cells of Sonnet 5.5 via Copilot (HTTP 402 on every call; never billed); the run finished after the
+  monthly reset. Anthropic models cost about twice what GPT-6 Luna did per call through Copilot.
+- **Kimi Allegretto 7-day window:** reached 100% on 2026-09-29 (all of it this eval); the last Kimi K2.8 cell
+  and Kimi K3's app battery wait for it to reopen (2026-10-03 15:02 PDT).
+- **Antigravity and the call cap:** quota refusals count as calls, and the run directory's `--max-calls` cap is
+  shared by every subject in it; days of refused retries used it up. The resume loop now retries hourly under a
+  higher cap. A refused call costs nothing.
 
 ## Changes to the harness that touch the committed Claude runs
 
@@ -134,6 +163,17 @@ Two repair-prompt details changed for new runs: after an early abort the `<previ
 rejected line (it used to include up to ~18 characters of the next line), and after a timeout it is
 empty (it used to show the partial text). About 28 of the committed repair prompts would be built
 differently under the new rules; only attempts 2+ are affected.
+
+Assembler and encoder fixes made during the cross-vendor and app runs, each so a path accepts exactly what
+GNU as (and the prompt) accept; every recorded answer was replayed after each one:
+
+| Change | What it fixed | Effect on committed results |
+|---|---|---|
+| 95dcdb0 | stream: labels named like AArch64 keywords or registers (`lt`, `x0`, ...) that GNU as accepts | one app cell re-run (Sonnet 5.5) |
+| c7df64d | asm path (apps): the prompt's placement and constant rules, as the stream path enforces them | one app cell re-run (Opus 5.5) |
+| c1c1df7f | stream: keystone refuses a line GNU as accepts (e.g. `mov x17, x20, lsl #3`) -> GNU as's bytes | GPT-6 Luna via Copilot +1 (ADJ); 3 Qwen2.5 cells cut off, not rescorable (documented) |
+| 79a275c1 | stream: `.end`, `.arch`/`.cpu` within the prompt's ISA level (both paths), GNU's one-quote `'c` | two MAI-Code app cells re-run |
+| d7df9dda | structured x86-64: a label named like a register is refused where it is defined (the prompt forbids it; GNU as rejects the jump) | none (the affected attempts had failed genuinely) |
 
 Fable 5.1: Claude Code used to re-run a refused call on claude-opus-4-8 silently. The fallback is now
 off, a refusal is scored, and on real task prompts Fable answers as itself.

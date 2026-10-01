@@ -108,7 +108,7 @@ output-cap do-over counted as the failure it would be now; see the false-reject 
   Luna via Codex. Raw assembly is its strength (stream 78%); QBE is almost entirely beyond it (4/74: 261 compile
   failures, mostly `%x = copy 0` without a result class, and invented opcodes such as `addl`), and its structured
   answers are often malformed JSON. On the app battery (whole programs) it managed 23/96 first attempt and 64/96
-  within four (pending the re-run of two cells after a stream fix): the only model tested so far that does not
+  within four (two cells re-run after a stream fix; the totals did not change): the only model tested so far that does not
   eventually write every program.
 - **Fable 5.1's** one final failure is a refusal: Anthropic's cyber classifier blocked
   `fill_down.ir.x86_64` on all four attempts, even on the CVP account.
