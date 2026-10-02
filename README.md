@@ -88,6 +88,10 @@ its plan quota is spent.
 Still running (added when complete and reviewed): Kimi K2.8 (kimi-for-coding) and Gemini 3.8 Flash on Antigravity (quota-paced).
 Local open-weight models (Qwen3-Coder-Next, Qwen3-30B-A3B, Qwen2.5-14B, Qwen3.6 on this DGX Spark) score
 3-8% first try and are reported separately: [Local open-weight models](reports/live-model-eval-cross-vendor.md#local-open-weight-models-dgx-spark).
+An opt-in `assisted` variant (notes on AArch64 constants, x86 addressing, a QBE cheat sheet, structured
+examples, and explained failures; same rules and checks) lifts weaker models a lot on rounds 1 + 2: Haiku 4.5
+58% to 89%, MAI-Code 55% to 89%, GPT-6 Luna 67% to 80%, Qwen3-Coder-Next 9% to 24%, almost all of it on QBE.
+Baseline stays the headline: [`reports/live-model-eval-assisted.md`](reports/live-model-eval-assisted.md).
 
 Raw assembly is easy for nearly
 every model; the QBE IR path separates them most. The Claude account is enrolled in Anthropic's Cyber
