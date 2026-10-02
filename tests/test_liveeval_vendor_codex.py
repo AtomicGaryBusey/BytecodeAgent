@@ -355,6 +355,32 @@ def test_audited_version_only(tmp_path, codex_home):
     assert runner.infra_kind(r.error) == "fatal" and not (tmp_path / "seen.json").exists()
 
 
+REC_0160 = json.loads((Path(__file__).parent / "fixtures" / "codex" / "exec-0.160.0.json").read_text())
+
+
+@pytest.mark.parametrize("version,ok", [("0.157.1", True), ("0.160.0", True), ("0.161.0", False)])
+def test_audited_versions(tmp_path, codex_home, version, ok):
+    r = subject(tmp_path, codex_home, version=version).complete("p")
+    assert r.ok is ok
+    if not ok:
+        assert r.error.startswith(f"isolation: codex CLI {version} is not an audited version")
+
+
+def test_recorded_0160_exec_stream_is_a_clean_answer(tmp_path, codex_home):
+    # gpt-6-luna on codex 0.160.0, recorded live (websocket transport): the event types are the audited set
+    r = subject(tmp_path, codex_home, events=REC_0160["events"], version="0.160.0").complete(REC_0160["prompt"])
+    assert r.ok and r.text == "OK" and not r.error
+    assert r.usage["input_tokens"] == 48 and r.usage["input_tokens"] <= codex_input_bound(REC_0160["prompt"])
+    assert r.model == "gpt-6-luna" and r.model_source == "requested"
+
+
+@pytest.mark.parametrize("model", ["gpt-6-luna", "gpt-6-astra"])
+def test_recorded_0160_catalog_fields_are_all_audited(model):
+    from bca.liveeval.vendor_codex import CATALOG_AUDITED
+
+    assert set(REC_0160["catalog_fields"][model]) <= CATALOG_AUDITED
+
+
 # -- the request size guard (no tool list reached the model) ----------------------------------------
 
 

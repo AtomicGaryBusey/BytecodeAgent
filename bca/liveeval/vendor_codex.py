@@ -13,6 +13,16 @@ Responses request recorded through a local `openai_base_url` relay):
   echoes `"tools": []`), SYSTEM_PROMPT as the only developer message and the prompt as the only user
   message (58 input tokens for a one-line prompt, down from ~4,000).
 
+Re-audited on codex 0.160.0 (2026-10-01, same recorder; gpt-6-luna and gpt-6-astra): with the switches the
+request is unchanged in substance -- `additional_tools: []`, the server echoes `"tools": []`, SYSTEM_PROMPT as
+the only developer message, the prompt as the only user message, 48 input tokens for a one-line prompt. New
+request fields `client_metadata` (turn bookkeeping: installation/session/turn ids, sandbox mode, also sent as
+the `x-codex-turn-metadata` header) and `prompt_cache_key` (the session id) are not model input. Without the
+switches 0.160.0 sends 11 tools (code mode exec/wait, request_user_input and its async form, clock.sleep, six
+collaboration.* agent tools), the ~18 KB vendor base prompt and ~10 KB of injected developer/user text. The
+exec event types, catalog fields (every field served for both models is in CATALOG_AUDITED) and auth.json
+format and refresh constants are unchanged.
+
 The model's catalog entry is taken from the CLI itself (`codex debug models`: the live catalog the
 CLI would use), stripped of every tool-bearing field and passed back as an authoritative
 `model_catalog_json`, so reasoning effort, verbosity, service tier and wire format stay the CLI's own
@@ -177,7 +187,7 @@ class CodexSubject(CliSubject):
     _bundled: dict | None = None
     binary_name = "codex"
     efforts = ("low", "medium", "high", "xhigh", "max", "ultra")  # models_cache.json; luna has no ultra
-    audited_versions = ("0.157.1",)
+    audited_versions = ("0.157.1", "0.160.0")
     streams_text = False
     home_files = ("auth.json",)
     home_required = ("auth.json",)
