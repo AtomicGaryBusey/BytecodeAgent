@@ -84,6 +84,27 @@ results (— where that model did not run the app battery):
 | Codex GPT-6 Luna | **0/16** | 0/16 | — | — |
 | Claude Sonnet 5.5 via Copilot | **0/16** | 4/16 | — | — |
 
+Those first-attempt scores mix two different things for two rows: safety blocks and wrong programs. Split
+apart (first attempts only, except the last column):
+
+| Model | First attempts | Passed | Refused | Genuine failures | Pass rate among answered | Refused attempts (all rounds) |
+|---|---|---|---|---|---|---|
+| Claude Opus 5.5 | 16 | 7 | 9 | 0 | 7/7 (100%) | 22 of 34 |
+| Codex GPT-6 Astra | 16 | 15 | 0 | 1 | 15/16 (94%) | 0 of 17 |
+| Claude Opus 4.8 | 16 | 15 | 0 | 1 | 15/16 (94%) | 0 of 17 |
+| Claude Sonnet 5.5 | 16 | 13 | 1 | 2 | 13/15 (87%) | 3 of 23 |
+| Claude Fable 5.1 | 16 | 12 | 0 | 4 | 12/16 (75%) | 0 of 20 |
+| Codex GPT-6 Sol | 16 | 6 | 0 | 10 | 6/16 (38%) | 0 of 33 |
+| Codex GPT-5.5 | 16 | 3 | 0 | 13 | 3/16 (19%) | 0 of 37 |
+| Codex Daybreak Blue | 16 | 2 | 0 | 14 | 2/16 (12%) | 0 of 42 |
+| GPT-6 Luna via Copilot | 16 | 2 | 0 | 14 | 2/16 (12%) | 0 of 52 |
+| Claude Sonnet 4.5 | 16 | 0 | 0 | 16 | 0/16 (0%) | 0 of 57 |
+| Codex GPT-6 Luna | 16 | 0 | 0 | 16 | 0/16 (0%) | 0 of 64 |
+| Claude Sonnet 5.5 via Copilot | 16 | 0 | 14 | 2 | 0/2 (0%) | 52 of 58 |
+
+Read Claude Opus 5.5's 7/16 and Claude Sonnet 5.5 via Copilot's 0/16 as what each front end's safety filter
+let through, not as ability: every first attempt Opus 5.5 was allowed to answer passed.
+
 ## Findings
 
 - **Writing raw machine code is within reach of the frontier models.** On functions, Opus 5.5 was perfect
@@ -111,6 +132,15 @@ results (— where that model did not run the app battery):
     to answer passed (7/7). The same programs written as assembly were not blocked.
   - GitHub Copilot's content filter blocked **every** first attempt of Claude Sonnet 5.5 through Copilot
     (52 attempts in all, finish reason `content_filter`, no content returned).
+  - **Where the blocks come from.** Opus 5.5 and Sonnet 5.5 ran through `claude -p` on the user's own Claude
+    Max 20x subscription (enrolled in Anthropic's Cyber Verification Program): the API ended the stream mid-
+    answer with `stop_reason: refusal`, `category: cyber`, after part of the hex program had streamed (the
+    harness discards that partial text). x86-64 was refused far more than AArch64 (Opus 5.5: 18 of 22
+    x86-64 attempts, 4 of 12 AArch64), consistent with x86 machine code that makes its own system calls
+    looking most like shellcode. The current generation refuses where the older Opus 4.8 and Sonnet 4.5 and
+    the cyber-oriented Fable 5.1 do not. The Copilot blocks are a different mechanism: GitHub's own content
+    filter on its route (both ISAs alike: 27 of 30 x86-64, 25 of 28 AArch64), to which the user's CVP
+    enrolment does not apply.
   Under the fairness contract a safety block is a scored refusal, as for Fable's refusals on the function
   batteries; these rows measure what each front end lets through, not only what the model can write. Raw
   machine code with system calls and no symbols plausibly resembles shellcode to such classifiers.
