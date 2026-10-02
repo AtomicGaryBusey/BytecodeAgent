@@ -1,0 +1,143 @@
+Write the complete program `json_lint`: a static Linux executable for x86-64 (AMD64), written directly as machine code. There is no assembler, no linker, no C library, no C runtime and no helper code: you write every instruction, every table and string, and make the system calls yourself.
+
+Entry state (as the Linux kernel sets it up): execution starts at the first byte of your code, address 0x400000. rsp is 16-byte aligned and points at argc = 0, followed by the NULL terminators of an empty argv, an empty envp and an empty auxiliary vector: the program gets no arguments. Every other general-purpose register is zero, and the direction flag is clear. There is no return address: the program ends only through the exit system call.
+
+System calls: the `syscall` instruction, with the system call number in rax and the arguments in rdi, rsi, rdx; the result comes back in rax. The kernel overwrites rcx and r11; every other register is preserved. Exactly these four are available:
+- read = 0: read(fd = 0, buf, count) reads up to count bytes of standard input into buf; returns the number of bytes read, 0 at end of input.
+- write = 1: write(fd, buf, count) with fd 1 (standard output) or 2 (standard error); returns count.
+- exit = 60: exit(status) ends the program; the exit status is the low 8 bits of status.
+- exit_group = 231: the same as exit.
+Any other system call number, another file descriptor, `int 0x80` or `sysenter` stops the program with an error, and so does a buffer that is not entirely inside the program's memory.
+
+Memory: the code, data and zero-initialised areas below, plus a stack of 1 MiB below the entry sp. There is no heap (no brk, no mmap, no malloc). Code is not writable. Any access outside these areas stops the program. Each test run may execute at most 50,000,000 instructions.
+
+Output format: the whole program as raw machine code and data bytes, which you encode yourself: there is no assembler, no linker and no encoder, and your bytes are loaded exactly as you write them. The memory layout is fixed:
+- code (read and execute): your instruction lines, from address 0x400000; the entry point is the first instruction; at most 1 MiB.
+- data (read and write): the data bytes you give, from address 0x500000, at most 1 MiB; your strings and tables go here, at offsets you choose and keep track of (the byte you write at position k of the data section is at address 0x500000 + k).
+- a zero-initialised work area (read and write) of 1 MiB from address 0x600000.
+- the stack (above).
+Write a line `.text` followed by the instruction lines, then optionally a line `.data` followed by the data lines. These two markers are the only directives: no labels, no symbols, no other directive, so every address and offset is a number you compute.
+Instructions: one per line as its bytes in memory order, each byte as two hex digits separated by spaces, e.g. `48 01 f0` is `add rax, rsi` and `0f 05` is `syscall`. The lines are placed one after another starting at 0x400000. Every relative branch or call displacement (jmp, jcc, call rel8/rel32) and every rip-relative disp32 is the signed distance from the end of that instruction (the address of the next one) to the target, little-endian, which you compute. Because the addresses below are fixed and below 2^31, absolute forms also work (e.g. `be 00 00 50 00` is `mov esi, 0x500000`, and a `[disp32 + reg]` memory operand with no base register addresses a table directly).
+Data: bytes in memory order as pairs of hex digits, separated by spaces or not, any number per line (e.g. `68 65 6c 6c 6f 0a` or `68656c6c6f0a` is "hello\n").
+You may end any line with a comment starting with `//` or `;` (e.g. `d4000001 // svc #0`); comments and blank lines are ignored.
+Instruction set: x86-64 with SSE up to SSE4.2 (including SSSE3, SSE4.1 and crc32), POPCNT, LZCNT, BMI1/BMI2 (andn, bextr, blsi, blsr, tzcnt, bzhi, mulx, pdep, pext, rorx, sarx, shlx, shrx), MOVBE, AES-NI and PCLMULQDQ. Not supported (rejected): AVX, AVX2, AVX-512, FMA, F16C and every other VEX/EVEX vector instruction, ADX (adcx/adox; use adc) and SHA.
+Output ONLY the program text: no Markdown fences, no prose before or after it.
+
+Specification: Task `json_lint`: check that standard input is exactly one valid JSON document (RFC 8259 grammar) and report
+the byte offset of the first error.
+
+Grammar (byte-level):
+- document = ws value ws, and nothing else. ws = any number of the bytes space 0x20, tab 0x09, newline 0x0A,
+  carriage return 0x0D (only these four).
+- value = object | array | string | number | `true` | `false` | `null` (lowercase only).
+- object = `{` ws `}`, or `{` ws member (ws `,` ws member)* ws `}`, where member = string ws `:` ws value.
+  array = `[` ws `]`, or `[` ws value (ws `,` ws value)* ws `]`. No trailing commas.
+- string = `"` chars `"`. A char is any byte 0x20-0xFF except `"` (0x22) and `\` (0x5C) (bytes >= 0x80 are
+  accepted as they are; no UTF-8 validation), or an escape: `\` followed by one of `"` `\` `/` `b` `f` `n` `r`
+  `t`, or `\u` followed by exactly 4 hex digits (`0-9a-fA-F`; any code unit, surrogates are not checked).
+  Bytes 0x00-0x1F inside a string are errors.
+- number = `-`? int frac? exp?, where int = `0` | a digit `1`-`9` followed by any digits; frac = `.` and one or
+  more digits; exp = `e` or `E`, an optional `+` or `-`, and one or more digits. (So `01`, `+1`, `.5`, `1.`,
+  `1e`, `-` are not valid numbers.)
+
+Output: if the input is valid, print `ok\n` and exit with status 0. Otherwise print `error at N\n` (N in
+decimal, no padding) and exit with status 1, where N is the 0-based offset of the first byte at which the input
+stops being the beginning of some valid document: the first byte that no valid document could have at that
+position given all the bytes before it. If every byte of the input is such a valid beginning but the document is
+incomplete (this includes empty and whitespace-only input), N is the length of the input.
+
+Examples: `[1, 2]` ok; empty input `error at 0`; `[1,]` `error at 3`; `{"a" 1}` `error at 5`; `01` `error at 1`;
+`tru` `error at 3`; `trux` `error at 3`; `[1] x` `error at 4`; `"a<TAB>b"` (a raw tab byte) `error at 2`;
+`-` `error at 1`; `1.e5` `error at 2`.
+
+Limits: the input is at most 65536 bytes; arrays and objects are nested at most 1000 deep. These limits
+describe the inputs you will be given; you do not need to detect or report inputs that exceed them.
+
+Input and output (applies to this whole task):
+- The input is the complete contents of standard input (file descriptor 0). Read it with `read` until `read`
+  returns 0 (end of input). A `read` may return FEWER bytes than requested, at any position (in the middle of a
+  line, a token or a group of bytes), so keep calling it; only a return value of 0 means end of input.
+- Write the output to standard output (file descriptor 1). Only the bytes this task describes may appear on
+  standard output (standard error is ignored). Every output byte must be written before the program exits.
+- Finish with `exit` (or `exit_group`) and the exit status this task gives. The program must not run off the end
+  of its code or crash.
+
+Your previous attempt was:
+<previous>
+.text
+45 31 e4
+b8 00 00 00 00
+31 ff
+be 00 00 60 00
+4c 01 e6
+ba 00 00 01 00
+4c 29 e2
+0f 05
+48 85 c0
+74 0a
+49 01 c4
+e9 e6 ff ff ff
+45 85 e4
+74 1a
+b8 01 00 00 00
+bf 01 00 00 00
+be 00 00 50 00
+ba 03 00 00 00
+0f 05
+b8 3c 00 00 00
+31 ff
+0f 05
+b8 01 00 00 00
+bf 01 00 00 00
+be 03 00 50 00
+ba 0b 00 00 00
+0f 05
+b8 3c 00 00 00
+bf 01 00 00 00
+0f 05
+.data
+6f 6b 0a 65 72 72 6f 72 20 61 74 20 30 0a
+</previous>
+It failed:
+<failure>
+Test `empty` failed (stdin delivered whole; test run 1 of 80; the runs before it passed).
+stdin (0 bytes): ""
+The program stopped with a fault (oob): 1-byte read of unmapped memory at 0x1, pc=0x40002d at pc 0x40002d [the faulting instruction is line 15: `74 1a`]
+exit status: expected 1, got none (the program did not exit)
+stdout differs from byte 0 on (line 1, column 1 of the expected output); expected 11 bytes in total, got 0
+  expected from byte 0: "error at 0\n"
+  actual from byte 0:   (end of output)
+
+Your machine code, as written, decodes as (address, your line, the hex, the disassembly; the entry point is the first line):
+  0x400000 line    2: 45 31 e4                 xor r12d, r12d
+  0x400003 line    3: b8 00 00 00 00           mov eax, 0
+  0x400008 line    4: 31 ff                    xor edi, edi
+  0x40000a line    5: be 00 00 60 00           mov esi, 0x600000
+  0x40000f line    6: 4c 01 e6                 add rsi, r12
+  0x400012 line    7: ba 00 00 01 00           mov edx, 0x10000
+  0x400017 line    8: 4c 29 e2                 sub rdx, r12
+  0x40001a line    9: 0f 05                    syscall
+  0x40001c line   10: 48 85 c0                 test rax, rax
+  0x40001f line   11: 74 0a                    je 0x40002b
+  0x400021 line   12: 49 01 c4                 add r12, rax
+  0x400024 line   13: e9 e6 ff ff ff           jmp 0x40000f
+  0x400029 line   14: 45 85 e4                 test r12d, r12d
+  0x40002c line   15: 74 1a                    je 0x400048
+  0x40002e line   16: b8 01 00 00 00           mov eax, 1
+  0x400033 line   17: bf 01 00 00 00           mov edi, 1
+  0x400038 line   18: be 00 00 50 00           mov esi, 0x500000
+  0x40003d line   19: ba 03 00 00 00           mov edx, 3
+  0x400042 line   20: 0f 05                    syscall
+  0x400044 line   21: b8 3c 00 00 00           mov eax, 0x3c
+  0x400049 line   22: 31 ff                    xor edi, edi
+  0x40004b line   23: 0f 05                    syscall
+  0x40004d line   24: b8 01 00 00 00           mov eax, 1
+  0x400052 line   25: bf 01 00 00 00           mov edi, 1
+  0x400057 line   26: be 03 00 50 00           mov esi, 0x500003
+  0x40005c line   27: ba 0b 00 00 00           mov edx, 0xb
+  0x400061 line   28: 0f 05                    syscall
+  0x400063 line   29: b8 3c 00 00 00           mov eax, 0x3c
+  0x400068 line   30: bf 01 00 00 00           mov edi, 1
+  0x40006d line   31: 0f 05                    syscall
+</failure>
+Write a corrected, complete version. Same output format; output only the program text.

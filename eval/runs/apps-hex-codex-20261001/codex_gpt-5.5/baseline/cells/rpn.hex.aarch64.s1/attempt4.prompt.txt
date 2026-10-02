@@ -1,0 +1,236 @@
+Write the complete program `rpn`: a static Linux executable for AArch64 (ARMv8-A, little-endian), written directly as machine code. There is no assembler, no linker, no C library, no C runtime and no helper code: you write every instruction, every table and string, and make the system calls yourself.
+
+Entry state (as the Linux kernel sets it up): execution starts at the first instruction of your code, address 0x400000. sp is 16-byte aligned and points at argc = 0, followed by the NULL terminators of an empty argv, an empty envp and an empty auxiliary vector: the program gets no arguments. Every other general-purpose register (x0-x30) is zero; x30 is not a return address; the program ends only through the exit system call.
+
+System calls: the `svc #0` instruction, with the system call number in x8 and the arguments in x0, x1, x2; the result comes back in x0. Every other register is preserved. Exactly these four are available:
+- read = 63: read(fd = 0, buf, count) reads up to count bytes of standard input into buf; returns the number of bytes read, 0 at end of input.
+- write = 64: write(fd, buf, count) with fd 1 (standard output) or 2 (standard error); returns count.
+- exit = 93: exit(status) ends the program; the exit status is the low 8 bits of status.
+- exit_group = 94: the same as exit.
+Any other system call number or file descriptor stops the program with an error, and so does a buffer that is not entirely inside the program's memory.
+
+Memory: the code, data and zero-initialised areas below, plus a stack of 1 MiB below the entry sp. There is no heap (no brk, no mmap, no malloc). Code is not writable. Any access outside these areas stops the program. Each test run may execute at most 50,000,000 instructions.
+
+Output format: the whole program as raw machine code and data bytes, which you encode yourself: there is no assembler, no linker and no encoder, and your bytes are loaded exactly as you write them. The memory layout is fixed:
+- code (read and execute): your instruction lines, from address 0x400000; the entry point is the first instruction; at most 1 MiB.
+- data (read and write): the data bytes you give, from address 0x500000, at most 1 MiB; your strings and tables go here, at offsets you choose and keep track of (the byte you write at position k of the data section is at address 0x500000 + k).
+- a zero-initialised work area (read and write) of 1 MiB from address 0x600000.
+- the stack (above).
+Write a line `.text` followed by the instruction lines, then optionally a line `.data` followed by the data lines. These two markers are the only directives: no labels, no symbols, no other directive, so every address and offset is a number you compute.
+Instructions: one per line as its 32-bit instruction word in hexadecimal, exactly 8 hex digits (an optional 0x prefix is allowed), e.g. `8b010000` is `add x0, x0, x1` and `d4000001` is `svc #0`. The words are stored little-endian one after another: the first instruction line is at 0x400000, the next at 0x400004, and so on. Every branch and PC-relative field (b, b.cond, bl, cbz, cbnz, tbz, tbnz, adr, adrp) holds an offset from the address of that instruction itself, encoded as the architecture specifies (b/bl/b.cond/cbz/tbz: byte offset / 4; adr: byte offset; adrp: (target page - this instruction's page) / 4096, pages being addresses with the low 12 bits cleared), which you compute. Because the addresses below are fixed, you can also build an address with movz/movk (e.g. `d2a00a01` is `movz x1, #0x50, lsl #16`, i.e. x1 = 0x500000).
+Data: bytes in memory order as pairs of hex digits, separated by spaces or not, any number per line (e.g. `68 65 6c 6c 6f 0a` or `68656c6c6f0a` is "hello\n").
+You may end any line with a comment starting with `//` or `;` (e.g. `d4000001 // svc #0`); comments and blank lines are ignored.
+Instruction set: ARMv8.0-A with floating point and Advanced SIMD (NEON). Not supported (rejected): CRC32, LSE atomics, dot product, half-precision, crypto (AES/SHA/PMULL) and SVE.
+Output ONLY the program text: no Markdown fences, no prose before or after it.
+
+Specification: Task `rpn`: evaluate one Reverse Polish Notation expression per input line and print one result line per input
+line.
+
+Lines: a line is a (possibly empty) sequence of bytes terminated by a newline 0x0A; if the input does not end
+with a newline, the bytes after the last newline form one more, final line. Empty input has no lines (prints
+nothing), and the empty remainder after a final newline is not a line.
+
+Tokens: the separators are space 0x20 and tab 0x09 only; a token is a maximal run of other bytes. Any number of
+separators may appear before, between and after tokens. A token is exactly one of:
+- an integer literal: an optional `-` followed by 1 to 18 decimal digits `0`-`9` (leading zeros allowed, `-0`
+  is 0). A literal with 19 or more digits is invalid;
+- an operator: exactly one of `+` `-` `*` `/` `%` (a lone `-` is the subtraction operator);
+- anything else (for example `1a`, `+5`, `--3`, `1.5`, `x`, or a token containing 0x0D or any other byte) is
+  invalid.
+
+Evaluation uses a stack of signed 64-bit integers, empty at the start of each line. Process tokens left to right:
+a literal is pushed; an operator pops b (top) then a, and pushes `a op b`. `+`, `-`, `*` wrap modulo 2^64 (two's
+complement). `/` is division truncated toward zero; `%` is the remainder with the sign of a (a == (a/b)*b +
+a%b), as in C. A line is an ERROR if: it contains an invalid token; an operator finds fewer than two values on
+the stack; `/` or `%` has b == 0; `/` or `%` has a == -9223372036854775808 and b == -1; or, after the last token,
+the stack does not hold exactly one value (this includes a line with no tokens, e.g. an empty line).
+
+Output per line: if it is not an error, the single remaining value in decimal (a `-` sign if negative, no `+`,
+no leading zeros; -9223372036854775808 must print correctly) followed by a newline; if it is an error, exactly
+`error\n`. After an error the rest of that line is ignored and evaluation continues with the next line.
+
+Example: input `3 4 +\n-7 2 /\n1 +\n\n5 1 2 + 4 * + 3 -` prints `7\n-3\nerror\nerror\n14\n`.
+
+Limits: the input is at most 65536 bytes; a line is at most 1000 bytes. Exit status 0.
+
+Input and output (applies to this whole task):
+- The input is the complete contents of standard input (file descriptor 0). Read it with `read` until `read`
+  returns 0 (end of input). A `read` may return FEWER bytes than requested, at any position (in the middle of a
+  line, a token or a group of bytes), so keep calling it; only a return value of 0 means end of input.
+- Write the output to standard output (file descriptor 1). Only the bytes this task describes may appear on
+  standard output (standard error is ignored). Every output byte must be written before the program exits.
+- Finish with `exit` (or `exit_group`) and the exit status this task gives. The program must not run off the end
+  of its code or crash.
+
+Your previous attempt was:
+<previous>
+.text
+d2a00c13
+d2800014
+d2a00022
+cb140042
+b4000102
+d2800000
+8b140261
+d28007e8
+d4000001
+b4000060
+8b000294
+17fffff7
+aa1303f5
+aa1403f6
+aa1503f8
+d2800019
+b4000476
+394002a0
+910006b5
+d10006d6
+7100281f
+54000060
+91000739
+17fffff9
+f100073f
+54000241
+39400300
+7100c01f
+540001eb
+7100e41f
+540001ac
+d2a00a01
+39001820
+d2800140
+39001c20
+d2800020
+91001821
+d2800042
+d2800808
+d4000001
+aa1503f8
+d2800019
+17ffffe6
+d2800020
+d2a00a01
+d28000c2
+d2800808
+d4000001
+aa1503f8
+d2800019
+17ffffde
+b40002f9
+f100073f
+54000201
+39400300
+7100c01f
+540001ab
+7100e41f
+5400016c
+d2a00a01
+39001820
+d2800140
+39001c20
+d2800020
+91001821
+d2800042
+d2800808
+d4000001
+14000006
+d2800020
+d2a00a01
+d28000c2
+d2800808
+d4000001
+d2800000
+d2800ba8
+d4000001
+.data
+65 72 72 6f 72 0a 00 00
+</previous>
+It failed:
+<failure>
+Test `example` failed (stdin delivered whole; test run 4 of 46; the runs before it passed).
+stdin (35 bytes): "3 4 +\n-7 2 /\n1 +\n\n5 1 2 + 4 * + 3 -"
+exit status: expected 0, got 0
+stdout differs from byte 0 on (line 1, column 1 of the expected output); expected 20 bytes in total, got 30
+  expected from byte 0: "7\n-3\nerror\nerror\n14\n"
+  actual from byte 0:   "error\nerror\nerror\nerror\nerror\n"
+
+Your machine code, as written, decodes as (address, your line, the hex, the disassembly; the entry point is the first line):
+  0x400000 line    2: d2a00c13                 mov x19, #0x600000
+  0x400004 line    3: d2800014                 mov x20, #0
+  0x400008 line    4: d2a00022                 mov x2, #0x10000
+  0x40000c line    5: cb140042                 sub x2, x2, x20
+  0x400010 line    6: b4000102                 cbz x2, #0x400030
+  0x400014 line    7: d2800000                 mov x0, #0
+  0x400018 line    8: 8b140261                 add x1, x19, x20
+  0x40001c line    9: d28007e8                 mov x8, #0x3f
+  0x400020 line   10: d4000001                 svc #0
+  0x400024 line   11: b4000060                 cbz x0, #0x400030
+  0x400028 line   12: 8b000294                 add x20, x20, x0
+  0x40002c line   13: 17fffff7                 b #0x400008
+  0x400030 line   14: aa1303f5                 mov x21, x19
+  0x400034 line   15: aa1403f6                 mov x22, x20
+  0x400038 line   16: aa1503f8                 mov x24, x21
+  0x40003c line   17: d2800019                 mov x25, #0
+  0x400040 line   18: b4000476                 cbz x22, #0x4000cc
+  0x400044 line   19: 394002a0                 ldrb w0, [x21]
+  0x400048 line   20: 910006b5                 add x21, x21, #1
+  0x40004c line   21: d10006d6                 sub x22, x22, #1
+  0x400050 line   22: 7100281f                 cmp w0, #0xa
+  0x400054 line   23: 54000060                 b.eq #0x400060
+  0x400058 line   24: 91000739                 add x25, x25, #1
+  0x40005c line   25: 17fffff9                 b #0x400040
+  0x400060 line   26: f100073f                 cmp x25, #1
+  0x400064 line   27: 54000241                 b.ne #0x4000ac
+  0x400068 line   28: 39400300                 ldrb w0, [x24]
+  0x40006c line   29: 7100c01f                 cmp w0, #0x30
+  0x400070 line   30: 540001eb                 b.lt #0x4000ac
+  0x400074 line   31: 7100e41f                 cmp w0, #0x39
+  0x400078 line   32: 540001ac                 b.gt #0x4000ac
+  0x40007c line   33: d2a00a01                 mov x1, #0x500000
+  0x400080 line   34: 39001820                 strb w0, [x1, #6]
+  0x400084 line   35: d2800140                 mov x0, #0xa
+  0x400088 line   36: 39001c20                 strb w0, [x1, #7]
+  0x40008c line   37: d2800020                 mov x0, #1
+  0x400090 line   38: 91001821                 add x1, x1, #6
+  0x400094 line   39: d2800042                 mov x2, #2
+  0x400098 line   40: d2800808                 mov x8, #0x40
+  0x40009c line   41: d4000001                 svc #0
+  0x4000a0 line   42: aa1503f8                 mov x24, x21
+  0x4000a4 line   43: d2800019                 mov x25, #0
+  0x4000a8 line   44: 17ffffe6                 b #0x400040
+  0x4000ac line   45: d2800020                 mov x0, #1
+  0x4000b0 line   46: d2a00a01                 mov x1, #0x500000
+  0x4000b4 line   47: d28000c2                 mov x2, #6
+  0x4000b8 line   48: d2800808                 mov x8, #0x40
+  0x4000bc line   49: d4000001                 svc #0
+  0x4000c0 line   50: aa1503f8                 mov x24, x21
+  0x4000c4 line   51: d2800019                 mov x25, #0
+  0x4000c8 line   52: 17ffffde                 b #0x400040
+  0x4000cc line   53: b40002f9                 cbz x25, #0x400128
+  0x4000d0 line   54: f100073f                 cmp x25, #1
+  0x4000d4 line   55: 54000201                 b.ne #0x400114
+  0x4000d8 line   56: 39400300                 ldrb w0, [x24]
+  0x4000dc line   57: 7100c01f                 cmp w0, #0x30
+  0x4000e0 line   58: 540001ab                 b.lt #0x400114
+  0x4000e4 line   59: 7100e41f                 cmp w0, #0x39
+  0x4000e8 line   60: 5400016c                 b.gt #0x400114
+  0x4000ec line   61: d2a00a01                 mov x1, #0x500000
+  0x4000f0 line   62: 39001820                 strb w0, [x1, #6]
+  0x4000f4 line   63: d2800140                 mov x0, #0xa
+  0x4000f8 line   64: 39001c20                 strb w0, [x1, #7]
+  0x4000fc line   65: d2800020                 mov x0, #1
+  0x400100 line   66: 91001821                 add x1, x1, #6
+  0x400104 line   67: d2800042                 mov x2, #2
+  0x400108 line   68: d2800808                 mov x8, #0x40
+  0x40010c line   69: d4000001                 svc #0
+  0x400110 line   70: 14000006                 b #0x400128
+  0x400114 line   71: d2800020                 mov x0, #1
+  0x400118 line   72: d2a00a01                 mov x1, #0x500000
+  0x40011c line   73: d28000c2                 mov x2, #6
+  0x400120 line   74: d2800808                 mov x8, #0x40
+  0x400124 line   75: d4000001                 svc #0
+  0x400128 line   76: d2800000                 mov x0, #0
+  0x40012c line   77: d2800ba8                 mov x8, #0x5d
+  0x400130 line   78: d4000001                 svc #0
+</failure>
+Write a corrected, complete version. Same output format; output only the program text.
