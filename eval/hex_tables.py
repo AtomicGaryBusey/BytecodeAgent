@@ -12,7 +12,9 @@ NAMES = {
     "claude-haiku-4-5-20251001": "Claude Haiku 4.5", "claude-opus-4-8": "Claude Opus 4.8",
     "claude-sonnet-4-5-20250929": "Claude Sonnet 4.5", "copilot:mai-code-1.1-flash": "Microsoft MAI-Code 1.1 Flash (Copilot)",
     "copilot:claude-sonnet-5.5": "Claude Sonnet 5.5 via Copilot", "copilot:gpt-6-luna": "GPT-6 Luna via Copilot",
-    "grok:grok-4.7-build-fast": "Grok 4.7 build-fast",
+    "grok:grok-4.7-build-fast": "Grok 4.7 build-fast", "grok:grok-4.7": "Grok 4.7", "grok:grok-4.6": "Grok 4.6",
+    "grok:grok-4.5": "Grok 4.5", "kimi:kimi-code/k3": "Kimi K3", "kimi:kimi-code/kimi-for-coding": "Kimi K2.8 (for-coding)",
+    "agy:gemini-3.8-flash-high": "Gemini 3.8 Flash High (Antigravity)",
 }
 
 
@@ -89,3 +91,30 @@ if app_models:
         a = apps[m]
         print(f"| {NAMES.get(m, m)} | **{frac(a['hex'], 'pass_at_1')}** | {frac(a['hex'], 'pass_final')} | "
               f"{frac(a['asm'], 'pass_at_1')} | {frac(a['stream'], 'pass_at_1')} |")
+
+    # Safety blocks are scored as failures above; split them out (attempt records, category "refusal")
+    att = collections.defaultdict(list)  # label -> every hex app attempt
+    for f in sorted(glob.glob("eval/runs/apps-*/*/baseline/attempts.jsonl")):
+        if "smoke" in f:
+            continue
+        for line in open(f):
+            r = json.loads(line)
+            if (r.get("variant", "baseline") == "baseline" and r.get("battery") == "apps" and r.get("sample") == 1
+                    and path_of(r) == "hex"):
+                att[label_of(r)].append(r)
+    print()
+    print("First attempts split into passed / refused (provider safety block) / genuine failures; last column: all rounds")
+    print()
+    print("| Model | First attempts | Passed | Refused | Genuine failures | Pass rate among answered | Refused attempts (all rounds) |")
+    print("|---|---|---|---|---|---|---|")
+    rows = []
+    for m in app_models:
+        first = [r for r in att[m] if r["attempt"] == 1]
+        ok = sum(bool(r["ok"]) for r in first)
+        ref = sum(r["category"] == "refusal" for r in first)
+        rows.append((m, first, ok, ref, len(first) - ref))
+    rows.sort(key=lambda x: (-(x[2] / x[4] if x[4] else 0), -x[2]))  # by pass rate among answered
+    for m, first, ok, ref, ans in rows:
+        rate = f"{ok}/{ans} ({100 * ok / ans:.0f}%)" if ans else "—"
+        print(f"| {NAMES.get(m, m)} | {len(first)} | {ok} | {ref} | {ans - ok} | {rate} | "
+              f"{sum(r['category'] == 'refusal' for r in att[m])} of {len(att[m])} |")

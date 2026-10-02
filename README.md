@@ -15,7 +15,7 @@ six vendors through the same tasks under the same rules.
 | **IR** (`bca.ir`) | A small portable language: QBE IL, freestanding C, or WebAssembly text | An existing compiler (QBE, clang/tcc, Cranelift via wasmtime) lowers it; the function's bytes are pulled out of the ELF object |
 | **Hex** (`bca.liveeval.hexpath`, opt-in `--paths hex`) | The machine code itself, as hex: AArch64 32-bit words or x86-64 instruction bytes, plus data bytes for whole programs | Nothing: the bytes run exactly as written (decoded only to check the instruction set and to explain failures). Astra: 15/16 round-1 functions and 15/16 app-battery programs on the first try, 16/16 within four |
 
-Raw machine code across 14 models (functions and whole programs, mistakes models make encoding by hand, and the
+Raw machine code across 18 models (functions and whole programs, mistakes models make encoding by hand, and the
 safety filters that block it): [`reports/live-model-eval-hex.md`](reports/live-model-eval-hex.md).
 
 ```python

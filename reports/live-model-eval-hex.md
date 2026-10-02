@@ -12,16 +12,16 @@ only for the feedback listing and for the instruction-set check (ARMv8.0-A with 
 the other paths allow). Method: [design-app-battery.md](design-app-battery.md),
 `bca/liveeval/hexpath.py`; Astra's first runs are in [live-model-eval-apps.md](live-model-eval-apps.md).
 
-Two stages, 2026-10-01, CLI-default effort, up to four attempts with repair feedback, the same subjects and
-fairness contract as every other run:
+Two stages, 2026-10-01 (Grok: 2026-10-01 22:19 to 10-02 04:20), CLI-default effort, up to four attempts
+with repair feedback, the same subjects and fairness contract as every other run:
 
 1. **Functions:** round 1 (8 tasks x 2 ISAs = 16 cells) for every model with plan room.
 2. **Whole programs:** the app battery (8 programs x 2 ISAs, sample 1 = 16 cells) for every model that
    reached at least 12/16 within four attempts in stage 1.
 
 Tables: `.venv/bin/python eval/hex_tables.py`. Runs: `eval/runs/hex-{astra-20261001-165154,claude-20261001,
-codex-20261001,copilot-20261001}` and `eval/runs/apps-hex-{astra-20261001-174623,claude-20261001,
-codex-20261001,copilot-20261001}`.
+codex-20261001,copilot-20261001,grok-20261001-221930}` and `eval/runs/apps-hex-{astra-20261001-174623,
+claude-20261001,codex-20261001,copilot-20261001,grok-20261001-221930}`.
 
 ## Functions (round 1)
 
@@ -36,9 +36,13 @@ results on the other paths (16 cells each):
 | Claude Fable 5.1 | **15/16** | 16/16 | 15/16 | 15/16 | 14/16 |
 | Codex GPT-5.5 | **14/16** | 16/16 | 16/16 | 16/16 | 15/16 |
 | Codex GPT-6 Sol | **14/16** | 16/16 | 16/16 | 16/16 | 11/16 |
+| Grok 4.7 | **14/16** | 16/16 | 16/16 | 16/16 | 16/16 |
+| Grok 4.7 build-fast | **14/16** | 16/16 | 16/16 | 16/16 | 15/16 |
 | Claude Opus 4.8 | **14/16** | 16/16 | 13/16 | 15/16 | 7/16 |
 | Claude Sonnet 5.5 | **14/16** | 16/16 | 16/16 | 15/16 | 16/16 |
 | GPT-6 Luna via Copilot | **12/16** | 16/16 | 16/16 | 15/16 | 11/16 |
+| Grok 4.6 | **12/16** | 16/16 | 15/16 | 16/16 | 14/16 |
+| Grok 4.5 | **10/16** | 16/16 | 16/16 | 16/16 | 15/16 |
 | Claude Sonnet 4.5 | **10/16** | 16/16 | 16/16 | 16/16 | 16/16 |
 | Codex GPT-6 Luna | **10/16** | 15/16 | 15/16 | 12/16 | 6/16 |
 | Microsoft MAI-Code 1.1 Flash (Copilot) | **6/16** | 11/16 | 16/16 | 10/16 | 0/16 |
@@ -55,9 +59,13 @@ Per ISA, hex first attempt:
 | Claude Fable 5.1 | 7/8 | 8/8 |
 | Codex GPT-5.5 | 6/8 | 8/8 |
 | Codex GPT-6 Sol | 7/8 | 7/8 |
+| Grok 4.7 | 7/8 | 7/8 |
+| Grok 4.7 build-fast | 6/8 | 8/8 |
 | Claude Opus 4.8 | 6/8 | 8/8 |
 | Claude Sonnet 5.5 | 6/8 | 8/8 |
 | GPT-6 Luna via Copilot | 6/8 | 6/8 |
+| Grok 4.6 | 5/8 | 7/8 |
+| Grok 4.5 | 5/8 | 5/8 |
 | Claude Sonnet 4.5 | 2/8 | 8/8 |
 | Codex GPT-6 Luna | 5/8 | 5/8 |
 | Microsoft MAI-Code 1.1 Flash (Copilot) | 2/8 | 4/8 |
@@ -75,11 +83,15 @@ results (— where that model did not run the app battery):
 | Claude Opus 4.8 | **15/16** | 16/16 | — | — |
 | Claude Sonnet 5.5 | **13/16** | 15/16 | 14/16 | 15/16 |
 | Claude Fable 5.1 | **12/16** | 16/16 | 13/16 | 13/16 |
+| Grok 4.6 | **11/16** | 16/16 | — | — |
+| Grok 4.7 build-fast | **10/16** | 16/16 | 16/16 | 14/16 |
+| Grok 4.7 | **10/16** | 16/16 | — | — |
 | Claude Opus 5.5 | **7/16** | 12/16 | 16/16 | 15/16 |
 | Codex GPT-6 Sol | **6/16** | 14/16 | — | — |
 | Codex GPT-5.5 | **3/16** | 12/16 | — | — |
 | Codex Daybreak Blue | **2/16** | 11/16 | — | — |
 | GPT-6 Luna via Copilot | **2/16** | 5/16 | — | — |
+| Grok 4.5 | **1/16** | 15/16 | — | — |
 | Claude Sonnet 4.5 | **0/16** | 4/16 | — | — |
 | Codex GPT-6 Luna | **0/16** | 0/16 | — | — |
 | Claude Sonnet 5.5 via Copilot | **0/16** | 4/16 | — | — |
@@ -94,10 +106,14 @@ apart (first attempts only, except the last column):
 | Claude Opus 4.8 | 16 | 15 | 0 | 1 | 15/16 (94%) | 0 of 17 |
 | Claude Sonnet 5.5 | 16 | 13 | 1 | 2 | 13/15 (87%) | 3 of 23 |
 | Claude Fable 5.1 | 16 | 12 | 0 | 4 | 12/16 (75%) | 0 of 20 |
+| Grok 4.6 | 16 | 11 | 0 | 5 | 11/16 (69%) | 0 of 23 |
+| Grok 4.7 build-fast | 16 | 10 | 0 | 6 | 10/16 (62%) | 0 of 23 |
+| Grok 4.7 | 16 | 10 | 0 | 6 | 10/16 (62%) | 0 of 22 |
 | Codex GPT-6 Sol | 16 | 6 | 0 | 10 | 6/16 (38%) | 0 of 33 |
 | Codex GPT-5.5 | 16 | 3 | 0 | 13 | 3/16 (19%) | 0 of 37 |
 | Codex Daybreak Blue | 16 | 2 | 0 | 14 | 2/16 (12%) | 0 of 42 |
 | GPT-6 Luna via Copilot | 16 | 2 | 0 | 14 | 2/16 (12%) | 0 of 52 |
+| Grok 4.5 | 16 | 1 | 0 | 15 | 1/16 (6%) | 0 of 41 |
 | Claude Sonnet 4.5 | 16 | 0 | 0 | 16 | 0/16 (0%) | 0 of 57 |
 | Codex GPT-6 Luna | 16 | 0 | 0 | 16 | 0/16 (0%) | 0 of 64 |
 | Claude Sonnet 5.5 via Copilot | 16 | 0 | 14 | 2 | 0/2 (0%) | 52 of 58 |
@@ -108,16 +124,31 @@ let through, not as ability: every first attempt Opus 5.5 was allowed to answer 
 ## Findings
 
 - **Writing raw machine code is within reach of the frontier models.** On functions, Opus 5.5 was perfect
-  (16/16 first attempt), and Astra, Daybreak Blue and Fable 5.1 missed one cell each. Eleven of the fourteen
+  (16/16 first attempt), and Astra, Daybreak Blue and Fable 5.1 missed one cell each. Fifteen of the eighteen
   model rows pass every function cell within four attempts. Hex costs the strongest models little against
   their assembly results; it costs mid-tier models much more (Sonnet 4.5 10/16, Luna 10/16 through Codex,
   MAI-Code 6/16, Haiku 4.5 5/16).
 - **AArch64 is harder to hand-encode than x86-64 for most models** (fixed 32-bit words with packed
   bit fields: shift and bitmask immediates, register fields, 19- and 26-bit branch offsets), e.g. Sonnet 4.5
-  2/8 vs 8/8, Haiku 4.5 0/8 vs 5/8.
+  2/8 vs 8/8, Haiku 4.5 0/8 vs 5/8. Grok 4.6's AArch64 misses (5/8 vs 7/8) are all time-outs: it was still
+  reasoning at 180 s.
 - **Whole programs separate the models sharply.** Astra and Opus 4.8 wrote 15 of 16 programs correctly on
   the first attempt; Sonnet 5.5 13 and Fable 5.1 12. The Codex models other than Astra fall to 2-6/16 first
   attempt (most still recover within four: Sol 14/16), Sonnet 4.5 to 0/16 (4/16 within four).
+- **Grok sits in the upper middle, and recovers well.** On functions Grok 4.7 and 4.7 build-fast reached
+  14/16 first attempt, 4.6 12/16 and 4.5 10/16, all four 16/16 within four. On whole programs Grok 4.6 wrote
+  11/16 correctly first time, 4.7 and build-fast 10/16, and all three fixed every remaining program within
+  four (16/16, as only Astra, Opus 4.8 and Fable 5.1 otherwise do). Grok 4.6's four first-attempt function
+  misses were all time-outs (180 s, still reasoning), not wrong code. No Grok attempt was refused (0 of 188
+  attempts).
+- **Grok 4.5: 1/16 first attempt, 15/16 within four.** Its first programs were nearly right but untested
+  against the edges: 13 of its 15 first-attempt failures ran and broke on one of the first five test runs,
+  the smallest inputs (empty input, one byte, `"b\na\n"`, `"hello world\n"`); the other two were refused
+  before running (`text` for the `.text` marker; an AArch64 slip onto the ARMv8.1 `ldaddlb`). The feedback
+  (the failing input, expected against actual output, the decoded listing) was enough to fix all but `rpn`
+  on AArch64, at a cost of 41 attempts for 16 cells (22-23 for the other Grok models). It also reasoned least
+  before answering: a median of about 21,800 reasoning tokens on a first attempt, against 27,600 (4.6) and
+  33,000 (4.7, build-fast).
 - **The Codex models other than Astra mostly fail whole programs on memory layout, not encoding.** Their
   first-attempt app failures are out-of-bounds accesses and wrong output: writing to the data base 0x500000
   without giving a data section, to 0x700000 just past the 1 MiB work area, through a null or unset pointer, or
@@ -144,6 +175,9 @@ let through, not as ability: every first attempt Opus 5.5 was allowed to answer 
   Under the fairness contract a safety block is a scored refusal, as for Fable's refusals on the function
   batteries; these rows measure what each front end lets through, not only what the model can write. Raw
   machine code with system calls and no symbols plausibly resembles shellcode to such classifiers.
+- **Cost on SuperGrok.** The whole Grok run (four models, both stages: 195 calls, 188 scored attempts and
+  7 retried, about six hours at two calls at a time) moved the SuperGrok weekly usage meter from 71% to about 88%, roughly
+  0.09% of a week's allowance per call; no paid credits were used.
 - **Answer discipline still matters:** Sonnet 5.5 through Copilot opened 14 of 16 function answers with a
   prose plan ("Plan:", "Euclid's algorithm...") on a path whose first line must be machine code; it passed
   all 16 within four once told so.
@@ -154,16 +188,16 @@ From a by-hand review of every failed attempt (first attempts and repairs), with
 
 | Kind | Examples |
 |---|---|
-| Branch / offset arithmetic | off by one instruction (Fable `17fffffc` for `17fffffb`, GPT-5.5 `cbz`/`b.ne` in `fib`), x86 rel8 targets past the end or into the middle of an instruction (Astra `7e 0f` for `7e 0b`, Daybreak `je`/`jne` in `reverse`), a `b` past the end of a whole program (Astra `json_lint`) |
-| Immediate fields | AArch64 `lsr` encoded with the wrong shift (UBFM `immr`): Sol `lsr #0` for `#1`, Opus 4.8 `lsr #60` and Sonnet 5.5 `lsr #24` for `#56`; logical (bitmask) immediates wrong (Luna `0x1fff...` for `0x5555...`) |
-| Register fields | a source register never written (Opus 4.8 `add x0, x6, x5`) |
-| Opcode bits / undefined words | unallocated encodings (MAI-Code `d3a00000`, `8bc10003`; Luna `9a9d3b7b`; Sonnet 4.5 `d71d001d`) |
-| Accidentally a newer instruction | a slip that lands on an ARMv8.1+ instruction the prompt forbids: LSE atomics (MAI-Code `ldaddl`, Luna `ldsminlb`, Sonnet 4.5 `ldumaxlb`), MTE `subp` (Sonnet 4.5) |
-| Byte order | an AArch64 word written byte-swapped (Sonnet 4.5 `600400b4` for `b4000460`, a `cbz`) |
+| Branch / offset arithmetic | off by one instruction (Fable `17fffffc` for `17fffffb`, GPT-5.5 `cbz`/`b.ne` in `fib`), an AArch64 byte offset not divided by 4 (Grok 4.5 `54fffe01` for `54ffff81` and Grok 4.7 build-fast `b5fffe01` for `b5ffff81`: -16 instructions for -16 bytes), x86 rel8 targets past the end or into the middle of an instruction (Astra `7e 0f` for `7e 0b`, Daybreak `je`/`jne` in `reverse`; Grok 4.7 `bf`, 4.6 `rpn`, 4.5 `hexdump` and `sort_lines`), a `b` past the end of a whole program (Astra `json_lint`), a branch or `bl` back out of the start of the code (Grok 4.5 and 4.6 `json_lint`) |
+| Immediate fields | AArch64 `lsr` encoded with the wrong shift (UBFM `immr`): Sol `lsr #0` for `#1`, Opus 4.8 `lsr #60` and Sonnet 5.5 `lsr #24` for `#56`; logical (bitmask) immediates wrong (Luna `0x1fff...` for `0x5555...`); a post-index `strb` of `#-255` for `#1` (Grok 4.6 `381016e3` for `380016e3`); a buffer at 0x300000 for 0x600000 (Grok 4.7 `d2a00613` for `d2a00c13`) |
+| Register fields | a source register never written (Opus 4.8 `add x0, x6, x5`; Grok 4.5 `add x1, x1, #0` for `add x1, x0, #1`); x86 REX bits that pick the wrong register (Grok 4.5 `49 31 c0`, `xor r8, rax`, for `4d 31 c0`, and `4c 01 c5`, `add rbp, r8`, for `49 01 c5`; Grok 4.7 `4f 8d 34 2c`, `lea r14`, for `4b 8d 34 2c`, `lea rsi`, so `read` got a null buffer); a SIB index of 100, meaning none (Grok 4.5 `lea rcx, [rdi + riz*8 - 8]` for `rsi*8`) |
+| Opcode bits / undefined words | unallocated encodings (MAI-Code `d3a00000`, `8bc10003`; Luna `9a9d3b7b`; Sonnet 4.5 `d71d001d`); the wrong addressing form (Grok 4.7 build-fast `f8000465`, `str x5, [x3], #0`, for `f9000465`, `str x5, [x3, #8]`) |
+| Accidentally a newer instruction | a slip that lands on an ARMv8.1+ instruction the prompt forbids: LSE atomics (MAI-Code `ldaddl`, Luna `ldsminlb`, Sonnet 4.5 `ldumaxlb`, Grok 4.5 `ldaddlb` `38690263` for `ldrb w3, [x19, x9]` `38696a63`), MTE `subp` (Sonnet 4.5) |
+| Byte order | an AArch64 word written byte-swapped (Sonnet 4.5 `600400b4` for `b4000460`, a `cbz`); an x86 absolute address shifted by a byte (Grok 4.5 `00 00 10 61`, 0x61100000, for `00 10 61 00`, 0x611000) |
 | x86 length and encoding | a truncated `movabs` (`48 be 00 00 60 00`), an invalid ModRM (`49 ff ef`), three instructions on one line (`50 52 51`, refused by the stated one-instruction-per-line rule) |
-| Format | words split by spaces (`9100 0d8c`), labels or mnemonics left among the hex (Sonnet 4.5), prose plans (Sonnet 5.5 via Copilot) |
+| Format | words split by spaces (`9100 0d8c`), labels or mnemonics left among the hex (Sonnet 4.5), prose plans (Sonnet 5.5 via Copilot), `text` for the `.text` marker (Grok 4.5) |
 | Ordinary logic | a missing `ret` before a fall-through (GPT-5.5 `sum_to`), loops that run on zero counts, a misordered bit-count (Luna `popcount`), empty-input and buffer handling in whole programs |
-| Out of time | Haiku 4.5 reasoned through the whole 180 s on 8 AArch64 function cells (about 20,800 thinking tokens, no answer); Sonnet 4.5 on 4 |
+| Out of time | Haiku 4.5 reasoned through the whole 180 s on 8 AArch64 function cells (about 20,800 thinking tokens, no answer); Sonnet 4.5 on 4; Grok 4.6 on 5 function attempts, Grok 4.5 and 4.7 on 1 each, and Grok 4.5 and 4.7 on one whole program each (900 s) |
 
 ## False-reject review
 
@@ -176,12 +210,31 @@ Every other pre-run refusal was checked against GNU objdump: undefined words, or
 prompt forbids. The Copilot content-filter and Anthropic cyber-classifier blocks are provider-side and are
 scored as refusals, as everywhere else.
 
+**Grok (2026-10-02): no false rejects** in 61 failed attempts (15 function, 46 whole-program).
+
+- **Rejected before running (2):** both genuine. `text` for the `.text` marker; the model's own stream began
+  with `text`, so this was not a CLI artifact. And `38690263`, which GNU objdump also decodes as the ARMv8.1
+  `ldaddlb`.
+- **Faults at an address inside an instruction (4):** a branch computed into the middle of an instruction,
+  each found in the listing: for example `jae 0x4000b1` into `eb a3`, whose second byte then executes as a
+  store.
+- **Faults outside the code (6):** branches with a wrong offset, backwards out of the start of the code or
+  past its end.
+- **Time-outs (9):** checked against the raw stream. Reasoning streamed at the model's normal rate (about
+  35-65 characters per second, the same as answered attempts) until the limit, so these were the model
+  thinking past the time limit, not a stalled service.
+- **Other failures:** runtime verdicts, checked against the spec's expected output.
+- **Fenced answer:** one whole-program answer wrapped in a Markdown fence ran as written after the fence was
+  stripped, as on every path.
+- **Infrastructure errors (7):** retried and not counted as attempts, all in the whole-program stage. Six
+  were Grok CLI stream failures (`reqwest error stream: Transport error: error decoding response body`) and
+  one was an HTTP 500 (`Internal error during token generation`).
+
 ## Pending
 
 | Models | Waiting for |
 |---|---|
-| Grok 4.7, Grok 4.7 build-fast, Grok 4.6, Grok 4.5 | SuperGrok weekly usage resets Sat 2026-10-03 10:42 (never into paid credits) |
-| Kimi K3, Kimi K2.8 | Kimi's 7-day window reopens Sat 2026-10-03 15:02 |
+| Kimi K3, Kimi K2.8 | Kimi's 7-day window reopens Sat 2026-10-03 15:02 (scheduled after 15:05) |
 | Gemini 3.8 Flash (Antigravity) | Google quota, about Mon 2026-10-06 |
 | Local Qwen models | the GPU (used by the assisted-variant runs); expected near 0 given 3-8% on assembly |
 | Haiku 4.5, MAI-Code (apps) | below the 12/16 bar in stage 1 (8/16 and 11/16 within four) |
