@@ -18,6 +18,7 @@ for f in sorted(glob.glob("eval/runs/*/**/results.jsonl", recursive=True) + glob
         else: label = r.get("model") or subj
         bat = r.get("battery") or ("round2" if "round2" in rd else "round1")
         if bat == "apps": continue  # the app battery has its own tables
+        if r.get("path", r["cell"].split(".")[1]) == "hex": continue  # the opt-in hex path: eval/hex_tables.py
         recs[(label, bat, r["cell"])] = r
 names = {"claude-opus-5-5": "Claude Opus 5.5", "claude-fable-5-1": "Claude Fable 5.1", "grok:grok-4.7": "Grok 4.7",
  "grok:grok-4.7-build-fast": "Grok 4.7 build-fast", "kimi:kimi-code/k3": "Kimi K3", "kimi:kimi-code/kimi-for-coding": "Kimi K2.8 (for-coding)",
