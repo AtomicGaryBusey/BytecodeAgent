@@ -216,7 +216,10 @@ def test_legacy_style_is_a_one_attempt_format_probe_outside_all():
     assert [k for k, v in VARIANT_INFO.items() if v["conflicts_with_format"]] == ["legacy_style"]
     assert all("max_attempts" not in v for k, v in VARIANT_INFO.items() if k != "legacy_style")
     assert "legacy_style" not in ALL_VARIANTS_DEFAULT
-    assert set(ALL_VARIANTS_DEFAULT) == set(VARIANTS) - {"legacy_style"} and ALL_VARIANTS_DEFAULT[0] == "baseline"
+    opt_in = {k for k, v in VARIANT_INFO.items() if v.get("opt_in")}
+    assert opt_in == {"assisted"}  # information, not an adversarial probe: requested by name only
+    assert set(ALL_VARIANTS_DEFAULT) == set(VARIANTS) - {"legacy_style"} - opt_in
+    assert ALL_VARIANTS_DEFAULT[0] == "baseline"
     assert set(RECOMMENDED_VARIANTS) <= set(ALL_VARIANTS_DEFAULT)
 
 

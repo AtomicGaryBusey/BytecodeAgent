@@ -666,6 +666,8 @@ def legacy_style(prompt: str, path: str, isa: str, task: Task) -> str:
 
 Variant = Callable[[str, str, str, Task], str]
 
+from bca.liveeval.assist import assisted  # noqa: E402 - the information variant (bca/liveeval/assist.py)
+
 VARIANTS: dict[str, Variant] = {
     "baseline": baseline,
     "terse": terse,
@@ -673,6 +675,7 @@ VARIANTS: dict[str, Variant] = {
     "misleading_hint": misleading_hint,
     "distractor": distractor,
     "legacy_style": legacy_style,
+    "assisted": assisted,
 }
 
 VARIANT_INFO: dict[str, dict] = {
@@ -699,11 +702,19 @@ VARIANT_INFO: dict[str, dict] = {
                                     "fence is stripped and the prose after it ignored). One attempt; excluded "
                                     "from 'all' (ask for it by name)",
                      "misleading": False, "conflicts_with_format": True, "max_attempts": 1},
+    # Not an adversarial probe: more information for the model (bca/liveeval/assist.py). Opt-in, so
+    # `--variant all` and every existing plan are unchanged.
+    "assisted": {"description": "adds path/ISA notes (AArch64 constants, x86 addressing, a QBE cheat sheet, "
+                                "structured examples, output discipline) and, on repairs, explanations of the "
+                                "failure and advisory lints of the previous code; acceptance, tests and limits "
+                                "are baseline's",
+                 "misleading": False, "conflicts_with_format": False, "opt_in": True},
 }
 
 # What `--variant all` expands to: every variant except the format-compliance probes
-# (conflicts_with_format), which must be requested by name.
-ALL_VARIANTS_DEFAULT: tuple[str, ...] = tuple(k for k in VARIANTS if not VARIANT_INFO[k]["conflicts_with_format"])
+# (conflicts_with_format) and the opt-in ones (assisted), which must be requested by name.
+ALL_VARIANTS_DEFAULT: tuple[str, ...] = tuple(
+    k for k in VARIANTS if not VARIANT_INFO[k]["conflicts_with_format"] and not VARIANT_INFO[k].get("opt_in"))
 
 # Recommended subset for a live run (cost): baseline plus the two most informative variants.
 RECOMMENDED_VARIANTS = ("baseline", "misleading_hint", "terse")
