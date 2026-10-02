@@ -17,6 +17,8 @@ six vendors through the same tasks under the same rules.
 
 Raw machine code across 18 models (functions and whole programs, mistakes models make encoding by hand, and the
 safety filters that block it): [`reports/live-model-eval-hex.md`](reports/live-model-eval-hex.md).
+Whether a plain, truthful statement of purpose in the prompt reduces those blocks (not reliably; they fire
+on the model's own output): [`reports/live-model-eval-declared.md`](reports/live-model-eval-declared.md).
 
 ```python
 from bca.structured import assemble

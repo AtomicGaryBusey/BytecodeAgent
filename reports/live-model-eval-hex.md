@@ -175,6 +175,11 @@ let through, not as ability: every first attempt Opus 5.5 was allowed to answer 
   Under the fairness contract a safety block is a scored refusal, as for Fable's refusals on the function
   batteries; these rows measure what each front end lets through, not only what the model can write. Raw
   machine code with system calls and no symbols plausibly resembles shellcode to such classifiers.
+  - **A plain statement of purpose does not stop them.** Putting a truthful paragraph before the prompt (what
+    the benchmark is, what the program does, that it runs only in the emulator against fixed tests) lowered
+    Opus 5.5's blocked attempts from 22 of 34 to 12 of 27, within run-to-run noise, and asking for an assembly
+    comment on every line did not lower them at all (22 of 34). Every block came partway through generation,
+    after hundreds to thousands of output tokens: [`live-model-eval-declared.md`](live-model-eval-declared.md).
 - **Cost on SuperGrok.** The whole Grok run (four models, both stages: 195 calls, 188 scored attempts and
   7 retried, about six hours at two calls at a time) moved the SuperGrok weekly usage meter from 71% to about 88%, roughly
   0.09% of a week's allowance per call; no paid credits were used.
