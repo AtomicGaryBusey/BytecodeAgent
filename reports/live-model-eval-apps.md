@@ -148,6 +148,35 @@ would not change the picture; see the local section of the cross-vendor report).
 - **Every failure was reviewed by hand** for all six models (the Copilot adapter's own transient errors, such
   as a broken stream or a network timeout, void the attempt and are retried, never scored).
 
+## Raw machine code: the opt-in hex path (Codex GPT-6 Astra)
+
+The asm and stream paths still hand the model's text to an assembler. The opt-in `hex` path removes it: the
+model writes the whole program as machine code (AArch64 32-bit instruction words, x86-64 instruction bytes) and
+data bytes, in a fixed layout the prompt states (code at 0x400000 = the entry point, data at 0x500000, the
+task's zeroed area at 0x600000). There are no labels or directives besides `.text` / `.data`, so every branch
+offset, address and immediate is the model's own arithmetic; the harness copies the bytes into place unchanged
+(`bca.liveeval.hexpath`), runs the same tests, and returns the same failure messages plus a disassembly of the
+model's bytes. Run `eval/runs/apps-hex-astra-20261001-174623` (sample 1, both ISAs, up to 4 attempts):
+
+| Task | x86-64 | AArch64 | instruction lines (x86-64 / AArch64) |
+|---|---|---|---|
+| wc | pass, 1st | pass, 1st | 61 / 55 |
+| rev_lines | pass, 1st | pass, 1st | 45 / 48 |
+| hexdump | pass, 1st | pass, 1st | 84 / 92 |
+| sort_lines | pass, 1st | pass, 1st | 75 / 92 |
+| rpn | pass, 1st | pass, 1st | 166 / 155 |
+| base64 | pass, 1st | pass, 1st | 68 / 72 |
+| bf | pass, 1st | pass, 1st | 113 / 105 |
+| json_lint | pass, 1st | pass, 2nd | 251 / 252 |
+
+**15/16 on the first attempt, 16/16 within four**, against 32/32 for Astra's sample 1 on asm + stream. The one
+miss was a single hand-computed branch: `json_lint` on AArch64 jumped past the end of the code (`b` with offset
+0x26c words) and never exited on empty input; the repair listing showed the target, and attempt 2 changed only
+that word. Round-1 functions on the same path: 15/16 first attempt, 16/16 within four (run
+`eval/runs/hex-astra-20261001-165154`). The same path also produced a working text editor with no assembler
+anywhere (`demo/editor-hex/`, fourth round). This is one model and one sample per cell, so it shows the
+capability, not a comparison.
+
 ## Limitations
 
 - One run per model and date; 3 samples per cell. CLI defaults for effort, as in the function batteries (Astra

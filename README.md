@@ -1,17 +1,19 @@
 # BytecodeAgent
 
 Can a language model write **machine code** directly, without a human-facing toolchain in the loop?
-This project builds three non-standard ways for a model to emit x86-64 and AArch64 code, a
+This project builds non-standard ways for a model to emit x86-64 and AArch64 code (including raw machine
+code with no tool at all), a
 differential harness that proves the result correct, and a live evaluation that puts models from
 six vendors through the same tasks under the same rules.
 
-## The three emission paths
+## The emission paths
 
 | Path | What the model writes | What turns it into bytes |
 |---|---|---|
 | **Stream** (`bca.stream`) | Assembly text, token by token | `StreamAssembler` encodes each instruction the moment its line is complete (keystone), cross-checked against GNU as, so generation can stop at the first bad line |
 | **Structured** (`bca.structured`) | One JSON object per instruction (e.g. a tool call) | A deterministic encoder: AArch64 bit by bit, x86-64 via iced-x86; no assembly text at all |
 | **IR** (`bca.ir`) | A small portable language: QBE IL, freestanding C, or WebAssembly text | An existing compiler (QBE, clang/tcc, Cranelift via wasmtime) lowers it; the function's bytes are pulled out of the ELF object |
+| **Hex** (`bca.liveeval.hexpath`, opt-in `--paths hex`) | The machine code itself, as hex: AArch64 32-bit words or x86-64 instruction bytes, plus data bytes for whole programs | Nothing: the bytes run exactly as written (decoded only to check the instruction set and to explain failures). Astra: 15/16 round-1 functions and 15/16 app-battery programs on the first try, 16/16 within four |
 
 ```python
 from bca.structured import assemble
@@ -127,6 +129,11 @@ Codex GPT-6 Astra wrote all of it as one assembly file, on the first attempt:
   (no network).
 - **How to run it:** `./demo/editor/edit FILE`.
 
+[`demo/editor-hex/`](demo/editor-hex/README.md) is the same editor with **no assembler at all**: Astra wrote all
+354 instruction words and the data bytes as hex (every branch offset and address its own arithmetic), and the
+harness only copied them into an ELF container. It passed all 12 scenarios on the fourth round (rounds 1-3
+failed on cursor logic, a hang, and mis-computed branch offsets). Run it with `./demo/editor-hex/edit FILE`.
+
 ## Setup
 
 Python 3.12 with `keystone-engine`, `unicorn`, `iced-x86`, `capstone`, `wasmtime` and `pytest`, plus
@@ -156,4 +163,5 @@ eval/runs/                        recorded runs (prompts, responses, raw streams
 reports/                          research report and eval write-ups
 examples/stream_demo.py           the stream path end to end
 demo/editor/                      a model-written text editor (AArch64 assembly -> GNU as -> static ELF), sandbox tests
+demo/editor-hex/                  the same editor written directly as machine code (hex -> ELF container, no assembler)
 ```
