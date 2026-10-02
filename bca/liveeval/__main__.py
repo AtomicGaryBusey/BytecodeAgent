@@ -17,6 +17,7 @@ from bca.liveeval.registry import (
     model_for,
     safe_name,
     select,
+    variant_info,
     variant_max_attempts,
 )
 from bca.liveeval.runner import (
@@ -150,9 +151,11 @@ def _run(args, subject_factory) -> int:
     cells = plan_cells(selected, paths, isas, args.samples)
     if not cells:
         raise RegistryError(f"no cell to run: the selected tasks have none of the paths {paths}")
-    if any(getattr(t, "is_app", False) for t, _b, _p, _i in cells) and list(variants) != ["baseline"]:
-        raise RegistryError("prompt variants are defined for the function batteries only; run the app "
-                            "battery with --variant baseline")
+    bad_app = [v for v in variants if v != "baseline" and not variant_info(v).get("apps_ok")]
+    if any(getattr(t, "is_app", False) for t, _b, _p, _i in cells) and bad_app:
+        raise RegistryError(f"variants are defined for the function batteries only ({', '.join(bad_app)}); the "
+                            "app battery takes baseline and the variants marked apps_ok (declared, "
+                            "declared_annotated)")
     flat = not subjects and list(variants) == ["baseline"]  # the round-1/round-2 layout
     if len(subjects) > 1 and not args.effort:
         print(f"warning: {len(subjects)} subjects without --effort: each runs at its CLI default effort, which "

@@ -217,10 +217,13 @@ def test_legacy_style_is_a_one_attempt_format_probe_outside_all():
     assert all("max_attempts" not in v for k, v in VARIANT_INFO.items() if k != "legacy_style")
     assert "legacy_style" not in ALL_VARIANTS_DEFAULT
     opt_in = {k for k, v in VARIANT_INFO.items() if v.get("opt_in")}
-    assert opt_in == {"assisted"}  # information, not an adversarial probe: requested by name only
+    assert opt_in == {"assisted", "declared", "declared_annotated"}  # not adversarial probes: by name only
     assert set(ALL_VARIANTS_DEFAULT) == set(VARIANTS) - {"legacy_style"} - opt_in
     assert ALL_VARIANTS_DEFAULT[0] == "baseline"
     assert set(RECOMMENDED_VARIANTS) <= set(ALL_VARIANTS_DEFAULT)
+
+
+PREPEND = {"declared", "declared_annotated"}  # bca/liveeval/declared.py
 
 
 @pytest.mark.parametrize("name", list(VARIANTS))
@@ -230,7 +233,8 @@ def test_variants_are_pure_and_keep_the_whole_prompt(name):
         base = build_prompt(path, isa, task)
         out = fn(base, path, isa, task)
         assert out == fn(base, path, isa, task)  # deterministic
-        assert out.startswith(base.rstrip("\n"))  # the original prompt is kept verbatim ...
+        # the original prompt is kept verbatim (the declared variants put their paragraph before it) ...
+        assert out.startswith(base.rstrip("\n")) or (name in PREPEND and base.rstrip("\n") in out)
         for part in (task.signature, task.spec, ABI[isa], ABI_EXTRA[isa], rules(path, isa, task)):
             assert part in out  # ... including the full spec, ABI text and format rules
         if name == "baseline":
@@ -240,7 +244,8 @@ def test_variants_are_pure_and_keep_the_whole_prompt(name):
     # Repair prompts are transformed the same way.
     t = BY_NAME["sdivrem"]
     rep = build_prompt("stream", "x86_64", t, previous=("sdivrem:\n    ret", "wrong"))
-    assert fn(rep, "stream", "x86_64", t).startswith(rep.rstrip("\n"))
+    rout = fn(rep, "stream", "x86_64", t)
+    assert rout.startswith(rep.rstrip("\n")) or (name in PREPEND and rep.rstrip("\n") in rout)
 
 
 def test_misleading_hints_are_labelled_and_contradicted_by_the_prompt():

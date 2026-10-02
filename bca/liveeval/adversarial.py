@@ -667,6 +667,7 @@ def legacy_style(prompt: str, path: str, isa: str, task: Task) -> str:
 Variant = Callable[[str, str, str, Task], str]
 
 from bca.liveeval.assist import assisted  # noqa: E402 - the information variant (bca/liveeval/assist.py)
+from bca.liveeval.declared import declared, declared_annotated  # noqa: E402 - statement of purpose (declared.py)
 
 VARIANTS: dict[str, Variant] = {
     "baseline": baseline,
@@ -676,6 +677,8 @@ VARIANTS: dict[str, Variant] = {
     "distractor": distractor,
     "legacy_style": legacy_style,
     "assisted": assisted,
+    "declared": declared,
+    "declared_annotated": declared_annotated,
 }
 
 VARIANT_INFO: dict[str, dict] = {
@@ -709,6 +712,15 @@ VARIANT_INFO: dict[str, dict] = {
                                 "failure and advisory lints of the previous code; acceptance, tests and limits "
                                 "are baseline's",
                  "misleading": False, "conflicts_with_format": False, "opt_in": True},
+    # A plain, truthful statement of what the request is and what happens to the result
+    # (bca/liveeval/declared.py). Opt-in; the only variants the app battery accepts (apps_ok).
+    "declared": {"description": "puts a plain statement of purpose before the prompt: the benchmark, what the "
+                                "program or function does, why it is written in this form, and that it runs only "
+                                "in the emulator against fixed tests; acceptance, tests and limits are baseline's",
+                 "misleading": False, "conflicts_with_format": False, "opt_in": True, "apps_ok": True},
+    "declared_annotated": {"description": "declared, plus (hex path only) a `//` assembly comment on every "
+                                          "instruction line; comments are ignored, acceptance is baseline's",
+                           "misleading": False, "conflicts_with_format": False, "opt_in": True, "apps_ok": True},
 }
 
 # What `--variant all` expands to: every variant except the format-compliance probes
