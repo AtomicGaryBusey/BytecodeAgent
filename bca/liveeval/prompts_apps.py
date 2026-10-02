@@ -127,9 +127,79 @@ def format_rules(isa: str) -> str:
     )
 
 
+HEX_ENTRY = {
+    "x86_64": (
+        "Entry state (as the Linux kernel sets it up): execution starts at the first byte of your code, address "
+        "0x400000. rsp is 16-byte aligned and points at argc = 0, followed by the NULL terminators of an empty "
+        "argv, an empty envp and an empty auxiliary vector: the program gets no arguments. Every other "
+        "general-purpose register is zero, and the direction flag is clear. There is no return address: the "
+        "program ends only through the exit system call."
+    ),
+    "aarch64": (
+        "Entry state (as the Linux kernel sets it up): execution starts at the first instruction of your code, "
+        "address 0x400000. sp is 16-byte aligned and points at argc = 0, followed by the NULL terminators of an "
+        "empty argv, an empty envp and an empty auxiliary vector: the program gets no arguments. Every other "
+        "general-purpose register (x0-x30) is zero; x30 is not a return address; the program ends only through "
+        "the exit system call."
+    ),
+}
+
+HEX_INSN = {
+    "aarch64": (
+        "Instructions: one per line as its 32-bit instruction word in hexadecimal, exactly 8 hex digits (an "
+        "optional 0x prefix is allowed), e.g. `8b010000` is `add x0, x0, x1` and `d4000001` is `svc #0`. The "
+        "words are stored little-endian one after another: the first instruction line is at 0x400000, the next "
+        "at 0x400004, and so on. Every branch and PC-relative field (b, b.cond, bl, cbz, cbnz, tbz, tbnz, adr, "
+        "adrp) holds an offset from the address of that instruction itself, encoded as the architecture "
+        "specifies (b/bl/b.cond/cbz/tbz: byte offset / 4; adr: byte offset; adrp: (target page - this "
+        "instruction's page) / 4096, pages being addresses with the low 12 bits cleared), which you compute. "
+        "Because the addresses below are fixed, you can also build an address with movz/movk (e.g. "
+        "`d2a00a01` is `movz x1, #0x50, lsl #16`, i.e. x1 = 0x500000)."
+    ),
+    "x86_64": (
+        "Instructions: one per line as its bytes in memory order, each byte as two hex digits separated by "
+        "spaces, e.g. `48 01 f0` is `add rax, rsi` and `0f 05` is `syscall`. The lines are placed one after "
+        "another starting at 0x400000. Every relative branch or call displacement (jmp, jcc, call rel8/rel32) "
+        "and every rip-relative disp32 is the signed distance from the end of that instruction (the address of "
+        "the next one) to the target, little-endian, which you compute. Because the addresses below are fixed "
+        "and below 2^31, absolute forms also work (e.g. `be 00 00 50 00` is `mov esi, 0x500000`, and a "
+        "`[disp32 + reg]` memory operand with no base register addresses a table directly)."
+    ),
+}
+
+
+def hex_format_rules(isa: str, bss_size: int) -> str:
+    return (
+        "Output format: the whole program as raw machine code and data bytes, which you encode yourself: there "
+        "is no assembler, no linker and no encoder, and your bytes are loaded exactly as you write them. The "
+        "memory layout is fixed:\n"
+        "- code (read and execute): your instruction lines, from address 0x400000; the entry point is the first "
+        "instruction; at most 1 MiB.\n"
+        "- data (read and write): the data bytes you give, from address 0x500000, at most 1 MiB; your strings "
+        "and tables go here, at offsets you choose and keep track of (the byte you write at position k of the "
+        "data section is at address 0x500000 + k).\n"
+        f"- a zero-initialised work area (read and write) of {_size(bss_size)} from address 0x600000.\n"
+        "- the stack (above).\n"
+        "Write a line `.text` followed by the instruction lines, then optionally a line `.data` followed by the "
+        "data lines. These two markers are the only directives: no labels, no symbols, no other directive, so "
+        "every address and offset is a number you compute.\n"
+        + HEX_INSN[isa] + "\n"
+        "Data: bytes in memory order as pairs of hex digits, separated by spaces or not, any number per line "
+        "(e.g. `68 65 6c 6c 6f 0a` or `68656c6c6f0a` is \"hello\\n\").\n"
+        "You may end any line with a comment starting with `//` or `;` (e.g. `d4000001 // svc #0`); comments and "
+        "blank lines are ignored.\n"
+        + ISA_LEVEL[isa] + "\n"
+        "Output ONLY the program text: no Markdown fences, no prose before or after it."
+    )
+
+
 def build_app_prompt(path: str, isa: str, task, previous: tuple[str, str] | None = None) -> str:
     """The prompt for an app cell; the same text for `asm` and `stream` (see the module docstring).
-    `previous` = (code, failure description) for a repair round."""
+    The opt-in `hex` path replaces the assembly format with the raw machine-code format and its fixed
+    memory layout (everything else is the same). `previous` = (code, failure description) for a repair
+    round."""
+    if path == "hex":
+        return _build_hex_prompt(isa, task, previous)
     if path not in APP_PATHS:
         raise ValueError(f"{task.name} is not applicable on the {path} path: {task.na_paths.get(path, '')}")
     app = task.app
@@ -152,5 +222,29 @@ def build_app_prompt(path: str, isa: str, task, previous: tuple[str, str] | None
             "Your previous attempt was:\n<previous>\n" + code.rstrip() + "\n</previous>\n"
             "It failed:\n<failure>\n" + failure.rstrip() + "\n</failure>\n"
             "Write a corrected, complete version. Same output format; output only the code."
+        )
+    return "\n\n".join(parts) + "\n"
+
+
+def _build_hex_prompt(isa: str, task, previous: tuple[str, str] | None) -> str:
+    app = task.app
+    parts = [
+        f"Write the complete program `{task.name}`: a static Linux executable for {TARGET[isa]}, written "
+        "directly as machine code. There is no assembler, no linker, no C library, no C runtime and no helper "
+        "code: you write every instruction, every table and string, and make the system calls yourself.",
+        HEX_ENTRY[isa],
+        SYSCALLS[isa],
+        f"Memory: the code, data and zero-initialised areas below, plus a stack of {_size(STACK_BYTES)} below the "
+        "entry sp. There is no heap (no brk, no mmap, no malloc). Code is not writable. Any access outside these "
+        f"areas stops the program. Each test run may execute at most {app.max_insns:,} instructions.",
+        hex_format_rules(isa, app.bss_size),
+        f"Specification: {task.spec.rstrip()}",
+    ]
+    if previous is not None:
+        code, failure = previous
+        parts.append(
+            "Your previous attempt was:\n<previous>\n" + code.rstrip() + "\n</previous>\n"
+            "It failed:\n<failure>\n" + failure.rstrip() + "\n</failure>\n"
+            "Write a corrected, complete version. Same output format; output only the program text."
         )
     return "\n\n".join(parts) + "\n"

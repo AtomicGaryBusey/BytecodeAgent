@@ -323,7 +323,58 @@ def _app_stream_attempt(subject: Subject, isa: str, task: AppEvalTask, prompt: s
     return a
 
 
-APP_PIPELINES = {"asm": _asm_attempt, "stream": _app_stream_attempt}
+def _app_hex_attempt(subject: Subject, isa: str, task: AppEvalTask, prompt: str, raw_path: str,
+                     timeout: float | None = None) -> Attempt:
+    """The opt-in `hex` path: the model writes the whole program as machine code and data bytes in
+    the stated fixed layout (bca.liveeval.hexpath); the harness copies the bytes into place unchanged.
+    No assembler and no linker."""
+    from bca.liveeval import hexpath
+
+    t0 = time.perf_counter()
+    resp = _call(subject, prompt, None, raw_path, timeout)
+    a = Attempt("hex", isa, task.name, False, None, "", resp.text, response=resp, wall_s=time.perf_counter() - t0)
+    if resp.refusal:
+        a.category, a.failure = "refusal", f"the model refused to answer ({resp.refusal})"
+        return a
+    if not resp.ok:
+        a.category = "subject_timeout" if resp.timed_out else "subject_error"
+        a.code_text = ""
+        a.failure = f"the model call failed: {resp.error}"
+        return a
+    src = strip_fences(resp.text)
+    a.code_text = src
+    try:
+        prog = hexpath.parse_program(isa, src)
+    except hexpath.HexError as exc:
+        lines = src.splitlines()
+        bad = lines[exc.line - 1].strip() if 0 < exc.line <= len(lines) else ""
+        first = next((ln.strip() for ln in lines if ln.strip()), "")
+        prose = bad and bad == first and _PROSE_RE.match(bad)
+        a.category = "format" if prose or exc.category == "format" else "encoding"
+        a.failure = f"The machine code is malformed: {exc}"
+        return a
+    note = HEX_NOTE + hexpath.program_listing(isa, prog)
+    try:
+        hexpath.check(isa, prog.lines, hexpath.HEX_TEXT_BASE)
+    except hexpath.HexError as exc:
+        a.category = exc.category
+        a.failure = f"The machine code was rejected before running: {exc}" + note
+        return a
+    image = hexpath.program_image(prog, task.app.bss_size)
+    assert text_bytes(image) == prog.text  # the executed code is exactly the parsed bytes
+    a.code = prog.text
+    a.hex_note = note
+    a.locate = _range_locator((hexpath.HEX_TEXT_BASE + hl.offset, len(hl.data), f"line {hl.line}: `{hl.text.strip()}`")
+                              for hl in prog.lines)
+    a.image = image
+    return a
+
+
+HEX_NOTE = ("\n\nYour machine code, as written, decodes as (address, your line, the hex, the disassembly; the "
+            "entry point is the first line):\n")
+
+APP_PIPELINES = {"asm": _asm_attempt, "stream": _app_stream_attempt, "hex": _app_hex_attempt}
+APP_EXTRA_PATHS = ("hex",)  # opt-in (`--paths hex`): not in APP_PATHS, so default plans are unchanged
 
 
 def app_attempt(subject: Subject, path: str, isa: str, task: AppEvalTask, prompt: str, *, raw_path: str = "",
@@ -340,7 +391,9 @@ def app_attempt(subject: Subject, path: str, isa: str, task: AppEvalTask, prompt
         a.verdict = v
         a.ok, a.category = v.ok, v.category
         if not v.ok:
-            a.failure = v.message
+            a.failure = v.message + getattr(a, "hex_note", "")  # hex: what the model's bytes decode as
     if hasattr(a, "image"):
         del a.image  # not part of the record
+    if hasattr(a, "hex_note"):
+        del a.hex_note
     return a

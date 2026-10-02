@@ -201,7 +201,7 @@ def _function_tables(run_dir: Path, cells: list[dict], atts: list[dict]) -> str:
 
 # -- the app battery -----------------------------------------------------------------------------
 
-APP_PATH_ORDER = ("asm", "stream")
+APP_PATH_ORDER = ("asm", "stream", "hex")  # hex: opt-in, shown only when a cell ran on it
 
 
 def _units(cells: list[dict]) -> dict[tuple, list[dict]]:

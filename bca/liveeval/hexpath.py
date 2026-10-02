@@ -151,3 +151,143 @@ def listing(isa: str, code: bytes, lines: list[HexLine], base: int) -> str:
         d = describe(isa, hl.data, base + hl.offset)
         out.append(f"  +{hl.offset:#06x} line {hl.line:>3}: {word:<24} {d if d is not None else '(does not decode)'}")
     return "\n".join(out)
+
+
+# -- whole programs (the app battery's opt-in `hex` path) -------------------------------------------
+#
+# A fixed static layout the prompt states exactly, so the model can compute every address itself:
+# code at HEX_TEXT_BASE (the entry point is its first byte), the initialised writable data the model
+# gives at HEX_DATA_BASE, and the task's zeroed scratch area at HEX_BSS_BASE. The model writes a
+# `.text` section of instruction lines (as above) and optionally a `.data` section of data bytes; no
+# other directive, no label. The harness copies the bytes into place unchanged (and, for a native
+# run, into an ELF container: write_elf); nothing assembles, links or relocates them.
+
+HEX_TEXT_BASE = 0x400000
+HEX_DATA_BASE = 0x500000
+HEX_BSS_BASE = 0x600000
+HEX_SECTION_MAX = 1 << 20  # text and data each at most 1 MiB (the gap to the next section)
+DATA_LINE_MAX = 400
+
+
+@dataclass(frozen=True)
+class HexProgram:
+    isa: str
+    text: bytes
+    lines: list[HexLine]  # the instruction lines (offsets from HEX_TEXT_BASE)
+    data: bytes
+
+
+def _data_bytes(body: str, n: int) -> bytes:
+    out = bytearray()
+    for tok in body.split():
+        t = tok[2:] if tok[:2] in ("0x", "0X") else tok
+        if not t or len(t) % 2 or not all(c in "0123456789abcdefABCDEF" for c in t):
+            raise HexError(f"line {n}: {tok[:30]!r} is not data bytes (pairs of hex digits in memory order, "
+                           "e.g. 48 65 6c 6c 6f 0a or 48656c6c6f0a)", n)
+        out += bytes.fromhex(t)
+    return bytes(out)
+
+
+def parse_program(isa: str, text: str) -> HexProgram:
+    """A whole program in the hex format: instruction lines (before any marker, or after `.text`) and
+    data lines (after `.data`). Raises HexError."""
+    section = ".text"
+    code_src: list[str] = []
+    data = bytearray()
+    seen: set[str] = set()
+    for n, raw in enumerate(text.splitlines(), 1):
+        body = _strip_comment(raw)
+        if body.startswith("."):
+            name = body.split()[0].lower()
+            if name not in (".text", ".data") or len(body.split()) != 1:
+                raise HexError(f"line {n}: {body[:40]!r}: the only markers are `.text` and `.data`, each on a "
+                               "line of its own (no other directive, no labels)", n)
+            if name in seen:
+                raise HexError(f"line {n}: {name} appears twice; give each section once", n)
+            seen.add(name)
+            section = name
+            code_src.append("")  # keep the line numbering
+            continue
+        if section == ".text":
+            code_src.append(raw)
+            continue
+        code_src.append("")
+        if body:
+            if len(raw) > DATA_LINE_MAX:
+                raise HexError(f"line {n} is longer than {DATA_LINE_MAX} characters", n)
+            data += _data_bytes(body, n)
+    code, lines = parse(isa, "\n".join(code_src))
+    if len(code) > HEX_SECTION_MAX:
+        raise HexError(f".text is {len(code)} bytes, over the limit of {HEX_SECTION_MAX}", 0, "format")
+    if len(data) > HEX_SECTION_MAX:
+        raise HexError(f".data is {len(data)} bytes, over the limit of {HEX_SECTION_MAX}", 0, "format")
+    return HexProgram(isa, code, lines, bytes(data))
+
+
+def program_image(prog: HexProgram, bss_size: int):
+    """The bca.image.Image of a hex program: the bytes at the stated addresses, unchanged (the code
+    page is filled with traps after the last instruction, as the linker does for the asm path)."""
+    from bca.image import PAGE, _TRAP, Image
+
+    text = bytearray(prog.text)
+    tail = (-(len(text) + 1)) % PAGE + 1  # always at least one trap after the code
+    trap = _TRAP[prog.isa]
+    text += (trap * (tail // len(trap) + 1))[:tail]
+    segments = [(HEX_TEXT_BASE, bytes(text), "rx")]
+    sections = {".text": (HEX_TEXT_BASE, len(prog.text))}
+    if prog.data:
+        segments.append((HEX_DATA_BASE, prog.data, "rw"))
+        sections[".data"] = (HEX_DATA_BASE, len(prog.data))
+    if bss_size:
+        sections[".bss"] = (HEX_BSS_BASE, bss_size)
+    return Image(isa=prog.isa, entry=HEX_TEXT_BASE, segments=segments, symbols={},
+                 bss=(HEX_BSS_BASE, bss_size), text_end=HEX_TEXT_BASE + len(prog.text), sections=sections)
+
+
+_ELF_MACHINE = {"x86_64": 62, "aarch64": 183}
+
+
+def write_elf(prog: HexProgram, bss_size: int) -> bytes:
+    """A static ELF executable (ET_EXEC) holding the program's bytes unchanged: one PT_LOAD per
+    segment (code r-x at HEX_TEXT_BASE, data rw- at HEX_DATA_BASE, the zeroed area rw- at
+    HEX_BSS_BASE with no file bytes) and a PT_GNU_STACK (non-executable stack); no section headers.
+    The entry point is the first code byte."""
+    import struct
+
+    page = 0x1000
+    segs = [(HEX_TEXT_BASE, prog.text, len(prog.text), 5)]  # PF_R | PF_X
+    if prog.data:
+        segs.append((HEX_DATA_BASE, prog.data, len(prog.data), 6))  # PF_R | PF_W
+    if bss_size:
+        segs.append((HEX_BSS_BASE, b"", bss_size, 6))
+    nph = len(segs) + 1
+    out = bytearray(page)  # the headers' page
+    phdrs = []
+    for vaddr, blob, memsz, flags in segs:
+        off = len(out) if blob else 0
+        if blob:
+            out += blob
+            out += b"\0" * (-len(out) % page)
+        phdrs.append(struct.pack("<IIQQQQQQ", 1, flags, off, vaddr, vaddr, len(blob), memsz, page))
+    phdrs.append(struct.pack("<IIQQQQQQ", 0x6474E551, 6, 0, 0, 0, 0, 0, 16))  # PT_GNU_STACK, rw-
+    ehdr = struct.pack("<16sHHIQQQIHHHHHH",
+                       b"\x7fELF\x02\x01\x01" + b"\0" * 9,  # 64-bit, little-endian, System V
+                       2, _ELF_MACHINE[prog.isa], 1,  # ET_EXEC, machine, EV_CURRENT
+                       HEX_TEXT_BASE, 64, 0,  # entry, program headers at 64, no section headers
+                       0, 64, 56, nph, 64, 0, 0)
+    out[0:64] = ehdr
+    out[64:64 + 56 * nph] = b"".join(phdrs)
+    return bytes(out)
+
+
+def program_listing(isa: str, prog: HexProgram, limit: int = 700) -> str:
+    """What the code bytes mean, by absolute address: address, your line, the hex, the disassembly."""
+    out = []
+    for hl in prog.lines[:limit]:
+        word = hl.data[::-1].hex() if isa == "aarch64" else hl.data.hex(" ")
+        d = describe(isa, hl.data, HEX_TEXT_BASE + hl.offset)
+        out.append(f"  {HEX_TEXT_BASE + hl.offset:#08x} line {hl.line:>4}: {word:<24} "
+                   f"{d if d is not None else '(does not decode)'}")
+    if len(prog.lines) > limit:
+        out.append(f"  ... ({len(prog.lines) - limit} more instructions not shown)")
+    return "\n".join(out)

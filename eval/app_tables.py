@@ -13,6 +13,8 @@ for f in sorted(glob.glob("eval/runs/apps-*/*/baseline/results.jsonl")):
         r = json.loads(line)
         if r.get("battery") != "apps" or r.get("variant", "baseline") != "baseline":
             continue
+        if r.get("path") not in ("asm", "stream"):  # the opt-in hex path is reported on its own
+            continue
         subj = r.get("subject") or ""
         if subj.startswith(("codex_", "kimi_", "agy_", "grok_", "copilot_")):
             label = subj.replace("_", ":", 1).replace("kimi-code_", "kimi-code/")
