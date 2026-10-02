@@ -101,6 +101,23 @@ def test_undecodable_aarch64_word_is_an_encoding_error():
     assert a.category == "encoding" and "does not decode" in a.failure
 
 
+def test_valid_armv8_0_word_capstone_misses_is_not_refused():
+    # seen live (claude-sonnet-4-5, sort_lines hex app): 384568e7 is `ldtrb w7, [x7, #86]`, a valid ARMv8.0
+    # unprivileged load GNU as accepts; capstone does not decode it, so GNU objdump's text is used instead
+    import struct
+
+    word = struct.pack("<I", 0x384568E7)
+    assert hexpath.describe("aarch64", word, CODE_BASE) == "ldtrb w7, [x7, #86]"
+    _, lines = hexpath.parse("aarch64", "384568e7\nd65f03c0\n")
+    hexpath.check("aarch64", lines, CODE_BASE)  # no HexError
+    # undefined words and a byte-swapped word (b4000460 written as 600400b4) are still refused,
+    # and an ARMv8.1 atomic is still outside the prompt's instruction set
+    for text, frag in (("d71d001d\n", "does not decode"), ("600400b4\n", "does not decode"),
+                       ("386e600f\n", "outside the prompt's instruction set")):
+        with pytest.raises(hexpath.HexError, match=frag):
+            hexpath.check("aarch64", hexpath.parse("aarch64", text)[1], CODE_BASE)
+
+
 def test_runtime_failure_feedback_lists_what_the_bytes_mean(tmp_path):
     good = _hex("aarch64", A64_SUM)
     wrong = good.replace("8b010000", "cb010000", 1)  # add x0, x0, x1 -> sub x0, x0, x1

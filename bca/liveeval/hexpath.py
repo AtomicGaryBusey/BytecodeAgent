@@ -95,12 +95,48 @@ def parse(isa: str, text: str) -> tuple[bytes, list[HexLine]]:
 
 
 def describe(isa: str, data: bytes, addr: int) -> str | None:
-    """Capstone's text for one instruction's bytes (None if they do not decode as one)."""
+    """The text of one instruction's bytes (None if they do not decode as one): capstone's, or for an
+    AArch64 word capstone does not know, GNU objdump's (capstone misses some valid ARMv8.0 encodings,
+    e.g. the unprivileged loads `ldtrb`, which GNU as accepts)."""
     insns = list(ISAS[isa].disassembler().disasm(data, addr))
-    if len(insns) != 1 or insns[0].size != len(data):
-        return None
-    i = insns[0]
-    return f"{i.mnemonic} {i.op_str}".strip()
+    if len(insns) == 1 and insns[0].size == len(data):
+        i = insns[0]
+        return f"{i.mnemonic} {i.op_str}".strip()
+    if isa == "aarch64" and len(data) == 4:
+        return _objdump_a64(data)
+    return None
+
+
+_OBJDUMP_CACHE: dict[bytes, str | None] = {}
+_OBJDUMP_LINE_RE = re.compile(r"^\s*0:\s+[0-9a-f]{8}\s+(.*?)\s*$", re.M)
+
+
+def _objdump_a64(word: bytes) -> str | None:
+    """GNU objdump's text for one AArch64 word, None if it is undefined. Branch targets are printed
+    as absolute addresses from 0, so such text is used only for the ISA-level check and feedback."""
+    if word in _OBJDUMP_CACHE:
+        return _OBJDUMP_CACHE[word]
+    from bca.stream import _gas_tool
+
+    gas = _gas_tool("aarch64")
+    tool = None
+    if gas:
+        cand = gas[: -len("as")] + "objdump" if gas.endswith("as") else None
+        tool = cand if cand and os.path.exists(cand) else None
+    text = None
+    if tool:
+        with tempfile.TemporaryDirectory(prefix="bca-hex-") as tmp:
+            path = os.path.join(tmp, "w.bin")
+            with open(path, "wb") as f:
+                f.write(word)
+            proc = subprocess.run([tool, "-D", "-b", "binary", "-m", "aarch64", path], capture_output=True,
+                                  timeout=30, env={"PATH": "/usr/bin:/bin", "LC_ALL": "C"})
+        m = _OBJDUMP_LINE_RE.search(proc.stdout.decode(errors="replace"))
+        if m and not m.group(1).startswith(".inst") and "undefined" not in m.group(1):
+            text = re.sub(r"\s+", " ", m.group(1).split("//")[0]).strip()
+            text = re.sub(r"\s*<.*?>", "", text)  # drop objdump's symbol annotations
+    _OBJDUMP_CACHE[word] = text
+    return text
 
 
 def check(isa: str, lines: list[HexLine], base: int) -> None:
