@@ -20,7 +20,7 @@ keys, and no second account for any vendor.
 | Vendor / CLI | Plan | Safety program | Limits seen in these runs |
 |---|---|---|---|
 | Anthropic / Claude Code | **Claude Max 20x** | Cyber Verification Program (relaxed cyber safeguards) | none hit |
-| OpenAI / Codex CLI | **ChatGPT Plus** | Daybreak, Blue tier (no Red / `*-cyber` models) | the 5-hour window, once (Astra's app battery); weekly not reached |
+| OpenAI / Codex CLI | **ChatGPT Plus** (Pro 100 from 2026-10-04; every committed Codex run used Plus) | Daybreak, Blue tier (no Red / `*-cyber` models) | the 5-hour window, once (Astra's app battery); weekly not reached |
 | Moonshot / Kimi Code | **Kimi Allegretto** | none known | a 5-hour window (~125-160 calls) and a 7-day window on Code usage (reached 100% 2026-09-29); monthly credits |
 | Google / Antigravity | **Google AI Plus (2 TB)** | none known | ~75 calls per week, per account (not per model) |
 | xAI / Grok Build | **SuperGrok** | none known | weekly included usage ~70% at most (app calls cost ~0.4% each); not exceeded, no paid credits used |
@@ -50,9 +50,30 @@ these accounts, not every account on each service.
 | request evidence | CLI debug log: `tools: []`; system/message contents not visible | request captured at a local recorder: `tools: []`, only SYSTEM_PROMPT + prompt, 48-58 input tokens for a one-line prompt (was ~4000); every call also guarded by an input-token bound | kimi's session record (`wire.jsonl`): tools hash of `[]`, system prompt hash = SYSTEM_PROMPT, message count checked | agy's conversation record (protobuf `gen_metadata`) | request captured at a local recorder (no `tools` key; server echoes `tools: []`), then grok's per-call session record: empty tool definitions, system prompt = SYSTEM_PROMPT, one model call, input tokens bounded | the runtime's own debug log of the wire request, per call: system prompt = SYSTEM_PROMPT, the prompt verbatim, no `tools` key, empty tool fingerprint, `tool_count` 0; plus the stream's request capture (0 tools, one system segment `agent_replacement`); one model call; input tokens bounded |
 | extra context the model sees | ~350 tokens added by Claude Code (content not visible to us) | none found | a date reminder (227 chars) and an "auto permission mode" note (508 chars) | `<System Prompt>` / `<USER_REQUEST>` wrappers, a local-time line, a "model setting changed" note | an empty first user message; ~1152 tokens of server-side context xAI adds itself (not visible); the prompt's final newline is trimmed | none in the request (the runtime's `<current_datetime>` prompt prefix is removed by a hook); the Anthropic path trims the prompt's final newline; Grok models add ~1500 tokens of server-side context (not visible) |
 | served model reported | yes (per message; fallbacks flagged) | no, except a cyber reroute (scored as refusal) | no (the id sent is recorded) | no (the request echoes the id) | yes, from the response (`grok-4.7` is served as `grok-4.7-build`); any other model is a fatal reroute | yes, per call (model.call_start / usage / message); a model switch (rate-limit auto switch, "refusal fallback") is a fatal reroute |
-| default effort (runs use CLI defaults, as the Claude runs did) | CLI default | catalog default (luna/sol: medium) | high | encoded in the model id (`-high`, `-low`) | high (served effort recorded; a mismatch is fatal) | per model (medium seen for GPT, MAI and Claude; high for Kimi K3 and Grok 4.7); served effort recorded, a requested effort must be served (fatal otherwise) |
+| default effort (runs use CLI defaults, as the Claude runs did) | CLI default | pinned per model since 2026-10-04: astra and daybreak-blue low; luna, sol and gpt-5.5 medium (the defaults recorded for their committed runs; see below) | high | encoded in the model id (`-high`, `-low`) | high (served effort recorded; a mismatch is fatal) | per model (medium seen for GPT, MAI and Claude; high for Kimi K3 and Grok 4.7); served effort recorded, a requested effort must be served (fatal otherwise) |
 | refusal signal | `stop_reason: refusal`; fallback turned off (`switchModelsOnFlag: false`) | cyber/bio policy errors, content_filter, cyber reroute | `provider.filtered` ("Provider safety policy blocked the response.") | content-filter / safety finish reasons | HTTP 403 content-safety blocks (account 403s stay errors), `stopReason: refusal` | `finishReason: content_filter` (Anthropic `refusal` is normalised to it), `contentFilterTriggered`, an OpenAI-style `refusal` field |
 | text delivery | streamed, killed on an early abort | one message | one message | streamed, but not killed on an early abort (its request record is written at the end of the turn) | streamed, not killed early (session record written at the end of the turn) | one message, handed over after the call is verified |
+
+**Codex effort is pinned (2026-10-04).** Without `--effort`, the Codex CLI uses the effort in its *live*
+model catalog, and that default follows the ChatGPT plan: for `gpt-6-astra` it is medium on Pro 100. The
+adapter recorded the default from the CLI's offline *bundled* catalog, because each run describes its subject
+before the first call fetches the live one. So the committed records ("cli-default (low)" for Astra and
+Daybreak Blue, "cli-default (medium)" for Luna, Sol and GPT-5.5) show the bundled default, not a
+server-confirmed setting. Those runs were all made on ChatGPT Plus. A calibration on 2026-10-04 re-sent four
+historical first-attempt Astra prompts at a pinned low and a pinned medium. The original runs' reasoning tokens
+were nearer low in three cells and tied in the fourth:
+
+| Cell | Original | Pinned low | Pinned medium |
+|---|---|---|---|
+| base64.hex.aarch64 | 1,006 | 1,034 | 1,226 |
+| wc.hex.x86_64 | 655 | 744 | 859 |
+| rpn.stream.x86_64 | 136 | 117 | 116 |
+| sort_lines.asm.aarch64 | 153 | 186 | 257 |
+
+That is consistent with low, but medium costs Astra only 15-40% more reasoning here, so it is evidence, not
+proof. From 2026-10-04 every Codex call passes its effort explicitly. Known models default to the pins above
+(`CODEX_PINNED_EFFORT`), any other model must be given `--effort`, and each call records the effort it ran at
+("low (pinned)" or "... (requested)").
 
 ## Local models (`local:<model>`)
 
@@ -80,7 +101,22 @@ Q8_0, context 65536 of a native 262144; Modelfile sampling temperature 0.7, top_
 `qwen3-coder-next:q4_K_M` (80B total / 3B active; it never thinks, so no suffix) and `qwen3.6:35b-a3b-q8_0`
 (35B / 3B active; thinks by default, run both `@nothink` and `@think`). These are quantised open-weight
 models on a single desktop-class machine: their results say what such a setup can do, not what the same
-models do at full precision on a provider's servers.
+models do at full precision on a provider's servers. `qwen3-coder-next:q4_K_M` was removed from the volume
+on 2026-10-04 to make room for Kolibri-1; its results stay committed, and a re-run would download it again.
+
+**vLLM-served models (`vllm:<model>`, `vendor_vllm`).** For models Ollama cannot run, the same contract holds
+through vLLM's OpenAI-compatible server. The request is `POST /v1/chat/completions`, streamed, with
+`[system: SYSTEM_PROMPT, user: prompt]` and no `tools`, `tool_choice`, `response_format` or sampling fields,
+so sampling is the checkpoint's `generation_config.json`. `--effort` maps to
+`chat_template_kwargs.reasoning_effort`. The served model must be listed by `/v1/models` and named by every
+stream chunk, the server version must be an audited one (0.29.0), and a call ending with
+`finish_reason: length` reached the context window and fails closed. Reasoning arrives in separate deltas (or a
+`<think>` block) and is recorded, never scored. A tool call fails closed. Calls are serialised per server as
+for Ollama. First model: Aleph Alpha's Kolibri-1 (78.1B total / 3.46B active, FP8, Apache 2.0). It runs in
+`bca-vllm-kolibri`: the official vLLM 0.29.0 arm64 image plus Aleph Alpha's `aleph-alpha-inference` 1.0.0
+plugin (their own image is x86-only). The server binds 127.0.0.1:8000, the weights come from the
+`bca-hf-models` volume, `HF_HUB_OFFLINE=1` is set, `--max-model-len 65536` matches the Ollama models, and a
+reasoning parser is on with no tool parser.
 
 ## Known limits
 

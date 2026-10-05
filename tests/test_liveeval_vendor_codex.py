@@ -188,7 +188,9 @@ def test_catalog_fetched_once_in_its_own_private_home(tmp_path, codex_home):
 
 
 def test_unknown_model_is_fatal_and_never_runs(tmp_path, codex_home):
-    r = subject(tmp_path, codex_home, model="gpt-nope").complete("p")
+    with pytest.raises(ValueError, match="pass --effort"):  # no pinned effort for an unknown model
+        subject(tmp_path, codex_home, model="gpt-nope")
+    r = subject(tmp_path, codex_home, model="gpt-nope", effort="low").complete("p")
     assert not r.ok and "unknown model" in r.error and runner.infra_kind(r.error) == "fatal"
     assert not (tmp_path / "seen.json").exists()
 
@@ -199,18 +201,22 @@ def test_effort_the_model_does_not_list_is_fatal(tmp_path, codex_home):
     assert not (tmp_path / "seen.json").exists()
 
 
-def test_default_effort_passes_no_effort_and_is_described(tmp_path, codex_home):
+def test_pinned_effort_is_passed_and_described(tmp_path, codex_home):
+    # without --effort a known model runs at its pinned effort (CODEX_PINNED_EFFORT), never the plan-dependent
+    # CLI default; the catalog is still described (bundled before the first call, live after)
     s = subject(tmp_path, codex_home)
-    d = s.describe()  # before any call: the CLI's bundled catalog, offline
+    assert s.effort == "medium" and s.effort_source == "pinned"
+    d = s.describe()
     assert d["catalog"]["source"] == "bundled" and d["catalog"]["service_tier"] == "priority"
-    assert d["effort"] == "cli-default (medium)" and d["cli_version"] == "codex 0.157.1"
+    assert d["effort"] == "medium" and d["cli_version"] == "codex 0.157.1"
     assert s.complete("p").ok
-    assert not any(a.startswith("model_reasoning_effort") for a in seen(tmp_path)["argv"])
+    assert 'model_reasoning_effort="medium"' in seen(tmp_path)["argv"]
     d = s.describe()
     assert d["catalog"] == {"source": "live", "default_effort": "medium",
                             "efforts": ["low", "medium", "high", "xhigh", "max"], "verbosity": "low",
                             "service_tier": None, "reasoning_summary": "none"}
     assert subject(tmp_path, codex_home, effort="high").describe()["effort"] == "high"
+    assert CodexSubject("gpt-6-astra").effort == "low"
 
 
 # -- fail closed: an allowlist of items and events --------------------------------------------------
@@ -335,7 +341,7 @@ def test_timeout(tmp_path, codex_home):
 
 
 def test_missing_credentials_is_fatal(tmp_path):
-    s = CodexSubject("m", binary=str(fake_codex(tmp_path, CODEX_OK)), home_real=tmp_path / "nohome")
+    s = CodexSubject("m", binary=str(fake_codex(tmp_path, CODEX_OK)), home_real=tmp_path / "nohome", effort="low")
     r = s.complete("p")
     assert not r.ok and "log in first" in r.error and runner.infra_kind(r.error) == "fatal"
     assert not (tmp_path / "seen.json").exists() and not catalog_calls(tmp_path)
@@ -532,3 +538,12 @@ def test_expiring_token_leads_without_deadlocking_the_catalog_fetch(tmp_path, co
     r = s.complete("p")  # the refresh leader holds the credential lock for the whole call
     assert r.ok, r.error
     assert (codex_home / "auth.json").read_text() == new
+
+
+def test_each_call_notes_the_effort_it_ran_at(tmp_path, codex_home):
+    # the cell record's catalog comes from the bundled catalog (describe() runs before the first call), which can
+    # differ from the live default the CLI uses; each call notes the effort it actually ran at
+    r = subject(tmp_path, codex_home).complete("p")
+    assert r.ok and r.notes[-1] == "effort: medium (pinned)"
+    r = subject(tmp_path, codex_home, effort="low").complete("p")
+    assert r.ok and r.notes[-1] == "effort: low (requested)"

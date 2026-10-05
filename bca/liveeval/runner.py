@@ -131,6 +131,7 @@ _FATAL_RE = re.compile(
     r"/login|oauth token|not_found_error|permission_error|invalid model|model[^\n]{0,40}not (?:found|exist|available|"
     r"supported)|unknown model|no such model|credit balance|"
     r"local server unreachable|not an audited version|"  # vendor_local: the Ollama server is down or changed
+    r"vllm server unreachable|vllm model [^\n]{0,80} not served|"  # vendor_vllm: likewise for the vLLM server
     # a subscription's usage window is spent: retrying in minutes cannot help; resume the run later
     r"usage limit|hit your (?:weekly |daily )?limit|exceeded your current (?:token )?quota|exceeded_current_quota|"
     r"quota (?:exhausted|exceeded)|insufficient balance|login_required|token_unauthorized|"

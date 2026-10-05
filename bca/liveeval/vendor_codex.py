@@ -180,6 +180,14 @@ def codex_safety(message: str) -> str:
     return ""
 
 
+# The effort every Codex model runs at, pinned (decided 2026-10-04). Without --effort the CLI uses the LIVE
+# catalog's default, which changes with the ChatGPT plan (gpt-6-astra: low on Plus, medium on Pro 100), so an
+# unpinned run's effort would depend on the account's plan. Each pin is the default recorded for that model's
+# committed runs (all made on ChatGPT Plus). A model not listed here must be given --effort explicitly.
+CODEX_PINNED_EFFORT = {"gpt-6-astra": "low", "gpt-daybreak-blue-latest": "low", "gpt-6-luna": "medium",
+                       "gpt-6-sol": "medium", "gpt-5.5": "medium"}
+
+
 class CodexSubject(CliSubject):
     vendor = "codex"
     _features: list[str] | None = None
@@ -195,6 +203,14 @@ class CodexSubject(CliSubject):
     _catalog_lock = threading.Lock()
 
     def __init__(self, model: str, **kw):
+        if kw.get("effort") is None and model:  # an empty model id is refused by CliSubject below
+            if model not in CODEX_PINNED_EFFORT:
+                raise ValueError(f"codex: pass --effort for {model!r}: the CLI default follows the ChatGPT plan, "
+                                 f"so runs pin it (pinned models: {', '.join(sorted(CODEX_PINNED_EFFORT))})")
+            kw["effort"] = CODEX_PINNED_EFFORT[model]
+            self.effort_source = "pinned"
+        else:
+            self.effort_source = "requested"
         super().__init__(model, **kw)
         self._call = threading.local()  # the prompt of the call running in this thread
 
@@ -312,6 +328,10 @@ class CodexSubject(CliSubject):
             raise IsolationError(f"codex model {self.model}: effort {self.effort!r} not supported "
                                  f"(catalog lists {', '.join(self._supported_efforts(entry))})")
         (home / "bca-models.json").write_text(json.dumps(self.tool_less_catalog(entry)))
+        # What this call runs at: the requested effort, else the LIVE catalog's default (the bundled one in
+        # describe() can differ: Astra's was low in both on ChatGPT Plus, the live one medium on Pro 100).
+        self._call.effort_note = (f"effort: {self.effort} ({self.effort_source})" if self.effort else
+                                  f"effort: cli-default = live catalog default {entry.get('default_reasoning_level')}")
 
     def argv(self, prompt: str, home: Path) -> list[str]:
         self._call.prompt = prompt
@@ -333,7 +353,9 @@ class CodexSubject(CliSubject):
     def describe(self) -> dict:
         """Adds the model's catalog defaults (the effort, verbosity and service tier the CLI uses when
         none is passed). Before the first call the live entry is not known yet; the CLI's bundled
-        catalog (offline, no credentials) stands in and is labelled as such."""
+        catalog (offline, no credentials) stands in and is labelled as such. The bundled default can
+        differ from the live one the call actually uses (it does for gpt-6-astra on ChatGPT Pro 100), so
+        each call also notes the effort it ran at (prepare_home); pass --effort to pin it."""
         d = super().describe()
         entry, source = self._entry, "live"
         if entry is None:
@@ -447,3 +469,6 @@ class CodexSubject(CliSubject):
             self.check_request_size(p)  # every completed turn, the scored refusals included
         if p.violations:
             p.refusal = ""  # an isolation failure is never scored, not even as a refusal
+        note = getattr(self._call, "effort_note", None)
+        if note:
+            p.notes.append(note)  # last, after the error message above has used the CLI's own last note
