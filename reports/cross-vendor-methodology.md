@@ -115,8 +115,44 @@ stream chunk, the server version must be an audited one (0.29.0), and a call end
 for Ollama. First model: Aleph Alpha's Kolibri-1 (78.1B total / 3.46B active, FP8, Apache 2.0). It runs in
 `bca-vllm-kolibri`: the official vLLM 0.29.0 arm64 image plus Aleph Alpha's `aleph-alpha-inference` 1.0.0
 plugin (their own image is x86-only). The server binds 127.0.0.1:8000, the weights come from the
-`bca-hf-models` volume, `HF_HUB_OFFLINE=1` is set, `--max-model-len 65536` matches the Ollama models, and a
-reasoning parser is on with no tool parser.
+`bca-hf-models` volume, `HF_HUB_OFFLINE=1` is set, and a reasoning parser is on with no tool parser.
+
+**Token-budget mode (`vllm:<model>@budget`, `bca.liveeval.token_budget`), decided 2026-10-05.** Kolibri-1
+generates about 30 tokens/s on the GB10. At its default (high) reasoning effort it spent about 3,000 tokens
+on a trivial function. Under the wall-clock limits, 13 of the first 15 round-1 attempts timed out at 180 s
+(run kept as `kolibri-untuned-trial-r1-*`, not reported). The vendor models are served at 100-300
+tokens/s, so those limits never constrained how long they reasoned: in round 1 one used 27,661 output
+tokens in a single call. A local subject in budget mode is therefore limited by output tokens, reasoning
+included, not by time. Each battery's budget is the largest output any vendor model produced for one call
+in it (measured over all committed vendor attempts), rounded up:
+
+| Battery | Most any vendor model used | Budget |
+|---|---|---|
+| round1 | 27,661 | 32,768 |
+| round2 | 39,297 | 49,152 |
+| long | 44,729 | 49,152 |
+| adversarial | 22,159 | 24,576 |
+| apps | 76,794 | 81,920 |
+
+The budget is sent as `max_tokens`. Reaching it is a timeout, recorded and scored as one, with the same
+error text, so repair prompts are unchanged; the call's notes record the budget. A wall-clock ceiling
+(budget / 8 tokens/s + 300 s) still guards against a hung server. The server runs with
+`--max-model-len 131072`, so prompt plus budget always fits (Kolibri supports 1M); a call that stops at
+the context window short of its budget still fails closed. The model keeps its default sampling and
+effort. Budget-mode results are a separate subject and table row: they measure what the model does given
+the vendor models' thinking room, not at their speed.
+
+**Kolibri-1's serving setup.** Tried on 2026-10-04/05 to fix the speed:
+- **Expert-layer backends** via `--moe-backend`: `triton` 31.9 / 27.8 tok/s, `marlin` 29.9 / 27.3; `b12x`,
+  `flashinfer_cutlass` and `cutlass` fail to start on this model and GPU.
+- **Tuned Triton config** for its expert-layer shape (`E=384,N=512`, FP8 128x128 blocks, which ships for no
+  GPU): batch size 1 tuned on the GB10 by vLLM's `benchmark_moe.py` (tuning batch size 2048 here was
+  stopped, its slowest configurations ran ~49 s each); the 2048 entry borrowed from vLLM's shipped
+  `E=256,N=512` B200 config, with `num_stages` 4 -> 3 for the GB10's smaller shared memory. Result:
+  35.3 / 28.2 tok/s.
+
+The kernels are not the bottleneck; the tuned config is kept, and it changes kernel speed only, never
+outputs.
 
 ## Known limits
 

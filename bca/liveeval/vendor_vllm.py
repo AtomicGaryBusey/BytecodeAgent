@@ -19,6 +19,11 @@ construction and is checked per call:
 - Reasoning: the server's reasoning parser returns it in `reasoning_content` / `reasoning` deltas, and a
   leading <think>...</think> block in the content is held back too (vendor_local._ThinkFilter). Either
   is recorded in notes, never scored. A tool call in the stream fails closed.
+- Token-budget mode (`vllm:<model>@budget`, bca.liveeval.token_budget): the call's limit is a number of
+  output tokens per battery (the most any vendor model used for one call there), sent as `max_tokens`,
+  instead of the battery's wall-clock limit (a generous wall-clock ceiling remains). Reaching it is a
+  timeout, recorded and scored as one, with the same error text; the budget goes into the notes. A
+  separate subject (its own directory and table row).
 - Server: BCA_VLLM_URL (default http://127.0.0.1:8000). Calls are serialised per server through a
   cross-process file lock (concurrent requests would slow each other down), and the per-call clock
   starts once the lock is held.
@@ -38,6 +43,7 @@ import time
 from urllib.parse import urlparse
 
 from bca.liveeval.subject import SYSTEM_PROMPT, OnText, Response, Subject
+from bca.liveeval.token_budget import CURRENT_BATTERY, token_budget, wall_ceiling
 from bca.liveeval.vendor_local import _ThinkFilter
 
 VLLM_URL = os.environ.get("BCA_VLLM_URL", "http://127.0.0.1:8000")
@@ -58,10 +64,16 @@ class VllmSubject(Subject):
                  budget=None):
         if not model:
             raise ValueError("vllm: name the served model, e.g. vllm:Aleph-Alpha/Kolibri-1")
+        base, sep, suffix = model.rpartition("@")
+        self.budget_mode = bool(sep) and suffix == "budget" and bool(base)
+        if sep and not self.budget_mode:
+            raise ValueError(f"vllm: unknown suffix @{suffix}; use vllm:<model>@budget for token-budget mode")
+        if self.budget_mode:
+            model = base
         if effort is not None and effort not in EFFORTS:
             raise ValueError(f"vllm: unknown effort {effort!r}; have {', '.join(EFFORTS)}")
         self.model = model
-        self.name = f"vllm:{model}"
+        self.name = f"vllm:{model}" + ("@budget" if self.budget_mode else "")
         self.timeout = timeout
         self.effort = effort
         self.budget = budget
@@ -119,13 +131,17 @@ class VllmSubject(Subject):
         s = self.setup()
         return {"effort": self.effort or MODEL_DEFAULT, "cli_version": f"vllm {s['version']}", "vendor": "vllm",
                 "vllm": {"max_model_len": s["max_model_len"], "root": s["root"],
-                         "sampling": "generation_config.json defaults", "server": f"{self.host}:{self.port}"}}
+                         "sampling": "generation_config.json defaults", "server": f"{self.host}:{self.port}",
+                         "limit": "token budget per battery (bca.liveeval.token_budget)" if self.budget_mode
+                         else "wall clock per battery"}}
 
     # -- one call ----------------------------------------------------------------------------------
 
-    def request_body(self, prompt: str) -> dict:
+    def request_body(self, prompt: str, max_tokens: int | None = None) -> dict:
         body = {"model": self.model, "stream": True, "stream_options": {"include_usage": True},
                 "messages": [{"role": "system", "content": SYSTEM_PROMPT}, {"role": "user", "content": prompt}]}
+        if max_tokens is not None:
+            body["max_tokens"] = max_tokens
         if self.effort is not None:
             kw = {"reasoning_effort": self.effort}
             if self.effort == "none":
@@ -140,17 +156,20 @@ class VllmSubject(Subject):
         with self._lock, open(self._lockfile, "a") as lf:
             fcntl.flock(lf, fcntl.LOCK_EX)
             try:
-                return self._complete(prompt, on_text, raw_path, self.timeout if timeout is None else timeout)
+                budget = token_budget(CURRENT_BATTERY.get()) if self.budget_mode else None
+                limit = wall_ceiling(budget) if budget else (self.timeout if timeout is None else timeout)
+                return self._complete(prompt, on_text, raw_path, limit, budget)
             finally:
                 fcntl.flock(lf, fcntl.LOCK_UN)
 
-    def _complete(self, prompt: str, on_text: OnText | None, raw_path: str, limit: float) -> Response:
+    def _complete(self, prompt: str, on_text: OnText | None, raw_path: str, limit: float,
+                  budget: int | None = None) -> Response:
         try:
             s = self.setup()
         except VllmError as e:
             return Response("", ok=False, error=str(e), model=self.model, model_source="requested")
         self.calls += 1
-        body = json.dumps(self.request_body(prompt)).encode()
+        body = json.dumps(self.request_body(prompt, budget)).encode()
         conn = http.client.HTTPConnection(self.host, self.port, timeout=limit + 30)
         fired = threading.Event()
 
@@ -244,7 +263,12 @@ class VllmSubject(Subject):
             error = "timeout"
         elif not error and not killed and not done:
             error = "vllm server closed the stream before [DONE]"
-        if not error and not killed and finish == "length":
+        out_tokens = (usage or {}).get("completion_tokens")
+        if not error and not killed and finish == "length" and budget and isinstance(out_tokens, int) \
+                and out_tokens >= budget:
+            timed_out, error = True, "timeout"  # the token budget: scored as a timeout, same error text
+            notes.append(f"token budget reached: {out_tokens} of {budget} output tokens")
+        elif not error and not killed and finish == "length":
             error = (f"isolation: the answer reached the {s['max_model_len']}-token context window "
                      f"(finish_reason length; usage {usage})")
         usage = dict(usage or {})
@@ -257,6 +281,8 @@ class VllmSubject(Subject):
                              "chars of reasoning: the server did not honour the request"), False
         if self.effort is not None:
             notes.append(f"reasoning_effort={self.effort}")
+        if budget:
+            notes.append(f"token budget {budget} (battery {CURRENT_BATTERY.get()})")
         ok = not error or (killed and not error.startswith("isolation:"))
         return Response("".join(text), ok=ok and not timed_out, killed=killed, timed_out=timed_out,
                         error="" if ok and not timed_out else error, model=model or self.model,

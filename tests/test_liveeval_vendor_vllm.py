@@ -27,6 +27,7 @@ class Fake:
         self.tool_call = False
         self.requests = []
         self.delay = 0.0
+        self.fill_budget = False  # with finish "length": report completion_tokens == the request's max_tokens
 
 
 def serve(fake: Fake):
@@ -74,7 +75,8 @@ def serve(fake: Fake):
                     time.sleep(fake.delay)
                     send({"content": c})
                 send({}, finish=fake.finish)
-                send({}, usage={"prompt_tokens": 300, "completion_tokens": 10})
+                out = body.get("max_tokens", 10) if fake.fill_budget else 10
+                send({}, usage={"prompt_tokens": 300, "completion_tokens": out})
                 self.wfile.write(b"data: [DONE]\n\n")
             except OSError:
                 pass
@@ -197,3 +199,65 @@ def test_a_real_cell_runs_through_the_runner(env, tmp_path):
     s = subj(url)
     rec = run_cell(s, task, "stream", "x86_64", tmp_path, max_attempts=1, meta=s.describe())
     assert rec["attempts"] == 1 and rec["pass_at_1"] and rec.get("vendor") == "vllm"
+
+
+# -- token-budget mode (vllm:<model>@budget) ---------------------------------------------------------
+
+
+def test_budget_suffix_is_its_own_subject():
+    s = VllmSubject(MODEL + "@budget")
+    assert s.budget_mode and s.model == MODEL and s.name == f"vllm:{MODEL}@budget"
+    assert not VllmSubject(MODEL).budget_mode
+    with pytest.raises(ValueError, match="unknown suffix"):
+        VllmSubject(MODEL + "@fast")
+    assert "max_tokens" not in VllmSubject(MODEL).request_body("p")
+
+
+def test_budget_is_sized_by_the_battery_and_sent_as_max_tokens(env):
+    from bca.liveeval.token_budget import BATTERY_TOKEN_BUDGETS, CURRENT_BATTERY, DEFAULT_TOKEN_BUDGET
+
+    fake, url = env
+    s = VllmSubject(MODEL + "@budget", url=url)
+    tok = CURRENT_BATTERY.set("round2")
+    try:
+        r = s.complete("x", timeout=1)  # the runner's wall-clock limit does not apply in budget mode
+    finally:
+        CURRENT_BATTERY.reset(tok)
+    assert r.ok and fake.requests[-1]["max_tokens"] == BATTERY_TOKEN_BUDGETS["round2"]
+    assert any("token budget 49152 (battery round2)" in n for n in r.notes)
+    assert s.describe()["vllm"]["limit"].startswith("token budget")
+    s.complete("y")
+    assert fake.requests[-1]["max_tokens"] == DEFAULT_TOKEN_BUDGET  # no battery set
+
+
+def test_reaching_the_budget_is_a_timeout_with_the_same_error_text(env):
+    from bca.liveeval.token_budget import CURRENT_BATTERY
+
+    fake, url = env
+    fake.finish, fake.fill_budget = "length", True
+    tok = CURRENT_BATTERY.set("round1")
+    try:
+        r = VllmSubject(MODEL + "@budget", url=url).complete("x")
+    finally:
+        CURRENT_BATTERY.reset(tok)
+    assert not r.ok and r.timed_out and r.error == "timeout"  # repair prompts match a wall-clock timeout
+    assert any(n.startswith("token budget reached: 32768 of 32768") for n in r.notes)
+
+
+def test_length_short_of_the_budget_is_the_context_window_and_fails_closed(env):
+    fake, url = env
+    fake.finish = "length"  # completion_tokens 10, far below any budget
+    r = VllmSubject(MODEL + "@budget", url=url).complete("x")
+    assert not r.ok and r.error.startswith("isolation:") and "context window" in r.error
+
+
+def test_run_cell_publishes_the_battery_and_scores_the_budget_as_a_timeout(env, tmp_path):
+    from bca.liveeval.runner import run_cell
+    from bca.liveeval.tasks import TASKS
+
+    fake, url = env
+    fake.finish, fake.fill_budget = "length", True
+    task = next(t for t in TASKS if t.name == "sum_to")
+    s = VllmSubject(MODEL + "@budget", url=url)
+    rec = run_cell(s, task, "stream", "x86_64", tmp_path, max_attempts=1, meta={"battery": "round1", **s.describe()})
+    assert rec["categories"] == ["subject_timeout"] and fake.requests[0]["max_tokens"] == 32768

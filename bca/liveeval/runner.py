@@ -45,6 +45,7 @@ from bca.liveeval.pipelines import Attempt, attempt, code_base, disassemble
 from bca.liveeval.prompts import build_prompt
 from bca.liveeval.subject import Subject
 from bca.liveeval.tasks import Task
+from bca.liveeval.token_budget import CURRENT_BATTERY
 
 Variant = Callable[[str, str, str, Task], str]
 
@@ -308,6 +309,7 @@ def run_cell(subject: Subject, task: Task, path: str, isa: str, run_dir: Path, *
     stop: str | None = None  # "budget" | "infra"
     infra_errors = 0
     n = len(stored) + 1
+    CURRENT_BATTERY.set(meta.get("battery"))  # token-budget subjects size their calls by it (token_budget)
     while n <= max_attempts and not final_ok:
         prompt = build_prompt(path, isa, task, previous)
         if variant is not None:
