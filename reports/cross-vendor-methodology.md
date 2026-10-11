@@ -21,7 +21,7 @@ keys, and no second account for any vendor.
 |---|---|---|---|
 | Anthropic / Claude Code | **Claude Max 20x** | Cyber Verification Program (relaxed cyber safeguards) | none hit |
 | OpenAI / Codex CLI | **ChatGPT Plus** (Pro 100 from 2026-10-04; every committed Codex run used Plus) | Daybreak, Blue tier (no Red / `*-cyber` models) | the 5-hour window, once (Astra's app battery); weekly not reached |
-| Moonshot / Kimi Code | **Kimi Allegretto** | none known | a 5-hour window (~125-160 calls) and a 7-day window on Code usage (reached 100% 2026-09-29); monthly credits |
+| Moonshot / Kimi Code | **Kimi Allegretto** | none known | a 5-hour window (~125-160 calls), a 7-day window on Code usage (reached 100% on 2026-09-29, 10-04 and 10-11) and monthly credits; the 7-day window is the binding one (see below) |
 | Google / Antigravity | **Google AI Plus (2 TB)** | none known | ~75 calls per week, per account (not per model) |
 | xAI / Grok Build | **SuperGrok** | none known | weekly included usage ~70% at most (app calls cost ~0.4% each); not exceeded, no paid credits used |
 | GitHub / Copilot CLI | **GitHub Copilot Pro** (1,500 AI credits a month, billed per token) | none known | the September credits, spent 2026-09-30 (overage off; resumed after the monthly reset) |
@@ -103,6 +103,8 @@ Q8_0, context 65536 of a native 262144; Modelfile sampling temperature 0.7, top_
 models on a single desktop-class machine: their results say what such a setup can do, not what the same
 models do at full precision on a provider's servers. `qwen3-coder-next:q4_K_M` was removed from the volume
 on 2026-10-04 to make room for Kolibri-1; its results stay committed, and a re-run would download it again.
+`qwen3.6:35b-a3b-q8_0` (Ollama ID `0218f872e86b`) was archived to network storage on 2026-10-10 (its runs
+are complete); restoring its `manifests/` and `blobs/` into the volume brings back the exact weights tested.
 
 **vLLM-served models (`vllm:<model>`, `vendor_vllm`).** For models Ollama cannot run, the same contract holds
 through vLLM's OpenAI-compatible server. The request is `POST /v1/chat/completions`, streamed, with
@@ -151,8 +153,18 @@ the vendor models' thinking room, not at their speed.
   `E=256,N=512` B200 config, with `num_stages` 4 -> 3 for the GB10's smaller shared memory. Result:
   35.3 / 28.2 tok/s.
 
+- **A GB10-native vLLM build** (2026-10-06): `eugr/spark-vllm:nightly-20261002`
+  (`sha256:d8686cc0da9de31df2df477cebbb3f7f473ac771c8be1c0774f94e477d35220b`, vLLM
+  `0.30.1rc1.dev565+g8e58ac22a`, sm_121), reported on NVIDIA's forum at ~48 tok/s for other MoE models,
+  plus the same plugin (`--no-deps`, as it pins vLLM < 0.30), same flags and the same tuned config (the image
+  ships GB10 configs for E=256 and E=512, not 384). Same API (version, `max_model_len`, `reasoning`
+  deltas, `finish_reason`), but 35.2 / 28.2 / 28.2 tok/s over 1,024 tokens and 28.1 / 28.1 over 4,096,
+  against 30.4 / 28.3 on the current stack measured just before. No gain, so it was not adopted and is not
+  in `AUDITED_VERSIONS`.
+
 The kernels are not the bottleneck; the tuned config is kept, and it changes kernel speed only, never
-outputs.
+outputs. **Stack per battery:** every Kolibri battery runs on the official vLLM 0.29.0 image + plugin
+1.0.0 + tuned config.
 
 ## Known limits
 
@@ -226,7 +238,17 @@ only, and the others keep running; the same command resumes it later. Seen so fa
   203/224 cells of Sonnet 5.5 via Copilot (HTTP 402 on every call; never billed); the run finished after the
   monthly reset. Anthropic models cost about twice what GPT-6 Luna did per call through Copilot.
 - **Kimi Allegretto 7-day window:** reached 100% on 2026-09-29 (all of it this eval); the last Kimi K2.8 cell
-  and Kimi K3's app battery wait for it to reopen (2026-10-03 15:02 PDT).
+  and Kimi K3's app battery wait for it to reopen (2026-10-03 15:02 PDT). It reached 100% again on 2026-10-04
+  and 2026-10-11; each time the 5-hour window had blocked calls many times first.
+- **Kimi Allegretto's monthly credits cannot all be used.** The plan has three meters on Code usage: a 5-hour
+  window, a 7-day window and the monthly credits. On 2026-10-11 (Kimi's subscription page, 13:56 PDT), after
+  the 7-day window had been used to 100% three times in the billing month that renews 2026-10-18, the monthly
+  meter read 62.57%: one full week is worth roughly 21% of the month. A 30-day month is about 4.3 weeks, so
+  even with every week used to its limit the monthly meter tops out near 89%, and this month, whose 7-day window
+  reopens only on 2026-10-17 15:02, a day before the renewal, will end lower. This is inferred from the meters
+  (it assumes every week weighs the same; Kimi does not publish the conversion); in practice the 7-day window
+  is the plan's capacity, and a Kimi battery takes calendar weeks. The account has Kimi's "Extra Usage"
+  enabled (limit $50 a cycle) with a $0 balance, so nothing beyond the plan was or could be billed.
 - **Antigravity and the call cap:** quota refusals count as calls, and the run directory's `--max-calls` cap is
   shared by every subject in it; days of refused retries used it up. The resume loop now retries hourly under a
   higher cap. A refused call costs nothing.

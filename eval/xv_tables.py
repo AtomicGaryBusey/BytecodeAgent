@@ -3,7 +3,7 @@ false-reject corrections (ADJ) applied. Run from the repo root: .venv/bin/python
 import json, glob, collections
 recs = {}
 for f in sorted(glob.glob("eval/runs/*/**/results.jsonl", recursive=True) + glob.glob("eval/runs/*/results.jsonl")):
-    if "smoke" in f: continue
+    if "smoke" in f or "untuned-trial" in f: continue  # the untuned Kolibri wall-clock trial is not reported
     rd = f.split("/")[2]
     for l in open(f):
         r = json.loads(l)
@@ -14,6 +14,8 @@ for f in sorted(glob.glob("eval/runs/*/**/results.jsonl", recursive=True) + glob
         elif subj.startswith("local_"):  # @think / @nothink runs are separate rows
             think = (r.get("local") or {}).get("think")
             label = "local:" + (r.get("model") or subj[6:]) + ("" if think is None else "@think" if think else "@nothink")
+        elif subj.startswith("vllm_"):  # vLLM-served open-weight models sit with the local ones
+            label = "local:vllm:" + (r.get("model") or subj[5:])
         elif subj.startswith("claude-"): label = subj
         else: label = r.get("model") or subj
         bat = r.get("battery") or ("round2" if "round2" in rd else "round1")
@@ -31,6 +33,7 @@ names = {"claude-opus-5-5": "Claude Opus 5.5", "claude-fable-5-1": "Claude Fable
  "copilot:claude-sonnet-5.5": "Claude Sonnet 5.5 via Copilot",
  "local:qwen3:30b-a3b-instruct-2507-q8_0": "Qwen3-30B-A3B Instruct 2507 Q8 (local)", "local:qwen2.5:14b": "Qwen2.5-14B Q4 (local)",
  "local:qwen3-coder-next:q4_K_M": "Qwen3-Coder-Next Q4 (local)",
+ "local:vllm:Aleph-Alpha/Kolibri-1": "Aleph Alpha Kolibri-1 FP8, token budget (local)",
  "local:qwen3.6:35b-a3b-q8_0@nothink": "Qwen3.6-35B-A3B Q8, thinking off (local)",
  "local:qwen3.6:35b-a3b-q8_0@think": "Qwen3.6-35B-A3B Q8, thinking on (local)"}
 # reviewed harness false rejects counted as first-attempt passes: label -> [(battery, path, n)]
