@@ -89,8 +89,12 @@ its plan quota is spent.
 | Codex GPT-6 Luna | 33 | 41 | 10 | 46 | **130/224 (58%)** | 209/224 (93%) | 1.71 |
 | Claude Haiku 4.5 | 30 | 34 | 17 | 35 | **116/224 (52%)** | 158/224 (71%) | 2.19 |
 | Microsoft MAI-Code 1.1 Flash (Copilot) | 26 | 34 | 12 | 35 | **107/224 (48%)** | 151/224 (67%) | 2.29 |
+| Gemini 3.8 Flash High (Antigravity) † | 46 | 60 | 30/33 | — | **136/143 (95%)** | 143/143 (100%) | 1.06 |
 
-Still running (added when complete and reviewed): Kimi K2.8 (kimi-for-coding) and Gemini 3.8 Flash on Antigravity (quota-paced).
+Still running (added when complete and reviewed): Kimi K2.8 (kimi-for-coding).
+
+† Partial, quota-paced (Google AI Plus): rounds 1 + 2 complete, long 33/54, adversarial not yet run; the hourly resume loop adds cells as the weekly quota allows. Like for like on the complete batteries, rounds 1 + 2: **106/110 (96%)**, level with Claude Fable 5.1 (106) and behind Codex GPT-6 Astra, Grok 4.7 and Grok 4.7 build-fast (107 each). Its first-attempt failures were reviewed by hand: no harness false rejects (hex literals in QBE, `%x =l %y` without `copy`, malformed JSON, and one 400 s timeout spent thinking: 62,910 of 65,532 output tokens).
+
 Local open-weight models (Qwen3-Coder-Next, Qwen3-30B-A3B, Qwen2.5-14B, Qwen3.6 on this DGX Spark) score
 3-8% first try and are reported separately: [Local open-weight models](reports/live-model-eval-cross-vendor.md#local-open-weight-models-dgx-spark).
 An opt-in `assisted` variant (notes on AArch64 constants, x86 addressing, a QBE cheat sheet, structured
