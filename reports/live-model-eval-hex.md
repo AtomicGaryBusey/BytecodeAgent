@@ -40,12 +40,14 @@ results on the other paths (16 cells each):
 | Grok 4.7 build-fast | **14/16** | 16/16 | 16/16 | 16/16 | 15/16 |
 | Claude Opus 4.8 | **14/16** | 16/16 | 13/16 | 15/16 | 7/16 |
 | Claude Sonnet 5.5 | **14/16** | 16/16 | 16/16 | 15/16 | 16/16 |
+| Kimi K3 | **13/16** | 16/16 | 16/16 | 14/16 | 15/16 |
 | GPT-6 Luna via Copilot | **12/16** | 16/16 | 16/16 | 15/16 | 11/16 |
 | Grok 4.6 | **12/16** | 16/16 | 15/16 | 16/16 | 14/16 |
 | Grok 4.5 | **10/16** | 16/16 | 16/16 | 16/16 | 15/16 |
 | Claude Sonnet 4.5 | **10/16** | 16/16 | 16/16 | 16/16 | 16/16 |
 | Codex GPT-6 Luna | **10/16** | 15/16 | 15/16 | 12/16 | 6/16 |
 | Microsoft MAI-Code 1.1 Flash (Copilot) | **6/16** | 11/16 | 16/16 | 10/16 | 0/16 |
+| Kimi K2.8 (for-coding) | **5/16** | 15/16 | 15/16 | 13/16 | 9/16 |
 | Claude Haiku 4.5 | **5/16** | 8/16 | 16/16 | 14/16 | 0/16 |
 | Claude Sonnet 5.5 via Copilot | **1/16** | 16/16 | 16/16 | 15/16 | 14/16 |
 
@@ -63,12 +65,14 @@ Per ISA, hex first attempt:
 | Grok 4.7 build-fast | 6/8 | 8/8 |
 | Claude Opus 4.8 | 6/8 | 8/8 |
 | Claude Sonnet 5.5 | 6/8 | 8/8 |
+| Kimi K3 | 5/8 | 8/8 |
 | GPT-6 Luna via Copilot | 6/8 | 6/8 |
 | Grok 4.6 | 5/8 | 7/8 |
 | Grok 4.5 | 5/8 | 5/8 |
 | Claude Sonnet 4.5 | 2/8 | 8/8 |
 | Codex GPT-6 Luna | 5/8 | 5/8 |
 | Microsoft MAI-Code 1.1 Flash (Copilot) | 2/8 | 4/8 |
+| Kimi K2.8 (for-coding) | 0/8 | 5/8 |
 | Claude Haiku 4.5 | 0/8 | 5/8 |
 | Claude Sonnet 5.5 via Copilot | 1/8 | 0/8 |
 
@@ -91,6 +95,8 @@ results (— where that model did not run the app battery):
 | Codex GPT-5.5 | **3/16** | 12/16 | — | — |
 | Codex Daybreak Blue | **2/16** | 11/16 | — | — |
 | GPT-6 Luna via Copilot | **2/16** | 5/16 | — | — |
+| Kimi K3 | **2/16** | 15/16 | 15/16 | 14/16 |
+| Kimi K2.8 (for-coding) | **2/16** | 7/16 | — | — |
 | Grok 4.5 | **1/16** | 15/16 | — | — |
 | Claude Sonnet 4.5 | **0/16** | 4/16 | — | — |
 | Codex GPT-6 Luna | **0/16** | 0/16 | — | — |
@@ -113,6 +119,8 @@ apart (first attempts only, except the last column):
 | Codex GPT-5.5 | 16 | 3 | 0 | 13 | 3/16 (19%) | 0 of 37 |
 | Codex Daybreak Blue | 16 | 2 | 0 | 14 | 2/16 (12%) | 0 of 42 |
 | GPT-6 Luna via Copilot | 16 | 2 | 0 | 14 | 2/16 (12%) | 0 of 52 |
+| Kimi K3 | 16 | 2 | 0 | 14 | 2/16 (12%) | 0 of 41 |
+| Kimi K2.8 (for-coding) | 16 | 2 | 0 | 14 | 2/16 (12%) | 0 of 55 |
 | Grok 4.5 | 16 | 1 | 0 | 15 | 1/16 (6%) | 0 of 41 |
 | Claude Sonnet 4.5 | 16 | 0 | 0 | 16 | 0/16 (0%) | 0 of 57 |
 | Codex GPT-6 Luna | 16 | 0 | 0 | 16 | 0/16 (0%) | 0 of 64 |
@@ -235,11 +243,15 @@ scored as refusals, as everywhere else.
   were Grok CLI stream failures (`reqwest error stream: Transport error: error decoding response body`) and
   one was an HTTP 500 (`Internal error during token generation`).
 
+Kimi K3 and Kimi K2.8 (kimi-for-coding) are now in the tables above (completed 2026-10-17, after three
+maxed 7-day windows on Kimi Allegretto). Their failures were reviewed by hand: no harness false rejects
+(lines that are not one instruction, 9-digit AArch64 words, wrong syscall use, out-of-bounds accesses; every
+Kimi timeout is a genuine wall-clock timeout, since Kimi's CLI prints its answer only when the call ends).
+
 ## Pending
 
 | Models | Waiting for |
 |---|---|
-| Kimi K3, Kimi K2.8 | Kimi's 7-day window reopens Sat 2026-10-03 15:02 (scheduled after 15:05) |
-| Gemini 3.8 Flash (Antigravity) | Google quota, about Mon 2026-10-06 |
+| Gemini 3.8 Flash (Antigravity) | Google quota (the function battery is quota-paced, 163/224 on 2026-10-17) |
 | Local Qwen models | the GPU (used by the assisted-variant runs); expected near 0 given 3-8% on assembly |
 | Haiku 4.5, MAI-Code (apps) | below the 12/16 bar in stage 1 (8/16 and 11/16 within four) |

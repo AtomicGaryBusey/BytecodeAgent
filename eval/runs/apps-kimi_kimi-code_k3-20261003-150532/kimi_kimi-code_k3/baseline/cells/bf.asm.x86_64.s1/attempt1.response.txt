@@ -1,0 +1,172 @@
+.globl _start
+
+.equ BUFSZ, 65536
+.equ JUMPSZ, 262144
+
+.section .bss
+.align 16
+inbuf:   .zero 65536
+tape:    .zero 30000
+outbuf:  .zero 65536
+jumptab: .zero 262144
+bstack:  .zero 262144
+
+.text
+_start:
+    # ---- read all of stdin into inbuf ----
+    xor r12, r12                  # r12 = total bytes read
+read_loop:
+    mov rdx, BUFSZ
+    sub rdx, r12
+    jz read_done                  # buffer full
+    lea rsi, [rip + inbuf]
+    add rsi, r12
+    xor edi, edi                  # fd 0
+    xor eax, eax                  # sys_read
+    syscall
+    test rax, rax
+    jz read_done                  # EOF
+    add r12, rax
+    jmp read_loop
+read_done:
+
+    # ---- split at first '!' ----
+    xor ecx, ecx
+find_bang:
+    cmp rcx, r12
+    jae no_bang
+    cmp byte ptr [inbuf + rcx], 0x21
+    je found_bang
+    inc rcx
+    jmp find_bang
+no_bang:
+    mov rcx, r12                  # no '!': whole input is program
+found_bang:
+    lea rdx, [rcx + 1]            # input cursor = just past '!'
+    cmp rdx, r12
+    jbe 1f
+    mov rdx, r12                  # clamp (no input bytes)
+1:
+    mov r13, rdx                  # r13 = program-input cursor
+    mov r14, r12                  # r14 = program-input end
+    mov r12, rcx                  # r12 = program length
+
+    # ---- bracket balance check + jump table ----
+    xor ebx, ebx                  # i
+    xor ebp, ebp                  # depth
+prepass:
+    cmp rbx, r12
+    jae prepass_done
+    movzx eax, byte ptr [inbuf + rbx]
+    cmp al, 0x5B                  # '['
+    je do_open
+    cmp al, 0x5D                  # ']'
+    je do_close
+    jmp prepass_next
+do_open:
+    mov dword ptr [bstack + rbp*4], ebx
+    inc rbp
+    jmp prepass_next
+do_close:
+    test rbp, rbp
+    jz unbalanced
+    dec rbp
+    mov eax, dword ptr [bstack + rbp*4]
+    mov dword ptr [jumptab + rbx*4], eax   # jump[']'] = matching '['
+    mov dword ptr [jumptab + rax*4], ebx   # jump['['] = matching ']'
+prepass_next:
+    inc rbx
+    jmp prepass
+prepass_done:
+    test rbp, rbp
+    jnz unbalanced
+
+    # ---- interpret ----
+    xor ebx, ebx                  # ip
+    xor ebp, ebp                  # dp (cell index)
+    xor r15d, r15d                # output length
+interp:
+    cmp rbx, r12
+    jae run_done
+    movzx eax, byte ptr [inbuf + rbx]
+    cmp al, 0x3E                  # '>'
+    je c_right
+    cmp al, 0x3C                  # '<'
+    je c_left
+    cmp al, 0x2B                  # '+'
+    je c_plus
+    cmp al, 0x2D                  # '-'
+    je c_minus
+    cmp al, 0x2E                  # '.'
+    je c_out
+    cmp al, 0x2C                  # ','
+    je c_in
+    cmp al, 0x5B                  # '['
+    je c_open
+    cmp al, 0x5D                  # ']'
+    je c_close
+next:
+    inc rbx
+    jmp interp
+
+c_right:
+    inc rbp
+    jmp next
+c_left:
+    dec rbp
+    jmp next
+c_plus:
+    inc byte ptr [tape + rbp]
+    jmp next
+c_minus:
+    dec byte ptr [tape + rbp]
+    jmp next
+c_out:
+    mov al, byte ptr [tape + rbp]
+    mov byte ptr [outbuf + r15], al
+    inc r15
+    jmp next
+c_in:
+    xor eax, eax
+    cmp r13, r14
+    jae 1f                        # input exhausted: store 0
+    movzx eax, byte ptr [inbuf + r13]
+    inc r13
+1:
+    mov byte ptr [tape + rbp], al
+    jmp next
+c_open:
+    cmp byte ptr [tape + rbp], 0
+    jne next
+    mov ebx, dword ptr [jumptab + rbx*4]   # -> matching ']'; inc lands after it
+    jmp next
+c_close:
+    cmp byte ptr [tape + rbp], 0
+    je next
+    mov ebx, dword ptr [jumptab + rbx*4]   # -> matching '['; inc lands after it
+    jmp next
+
+    # ---- flush output, exit 0 ----
+run_done:
+    xor r8d, r8d                  # bytes written so far
+wloop:
+    cmp r8, r15
+    jae wdone
+    mov eax, 1                    # sys_write
+    mov edi, 1                    # fd 1
+    lea rsi, [rip + outbuf]
+    add rsi, r8
+    mov rdx, r15
+    sub rdx, r8
+    syscall
+    add r8, rax
+    jmp wloop
+wdone:
+    mov eax, 60                   # sys_exit
+    xor edi, edi
+    syscall
+
+unbalanced:
+    mov eax, 60                   # sys_exit
+    mov edi, 1
+    syscall

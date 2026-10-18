@@ -86,12 +86,12 @@ its plan quota is spent.
 | Claude Sonnet 5 | 40 | 49 | 41 | 45 | **175/224 (78%)** | 222/224 (99%) | 1.30 |
 | Claude Opus 4.8 | 35 | 48 | 49 | 43 | **175/224 (78%)** | 222/224 (99%) | 1.27 |
 | Claude Sonnet 5.5 via Copilot | 45 | 55 | 19 | 51 | **170/224 (76%)** | 219/224 (98%) | 1.35 |
+| Kimi K2.8 (for-coding) | 37 | 46 | 28 | 46 | **157/224 (70%)** | 213/224 (95%) | 1.52 |
 | Codex GPT-6 Luna | 33 | 41 | 10 | 46 | **130/224 (58%)** | 209/224 (93%) | 1.71 |
 | Claude Haiku 4.5 | 30 | 34 | 17 | 35 | **116/224 (52%)** | 158/224 (71%) | 2.19 |
 | Microsoft MAI-Code 1.1 Flash (Copilot) | 26 | 34 | 12 | 35 | **107/224 (48%)** | 151/224 (67%) | 2.29 |
 | Gemini 3.8 Flash High (Antigravity) † | 46 | 60 | 47/53 | — | **153/163 (94%)** | 163/163 (100%) | 1.07 |
 
-Still running (added when complete and reviewed): Kimi K2.8 (kimi-for-coding).
 
 † Partial, quota-paced (Google AI Plus): rounds 1 + 2 complete, long 53/54, adversarial not yet run; the hourly resume loop adds cells as the weekly quota allows. Like for like on the complete batteries, rounds 1 + 2: **106/110 (96%)**, level with Claude Fable 5.1 (106) and behind Codex GPT-6 Astra, Grok 4.7 and Grok 4.7 build-fast (107 each). Its first-attempt failures were reviewed by hand: no harness false rejects (hex literals in QBE, `%x =l %y` without `copy`, malformed JSON, an invented `subl` opcode, and one 400 s timeout spent thinking: 62,910 of 65,532 output tokens).
 
@@ -124,8 +124,9 @@ interpreter and a JSON validator, asm and stream paths, both ISAs, 3 samples, up
 | Claude Fable 5.1 | **84/96 (88%)** | 96/96 (100%) | 1.15 |
 | Claude Sonnet 5.5 | **84/96 (88%)** | 96/96 (100%) | 1.14 |
 | Microsoft MAI-Code 1.1 Flash (Copilot) | **23/96 (24%)** | 64/96 (67%) | 2.61 |
+| Kimi K3 † | **29/32 (91%)** | 32/32 (100%) | 1.09 |
 
-Pending: Kimi K3 (local models do not run the app battery, by decision). The frontier models' most common first-attempt error is an AArch64
+† Kimi K3 ran sample 1 only (32 of 96 cells) before its plan window ran out. Local models do not run the app battery, by decision. The frontier models' most common first-attempt error is an AArch64
 `mov` of an immediate no single instruction can encode. Report, including the sandbox-escape fix and the
 asm/stream acceptance parity work: [`reports/live-model-eval-apps.md`](reports/live-model-eval-apps.md).
 

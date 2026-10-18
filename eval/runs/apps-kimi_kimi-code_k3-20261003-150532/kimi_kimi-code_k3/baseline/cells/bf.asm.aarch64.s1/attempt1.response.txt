@@ -1,0 +1,239 @@
+.globl _start
+
+.equ SYS_read, 63
+.equ SYS_write, 64
+.equ SYS_exit, 93
+
+.bss
+.balign 8
+inbuf:   .zero 131072
+prog:    .zero 65536
+jmptab:  .zero 262144
+bstack:  .zero 8192
+tape:    .zero 30000
+outbuf:  .zero 65536
+
+.text
+_start:
+    // read all of stdin into inbuf
+    adrp x19, inbuf
+    add x19, x19, :lo12:inbuf
+    mov x20, 0                 // bytes read so far
+    mov x21, 131072            // capacity
+read_loop:
+    cmp x20, x21
+    b.hs read_done
+    mov x0, 0
+    add x1, x19, x20
+    sub x2, x21, x20
+    mov x8, SYS_read
+    svc #0
+    cmp x0, 0
+    b.le read_done
+    add x20, x20, x0
+    b read_loop
+read_done:
+    // locate first '!' (0x21)
+    mov x0, 0
+    mov w1, 0x21
+find_bang:
+    cmp x0, x20
+    b.hs no_bang
+    ldrb w2, [x19, x0]
+    cmp w2, w1
+    b.eq found_bang
+    add x0, x0, 1
+    b find_bang
+found_bang:
+    mov x22, x0                // program length
+    add x23, x19, x0
+    add x23, x23, 1            // input pointer
+    sub x24, x20, x0
+    sub x24, x24, 1            // input remaining
+    b compact_start
+no_bang:
+    mov x22, x20
+    add x23, x19, x20
+    mov x24, 0
+
+    // compact program: keep only the 8 command bytes
+compact_start:
+    adrp x25, prog
+    add x25, x25, :lo12:prog
+    mov x26, 0                 // program command count
+    mov x0, 0
+compact_loop:
+    cmp x0, x22
+    b.hs compact_done
+    ldrb w1, [x19, x0]
+    sub w2, w1, 43             // '+'=43 ','=44 '-'=45 '.'=46
+    cmp w2, 3
+    b.ls is_cmd
+    cmp w1, 60                 // '<'
+    b.eq is_cmd
+    cmp w1, 62                 // '>'
+    b.eq is_cmd
+    cmp w1, 91                 // '['
+    b.eq is_cmd
+    cmp w1, 93                 // ']'
+    b.eq is_cmd
+    b compact_next
+is_cmd:
+    strb w1, [x25, x26]
+    add x26, x26, 1
+compact_next:
+    add x0, x0, 1
+    b compact_loop
+compact_done:
+    // balance check and build matching-bracket table
+    adrp x27, bstack
+    add x27, x27, :lo12:bstack
+    adrp x28, jmptab
+    add x28, x28, :lo12:jmptab
+    mov x3, 0                  // nesting depth
+    mov x0, 0                  // index
+bal_loop:
+    cmp x0, x26
+    b.hs bal_done
+    ldrb w1, [x25, x0]
+    cmp w1, 91
+    b.eq push_open
+    cmp w1, 93
+    b.eq pop_close
+    b bal_next
+push_open:
+    cmp x3, 1000
+    b.hs fail
+    str x0, [x27, x3, lsl #3]
+    add x3, x3, 1
+    b bal_next
+pop_close:
+    cbz x3, fail
+    sub x3, x3, 1
+    ldr x4, [x27, x3, lsl #3]
+    str w0, [x28, x4, lsl #2]  // jmptab[open] = close
+    str w4, [x28, x0, lsl #2]  // jmptab[close] = open
+bal_next:
+    add x0, x0, 1
+    b bal_loop
+bal_done:
+    cbnz x3, fail
+
+    // execute
+    mov x9, 0                  // pc
+    mov x10, 0                 // data pointer
+    adrp x11, tape
+    add x11, x11, :lo12:tape
+    mov x12, x23               // input pointer
+    mov x13, x24               // input remaining
+    adrp x14, outbuf
+    add x14, x14, :lo12:outbuf
+    mov x15, 0                 // output count
+    mov x16, x25               // program base
+    mov x17, x26               // program length
+    mov x18, x28               // jump table base
+exec_loop:
+    cmp x9, x17
+    b.hs exec_done
+    ldrb w0, [x16, x9]
+    add x9, x9, 1
+    cmp w0, 62                 // '>'
+    b.eq op_right
+    cmp w0, 60                 // '<'
+    b.eq op_left
+    cmp w0, 43                 // '+'
+    b.eq op_plus
+    cmp w0, 45                 // '-'
+    b.eq op_minus
+    cmp w0, 46                 // '.'
+    b.eq op_dot
+    cmp w0, 44                 // ','
+    b.eq op_comma
+    cmp w0, 91                 // '['
+    b.eq op_open
+    cmp w0, 93                 // ']'
+    b.eq op_close
+    b exec_loop
+
+op_right:
+    add x10, x10, 1
+    b exec_loop
+op_left:
+    sub x10, x10, 1
+    b exec_loop
+op_plus:
+    ldrb w1, [x11, x10]
+    add w1, w1, 1
+    strb w1, [x11, x10]
+    b exec_loop
+op_minus:
+    ldrb w1, [x11, x10]
+    sub w1, w1, 1
+    strb w1, [x11, x10]
+    b exec_loop
+op_dot:
+    mov w2, 65536
+    cmp x15, x2
+    b.lo dot_store
+    bl flush_out
+dot_store:
+    ldrb w1, [x11, x10]
+    strb w1, [x14, x15]
+    add x15, x15, 1
+    b exec_loop
+op_comma:
+    cbz x13, comma_zero
+    ldrb w1, [x12], #1
+    sub x13, x13, 1
+    b comma_store
+comma_zero:
+    mov w1, 0
+comma_store:
+    strb w1, [x11, x10]
+    b exec_loop
+op_open:
+    ldrb w1, [x11, x10]
+    cbnz w1, exec_loop
+    sub x2, x9, 1
+    ldr w2, [x18, x2, lsl #2]
+    add x9, x2, 1
+    b exec_loop
+op_close:
+    ldrb w1, [x11, x10]
+    cbz w1, exec_loop
+    sub x2, x9, 1
+    ldr w2, [x18, x2, lsl #2]
+    add x9, x2, 1
+    b exec_loop
+
+exec_done:
+    cbz x15, no_out
+    bl flush_out
+no_out:
+    mov x0, 0
+    mov x8, SYS_exit
+    svc #0
+
+// write x15 bytes from x14 to stdout, then reset x15 to 0
+flush_out:
+    mov x3, 0
+flush_loop:
+    cmp x3, x15
+    b.hs flush_done
+    mov x0, 1
+    add x1, x14, x3
+    sub x2, x15, x3
+    mov x8, SYS_write
+    svc #0
+    cmp x0, 0
+    b.le flush_done
+    add x3, x3, x0
+    b flush_loop
+flush_done:
+    mov x15, 0
+    ret
+
+fail:
+    mov x0, 1
+    mov x8, SYS_exit
+    svc #0

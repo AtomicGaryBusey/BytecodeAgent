@@ -1,0 +1,399 @@
+// json_lint - validate one JSON document from stdin, AArch64 static, no libc
+// x20 = input base, x21 = cursor, x22 = end of input
+
+.text
+.globl _start
+
+_start:
+    adrp x20, inbuf
+    add x20, x20, :lo12:inbuf
+    movz x9, #1, lsl #16
+    add x23, x20, x9              // end of buffer capacity
+    mov x21, x20                  // write pointer
+1:
+    cmp x21, x23
+    b.hs 2f
+    mov x0, #0                    // fd 0
+    mov x1, x21
+    sub x2, x23, x21
+    mov x8, #63                   // read
+    svc #0
+    cbz x0, 2f
+    add x21, x21, x0
+    b 1b
+2:
+    mov x22, x21                  // end of input
+    mov x21, x20                  // cursor at start
+    bl skip_ws
+    bl parse_value
+    bl skip_ws
+    cmp x21, x22
+    b.ne parse_error
+    // valid: print "ok\n", exit 0
+    mov x0, #1
+    adrp x1, msg_ok
+    add x1, x1, :lo12:msg_ok
+    mov x2, #3
+    mov x8, #64
+    svc #0
+    mov x0, #0
+    mov x8, #93
+    svc #0
+
+// error: offset = x21 - x20; print "error at N\n", exit 1
+parse_error:
+    sub x0, x21, x20
+    adrp x9, numbuf
+    add x9, x9, :lo12:numbuf
+    add x9, x9, #32               // one past end of scratch
+    mov w10, #10                  // '\n'
+    strb w10, [x9, #-1]!
+    mov x11, #10
+1:
+    udiv x12, x0, x11
+    msub x13, x12, x11, x0        // remainder
+    add w13, w13, #'0'
+    strb w13, [x9, #-1]!
+    mov x0, x12
+    cbnz x0, 1b
+    mov x10, x9                   // start of digits
+    mov x0, #1
+    adrp x1, msg_err
+    add x1, x1, :lo12:msg_err
+    mov x2, #9
+    mov x8, #64
+    svc #0
+    adrp x2, numbuf
+    add x2, x2, :lo12:numbuf
+    add x2, x2, #32
+    sub x2, x2, x10               // length of digits + newline
+    mov x0, #1
+    mov x1, x10
+    mov x8, #64
+    svc #0
+    mov x0, #1
+    mov x8, #93
+    svc #0
+
+// skip whitespace: 0x20 0x09 0x0A 0x0D
+skip_ws:
+    cmp x21, x22
+    b.hs 2f
+    ldrb w0, [x21]
+    cmp w0, #0x20
+    b.eq 1f
+    cmp w0, #0x09
+    b.eq 1f
+    cmp w0, #0x0A
+    b.eq 1f
+    cmp w0, #0x0D
+    b.eq 1f
+    ret
+1:
+    add x21, x21, #1
+    b skip_ws
+2:
+    ret
+
+// parse a value at cursor; tail-dispatch
+parse_value:
+    cmp x21, x22
+    b.hs parse_error
+    ldrb w0, [x21]
+    cmp w0, #'{'
+    b.eq parse_object
+    cmp w0, #'['
+    b.eq parse_array
+    cmp w0, #'"'
+    b.eq parse_string
+    cmp w0, #'t'
+    b.eq parse_true
+    cmp w0, #'f'
+    b.eq parse_false
+    cmp w0, #'n'
+    b.eq parse_null
+    cmp w0, #'-'
+    b.eq parse_number
+    sub w1, w0, #'0'
+    cmp w1, #9
+    b.ls parse_number
+    b parse_error
+
+// match keyword: x0 = rodata pointer, x1 = length
+match_lit:
+    cmp x21, x22
+    b.hs parse_error
+    ldrb w2, [x21]
+    ldrb w3, [x0], #1
+    cmp w2, w3
+    b.ne parse_error
+    add x21, x21, #1
+    subs x1, x1, #1
+    b.ne match_lit
+    ret
+
+parse_true:
+    adrp x0, kw_true
+    add x0, x0, :lo12:kw_true
+    mov x1, #4
+    b match_lit
+
+parse_false:
+    adrp x0, kw_false
+    add x0, x0, :lo12:kw_false
+    mov x1, #5
+    b match_lit
+
+parse_null:
+    adrp x0, kw_null
+    add x0, x0, :lo12:kw_null
+    mov x1, #4
+    b match_lit
+
+// string: cursor is at opening quote
+parse_string:
+    add x21, x21, #1
+1:
+    cmp x21, x22
+    b.hs parse_error
+    ldrb w0, [x21]
+    cmp w0, #'"'
+    b.eq 2f
+    cmp w0, #0x5C
+    b.eq 3f
+    cmp w0, #0x20
+    b.lo parse_error
+    add x21, x21, #1
+    b 1b
+2:
+    add x21, x21, #1
+    ret
+3:                                // escape
+    add x21, x21, #1
+    cmp x21, x22
+    b.hs parse_error
+    ldrb w0, [x21]
+    cmp w0, #'u'
+    b.eq 5f
+    cmp w0, #'"'
+    b.eq 4f
+    cmp w0, #0x5C
+    b.eq 4f
+    cmp w0, #'/'
+    b.eq 4f
+    cmp w0, #'b'
+    b.eq 4f
+    cmp w0, #'f'
+    b.eq 4f
+    cmp w0, #'n'
+    b.eq 4f
+    cmp w0, #'r'
+    b.eq 4f
+    cmp w0, #'t'
+    b.eq 4f
+    b parse_error
+4:
+    add x21, x21, #1
+    b 1b
+5:                                // \uXXXX
+    add x21, x21, #1
+    mov w4, #4
+6:
+    cmp x21, x22
+    b.hs parse_error
+    ldrb w0, [x21]
+    sub w1, w0, #'0'
+    cmp w1, #9
+    b.ls 7f
+    sub w1, w0, #'a'
+    cmp w1, #5
+    b.ls 7f
+    sub w1, w0, #'A'
+    cmp w1, #5
+    b.ls 7f
+    b parse_error
+7:
+    add x21, x21, #1
+    subs w4, w4, #1
+    b.ne 6b
+    b 1b
+
+// number: cursor at '-' or digit
+parse_number:
+    ldrb w0, [x21]
+    cmp w0, #'-'
+    b.ne 1f
+    add x21, x21, #1
+1:                                // int part
+    cmp x21, x22
+    b.hs parse_error
+    ldrb w0, [x21]
+    cmp w0, #'0'
+    b.eq 3f
+    sub w1, w0, #'1'
+    cmp w1, #8
+    b.hi parse_error
+2:                                // digits after 1-9
+    add x21, x21, #1
+    cmp x21, x22
+    b.hs 4f
+    ldrb w0, [x21]
+    sub w1, w0, #'0'
+    cmp w1, #9
+    b.ls 2b
+    b 4f
+3:                                // leading zero: no more int digits
+    add x21, x21, #1
+4:                                // frac?
+    cmp x21, x22
+    b.hs 9f
+    ldrb w0, [x21]
+    cmp w0, #'.'
+    b.ne 6f
+    add x21, x21, #1
+    cmp x21, x22
+    b.hs parse_error
+    ldrb w0, [x21]
+    sub w1, w0, #'0'
+    cmp w1, #9
+    b.hi parse_error
+5:
+    add x21, x21, #1
+    cmp x21, x22
+    b.hs 6f
+    ldrb w0, [x21]
+    sub w1, w0, #'0'
+    cmp w1, #9
+    b.ls 5b
+6:                                // exp?
+    cmp x21, x22
+    b.hs 9f
+    ldrb w0, [x21]
+    cmp w0, #'e'
+    b.eq 7f
+    cmp w0, #'E'
+    b.eq 7f
+    b 9f
+7:
+    add x21, x21, #1
+    cmp x21, x22
+    b.hs parse_error
+    ldrb w0, [x21]
+    cmp w0, #'+'
+    b.eq 8f
+    cmp w0, #'-'
+    b.ne 10f
+8:
+    add x21, x21, #1
+10:                               // need at least one exp digit
+    cmp x21, x22
+    b.hs parse_error
+    ldrb w0, [x21]
+    sub w1, w0, #'0'
+    cmp w1, #9
+    b.hi parse_error
+11:
+    add x21, x21, #1
+    cmp x21, x22
+    b.hs 9f
+    ldrb w0, [x21]
+    sub w1, w0, #'0'
+    cmp w1, #9
+    b.ls 11b
+9:
+    ret
+
+// array: cursor at '['
+parse_array:
+    stp x29, x30, [sp, #-16]!
+    add x21, x21, #1
+    bl skip_ws
+    cmp x21, x22
+    b.hs parse_error
+    ldrb w0, [x21]
+    cmp w0, #']'
+    b.ne 1f
+    add x21, x21, #1
+    b 3f
+1:
+    bl parse_value
+    bl skip_ws
+    cmp x21, x22
+    b.hs parse_error
+    ldrb w0, [x21]
+    cmp w0, #','
+    b.ne 2f
+    add x21, x21, #1
+    bl skip_ws
+    b 1b
+2:
+    cmp w0, #']'
+    b.ne parse_error
+    add x21, x21, #1
+3:
+    ldp x29, x30, [sp], #16
+    ret
+
+// object: cursor at '{'
+parse_object:
+    stp x29, x30, [sp, #-16]!
+    add x21, x21, #1
+    bl skip_ws
+    cmp x21, x22
+    b.hs parse_error
+    ldrb w0, [x21]
+    cmp w0, #'}'
+    b.ne 1f
+    add x21, x21, #1
+    b 3f
+1:                                // member: string ws ':' ws value
+    cmp w0, #'"'
+    b.ne parse_error
+    bl parse_string
+    bl skip_ws
+    cmp x21, x22
+    b.hs parse_error
+    ldrb w0, [x21]
+    cmp w0, #':'
+    b.ne parse_error
+    add x21, x21, #1
+    bl skip_ws
+    bl parse_value
+    bl skip_ws
+    cmp x21, x22
+    b.hs parse_error
+    ldrb w0, [x21]
+    cmp w0, #','
+    b.ne 2f
+    add x21, x21, #1
+    bl skip_ws
+    cmp x21, x22
+    b.hs parse_error
+    ldrb w0, [x21]
+    b 1b
+2:
+    cmp w0, #'}'
+    b.ne parse_error
+    add x21, x21, #1
+3:
+    ldp x29, x30, [sp], #16
+    ret
+
+.section .rodata
+msg_ok:
+    .ascii "ok\n"
+msg_err:
+    .ascii "error at "
+kw_true:
+    .ascii "true"
+kw_false:
+    .ascii "false"
+kw_null:
+    .ascii "null"
+
+.bss
+.balign 16
+inbuf:
+    .zero 65536
+numbuf:
+    .zero 32

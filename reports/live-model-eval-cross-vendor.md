@@ -33,6 +33,7 @@ system and task prompts, and its CLI's default effort (as the Claude runs did). 
 | Claude Sonnet 5 | 40 | 49 | 41 | 45 | **175/224 (78%)** | 222/224 (99%) | 1.30 |
 | Claude Opus 4.8 | 35 | 48 | 49 | 43 | **175/224 (78%)** | 222/224 (99%) | 1.27 |
 | Claude Sonnet 5.5 via Copilot | 45 | 55 | 19 | 51 | **170/224 (76%)** | 219/224 (98%) | 1.35 |
+| Kimi K2.8 (for-coding) | 37 | 46 | 28 | 46 | **157/224 (70%)** | 213/224 (95%) | 1.52 |
 | Codex GPT-6 Luna | 33 | 41 | 10 | 46 | **130/224 (58%)** | 209/224 (93%) | 1.71 |
 | Claude Haiku 4.5 | 30 | 34 | 17 | 35 | **116/224 (52%)** | 158/224 (71%) | 2.19 |
 | Microsoft MAI-Code 1.1 Flash (Copilot) | 26 | 34 | 12 | 35 | **107/224 (48%)** | 151/224 (67%) | 2.29 |
@@ -40,7 +41,12 @@ system and task prompts, and its CLI's default effort (as the Claude runs did). 
 
 Codex Daybreak Blue includes one reviewed harness false reject counted as a pass, Grok 4.7 build-fast
 three and GPT-6 Luna via Copilot one; Claude Sonnet 5.5 via Copilot is one lower than recorded (a pre-fix
-output-cap do-over counted as the failure it would be now; see the false-reject review below). Still running (added when complete and reviewed): Kimi K2.8 (kimi-for-coding).
+output-cap do-over counted as the failure it would be now; see the false-reject review below). 
+Kimi K2.8 (kimi-for-coding), completed 2026-10-17: 157/224 first try. 40 of its 128 failed attempts are
+wall-clock timeouts: its median call took 113 s against the 180 s round-1/2 limit (Kimi K3: 51 s). Kimi's CLI
+prints the answer only when the call ends, so a timeout carries no text; these are the same timeout rule as
+every CLI vendor, not stalls. Failures reviewed by hand: no harness false rejects (QBE compares without a
+result class, `xor eax, 0` used to zero a register, malformed JSON, unencodable AArch64 immediates).
 
 † Partial, quota-paced (Google AI Plus): rounds 1 + 2 complete, long 53/54, adversarial not yet run; the hourly resume loop adds cells as the weekly quota allows. Like for like on the complete batteries, rounds 1 + 2: **106/110 (96%)**, level with Claude Fable 5.1 (106) and behind Codex GPT-6 Astra, Grok 4.7 and Grok 4.7 build-fast (107 each). Its first-attempt failures were reviewed by hand: no harness false rejects (hex literals in QBE, `%x =l %y` without `copy`, malformed JSON, an invented `subl` opcode, and one 400 s timeout spent thinking: 62,910 of 65,532 output tokens).
 
@@ -65,6 +71,7 @@ output-cap do-over counted as the failure it would be now; see the false-reject 
 | Claude Sonnet 5 | 63/76 (83%) | 53/74 (72%) | 59/74 (80%) |
 | Claude Opus 4.8 | 63/76 (83%) | 66/74 (89%) | 46/74 (62%) |
 | Claude Sonnet 5.5 via Copilot | 61/76 (80%) | 62/74 (84%) | 47/74 (64%) |
+| Kimi K2.8 (for-coding) | 67/76 (88%) | 52/74 (70%) | 38/74 (51%) |
 | Codex GPT-6 Luna | 60/76 (79%) | 45/74 (61%) | 25/74 (34%) |
 | Claude Haiku 4.5 | 61/76 (80%) | 54/74 (73%) | 1/74 (1%) |
 | Microsoft MAI-Code 1.1 Flash (Copilot) | 59/76 (78%) | 44/74 (59%) | 4/74 (5%) |

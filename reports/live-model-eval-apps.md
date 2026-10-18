@@ -54,8 +54,9 @@ samples passed on its first attempt.
 | Claude Fable 5.1 | **84/96 (88%)** | 96/96 (100%) | 1.15 | 26/32 | 27/32 | 31/32 | 31/32 |
 | Claude Sonnet 5.5 | **84/96 (88%)** | 96/96 (100%) | 1.14 | 29/32 | 28/32 | 27/32 | 32/32 |
 | Microsoft MAI-Code 1.1 Flash (Copilot) | **23/96 (24%)** | 64/96 (67%) | 2.61 | 6/32 | 7/32 | 10/32 | 15/32 |
+| Kimi K3 † | **29/32 (91%)** | 32/32 (100%) | 1.09 | 29/32 | — | — | 29/32 |
 
-Pending: **Kimi K3** (Kimi's 7-day plan window reopens 2026-10-03). The local open-weight models do not run
+† Kimi K3 is partial: sample 1 only (32 of 96 cells); Kimi Allegretto's 7-day window ran out before samples 2 and 3, and its failures were reviewed by hand (no harness false rejects). The local open-weight models do not run
 the app battery (decision 2026-10-01: at 3-8% first-attempt on the function batteries, days of 900 s app attempts
 would not change the picture; see the local section of the cross-vendor report).
 
@@ -69,6 +70,7 @@ would not change the picture; see the local section of the cross-vendor report).
 | Claude Fable 5.1 | 12/12 | 9/12 | 10/12 | 12/12 | 9/12 | 10/12 | 11/12 | 11/12 |
 | Claude Sonnet 5.5 | 12/12 | 11/12 | 11/12 | 12/12 | 9/12 | 11/12 | 12/12 | 6/12 |
 | Microsoft MAI-Code 1.1 Flash (Copilot) | 3/12 | 5/12 | 2/12 | 5/12 | 0/12 | 3/12 | 5/12 | 0/12 |
+| Kimi K3 † | 4/4 | 4/4 | 4/4 | 3/4 | 3/4 | 4/4 | 4/4 | 3/4 |
 
 ### Per path and ISA (first-attempt passes, 24 cells each)
 
@@ -80,6 +82,7 @@ would not change the picture; see the local section of the cross-vendor report).
 | Claude Fable 5.1 | 19/24 | 23/24 | 23/24 | 19/24 |
 | Claude Sonnet 5.5 | 23/24 | 20/24 | 22/24 | 19/24 |
 | Microsoft MAI-Code 1.1 Flash (Copilot) | 4/24 | 8/24 | 2/24 | 9/24 |
+| Kimi K3 † | 7/8 | 8/8 | 7/8 | 7/8 |
 
 ### First-attempt failure categories
 
@@ -91,6 +94,7 @@ would not change the picture; see the local section of the cross-vendor report).
 | Claude Fable 5.1 | · | · | · | · | · | · | 9 | 3 |
 | Claude Sonnet 5.5 | · | · | · | · | · | · | 11 | 1 |
 | Microsoft MAI-Code 1.1 Flash (Copilot) | 2 | 1 | · | · | 3 | 8 | 39 | 20 |
+| Kimi K3 † | · | · | · | · | · | 1 | · | 2 |
 
 ## Findings
 
