@@ -20,15 +20,15 @@ re-executes passing programs in the emulator. Each item lands as a script in `ev
    model.
 6. **Prompt-variant effects.** Paired deltas against baseline on the same cells: `misleading_hint`, `terse`,
    `assisted`, `declared`.
-
-## Backlog
-
 7. **Refusals.** Fable 5.1 (52), Opus 5.5 (56), Sonnet 5.5 via Copilot (52): which tasks and variants trigger
    them; read against the CVP caveat.
 8. **Within-vendor generations.** Opus 4.8 → 5.5, Sonnet 4.5 → 5 → 5.5, Grok 4.5 → 4.6 → 4.7, GPT-5.5 → GPT-6
    (Luna / Sol / Astra).
-9. **Efficiency.** Output tokens and wall time per passing cell; accuracy against tokens spent. Caveats: the
-   Ollama-served Qwen models record no token counts; local latencies include queue waits.
+9. **Efficiency.** Output tokens and wall time per passing cell; accuracy against tokens spent. Caveat: local
+   latencies include queue waits (Ollama's `eval_count` gives the Qwen models' token counts).
+
+## Backlog
+
 10. **Quality of passing code.** Code size (recorded) plus executed instruction counts from re-running each
     passing program in the emulator: how fast correct solutions are, not only whether they pass.
 11. **Harness and infrastructure audit.** One summary of false rejects found and fixed, infra error rates per

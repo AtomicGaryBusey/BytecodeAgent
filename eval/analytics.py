@@ -709,6 +709,211 @@ def variants(by_fn):
             f"{name(m)} `{v}` {k}" for (m, v), k in sorted(refusals.items())) + ".\n")
 
 
+# ------------------------------------------------------------------------------------------------ 7. refusals
+def load_all():
+    """Every recorded cell, all variants, batteries and paths (hex included): (label, variant, battery, cell) -> r."""
+    out = {}
+    for f in sorted(glob.glob("eval/runs/*/**/results.jsonl", recursive=True) + glob.glob("eval/runs/*/results.jsonl")):
+        if "smoke" in f or "untuned-trial" in f:
+            continue
+        rd = f.split("/")[2]
+        for line in open(f):
+            r = json.loads(line)
+            bat = r.get("battery") or ("round2" if "round2" in rd else "round1")
+            r["_bat"] = bat
+            r["_dir"] = os.path.dirname(f)
+            out[(label_of(r), r.get("variant", "baseline"), bat, r["cell"])] = r
+    return out
+
+
+def refusals_section(allr):
+    print("## 7. Refusals\n")
+    print("Attempts the model declined: Anthropic's cyber classifier (\"This request triggered restrictions on")
+    print("violative cyber content\"), or for Claude via Copilot, Copilot's `content_filter` finish reason. Counted")
+    print("over every recorded cell, all variants and paths (the hex path included). A refused attempt is scored")
+    print("as a failure and gets the normal repair prompt. *Lost* = cells never passed in which every attempt was")
+    print("a refusal. The Claude account is enrolled in the Cyber Verification Program, so these are the")
+    print("refusals that remain with relaxed cyber safeguards.\n")
+    per = collections.defaultdict(lambda: collections.Counter())
+    where = collections.defaultdict(lambda: collections.Counter())
+    tasks = collections.defaultdict(lambda: collections.Counter())
+    for (m, v, bat, c), r in allr.items():
+        cats = r["categories"]
+        k = sum(1 for x in cats if x == "refusal")
+        s = per[m]
+        s["cells"] += 1
+        s["attempts"] += len(cats)
+        if not k:
+            continue
+        s["refused"] += k
+        s["cells_hit"] += 1
+        s["first"] += cats[0] == "refusal"
+        lost = not r["pass_final"] and all(x == "refusal" for x in cats)
+        s["lost"] += lost
+        path = r.get("path", c.split(".")[1])
+        where[m][(v, bat, path)] += k
+        tasks[m][c.split(".")[0]] += k
+    hit = [m for m in per if per[m]["refused"]]
+    print("| Model | Cells recorded | Refused attempts | Cells with a refusal | First attempt refused | Lost |")
+    print("|---|---|---|---|---|---|")
+    for m in sorted(hit, key=lambda m: -per[m]["refused"]):
+        s = per[m]
+        print(f"| {name(m)} | {s['cells']} | {s['refused']} of {s['attempts']} | {s['cells_hit']} | {s['first']} | "
+              f"{s['lost']} |")
+    none = sorted(name(m) for m in per if not per[m]["refused"])
+    print(f"\nNo other model refused anything ({len(none)} models, every recorded attempt).\n")
+    print("**Where they happen** (refused attempts by variant, battery and path):\n")
+    print("| Model | Variant | Battery | Path | Refused attempts |")
+    print("|---|---|---|---|---|")
+    for m in sorted(hit, key=lambda m: -per[m]["refused"]):
+        for (v, bat, path), k in sorted(where[m].items(), key=lambda kv: -kv[1]):
+            print(f"| {name(m)} | `{v}` | {bat} | {path} | {k} |")
+    print()
+    print("**Which tasks trigger them** (refused attempts per task, all variants and paths):\n")
+    print("| Model | Tasks |")
+    print("|---|---|")
+    for m in sorted(hit, key=lambda m: -per[m]["refused"]):
+        print(f"| {name(m)} | " + ", ".join(f"`{t}` {k}" for t, k in tasks[m].most_common()) + " |")
+    print()
+
+
+# ------------------------------------------------------------------------------------------------ 8. generations
+GENERATIONS = [
+    ("Anthropic Opus", ["claude-opus-4-8", "claude-opus-5-5"]),
+    ("Anthropic Sonnet", ["claude-sonnet-4-5-20250929", "claude-sonnet-5", "claude-sonnet-5-5"]),
+    ("xAI Grok", ["grok:grok-4.5", "grok:grok-4.6", "grok:grok-4.7"]),
+    ("OpenAI (Codex CLI)", ["codex:gpt-5.5", "codex:gpt-6-luna", "codex:gpt-6-sol", "codex:gpt-6-astra"]),
+    ("Moonshot Kimi", ["kimi:kimi-code/kimi-for-coding", "kimi:kimi-code/k3"]),
+]
+
+
+def generations(by_fn):
+    print("## 8. Within-vendor generations\n")
+    print("Each step compares a model with its predecessor on the same 224 function cells (first attempt, paired")
+    print("exact McNemar, unadjusted). Every model ran through its vendor's CLI at that CLI's default effort; the")
+    print("GPT-6 models are three tiers of one generation (Luna, Sol, Astra), listed after GPT-5.5 in ascending")
+    print("tier, so their rows compare tiers rather than releases. Kimi K2.8 here is the `kimi-for-coding` preview.\n")
+    print("| Family | From → to | First attempt | Gained / lost | p | Stream | Structured | IR (QBE) | Within 4 |")
+    print("|---|---|---|---|---|---|---|---|---|")
+
+    def rate(m, p):
+        cs = [r for (b, c), r in by_fn[m].items() if c.split(".")[1] == p]
+        return 100 * sum(bool(r["pass_at_1"]) for r in cs) / len(cs)
+
+    for fam, chain in GENERATIONS:
+        chain = [m for m in chain if len(by_fn.get(m, {})) == FULL_FN]
+        for a, b in zip(chain, chain[1:]):
+            ca, cb = by_fn[a], by_fn[b]
+            g = sum(1 for k in ca if cb[k]["pass_at_1"] and not ca[k]["pass_at_1"])
+            lo = sum(1 for k in ca if ca[k]["pass_at_1"] and not cb[k]["pass_at_1"])
+            pa = sum(bool(r["pass_at_1"]) for r in ca.values())
+            pb = sum(bool(r["pass_at_1"]) for r in cb.values())
+            fa = sum(bool(r["pass_final"]) for r in ca.values())
+            fb = sum(bool(r["pass_final"]) for r in cb.values())
+            d = [f"{rate(a, p):.0f} → {rate(b, p):.0f}%" for p in ("stream", "structured", "ir")]
+            print(f"| {fam} | {name(a)} → {name(b)} | {pa} → {pb} | +{g} / −{lo} | {pfmt(mcnemar_exact(g, lo))} | "
+                  + " | ".join(d) + f" | {fa} → {fb} |")
+    print()
+
+
+# ------------------------------------------------------------------------------------------------ 9. efficiency
+_ATTEMPTS: dict[str, dict] = {}
+
+
+def attempts_of(r: dict) -> list[dict]:
+    """The attempt records behind a result: the last `attempts` records for its (variant, battery, cell)."""
+    d = r["_dir"]
+    if d not in _ATTEMPTS:
+        idx = collections.defaultdict(list)
+        path = os.path.join(d, "attempts.jsonl")
+        if os.path.exists(path):
+            rd = d.split("/")[2]
+            for line in open(path):
+                a = json.loads(line)
+                bat = a.get("battery") or ("round2" if "round2" in rd else "round1")
+                idx[(a.get("variant", "baseline"), bat, a["cell"])].append(a)
+        _ATTEMPTS[d] = idx
+    return _ATTEMPTS[d].get((r.get("variant", "baseline"), r["_bat"], r["cell"]), [])[-r["attempts"]:]
+
+
+def out_tokens(a: dict) -> int | None:
+    u = a.get("usage") or {}
+    for k in ("output_tokens", "completion_tokens", "eval_count"):  # every vendor counts reasoning inside these
+        if u.get(k):
+            return int(u[k])
+    return None
+
+
+def median(xs):
+    xs = sorted(xs)
+    if not xs:
+        return None
+    n = len(xs)
+    return xs[n // 2] if n % 2 else (xs[n // 2 - 1] + xs[n // 2]) / 2
+
+
+def efficiency(by_fn, by_apps):
+    print("## 9. Efficiency\n")
+    print("Output tokens are each vendor's own count of generated tokens, reasoning included (for every vendor")
+    print("that reports reasoning separately, the reasoning count is part of the output count); for Ollama it is")
+    print("`eval_count`, for vLLM `completion_tokens`. *Per solved cell* = all output tokens spent on the battery,")
+    print("every attempt included, divided by the cells passed within four, scaled up for attempts without a count")
+    print("and left blank below 75% coverage. *Coverage* = share of attempts that report a token count (refusals,")
+    print("timeouts and some CLI failures report none). Wall time per attempt is")
+    print("the subject's own call time; local models share one GPU with calls serialised, so their times include")
+    print("queue waits and are not comparable with the vendors'. Effort is each CLI's default unless noted.\n")
+    for title, data, full in (("Function batteries", by_fn, FULL_FN), ("App battery", by_apps, FULL_APPS)):
+        rows = []
+        for m, cells in data.items():
+            atts = [a for r in cells.values() for a in attempts_of(r)]
+            if not atts:
+                continue
+            toks = [t for t in (out_tokens(a) for a in atts) if t is not None]
+            walls = [a["wall_s"] for a in atts if a.get("wall_s")]
+            p1 = sum(bool(r["pass_at_1"]) for r in cells.values())
+            f4 = sum(bool(r["pass_final"]) for r in cells.values())
+            eff = collections.Counter(str(a.get("effort")) for a in atts).most_common(1)[0][0]
+            cov = len(toks) / len(atts)
+            # scaled up for attempts without a count; left out when too few attempts report one
+            per_solved = (sum(toks) / cov / f4) if f4 and toks and cov >= 0.75 else None
+            rows.append((is_local(m), len(cells) != full, -p1 / len(cells), m, len(cells), p1, f4, len(atts),
+                         median(toks), per_solved, cov, median(walls), eff))
+        rows.sort(key=lambda r: (r[0], r[1], r[2]))
+        print(f"### {title}\n")
+        print("| Model | Effort | First attempt | Attempts | Median output tokens / attempt | Output tokens / solved "
+              "cell | Coverage | Median wall s / attempt |")
+        print("|---|---|---|---|---|---|---|---|")
+        for loc, partial, _, m, n, p1, f4, na, mt, ps, cov, mw, eff in rows:
+            tag = " †" if partial else ""
+            effs = eff.replace("cli-default", "default").replace("model-default", "default").replace("None", "default")
+            print(f"| {name(m)}{tag} | {effs} | {pct(p1, n)} | {na} | {f'{mt:,.0f}' if mt else '—'} | "
+                  f"{f'{ps:,.0f}' if ps else '—'} | {100 * cov:.0f}% | {f'{mw:.0f}' if mw else '—'} |")
+        print()
+        vend = [r for r in rows if not r[0] and not r[1] and r[8]]
+        if len(vend) >= 5:
+            rho = spearman([r[8] for r in vend], [-r[2] for r in vend])
+            print(f"Across the {len(vend)} complete vendor models, the rank correlation between median output tokens "
+                  f"per attempt and first-attempt pass rate is {rho:+.2f}.\n")
+    print("Token counts come from each vendor's CLI and are not audited across vendors; tokenisers differ, so a")
+    print("token is not the same unit for every model. Compare within a vendor with more confidence than across.\n")
+
+
+def spearman(x, y):
+    def ranks(v):
+        order = sorted(range(len(v)), key=lambda i: v[i])
+        rk = [0.0] * len(v)
+        i = 0
+        while i < len(order):
+            j = i
+            while j + 1 < len(order) and v[order[j + 1]] == v[order[i]]:
+                j += 1
+            for k in range(i, j + 1):
+                rk[order[k]] = (i + j) / 2 + 1
+            i = j + 1
+        return rk
+    return pearson(ranks(x), ranks(y))
+
+
 def main():
     by_fn, by_apps = load()
     confidence(by_fn, by_apps)
@@ -717,6 +922,9 @@ def main():
     isa_path(by_fn, by_apps)
     error_classes(by_fn, by_apps)
     variants(by_fn)
+    refusals_section(load_all())
+    generations(by_fn)
+    efficiency(by_fn, by_apps)
 
 
 if __name__ == "__main__":

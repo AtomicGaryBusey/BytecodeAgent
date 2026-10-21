@@ -1,13 +1,16 @@
 # Live-model evaluation: analytics
 
-Six analyses of the recorded runs, using only data already committed (no new model calls):
+Nine analyses of the recorded runs, using only data already committed (no new model calls):
 
 1. how confident each pass rate is, and which ranking gaps are real;
 2. how well models repair their own failures;
 3. which cells are hard, and which ones decide the ranking;
 4. how much the ISA and the path matter;
 5. what the failures are, in one classification shared by every model;
-6. what each prompt variant changes, measured cell by cell against baseline.
+6. what each prompt variant changes, measured cell by cell against baseline;
+7. where models refuse;
+8. how each vendor's models changed from one generation to the next;
+9. what each model spends in output tokens and time.
 
 Records are selected exactly as in the cross-vendor and app reports: baseline variant, no smokes, no hex path.
 The reviewed false-reject corrections are applied cell by cell, so every count matches the published tables.
@@ -101,6 +104,46 @@ analyses is in [`TODO.md`](../TODO.md).
   - `terse` changes nothing (every p ≥ 0.25).
   - The `declared` hex-app variants run 16 cells each, too few to show an effect. Opus 5.5 refused 5 and 8 of
     the 16 first attempts in them.
+- **Only Claude models refuse, and almost only on the raw-hex path or a misleading hint.**
+  - Four Claude models refused anything; the other 24 models never did, on any recorded attempt. The four:
+    - **Claude Opus 5.5**: 56 refused attempts, all on the hex app battery (raw machine code for whole
+      programs): 22 at baseline, 22 in `declared_annotated`, 12 in `declared`. Most are on `bf`, `json_lint`
+      and `rpn`.
+    - **Claude Sonnet 5.5 via Copilot**: 52, all on the hex app battery, through Copilot's own content filter.
+      12 cells were lost outright.
+    - **Claude Fable 5.1**: 52, all on the adversarial battery. 44 are in the `misleading_hint` variant and 4
+      at baseline (`fill_down`, `bmin_empty`, `map_into`). Every cell it refused was lost.
+    - **Claude Sonnet 5.5**: 3, all hex `rpn`.
+  - No Claude model refused on the baseline function batteries outside those 4 Fable attempts.
+  - The account is CVP-enrolled: these are the refusals that remain with relaxed cyber safeguards.
+- **Generations: three vendors improved a lot; Sonnet went backwards and then recovered.**
+  - Opus 4.8 to 5.5: 175 to 215 (+45 / −5); QBE 62% to 95%.
+  - Kimi K2.8 to K3: 157 to 204 (+61 / −14); QBE 51% to 85%.
+  - Grok 4.5 to 4.6: 197 to 211 (+20 / −6, p = 0.009), mostly QBE (72% to 88%). Grok 4.6 to 4.7 changed
+    nothing (211 each, +8 / −8), and 4.7 loses three within-four cells to timeouts.
+  - Sonnet 4.5 to 5 is a significant regression: 203 to 175 (+19 / −47), with stream down from 97% to 83%
+    and structured from 91% to 72%. Sonnet 5.5 recovers to 201 (+42 / −16), level with 4.5, while its QBE
+    rate stays at 4.5's level (84%, 80%, 81%).
+  - The GPT-6 rows are tiers of one generation, not releases. Luna (130) is far below GPT-5.5 (207); Sol
+    (213) and Astra (221) are above it. Sol to Astra is +11 / −3 (p = 0.057), with Astra at the CLI's
+    low-effort default and Sol at medium.
+- **Tokens do not buy accuracy.**
+  - The top models span 70 times in output tokens per attempt (median) at nearly the same pass rate:
+    - Codex GPT-6 Astra: 228 tokens (99%);
+    - Claude Opus 5.5: 322 (96%);
+    - Codex GPT-6 Sol: 438 (95%);
+    - Grok 4.7 and build-fast: about 4,100 (94-95%);
+    - Gemini 3.8 Flash High: about 16,000 (94%, partial run).
+  - Across the 21 complete vendor models the rank correlation between tokens per attempt and first-attempt
+    pass rate is −0.35: models that write more do slightly worse.
+  - Per cell solved, Astra spends 380 tokens and Opus 5.5 813. Grok 4.7 build-fast spends 7,990, MAI-Code
+    24,096, Haiku 4.5 37,777 and Kolibri-1 148,501.
+  - Sonnet 5.5 matches Sonnet 4.5's score on a twentieth of the tokens (median 359 against 7,352 per
+    attempt).
+  - On the app battery Astra (1,105 per attempt) and Grok 4.7 build-fast (22,677) reach 98% and 93%.
+  - The Claude 5.5 generation answers fastest (median 6-7 s per function attempt). Astra takes 11 s, the
+    Grok models 32-61 s and Kimi K2.8 148 s.
+  - Tokenisers differ, so cross-vendor token comparisons are approximate.
 
 ## 1. Statistical confidence
 
@@ -563,4 +606,129 @@ Exact McNemar on those two counts (unadjusted; the variants answer different que
 | `terse` | adversarial (60) | Claude Sonnet 5 | 45/60 (75%) | 43/60 (72%) | +6 / −8 | 0.791 | 59 → 60 |
 
 First-attempt refusals inside the variant runs: Claude Fable 5.1 `misleading_hint` 11; Claude Fable 5.1 `terse` 1; Claude Opus 5.5 `declared` 5; Claude Opus 5.5 `declared_annotated` 8.
+
+## 7. Refusals
+
+Attempts the model declined: Anthropic's cyber classifier ("This request triggered restrictions on
+violative cyber content"), or for Claude via Copilot, Copilot's `content_filter` finish reason. Counted
+over every recorded cell, all variants and paths (the hex path included). A refused attempt is scored
+as a failure and gets the normal repair prompt. *Lost* = cells never passed in which every attempt was
+a refusal. The Claude account is enrolled in the Cyber Verification Program, so these are the
+refusals that remain with relaxed cyber safeguards.
+
+| Model | Cells recorded | Refused attempts | Cells with a refusal | First attempt refused | Lost |
+|---|---|---|---|---|---|
+| Claude Opus 5.5 | 504 | 56 of 569 | 22 | 22 | 10 |
+| Claude Fable 5.1 | 472 | 52 of 549 | 13 | 13 | 13 |
+| Claude Sonnet 5.5 via Copilot | 256 | 52 of 396 | 14 | 14 | 12 |
+| Claude Sonnet 5.5 | 352 | 3 of 400 | 1 | 1 | 0 |
+
+No other model refused anything (24 models, every recorded attempt).
+
+**Where they happen** (refused attempts by variant, battery and path):
+
+| Model | Variant | Battery | Path | Refused attempts |
+|---|---|---|---|---|
+| Claude Opus 5.5 | `baseline` | apps | hex | 22 |
+| Claude Opus 5.5 | `declared_annotated` | apps | hex | 22 |
+| Claude Opus 5.5 | `declared` | apps | hex | 12 |
+| Claude Fable 5.1 | `misleading_hint` | adversarial | ir | 20 |
+| Claude Fable 5.1 | `misleading_hint` | adversarial | structured | 12 |
+| Claude Fable 5.1 | `misleading_hint` | adversarial | stream | 12 |
+| Claude Fable 5.1 | `terse` | adversarial | ir | 4 |
+| Claude Fable 5.1 | `baseline` | adversarial | ir | 4 |
+| Claude Sonnet 5.5 via Copilot | `baseline` | apps | hex | 52 |
+| Claude Sonnet 5.5 | `baseline` | apps | hex | 3 |
+
+**Which tasks trigger them** (refused attempts per task, all variants and paths):
+
+| Model | Tasks |
+|---|---|
+| Claude Opus 5.5 | `bf` 15, `json_lint` 14, `rpn` 13, `base64` 7, `sort_lines` 5, `hexdump` 1, `wc` 1 |
+| Claude Fable 5.1 | `fill_down` 32, `bmin_empty` 12, `map_into` 8 |
+| Claude Sonnet 5.5 via Copilot | `hexdump` 8, `rpn` 8, `base64` 8, `bf` 8, `json_lint` 8, `rev_lines` 7, `sort_lines` 5 |
+| Claude Sonnet 5.5 | `rpn` 3 |
+
+## 8. Within-vendor generations
+
+Each step compares a model with its predecessor on the same 224 function cells (first attempt, paired
+exact McNemar, unadjusted). Every model ran through its vendor's CLI at that CLI's default effort; the
+GPT-6 models are three tiers of one generation (Luna, Sol, Astra), listed after GPT-5.5 in ascending
+tier, so their rows compare tiers rather than releases. Kimi K2.8 here is the `kimi-for-coding` preview.
+
+| Family | From → to | First attempt | Gained / lost | p | Stream | Structured | IR (QBE) | Within 4 |
+|---|---|---|---|---|---|---|---|---|
+| Anthropic Opus | Claude Opus 4.8 → Claude Opus 5.5 | 175 → 215 | +45 / −5 | <0.001 | 83 → 97% | 89 → 96% | 62 → 95% | 222 → 224 |
+| Anthropic Sonnet | Claude Sonnet 4.5 → Claude Sonnet 5 | 203 → 175 | +19 / −47 | <0.001 | 97 → 83% | 91 → 72% | 84 → 80% | 221 → 222 |
+| Anthropic Sonnet | Claude Sonnet 5 → Claude Sonnet 5.5 | 175 → 201 | +42 / −16 | <0.001 | 83 → 96% | 72 → 92% | 80 → 81% | 222 → 223 |
+| xAI Grok | Grok 4.5 → Grok 4.6 | 197 → 211 | +20 / −6 | 0.009 | 96 → 96% | 96 → 99% | 72 → 88% | 222 → 223 |
+| xAI Grok | Grok 4.6 → Grok 4.7 | 211 → 211 | +8 / −8 | 1.000 | 96 → 100% | 99 → 96% | 88 → 86% | 223 → 220 |
+| OpenAI (Codex CLI) | Codex GPT-5.5 → Codex GPT-6 Luna | 207 → 130 | +6 / −83 | <0.001 | 95 → 79% | 96 → 61% | 86 → 34% | 224 → 209 |
+| OpenAI (Codex CLI) | Codex GPT-6 Luna → Codex GPT-6 Sol | 130 → 213 | +85 / −2 | <0.001 | 79 → 96% | 61 → 96% | 34 → 93% | 209 → 224 |
+| OpenAI (Codex CLI) | Codex GPT-6 Sol → Codex GPT-6 Astra | 213 → 221 | +11 / −3 | 0.057 | 96 → 100% | 96 → 100% | 93 → 96% | 224 → 224 |
+| Moonshot Kimi | Kimi K2.8 (for-coding) → Kimi K3 | 157 → 204 | +61 / −14 | <0.001 | 88 → 99% | 70 → 89% | 51 → 85% | 213 → 224 |
+
+## 9. Efficiency
+
+Output tokens are each vendor's own count of generated tokens, reasoning included (for every vendor
+that reports reasoning separately, the reasoning count is part of the output count); for Ollama it is
+`eval_count`, for vLLM `completion_tokens`. *Per solved cell* = all output tokens spent on the battery,
+every attempt included, divided by the cells passed within four, scaled up for attempts without a count
+and left blank below 75% coverage. *Coverage* = share of attempts that report a token count (refusals,
+timeouts and some CLI failures report none). Wall time per attempt is
+the subject's own call time; local models share one GPU with calls serialised, so their times include
+queue waits and are not comparable with the vendors'. Effort is each CLI's default unless noted.
+
+### Function batteries
+
+| Model | Effort | First attempt | Attempts | Median output tokens / attempt | Output tokens / solved cell | Coverage | Median wall s / attempt |
+|---|---|---|---|---|---|---|---|
+| Codex GPT-6 Astra | default (low) | 221/224 (99%) | 227 | 228 | 380 | 100% | 11 |
+| Claude Opus 5.5 | default | 215/224 (96%) | 234 | 322 | 813 | 100% | 6 |
+| Codex GPT-6 Sol | default (medium) | 213/224 (95%) | 236 | 438 | 739 | 100% | 12 |
+| Grok 4.7 build-fast | default | 213/224 (95%) | 242 | 4,068 | 7,990 | 97% | 32 |
+| Claude Fable 5.1 | default | 212/224 (95%) | 241 | 349 | 1,094 | 97% | 7 |
+| Grok 4.7 | default | 211/224 (94%) | 247 | 4,182 | 7,517 | 91% | 61 |
+| Grok 4.6 | default | 211/224 (94%) | 239 | 3,728 | 5,802 | 99% | 58 |
+| Codex GPT-5.5 | default (medium) | 207/224 (92%) | 241 | 746 | 1,352 | 100% | 18 |
+| Kimi K3 | default | 204/224 (91%) | 248 | 926 | 2,160 | 99% | 51 |
+| Claude Sonnet 4.5 | default | 203/224 (91%) | 256 | 7,352 | 10,293 | 97% | 93 |
+| Codex Daybreak Blue | default (low) | 201/224 (90%) | 252 | 519 | 912 | 100% | 13 |
+| Claude Sonnet 5.5 | default | 201/224 (90%) | 250 | 359 | 963 | 100% | 6 |
+| Grok 4.5 | default | 197/224 (88%) | 260 | 2,904 | 5,087 | 99% | 42 |
+| GPT-6 Luna via Copilot | default | 176/224 (79%) | 289 | 901 | 1,739 | 100% | 32 |
+| Claude Sonnet 5 | default | 175/224 (78%) | 291 | 798 | 4,236 | 99% | 9 |
+| Claude Opus 4.8 | default | 175/224 (78%) | 285 | 433 | 2,173 | 99% | 8 |
+| Claude Sonnet 5.5 via Copilot | default | 170/224 (76%) | 302 | 402 | 1,170 | 100% | 24 |
+| Kimi K2.8 (for-coding) | default | 157/224 (70%) | 341 | 1,651 | 6,037 | 88% | 148 |
+| Codex GPT-6 Luna | default (medium) | 130/224 (58%) | 382 | 714 | 1,786 | 100% | 19 |
+| Claude Haiku 4.5 | default | 116/224 (52%) | 490 | 11,271 | 37,777 | 96% | 89 |
+| Microsoft MAI-Code 1.1 Flash (Copilot) | default | 107/224 (48%) | 512 | 5,472 | 24,096 | 100% | 59 |
+| Gemini 3.8 Flash High (Antigravity) † | default | 153/163 (94%) | 175 | 15,972 | 21,244 | 100% | 50 |
+| Aleph Alpha Kolibri-1 FP8, token budget (local) | default | 58/224 (26%) | 669 | 20,601 | 148,501 | 94% | 762 |
+| Qwen3-Coder-Next Q4 (local) | default | 12/224 (5%) | 835 | 425 | 23,476 | 89% | 30 |
+| Qwen3.6-35B-A3B Q8, thinking on (local) † | think | 9/110 (8%) | 405 | 4,467 | — | 7% | 180 |
+| Qwen3-30B-A3B Instruct 2507 Q8 (local) † | default | 6/115 (5%) | 431 | 259 | 12,389 | 87% | 10 |
+| Qwen3.6-35B-A3B Q8, thinking off (local) † | no-think | 4/110 (4%) | 415 | 311 | 13,126 | 88% | 27 |
+| Qwen2.5-14B Q4 (local) † | default | 3/114 (3%) | 444 | 298 | 35,384 | 86% | 22 |
+
+Across the 21 complete vendor models, the rank correlation between median output tokens per attempt and first-attempt pass rate is -0.35.
+
+### App battery
+
+| Model | Effort | First attempt | Attempts | Median output tokens / attempt | Output tokens / solved cell | Coverage | Median wall s / attempt |
+|---|---|---|---|---|---|---|---|
+| Codex GPT-6 Astra | default (low) | 94/96 (98%) | 98 | 1,105 | 1,154 | 100% | 36 |
+| Claude Opus 5.5 | default | 89/96 (93%) | 103 | 2,659 | 3,324 | 95% | 24 |
+| Grok 4.7 build-fast | default | 89/96 (93%) | 104 | 22,677 | 28,513 | 100% | 180 |
+| Claude Fable 5.1 | default | 84/96 (88%) | 110 | 3,380 | 4,942 | 94% | 36 |
+| Claude Sonnet 5.5 | default | 84/96 (88%) | 109 | 2,464 | 3,158 | 94% | 20 |
+| Microsoft MAI-Code 1.1 Flash (Copilot) | default | 23/96 (24%) | 251 | 14,708 | 63,612 | 100% | 137 |
+| Kimi K3 † | default | 29/32 (91%) | 35 | 4,703 | 6,831 | 100% | 448 |
+| Aleph Alpha Kolibri-1 FP8, token budget (local) | default | 3/96 (3%) | 363 | 30,928 | 684,522 | 79% | 1149 |
+
+Across the 6 complete vendor models, the rank correlation between median output tokens per attempt and first-attempt pass rate is -0.41.
+
+Token counts come from each vendor's CLI and are not audited across vendors; tokenisers differ, so a
+token is not the same unit for every model. Compare within a vendor with more confidence than across.
 
