@@ -1,0 +1,289 @@
+Write the complete program `bf`: a static Linux executable for AArch64 (ARMv8-A, little-endian), written in assembly. There is no C library, no C runtime and no helper code: you write the entry point `_start`, every function, every table and string, and make the system calls yourself.
+
+Entry state (as the Linux kernel sets it up): execution starts at the label `_start`. sp is 16-byte aligned and points at argc = 0, followed by the NULL terminators of an empty argv, an empty envp and an empty auxiliary vector: the program gets no arguments. Every other general-purpose register (x0-x30) is zero; x30 is not a return address, so `_start` must never return with `ret`; the program ends only through the exit system call.
+
+System calls: the `svc #0` instruction, with the system call number in x8 and the arguments in x0, x1, x2; the result comes back in x0. Every other register is preserved. Exactly these four are available:
+- read = 63: read(fd = 0, buf, count) reads up to count bytes of standard input into buf; returns the number of bytes read, 0 at end of input.
+- write = 64: write(fd, buf, count) with fd 1 (standard output) or 2 (standard error); returns count.
+- exit = 93: exit(status) ends the program; the exit status is the low 8 bits of status.
+- exit_group = 94: the same as exit.
+Any other system call number or file descriptor stops the program with an error, and so does a buffer that is not entirely inside the program's memory.
+
+Memory: the program's own sections plus a stack of 1 MiB below the entry sp. There is no heap (no brk, no mmap, no malloc): put working storage in `.bss` (zero-initialised), at most 1 MiB in total, or on the stack. Code is not writable. Any access outside these areas stops the program. Each test run may execute at most 200,000,000 instructions.
+
+Output format: one complete assembly source file in GNU assembler (GNU as) syntax for AArch64. Examples: `ldr x2, [x0, x1, lsl #3]`, `ldrb w3, [x1], #1`, `stp x29, x30, [sp, #-16]!`. Comments start with `//`; do not use `;`.
+Allowed in the file:
+- Sections: `.text` (code), `.section .rodata` (read-only data), `.data` (initialised writable data), `.bss` (zero-initialised space: only `.zero`/`.space` and alignment). Instructions go in `.text` only.
+- Data directives: `.byte`, `.short`/`.2byte`, `.word` (4 bytes on this target), `.long`/`.int`/`.4byte`, `.quad`/`.8byte`, `.ascii`, `.asciz`/`.string`, `.zero`/`.space`, alignment with `.align`/`.balign`/`.p2align`, and `.globl`/`.global` (write `.globl _start`).
+- Labels `name:` in any section, and GNU local labels `1:` referenced as `1f` (next) / `1b` (previous).
+- Constants: `.equ name, value` (or `.set name, value`, or `name = value`), where value is a number or a difference of labels defined earlier in the same section (e.g. `msg_len = . - msg`). Define every constant before its first use.
+- Addressing data: `adrp x0, label` followed by `add x0, x0, :lo12:label` (or a load/store `ldr x1, [x0, :lo12:label]`); `adr x0, label` also works within +-1 MiB. Literal pools are NOT allowed: no `ldr x0, =label` and no `ldr x0, =constant` (build constants with mov/movz/movk).
+Not allowed: macros (`.macro`, `.rept`, `.irp`), conditional assembly (`.if`), `.include`, `.incbin`, `.fill`, `.org`, `.comm`/`.lcomm`, `.inst`, `.cfi_*` directives, section stacks (`.pushsection`) and any other section. No libc and no other library: there is nothing to link against, so every symbol you use must be defined in your file.
+Instruction set: ARMv8.0-A with floating point and Advanced SIMD (NEON). Not supported (rejected): CRC32, LSE atomics, dot product, half-precision, crypto (AES/SHA/PMULL) and SVE.
+Output ONLY the assembly source: no Markdown fences, no prose before or after it.
+
+Specification: Task `bf`: a Brainfuck interpreter. Standard input holds the program, then a `!` byte (0x21), then the program's
+input: the program is every byte before the FIRST `!`; the program's input is every byte after it (it may itself
+contain `!`). If there is no `!` at all, the whole of standard input is the program and its input is empty.
+
+Machine: a tape of 30000 byte cells, all 0 initially, and a data pointer at cell 0. The eight commands:
+`>` pointer + 1; `<` pointer - 1; `+` cell + 1 (255 wraps to 0); `-` cell - 1 (0 wraps to 255); `.` write the
+cell's byte to the output; `,` read the next byte of the program's input into the cell, or store 0 if the
+program's input is exhausted (every later `,` also stores 0); `[` if the cell is 0, jump to just after the
+matching `]`; `]` if the cell is not 0, jump back to just after the matching `[`. Every other byte of the program
+(letters, digits, spaces, newlines, any value) is a comment and is ignored.
+
+Brackets: before running anything, check that the program's `[` and `]` are balanced (every `]` closes an
+earlier unmatched `[`, and no `[` is left open). If they are not, print NOTHING and exit with status 1.
+Otherwise run the program to its end and exit with status 0 (the output is exactly the bytes written by `.`).
+
+Limits: the whole standard input is at most 65536 bytes; bracket nesting is at most 1000 deep; the test
+programs never move the pointer outside cells 0..29999, write at most 65536 output bytes, and execute at
+most 5000000 commands.
+
+Input and output (applies to this whole task):
+- The input is the complete contents of standard input (file descriptor 0). Read it with `read` until `read`
+  returns 0 (end of input). A `read` may return FEWER bytes than requested, at any position (in the middle of a
+  line, a token or a group of bytes), so keep calling it; only a return value of 0 means end of input.
+- Write the output to standard output (file descriptor 1). Only the bytes this task describes may appear on
+  standard output (standard error is ignored). Every output byte must be written before the program exits.
+- Finish with `exit` (or `exit_group`) and the exit status this task gives. The program must not run off the end
+  of its code or crash.
+
+Your previous attempt was:
+<previous>
+.global _start
+
+.section .bss
+tape:
+    .space 30000
+in_buf:
+    .space 65536
+match:
+    .space 262144
+bracket_stack:
+    .space 4000
+total_len:
+    .quad 0
+prog_len:
+    .quad 0
+input_start:
+    .quad 0
+data_ptr:
+    .quad 0
+prog_ptr:
+    .quad 0
+stack_ptr:
+    .quad 0
+
+.section .text
+_start:
+    adrp x1, in_buf
+    add x1, x1, :lo12:in_buf
+    adrp x4, total_len
+    add x4, x4, :lo12:total_len
+    ldr x3, [x4]
+read_loop:
+    mov x2, #65536
+    sub x2, x2, x3
+    mov x0, #0
+    mov x8, #63
+    svc #0
+    cmp x0, #0
+    b.eq read_done
+    add x3, x3, x0
+    str x3, [x4]
+    b read_loop
+read_done:
+    mov x5, #0
+    mov x10, #0
+scan_loop:
+    cmp x5, x3
+    b.ge scan_no_excl
+    ldrb w15, [x1, x5]
+    cmp w15, #0x21
+    b.eq found_excl
+    add x5, x5, #1
+    b scan_loop
+found_excl:
+    mov x10, #1
+    adrp x6, prog_len
+    add x6, x6, :lo12:prog_len
+    str x5, [x6]
+    add x7, x5, #1
+    adrp x8, input_start
+    add x8, x8, :lo12:input_start
+    str x7, [x8]
+    b scan_done
+scan_no_excl:
+    mov x10, #0
+scan_done:
+    cmp x10, #0
+    b.ne skip_set
+    adrp x6, prog_len
+    add x6, x6, :lo12:prog_len
+    str x3, [x6]
+    adrp x8, input_start
+    add x8, x8, :lo12:input_start
+    str x3, [x8]
+skip_set:
+    adrp x6, match
+    add x6, x6, :lo12:match
+    adrp x7, bracket_stack
+    add x7, x7, :lo12:bracket_stack
+    adrp x9, prog_len
+    add x9, x9, :lo12:prog_len
+    ldr x10, [x9]
+    mov x8, #0
+    mov x5, #0
+bracket_loop:
+    cmp x5, x10
+    b.ge bracket_done
+    ldrb w15, [x1, x5]
+    cmp w15, #0x5B
+    b.ne check_closed
+    add x11, x7, x8, lsl #2
+    str w5, [x11]
+    add x8, x8, #1
+    b bracket_next
+check_closed:
+    cmp w15, #0x5D
+    b.ne bracket_next
+    cmp x8, #0
+    b.eq unbalanced
+    sub x8, x8, #1
+    add x11, x7, x8, lsl #2
+    ldr w2, [x11]
+    mov x2, w2
+    add x16, x6, x5, lsl #2
+    str w2, [x16]
+    add x16, x6, x2, lsl #2
+    str w5, [x16]
+bracket_next:
+    add x5, x5, #1
+    b bracket_loop
+bracket_done:
+    cmp x8, #0
+    b.ne unbalanced
+    adrp x11, tape
+    add x11, x11, :lo12:tape
+    adrp x8, input_start
+    add x8, x8, :lo12:input_start
+    ldr x8, [x8]
+    adrp x9, total_len
+    add x9, x9, :lo12:total_len
+    ldr x9, [x9]
+    adrp x10, prog_len
+    add x10, x10, :lo12:prog_len
+    ldr x10, [x10]
+    mov x13, #0
+    mov x14, #0
+    b run_loop
+unbalanced:
+    mov x0, #1
+    mov x8, #93
+    svc #0
+    b done
+run_loop:
+    cmp x14, x10
+    b.ge run_done
+    ldrb w15, [x1, x14]
+    cmp w15, #0x3E
+    b.eq cmd_gt
+    cmp w15, #0x3C
+    b.eq cmd_lt
+    cmp w15, #0x2B
+    b.eq cmd_plus
+    cmp w15, #0x2D
+    b.eq cmd_minus
+    cmp w15, #0x2E
+    b.eq cmd_dot
+    cmp w15, #0x2C
+    b.eq cmd_comm
+    cmp w15, #0x5B
+    b.eq cmd_lbracket
+    cmp w15, #0x5D
+    b.eq cmd_rbracket
+    b run_next
+cmd_gt:
+    add x13, x13, #1
+    b run_next
+cmd_lt:
+    sub x13, x13, #1
+    b run_next
+cmd_plus:
+    add x15, x11, x13
+    ldrb w16, [x15]
+    add w16, w16, #1
+    and w16, w16, #0xFF
+    str w16, [x15]
+    b run_next
+cmd_minus:
+    add x15, x11, x13
+    ldrb w16, [x15]
+    sub w16, w16, #1
+    and w16, w16, #0xFF
+    str w16, [x15]
+    b run_next
+cmd_dot:
+    mov x4, x1
+    add x15, x11, x13
+    ldrb w16, [x15]
+    mov x0, #1
+    mov x1, x15
+    mov x2, #1
+    mov x8, #64
+    svc #0
+    mov x1, x4
+    b run_next
+cmd_comm:
+    cmp x8, x9
+    b.ge cmd_comm_exhausted
+    add x15, x1, x8
+    ldrb w16, [x15]
+    add x15, x11, x13
+    str w16, [x15]
+    add x8, x8, #1
+    b run_next
+cmd_comm_exhausted:
+    add x15, x11, x13
+    mov w16, #0
+    str w16, [x15]
+    b run_next
+cmd_lbracket:
+    add x15, x11, x13
+    ldrb w16, [x15]
+    cmp w16, #0
+    b.eq jump_to_match
+    b run_next
+cmd_rbracket:
+    add x15, x11, x13
+    ldrb w16, [x15]
+    cmp w16, #0
+    b.eq run_next
+    b jump_to_match
+jump_to_match:
+    add x16, x6, x14, lsl #2
+    ldr w2, [x16]
+    mov x2, w2
+    add x14, x2, #1
+    b run_loop
+run_next:
+    add x14, x14, #1
+    b run_loop
+run_done:
+    mov x0, #0
+    mov x8, #93
+    svc #0
+    b done
+done:
+    mov x0, #0
+    mov x8, #93
+    svc #0
+</previous>
+It failed:
+<failure>
+GNU as rejected the program:
+line 13: .quad is not allowed in .bss (only .zero/.space/.skip and alignment)
+</failure>
+Write a corrected, complete version. Same output format; output only the code.
