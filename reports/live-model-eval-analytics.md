@@ -1,10 +1,13 @@
 # Live-model evaluation: analytics
 
-Three analyses of the recorded runs, using only data already committed (no new model calls):
+Six analyses of the recorded runs, using only data already committed (no new model calls):
 
-- how confident each pass rate is, and which ranking gaps are real;
-- how well models repair their own failures;
-- which cells are hard, and which ones decide the ranking.
+1. how confident each pass rate is, and which ranking gaps are real;
+2. how well models repair their own failures;
+3. which cells are hard, and which ones decide the ranking;
+4. how much the ISA and the path matter;
+5. what the failures are, in one classification shared by every model;
+6. what each prompt variant changes, measured cell by cell against baseline.
 
 Records are selected exactly as in the cross-vendor and app reports: baseline variant, no smokes, no hex path.
 The reviewed false-reject corrections are applied cell by cell, so every count matches the published tables.
@@ -59,6 +62,45 @@ analyses is in [`TODO.md`](../TODO.md).
     misses by strong models, not suspect tasks.
 - **App tasks:** `json_lint` (69% first attempt across the six complete vendor models) and `rpn` (74%) are the
   hardest; `sort_lines` (89%) is the easiest.
+- **No model is significantly better on one ISA than the other.**
+  - After correction across 28 models, no ISA gap holds. The largest raw gaps all favour AArch64: Claude
+    Sonnet 5 (30 tasks passed only on AArch64 against 15 only on x86-64, raw p = 0.036), Codex GPT-6 Luna (24
+    against 12) and Haiku 4.5 (11 against 3).
+  - Pooled over the 21 complete vendor models, the ISAs are level on stream (91% x86-64, 92% AArch64) and on
+    QBE (71% each). Structured is the one place x86-64 trails (84% against 90%); this is descriptive, not
+    tested.
+  - On the app battery the asm path is level (81% against 83%) and stream AArch64 trails (76% against 81%).
+  - The path matters far more than the ISA. QBE takes the top-tier models from 95-100% on stream down to
+    86-96%, while Haiku 4.5 passes 1% of QBE cells, MAI-Code 5% and every local model 0%.
+- **QBE accounts for most vendor static failures, and it is two mistakes.**
+  - 380 of the 915 vendor first-attempt failures are QBE.
+  - The two commonest are a missing or wrong type class on a result or parameter (131), and invented opcodes
+    such as `addl` or `mulw`, where QBE puts the class on the result instead (96). Hex literals, which QBE
+    does not accept, add another 35.
+  - 20 of Opus 4.8's 27 QBE failures are type classes.
+  - Once code assembles, wrong results are the largest single vendor class (174).
+- **Weaker models fail in other ways.**
+  - Local models write malformed QBE function signatures (124, mostly parameters without `%`), break the
+    structured schema (119, mostly `{"reg": ...}` operands) and time out (146).
+  - Some per-model profiles stand out:
+    - Grok 4.7: 10 of its 13 failures are timeouts.
+    - Sonnet 5.5 via Copilot: 29 of 54 are output-format failures, mostly prose plans before the code.
+    - Opus 5.5, Fable 5.1 and Sonnet 5.5: their largest group is encoding errors, mostly an AArch64 `mov` of
+      a constant no single instruction can hold (`mov x2, #65600`). Fable 5.1 has as many wrong results.
+- **The `assisted` variant works; `misleading_hint` and `terse` make no significant difference.**
+  - `assisted` (rounds 1 + 2, 110 cells) lifts all four models on the first attempt, with significant paired
+    gains:
+    - Haiku 4.5: 58% to 89% (+38 / −4);
+    - MAI-Code: 55% to 89% (+43 / −5);
+    - Codex GPT-6 Luna: 67% to 80% (+24 / −10, p = 0.024);
+    - Qwen3-Coder-Next: 9% to 24% (p = 0.007).
+  - Within four attempts it lifts Haiku (79 to 109) and MAI-Code (77 to 108), but not Luna (109 either way):
+    for Luna the notes save attempts but don't change the result.
+  - `misleading_hint` changes no model significantly. It leans negative for Fable 5.1 (+5 / −11, with 11
+    refusals), Haiku 4.5 (+3 / −11, p = 0.057) and Sonnet 5 (+5 / −12). Opus 5.5 is unaffected (+3 / −1).
+  - `terse` changes nothing (every p ≥ 0.25).
+  - The `declared` hex-app variants run 16 cells each, too few to show an effect. Opus 5.5 refused 5 and 8 of
+    the 16 first attempts in them.
 
 ## 1. Statistical confidence
 
@@ -340,4 +382,185 @@ failed) by all ten, so the top of the ranking rests on those cells:
 | `base64` | 58/72 (81%) | 71/72 (99%) |
 | `bf` | 60/72 (83%) | 70/72 (97%) |
 | `json_lint` | 50/72 (69%) | 61/72 (85%) |
+
+## 4. ISA and path gap
+
+First-attempt pass rates on the function batteries by path and by ISA. The ISA comparison is paired:
+each (battery, task, path) exists once per ISA, so *x86 only* counts tasks a model passed on x86-64
+and failed on AArch64, *A64 only* the reverse. Exact McNemar, Holm-adjusted over the models listed.
+
+| Model | Stream | Structured | IR (QBE) | x86-64 | AArch64 | x86 only / A64 only | p | Holm p |
+|---|---|---|---|---|---|---|---|---|
+| Codex GPT-6 Astra | 100% | 100% | 96% | 100% | 97% | 3 / 0 | 0.250 | 1.000 |
+| Claude Opus 5.5 | 97% | 96% | 95% | 97% | 95% | 6 / 3 | 0.508 | 1.000 |
+| Codex GPT-6 Sol | 96% | 96% | 93% | 94% | 96% | 1 / 4 | 0.375 | 1.000 |
+| Grok 4.7 build-fast | 99% | 97% | 89% | 93% | 97% | 3 / 8 | 0.227 | 1.000 |
+| Claude Fable 5.1 | 95% | 93% | 96% | 96% | 94% | 6 / 4 | 0.754 | 1.000 |
+| Grok 4.7 | 100% | 96% | 86% | 95% | 94% | 5 / 4 | 1.000 | 1.000 |
+| Grok 4.6 | 96% | 99% | 88% | 95% | 94% | 5 / 4 | 1.000 | 1.000 |
+| Codex GPT-5.5 | 95% | 96% | 86% | 89% | 96% | 3 / 10 | 0.092 | 1.000 |
+| Kimi K3 | 99% | 89% | 85% | 90% | 92% | 7 / 9 | 0.804 | 1.000 |
+| Claude Sonnet 4.5 | 97% | 91% | 84% | 91% | 90% | 8 / 7 | 1.000 | 1.000 |
+| Codex Daybreak Blue | 93% | 93% | 82% | 88% | 92% | 5 / 10 | 0.302 | 1.000 |
+| Claude Sonnet 5.5 | 96% | 92% | 81% | 92% | 88% | 12 / 7 | 0.359 | 1.000 |
+| Grok 4.5 | 96% | 96% | 72% | 87% | 89% | 10 / 13 | 0.678 | 1.000 |
+| GPT-6 Luna via Copilot | 88% | 82% | 65% | 81% | 76% | 17 / 11 | 0.345 | 1.000 |
+| Claude Sonnet 5 | 83% | 72% | 80% | 71% | 85% | 15 / 30 | 0.036 | 1.000 |
+| Claude Opus 4.8 | 83% | 89% | 62% | 78% | 79% | 12 / 13 | 1.000 | 1.000 |
+| Claude Sonnet 5.5 via Copilot | 80% | 84% | 64% | 74% | 78% | 5 / 9 | 0.424 | 1.000 |
+| Kimi K2.8 (for-coding) | 88% | 70% | 51% | 71% | 70% | 21 / 20 | 1.000 | 1.000 |
+| Codex GPT-6 Luna | 79% | 61% | 34% | 53% | 63% | 12 / 24 | 0.065 | 1.000 |
+| Claude Haiku 4.5 | 80% | 73% | 1% | 48% | 55% | 3 / 11 | 0.057 | 1.000 |
+| Microsoft MAI-Code 1.1 Flash (Copilot) | 78% | 59% | 5% | 45% | 51% | 9 / 16 | 0.230 | 1.000 |
+| Gemini 3.8 Flash High (Antigravity) † | 100% | 93% | 89% | 93% | 95% | 2 / 4 | 0.688 | 1.000 |
+| Aleph Alpha Kolibri-1 FP8, token budget (local) | 47% | 30% | 0% | 24% | 28% | 14 / 18 | 0.597 | 1.000 |
+| Qwen3-Coder-Next Q4 (local) | 16% | 0% | 0% | 4% | 6% | 3 / 5 | 0.727 | 1.000 |
+| Qwen3.6-35B-A3B Q8, thinking on (local) † | 13% | 11% | 0% | 5% | 11% | 0 / 3 | 0.250 | 1.000 |
+| Qwen3-30B-A3B Instruct 2507 Q8 (local) † | 12% | 3% | 0% | 5% | 5% | 3 / 3 | 1.000 | 1.000 |
+| Qwen3.6-35B-A3B Q8, thinking off (local) † | 8% | 3% | 0% | 4% | 4% | 2 / 2 | 1.000 | 1.000 |
+| Qwen2.5-14B Q4 (local) † | 5% | 3% | 0% | 2% | 4% | 1 / 2 | 1.000 | 1.000 |
+
+Models with a significant ISA gap: none.
+
+**Path × ISA, mean over the 21 complete vendor models** (first attempt):
+
+| Path | x86-64 | AArch64 |
+|---|---|---|
+| stream | 91% | 92% |
+| structured | 84% | 90% |
+| IR (QBE) | 71% | 71% |
+
+**App battery, the 6 complete vendor models** (first attempt, 144 cells each):
+
+| Path | x86-64 | AArch64 |
+|---|---|---|
+| asm | 117/144 (81%) | 119/144 (83%) |
+| stream | 117/144 (81%) | 110/144 (76%) |
+
+## 5. One error classification across models
+
+Every first-attempt failure (function and app batteries, baseline) sorted into one shared set of classes
+from its category and the harness's failure message. Static rejects are split by cause; runtime
+failures by kind. Counts are cells.
+
+### All models
+
+| Class | Vendor models | Local models | All |
+|---|---|---|---|
+| QBE: missing or wrong type class | 131 | 17 | 148 |
+| QBE: malformed function signature | 2 | 124 | 126 |
+| QBE: invented opcode | 96 | 12 | 108 |
+| QBE: hex literal (decimal only) | 35 | 15 | 50 |
+| QBE: type or SSA error | 33 | 0 | 33 |
+| QBE: other syntax | 83 | 79 | 162 |
+| operand not encodable (immediate / addressing) | 58 | 15 | 73 |
+| invalid operand combination | 17 | 46 | 63 |
+| invented / malformed instruction | 0 | 18 | 18 |
+| wrong assembler dialect (NASM) | 0 | 7 | 7 |
+| program-format rule broken | 12 | 19 | 31 |
+| label / symbol error | 10 | 14 | 24 |
+| structured: schema violation | 56 | 119 | 175 |
+| malformed JSON | 24 | 46 | 70 |
+| prose / markup instead of code | 31 | 2 | 33 |
+| other assembler / encoder reject | 8 | 11 | 19 |
+| calling-convention violation | 17 | 29 | 46 |
+| memory fault / crash | 77 | 58 | 135 |
+| syscall / exit misuse | 5 | 16 | 21 |
+| wrong result / runs forever | 174 | 105 | 279 |
+| timeout (no complete answer) | 43 | 146 | 189 |
+| refusal | 1 | 0 | 1 |
+| other | 2 | 0 | 2 |
+| **total** | 915 | 898 | 1813 |
+
+### Per model
+
+First-attempt failures per model, grouped. *QBE* = the QBE classes above; *Encoding* = operands not
+encodable, invalid operand combinations, invented instructions; *Rules / dialect* = NASM syntax on the
+GNU path, the prompt's section and constant rules, label errors; *Output format* = structured schema,
+malformed JSON, prose or markup instead of code; *ABI / memory* = calling convention, memory faults,
+syscall misuse. The largest group per model is in bold.
+
+| Model | Failures | QBE | Encoding | Rules / dialect | Output format | ABI / memory | Logic | Timeout | Refusal | Other |
+|---|---|---|---|---|---|---|---|---|---|---|
+| Codex GPT-6 Astra | 5 | **3** | 2 | · | · | · | · | · | · | · |
+| Gemini 3.8 Flash High (Antigravity) † | 10 | **6** | · | · | 3 | · | · | 1 | · | · |
+| Codex GPT-6 Sol | 11 | **5** | · | · | 1 | · | **5** | · | · | · |
+| Grok 4.7 | 13 | 2 | · | · | · | · | 1 | **10** | · | · |
+| Grok 4.6 | 13 | **7** | 1 | · | · | · | 4 | 1 | · | · |
+| Claude Opus 5.5 | 16 | 3 | **7** | · | 4 | 2 | · | · | · | · |
+| Codex GPT-5.5 | 17 | **9** | · | · | · | 2 | 6 | · | · | · |
+| Grok 4.7 build-fast | 18 | **6** | · | · | **6** | · | 3 | 3 | · | · |
+| Claude Sonnet 4.5 | 21 | **9** | · | · | 2 | · | 5 | 5 | · | · |
+| Codex Daybreak Blue | 23 | **12** | 1 | · | 1 | 4 | 5 | · | · | · |
+| Kimi K3 | 23 | 5 | · | 1 | 3 | 3 | **9** | 2 | · | · |
+| Claude Fable 5.1 | 24 | 2 | **7** | 2 | 4 | 1 | **7** | · | 1 | · |
+| Grok 4.5 | 27 | **17** | 1 | · | · | 3 | 6 | · | · | · |
+| Claude Sonnet 5.5 | 35 | 10 | **11** | 1 | 6 | 2 | 5 | · | · | · |
+| GPT-6 Luna via Copilot | 48 | **22** | 3 | · | 2 | 6 | 15 | · | · | · |
+| Claude Sonnet 5 | 49 | **14** | 3 | 1 | 12 | 13 | 6 | · | · | · |
+| Claude Opus 4.8 | 49 | **27** | 3 | · | 4 | 8 | 6 | · | · | 1 |
+| Claude Sonnet 5.5 via Copilot | 54 | 12 | 2 | 1 | **29** | 3 | 6 | · | · | 1 |
+| Kimi K2.8 (for-coding) | 67 | **23** | 1 | · | 8 | 5 | 14 | 16 | · | · |
+| Codex GPT-6 Luna | 94 | **46** | 2 | · | 7 | 12 | 27 | · | · | · |
+| Claude Haiku 4.5 | 108 | **70** | 6 | 4 | 10 | 8 | 5 | 5 | · | · |
+| Microsoft MAI-Code 1.1 Flash (Copilot) | 190 | **70** | 33 | 12 | 9 | 27 | 39 | · | · | · |
+| Qwen3.6-35B-A3B Q8, thinking on (local) † | 101 | 4 | · | · | · | · | 1 | **96** | · | · |
+| Qwen3.6-35B-A3B Q8, thinking off (local) † | 106 | **36** | 12 | 7 | 30 | 6 | 13 | 2 | · | · |
+| Qwen3-30B-A3B Instruct 2507 Q8 (local) † | 109 | **28** | 7 | 1 | 20 | 21 | 14 | 18 | · | · |
+| Qwen2.5-14B Q4 (local) † | 111 | **36** | 14 | 1 | 26 | 17 | 9 | 8 | · | · |
+| Qwen3-Coder-Next Q4 (local) | 212 | **73** | 25 | 6 | 66 | 26 | 14 | 2 | · | · |
+| Aleph Alpha Kolibri-1 FP8, token budget (local) | 259 | **70** | 32 | 25 | 25 | 33 | 54 | 20 | · | · |
+
+The QBE classes in detail, vendor models only (where QBE failures cluster):
+
+| Model | missing or wrong type class | malformed function signature | invented opcode | hex literal (decimal only) | type or SSA error | other syntax |
+|---|---|---|---|---|---|---|
+| Codex GPT-6 Astra | 2 | 0 | 0 | 0 | 1 | 0 |
+| Gemini 3.8 Flash High (Antigravity) | 0 | 0 | 1 | 4 | 0 | 1 |
+| Codex GPT-6 Sol | 1 | 0 | 3 | 1 | 0 | 0 |
+| Grok 4.7 | 0 | 0 | 1 | 1 | 0 | 0 |
+| Grok 4.6 | 1 | 0 | 0 | 6 | 0 | 0 |
+| Claude Opus 5.5 | 3 | 0 | 0 | 0 | 0 | 0 |
+| Codex GPT-5.5 | 1 | 0 | 0 | 1 | 1 | 6 |
+| Grok 4.7 build-fast | 1 | 0 | 2 | 1 | 0 | 2 |
+| Claude Sonnet 4.5 | 1 | 0 | 1 | 2 | 3 | 2 |
+| Codex Daybreak Blue | 1 | 0 | 5 | 2 | 4 | 0 |
+| Kimi K3 | 1 | 0 | 0 | 3 | 1 | 0 |
+| Claude Fable 5.1 | 0 | 0 | 1 | 0 | 1 | 0 |
+| Grok 4.5 | 3 | 0 | 4 | 4 | 0 | 6 |
+| Claude Sonnet 5.5 | 1 | 1 | 0 | 0 | 4 | 4 |
+| GPT-6 Luna via Copilot | 7 | 0 | 13 | 0 | 1 | 1 |
+| Claude Sonnet 5 | 4 | 0 | 2 | 0 | 5 | 3 |
+| Claude Opus 4.8 | 20 | 0 | 1 | 0 | 3 | 3 |
+| Claude Sonnet 5.5 via Copilot | 0 | 0 | 2 | 0 | 3 | 7 |
+| Kimi K2.8 (for-coding) | 9 | 0 | 2 | 3 | 1 | 8 |
+| Codex GPT-6 Luna | 16 | 0 | 16 | 2 | 4 | 8 |
+| Claude Haiku 4.5 | 34 | 0 | 15 | 2 | 0 | 19 |
+| Microsoft MAI-Code 1.1 Flash (Copilot) | 25 | 1 | 27 | 3 | 1 | 13 |
+
+## 6. Prompt-variant effects
+
+Each variant was run on the same cells as the model's baseline, so the effect is a paired difference.
+*Gained* = cells failed on the first attempt at baseline and passed with the variant; *lost* the reverse.
+Exact McNemar on those two counts (unadjusted; the variants answer different questions).
+
+| Variant | Cells | Model | Baseline | Variant | Gained / lost | p | Within 4: baseline → variant |
+|---|---|---|---|---|---|---|---|
+| `assisted` | rounds 1 + 2 (110) | Claude Haiku 4.5 | 64/110 (58%) | 98/110 (89%) | +38 / −4 | <0.001 | 79 → 109 |
+| `assisted` | rounds 1 + 2 (110) | Codex GPT-6 Luna | 74/110 (67%) | 88/110 (80%) | +24 / −10 | 0.024 | 109 → 109 |
+| `assisted` | rounds 1 + 2 (110) | Microsoft MAI-Code 1.1 Flash (Copilot) | 60/110 (55%) | 98/110 (89%) | +43 / −5 | <0.001 | 77 → 108 |
+| `assisted` | rounds 1 + 2 (110) | Qwen3-Coder-Next Q4 (local) | 10/110 (9%) | 26/110 (24%) | +24 / −8 | 0.007 | 25 → 42 |
+| `declared` | apps (hex path) (16) | Claude Opus 5.5 | 7/16 (44%) | 10/16 (62%) | +4 / −1 | 0.375 | 12 → 14 |
+| `declared` | apps (hex path) (16) | Codex GPT-6 Astra | 15/16 (94%) | 15/16 (94%) | +1 / −1 | 1.000 | 16 → 16 |
+| `declared_annotated` | apps (hex path) (16) | Claude Opus 5.5 | 7/16 (44%) | 8/16 (50%) | +4 / −3 | 1.000 | 12 → 12 |
+| `misleading_hint` | adversarial (60) | Claude Fable 5.1 | 54/60 (90%) | 48/60 (80%) | +5 / −11 | 0.210 | 59 → 49 |
+| `misleading_hint` | adversarial (60) | Claude Haiku 4.5 | 35/60 (58%) | 27/60 (45%) | +3 / −11 | 0.057 | 44 → 41 |
+| `misleading_hint` | adversarial (60) | Claude Opus 5.5 | 57/60 (95%) | 59/60 (98%) | +3 / −1 | 0.625 | 60 → 60 |
+| `misleading_hint` | adversarial (60) | Claude Sonnet 5 | 45/60 (75%) | 38/60 (63%) | +5 / −12 | 0.143 | 59 → 57 |
+| `terse` | adversarial (60) | Claude Fable 5.1 | 54/60 (90%) | 55/60 (92%) | +5 / −4 | 1.000 | 59 → 59 |
+| `terse` | adversarial (60) | Claude Haiku 4.5 | 35/60 (58%) | 33/60 (55%) | +4 / −6 | 0.754 | 44 → 42 |
+| `terse` | adversarial (60) | Claude Opus 5.5 | 57/60 (95%) | 60/60 (100%) | +3 / −0 | 0.250 | 60 → 60 |
+| `terse` | adversarial (60) | Claude Sonnet 5 | 45/60 (75%) | 43/60 (72%) | +6 / −8 | 0.791 | 59 → 60 |
+
+First-attempt refusals inside the variant runs: Claude Fable 5.1 `misleading_hint` 11; Claude Fable 5.1 `terse` 1; Claude Opus 5.5 `declared` 5; Claude Opus 5.5 `declared_annotated` 8.
 

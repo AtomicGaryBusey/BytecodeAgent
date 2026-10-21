@@ -12,6 +12,7 @@ import glob
 import json
 import math
 import os
+import re
 import sys
 
 sys.path.insert(0, os.path.dirname(__file__))
@@ -68,6 +69,7 @@ def load():
             if path == "hex":
                 continue
             r["_bat"] = bat
+            r["_dir"] = os.path.dirname(f)
             if bat == "apps":
                 apps[(label_of(r), r["cell"])] = r
             else:
@@ -410,11 +412,311 @@ def difficulty(by_fn, by_apps):
     print()
 
 
+# ------------------------------------------------------------------------------------------------ 4. ISA and path
+def isa_path(by_fn, by_apps):
+    print("## 4. ISA and path gap\n")
+    print("First-attempt pass rates on the function batteries by path and by ISA. The ISA comparison is paired:")
+    print("each (battery, task, path) exists once per ISA, so *x86 only* counts tasks a model passed on x86-64")
+    print("and failed on AArch64, *A64 only* the reverse. Exact McNemar, Holm-adjusted over the models listed.\n")
+    rows = []
+    for m, cells in by_fn.items():
+        n = len(cells)
+        per = collections.defaultdict(lambda: [0, 0])
+        pairs = collections.defaultdict(dict)
+        for (b, c), r in cells.items():
+            t, p, i = c.split(".")
+            per[p][0] += bool(r["pass_at_1"]); per[p][1] += 1
+            per[i][0] += bool(r["pass_at_1"]); per[i][1] += 1
+            pairs[(b, t, p)][i] = bool(r["pass_at_1"])
+        xo = sum(1 for v in pairs.values() if len(v) == 2 and v["x86_64"] and not v["aarch64"])
+        ao = sum(1 for v in pairs.values() if len(v) == 2 and v["aarch64"] and not v["x86_64"])
+        p1 = sum(bool(r["pass_at_1"]) for r in cells.values())
+        rows.append((is_local(m), n != FULL_FN, -p1 / n, m, per, xo, ao, mcnemar_exact(xo, ao)))
+    rows.sort(key=lambda r: (r[0], r[1], r[2]))
+    adj = holm([r[7] for r in rows])
+
+    def cell(k):
+        return f"{100 * k[0] / k[1]:.0f}%" if k[1] else "—"
+
+    print("| Model | Stream | Structured | IR (QBE) | x86-64 | AArch64 | x86 only / A64 only | p | Holm p |")
+    print("|---|---|---|---|---|---|---|---|---|")
+    for (loc, partial, _, m, per, xo, ao, praw), q in zip(rows, adj):
+        tag = " †" if partial else ""
+        print(f"| {name(m)}{tag} | {cell(per['stream'])} | {cell(per['structured'])} | {cell(per['ir'])} | "
+              f"{cell(per['x86_64'])} | {cell(per['aarch64'])} | {xo} / {ao} | {pfmt(praw)} | {pfmt(q)} |")
+    print()
+    sig = [(m, xo, ao) for (_, _, _, m, _, xo, ao, _), q in zip(rows, adj) if q < 0.05]
+    print("Models with a significant ISA gap: " + ("; ".join(
+        f"{name(m)} ({'x86-64' if xo > ao else 'AArch64'} better, {max(xo, ao)} vs {min(xo, ao)})" for m, xo, ao in sig)
+        if sig else "none") + ".\n")
+
+    vend = [m for m, c in by_fn.items() if len(c) == FULL_FN and not is_local(m)]
+    print(f"**Path × ISA, mean over the {len(vend)} complete vendor models** (first attempt):\n")
+    print("| Path | x86-64 | AArch64 |")
+    print("|---|---|---|")
+    for p in ("stream", "structured", "ir"):
+        out = []
+        for i in ("x86_64", "aarch64"):
+            k = sum(bool(r["pass_at_1"]) for m in vend for (b, c), r in by_fn[m].items() if c.split(".")[1:] == [p, i])
+            n = sum(1 for m in vend for (b, c) in by_fn[m] if c.split(".")[1:] == [p, i])
+            out.append(f"{100 * k / n:.0f}%")
+        print(f"| {'IR (QBE)' if p == 'ir' else p} | " + " | ".join(out) + " |")
+    print()
+    am = [m for m, c in by_apps.items() if len(c) == FULL_APPS and not is_local(m)]
+    print(f"**App battery, the {len(am)} complete vendor models** (first attempt, {len(am) * 24} cells each):\n")
+    print("| Path | x86-64 | AArch64 |")
+    print("|---|---|---|")
+    for p in ("asm", "stream"):
+        out = []
+        for i in ("x86_64", "aarch64"):
+            k = sum(bool(r["pass_at_1"]) for m in am for c, r in by_apps[m].items() if c.split(".")[1:3] == [p, i])
+            n = sum(1 for m in am for c in by_apps[m] if c.split(".")[1:3] == [p, i])
+            out.append(pct(k, n))
+        print(f"| {p} | " + " | ".join(out) + " |")
+    print()
+
+
+# ------------------------------------------------------------------------------------------------ 5. error classes
+_ATTEMPT1: dict[str, dict] = {}
+
+
+def first_failure(r: dict) -> str:
+    """The recorded failure message of the cell's first attempt (the last attempt-1 record for the cell)."""
+    d = r["_dir"]
+    if d not in _ATTEMPT1:
+        idx = {}
+        path = os.path.join(d, "attempts.jsonl")
+        if os.path.exists(path):
+            rd = d.split("/")[2]
+            for line in open(path):
+                a = json.loads(line)
+                if a.get("attempt") != 1:
+                    continue
+                bat = a.get("battery") or ("round2" if "round2" in rd else "round1")
+                idx[(a.get("variant", "baseline"), bat, a["cell"])] = a
+        _ATTEMPT1[d] = idx
+    a = _ATTEMPT1[d].get((r.get("variant", "baseline"), r["_bat"], r["cell"]))
+    if a is None:
+        return ""
+    f = a.get("failure") or a.get("subject_error") or ""
+    return f if isinstance(f, str) else json.dumps(f)
+
+
+QBE_OPS = re.compile(r"^(add|sub|mul|div|rem|udiv|urem|and|or|xor|sar|shr|shl|neg|copy|load|store|ext|trunc|"
+                     r"c[a-z]+|cast|call|ret|jmp|jnz|alloc|phi|blit|sel|vaarg|vastart)[a-z0-9]*$")
+
+
+def classify(cat: str, text: str) -> str:
+    t = " ".join(text.split())
+    low = t.lower()
+    if cat == "refusal":
+        return "refusal"
+    if cat == "subject_timeout":
+        return "timeout (no complete answer)"
+    if cat == "output_limit":
+        return "prose / markup instead of code"
+    if cat in ("abi", "misaligned_call"):
+        return "calling-convention violation"
+    if cat in ("oob", "oob_read", "crash", "write_to_text"):
+        return "memory fault / crash"
+    if cat in ("bad_syscall", "no_exit", "wrong_status"):
+        return "syscall / exit misuse"
+    if cat in ("wrong_result", "wrong_output", "hang"):
+        return "wrong result / runs forever"
+    if "stage qbe" in low:
+        if "invalid class specifier" in low:
+            return "QBE: missing or wrong type class"
+        m = re.search(r"qbe:-:(\d+): unknown keyword (\S+)", t)
+        if m:
+            tok = m.group(2)
+            if tok[:1].isupper():
+                return "prose / markup instead of code"
+            if re.fullmatch(r"x[0-9a-fA-F]+", tok):
+                return "QBE: hex literal (decimal only)"
+            if QBE_OPS.match(tok):
+                return "QBE: invented opcode"
+            if m.group(1) == "1":
+                return "QBE: malformed function signature"
+            return "QBE: other syntax"
+        if "invalid type for" in low or "phi" in low or "invalid jump to the start block" in low:
+            return "QBE: type or SSA error"
+        if "invalid character" in low and re.search(r"invalid character [0-9] \(", t):
+            return "QBE: hex literal (decimal only)"
+        if any(k in low for k in ("invalid function parameter", "function body must start", "top-level definition")):
+            return "QBE: malformed function signature"
+        return "QBE: other syntax"
+    if cat == "compile":
+        return "QBE: other syntax"
+    if cat == "format" or "not a json object" in low:
+        if "json" in low:
+            return "malformed JSON"
+        return "prose / markup instead of code"
+    m = re.search(r"rejected line \d+ \(`([^`]*)`\)", t)
+    if m and cat in ("syntax", "crosscheck", "format"):
+        line = m.group(1)
+        words = [w for w in re.findall(r"[A-Za-z]+", line) if len(w) >= 3]
+        if len(words) >= 3 and not re.search(r"[#\[\]%$]", line) and (
+                line[:1].isupper() or line.rstrip().endswith((".", ":")) or " the " in f" {line} "):
+            return "prose / markup instead of code"  # the model's prose reached the assembler
+    if "encoder rejected the program" in low:
+        if "size mismatch" in low or re.search(r"is (64|32)-bit but", low) or "is 64-bit," in low:
+            return "invalid operand combination"
+        return "structured: schema violation"
+    if any(k in low for k in ("immediate cannot be moved", "immediate out of range", "out of range", "invalid shift amount",
+                              "not a valid base/index", "rip cannot be scaled", "invalid address expression",
+                              "invalid immediate", "bitmask", "cannot be encoded")):
+        return "operand not encodable (immediate / addressing)"
+    if re.search(r"no such instruction: .(section|global|extern|default|bits|db|dq|resb|resq)\b", low) or \
+            re.search(r"rejected line \d+ \(.(section|global|extern|default rel|bits)\b", low):
+        return "wrong assembler dialect (NASM)"
+    if any(k in low for k in ("not allowed in .bss", "not allowed in .text", "instructions belong in .text",
+                              "before this definition", "unsupported directive", "is not supported (use",
+                              "no `.rodata` directive", "has no `.rodata`", "nothing may be placed")):
+        return "program-format rule broken"
+    if any(k in low for k in ("invalid mnemonic", "no such instruction", "unknown mnemonic", "produced no bytes")):
+        return "invented / malformed instruction"
+    if any(k in low for k in ("duplicate label", "undefined label", "undefined symbol", "unknown symbol", "local label",
+                              "never defined", "forward reference")):
+        return "label / symbol error"
+    if any(k in low for k in ("operand type mismatch", "operand size mismatch", "operand mismatch", "invalid operand",
+                              "number of operands", "expected a register", "invalid use of", "register")):
+        return "invalid operand combination"
+    if cat in ("syntax", "crosscheck", "link", "encoding"):
+        return "other assembler / encoder reject"
+    return "other"
+
+
+CLASS_ORDER = ["QBE: missing or wrong type class", "QBE: malformed function signature", "QBE: invented opcode",
+               "QBE: hex literal (decimal only)", "QBE: type or SSA error", "QBE: other syntax",
+               "operand not encodable (immediate / addressing)", "invalid operand combination",
+               "invented / malformed instruction", "wrong assembler dialect (NASM)", "program-format rule broken",
+               "label / symbol error", "structured: schema violation", "malformed JSON",
+               "prose / markup instead of code", "other assembler / encoder reject",
+               "calling-convention violation", "memory fault / crash", "syscall / exit misuse",
+               "wrong result / runs forever", "timeout (no complete answer)", "refusal", "other"]
+
+
+def error_classes(by_fn, by_apps):
+    print("## 5. One error classification across models\n")
+    print("Every first-attempt failure (function and app batteries, baseline) sorted into one shared set of classes")
+    print("from its category and the harness's failure message. Static rejects are split by cause; runtime")
+    print("failures by kind. Counts are cells.\n")
+    prof = collections.defaultdict(collections.Counter)
+    for data in (by_fn, by_apps):
+        for m, cells in data.items():
+            for r in cells.values():
+                if r["pass_at_1"]:
+                    continue
+                prof[m][classify(r["categories"][0] or "", first_failure(r))] += 1
+    total = collections.Counter()
+    vtotal, ltotal = collections.Counter(), collections.Counter()
+    for m, c in prof.items():
+        total.update(c)
+        (ltotal if is_local(m) else vtotal).update(c)
+    print("### All models\n")
+    print("| Class | Vendor models | Local models | All |")
+    print("|---|---|---|---|")
+    for k in CLASS_ORDER:
+        if total[k]:
+            print(f"| {k} | {vtotal[k]} | {ltotal[k]} | {total[k]} |")
+    print(f"| **total** | {sum(vtotal.values())} | {sum(ltotal.values())} | {sum(total.values())} |\n")
+
+    groups = [("QBE", [k for k in CLASS_ORDER if k.startswith("QBE")]),
+              ("Encoding", ["operand not encodable (immediate / addressing)", "invalid operand combination",
+                            "invented / malformed instruction", "other assembler / encoder reject"]),
+              ("Rules / dialect", ["wrong assembler dialect (NASM)", "program-format rule broken", "label / symbol error"]),
+              ("Output format", ["structured: schema violation", "malformed JSON", "prose / markup instead of code"]),
+              ("ABI / memory", ["calling-convention violation", "memory fault / crash", "syscall / exit misuse"]),
+              ("Logic", ["wrong result / runs forever"]),
+              ("Timeout", ["timeout (no complete answer)"]),
+              ("Refusal", ["refusal"])]
+    print("### Per model\n")
+    print("First-attempt failures per model, grouped. *QBE* = the QBE classes above; *Encoding* = operands not")
+    print("encodable, invalid operand combinations, invented instructions; *Rules / dialect* = NASM syntax on the")
+    print("GNU path, the prompt's section and constant rules, label errors; *Output format* = structured schema,")
+    print("malformed JSON, prose or markup instead of code; *ABI / memory* = calling convention, memory faults,")
+    print("syscall misuse. The largest group per model is in bold.\n")
+    order = sorted(prof, key=lambda m: (is_local(m), sum(prof[m].values())))
+    print("| Model | Failures | " + " | ".join(g for g, _ in groups) + " | Other |")
+    print("|---|---|" + "---|" * (len(groups) + 1))
+    for m in order:
+        c = prof[m]
+        vals = [sum(c[k] for k in ks) for _, ks in groups]
+        other = sum(c.values()) - sum(vals)
+        top = max(vals)
+        cellsf = [(f"**{v}**" if v == top and v else (str(v) if v else "·")) for v in vals]
+        partial = len(by_fn.get(m, {})) not in (0, FULL_FN)
+        print(f"| {name(m)}{' †' if partial else ''} | {sum(c.values())} | " + " | ".join(cellsf) + f" | {other or '·'} |")
+    print()
+    print("The QBE classes in detail, vendor models only (where QBE failures cluster):\n")
+    print("| Model | " + " | ".join(k.replace("QBE: ", "") for k in groups[0][1]) + " |")
+    print("|---|" + "---|" * len(groups[0][1]))
+    for m in order:
+        if is_local(m) or not sum(prof[m][k] for k in groups[0][1]):
+            continue
+        print(f"| {name(m)} | " + " | ".join(str(prof[m][k]) or "·" for k in groups[0][1]) + " |")
+    print()
+
+
+# ------------------------------------------------------------------------------------------------ 6. variants
+def variants(by_fn):
+    print("## 6. Prompt-variant effects\n")
+    print("Each variant was run on the same cells as the model's baseline, so the effect is a paired difference.")
+    print("*Gained* = cells failed on the first attempt at baseline and passed with the variant; *lost* the reverse.")
+    print("Exact McNemar on those two counts (unadjusted; the variants answer different questions).\n")
+    vrecs = {}
+    hexbase = {}
+    for f in sorted(glob.glob("eval/runs/*/**/results.jsonl", recursive=True)):
+        if "smoke" in f:
+            continue
+        rd = f.split("/")[2]
+        for line in open(f):
+            r = json.loads(line)
+            v = r.get("variant", "baseline")
+            bat = r.get("battery") or ("round2" if "round2" in rd else "round1")
+            path = r.get("path", r["cell"].split(".")[1])
+            m = label_of(r)
+            if v == "baseline":
+                if bat == "apps" and path == "hex":
+                    hexbase[(m, r["cell"])] = r
+                continue
+            vrecs[(m, v, bat, r["cell"])] = r
+    groups = collections.defaultdict(dict)
+    for (m, v, bat, c), r in vrecs.items():
+        base = hexbase.get((m, c)) if bat == "apps" else by_fn.get(m, {}).get((bat, c))
+        if base is not None:
+            batg = "apps (hex path)" if bat == "apps" else ("rounds 1 + 2" if bat in ("round1", "round2") else bat)
+            groups[(v, batg, m)][(bat, c)] = (base, r)
+    print("| Variant | Cells | Model | Baseline | Variant | Gained / lost | p | Within 4: baseline → variant |")
+    print("|---|---|---|---|---|---|---|---|")
+    for (v, batg, m), pairs in sorted(groups.items(), key=lambda kv: (kv[0][0], kv[0][1], kv[0][2])):
+        n = len(pairs)
+        b1 = sum(bool(b["pass_at_1"]) for b, _ in pairs.values())
+        v1 = sum(bool(x["pass_at_1"]) for _, x in pairs.values())
+        g = sum(1 for b, x in pairs.values() if x["pass_at_1"] and not b["pass_at_1"])
+        lo = sum(1 for b, x in pairs.values() if b["pass_at_1"] and not x["pass_at_1"])
+        b4 = sum(bool(b["pass_final"]) for b, _ in pairs.values())
+        v4 = sum(bool(x["pass_final"]) for _, x in pairs.values())
+        print(f"| `{v}` | {batg} ({n}) | {name(m)} | {pct(b1, n)} | {pct(v1, n)} | +{g} / −{lo} | "
+              f"{pfmt(mcnemar_exact(g, lo))} | {b4} → {v4} |")
+    print()
+    refusals = collections.Counter()
+    for (m, v, bat, c), r in vrecs.items():
+        if r["categories"] and r["categories"][0] == "refusal":
+            refusals[(m, v)] += 1
+    if refusals:
+        print("First-attempt refusals inside the variant runs: " + "; ".join(
+            f"{name(m)} `{v}` {k}" for (m, v), k in sorted(refusals.items())) + ".\n")
+
+
 def main():
     by_fn, by_apps = load()
     confidence(by_fn, by_apps)
     repair(by_fn, by_apps)
     difficulty(by_fn, by_apps)
+    isa_path(by_fn, by_apps)
+    error_classes(by_fn, by_apps)
+    variants(by_fn)
 
 
 if __name__ == "__main__":
