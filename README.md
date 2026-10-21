@@ -95,8 +95,10 @@ its plan quota is spent.
 
 † Partial, quota-paced (Google AI Plus): rounds 1 + 2 complete, long 53/54, adversarial not yet run; the hourly resume loop adds cells as the weekly quota allows. Like for like on the complete batteries, rounds 1 + 2: **106/110 (96%)**, level with Claude Fable 5.1 (106) and behind Codex GPT-6 Astra, Grok 4.7 and Grok 4.7 build-fast (107 each). Its first-attempt failures were reviewed by hand: no harness false rejects (hex literals in QBE, `%x =l %y` without `copy`, malformed JSON, an invented `subl` opcode, and one 400 s timeout spent thinking: 62,910 of 65,532 output tokens).
 
-Local open-weight models (Qwen3-Coder-Next, Qwen3-30B-A3B, Qwen2.5-14B, Qwen3.6 on this DGX Spark) score
-3-8% first try and are reported separately: [Local open-weight models](reports/live-model-eval-cross-vendor.md#local-open-weight-models-dgx-spark).
+Local open-weight models on this DGX Spark are reported separately: the Qwen models (Qwen3-Coder-Next,
+Qwen3-30B-A3B, Qwen2.5-14B, Qwen3.6) score 3-8% first try; Aleph Alpha Kolibri-1 (FP8, vLLM, given an
+output-token budget equal to the most any vendor model used per call) scores 58/224 (26%), 97/224 (43%)
+within four, and no QBE cell: [Local open-weight models](reports/live-model-eval-cross-vendor.md#local-open-weight-models-dgx-spark).
 An opt-in `assisted` variant (notes on AArch64 constants, x86 addressing, a QBE cheat sheet, structured
 examples, and explained failures; same rules and checks) lifts weaker models a lot on rounds 1 + 2: Haiku 4.5
 58% to 89%, MAI-Code 55% to 89%, GPT-6 Luna 67% to 80%, Qwen3-Coder-Next 9% to 24%, almost all of it on QBE.
@@ -124,9 +126,10 @@ interpreter and a JSON validator, asm and stream paths, both ISAs, 3 samples, up
 | Claude Fable 5.1 | **84/96 (88%)** | 96/96 (100%) | 1.15 |
 | Claude Sonnet 5.5 | **84/96 (88%)** | 96/96 (100%) | 1.14 |
 | Microsoft MAI-Code 1.1 Flash (Copilot) | **23/96 (24%)** | 64/96 (67%) | 2.61 |
+| Aleph Alpha Kolibri-1 FP8, token budget (local) | **3/96 (3%)** | 16/96 (17%) | 3.78 |
 | Kimi K3 † | **29/32 (91%)** | 32/32 (100%) | 1.09 |
 
-† Kimi K3 ran sample 1 only (32 of 96 cells) before its plan window ran out. Local models do not run the app battery, by decision. The frontier models' most common first-attempt error is an AArch64
+† Kimi K3 ran sample 1 only (32 of 96 cells) before its plan window ran out. Of the local models only Kolibri-1 runs the app battery (token-budget mode); the Ollama-served Qwen models do not, by decision. The frontier models' most common first-attempt error is an AArch64
 `mov` of an immediate no single instruction can encode. Report, including the sandbox-escape fix and the
 asm/stream acceptance parity work: [`reports/live-model-eval-apps.md`](reports/live-model-eval-apps.md).
 

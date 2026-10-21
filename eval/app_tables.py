@@ -6,7 +6,7 @@ import glob
 import json
 
 recs = {}
-for f in sorted(glob.glob("eval/runs/apps-*/*/baseline/results.jsonl")):
+for f in sorted(glob.glob("eval/runs/apps-*/*/baseline/results.jsonl") + glob.glob("eval/runs/kolibri-budget-apps-*/*/baseline/results.jsonl")):
     if "smoke" in f:
         continue
     for line in open(f):
@@ -21,13 +21,16 @@ for f in sorted(glob.glob("eval/runs/apps-*/*/baseline/results.jsonl")):
         elif subj.startswith("local_"):
             think = (r.get("local") or {}).get("think")  # @think / @nothink runs are separate rows
             label = "local:" + (r.get("model") or subj[6:]) + ("" if think is None else "@think" if think else "@nothink")
+        elif subj.startswith("vllm_"):  # vLLM-served open-weight models sit with the local ones
+            label = "local:vllm:" + (r.get("model") or subj[5:])
         else:
             label = subj
         recs[(label, r["cell"])] = r
 names = {"codex:gpt-6-astra": "Codex GPT-6 Astra", "grok:grok-4.7-build-fast": "Grok 4.7 build-fast",
          "claude-opus-5-5": "Claude Opus 5.5", "claude-fable-5-1": "Claude Fable 5.1",
          "claude-sonnet-5-5": "Claude Sonnet 5.5", "copilot:mai-code-1.1-flash": "Microsoft MAI-Code 1.1 Flash (Copilot)",
-         "kimi:kimi-code/k3": "Kimi K3", "local:qwen3:30b-a3b-instruct-2507-q8_0": "Qwen3-30B-A3B Q8 (local)",
+         "kimi:kimi-code/k3": "Kimi K3", "local:vllm:Aleph-Alpha/Kolibri-1": "Aleph Alpha Kolibri-1 FP8, token budget (local)",
+         "local:qwen3:30b-a3b-instruct-2507-q8_0": "Qwen3-30B-A3B Q8 (local)",
          "local:qwen2.5:14b": "Qwen2.5-14B Q4 (local)", "local:qwen3-coder-next:q4_K_M": "Qwen3-Coder-Next Q4 (local)",
          "local:qwen3.6:35b-a3b-q8_0@nothink": "Qwen3.6-35B-A3B Q8, thinking off (local)",
          "local:qwen3.6:35b-a3b-q8_0@think": "Qwen3.6-35B-A3B Q8, thinking on (local)"}

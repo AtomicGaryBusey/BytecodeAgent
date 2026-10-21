@@ -126,7 +126,10 @@ result class, `xor eax, 0` used to zero a register, malformed JSON, unencodable 
 ## Local open-weight models (DGX Spark)
 
 Open-weight models served on this machine, an NVIDIA DGX Spark (GB10, 128 GB unified memory), by Ollama 0.30.10
-(`local:<model>`; setup and isolation in [cross-vendor-methodology.md](cross-vendor-methodology.md#local-models-localmodel)).
+(`local:<model>`; setup and isolation in [cross-vendor-methodology.md](cross-vendor-methodology.md#local-models-localmodel))
+or, for Aleph Alpha Kolibri-1, by vLLM 0.29.0 in token-budget mode (`vllm:<model>@budget`: each call's limit is
+an output-token budget, the most any vendor model used for one call in that battery, instead of wall-clock time;
+see the methodology report).
 Same prompts, same zero-tool contract, same per-call time limits and attempts as every vendor subject; each model's
 own Modelfile sampling; `num_ctx` set explicitly to the native window or 65536, whichever is smaller. Weights are
 quantised (Q4_K_M or Q8_0) and every model shares the one GPU with calls serialised, so the time limits count only
@@ -135,6 +138,7 @@ These results say what such a desktop setup can do, not what the same models do 
 
 | Model | Round 1 (48) | Round 2 (62) | Long (54) | Adversarial (60) | Pass@1 | Within 4 | Mean attempts |
 |---|---|---|---|---|---|---|---|
+| Aleph Alpha Kolibri-1 FP8, token budget (local) | 20 | 21 | 1 | 16 | **58/224 (26%)** | 97/224 (43%) | 2.99 |
 | Qwen3-Coder-Next Q4 (local) | 5 | 5 | 0 | 2 | **12/224 (5%)** | 31/224 (14%) | 3.73 |
 | Qwen3.6-35B-A3B Q8, thinking on (local) † | 4 | 5 | — | — | **9/110 (8%)** | 15/110 (14%) | 3.68 |
 | Qwen3-30B-A3B Instruct 2507 Q8 (local) † | 5 | 1 | 0/5 | — | **6/115 (5%)** | 13/115 (11%) | 3.75 |
@@ -143,6 +147,7 @@ These results say what such a desktop setup can do, not what the same models do 
 
 | Model | Stream | Structured | IR (QBE) |
 |---|---|---|---|
+| Aleph Alpha Kolibri-1 FP8, token budget (local) | 36/76 (47%) | 22/74 (30%) | 0/74 (0%) |
 | Qwen3-Coder-Next Q4 (local) | 12/76 (16%) | 0/74 (0%) | 0/74 (0%) |
 | Qwen3.6-35B-A3B Q8, thinking on (local) † | 5/38 (13%) | 4/36 (11%) | 0/36 (0%) |
 | Qwen3-30B-A3B Instruct 2507 Q8 (local) † | 5/40 (12%) | 1/38 (3%) | 0/37 (0%) |
@@ -152,9 +157,16 @@ These results say what such a desktop setup can do, not what the same models do 
 † partial, by decision (2026-10-01): local runs were trimmed to save days of GPU time once it was clear they score
 in single digits. Qwen3-Coder-Next ran all four batteries; Qwen3-30B-A3B and Qwen2.5-14B stopped early in the long
 battery (115 and 114 of 224 cells); Qwen3.6-35B-A3B ran round1 and round2 only (110 cells), once with thinking off
-and once with thinking on (`local:<model>@nothink` / `@think`, Ollama's `think` field). No local model runs the app
-battery.
+and once with thinking on (`local:<model>@nothink` / `@think`, Ollama's `think` field). Kolibri-1 ran all four batteries and
+is the only local model that runs the app battery (3/96 first attempt, 16/96 within four:
+[app report](live-model-eval-apps.md)).
 
+- **Aleph Alpha Kolibri-1 is the best local model by far, still half the weakest frontier model.** 58/224 first
+  try (26%) and 97/224 (43%) within four: round 1 20/48, round 2 21/62, long 1/54, adversarial 16/60. It passes
+  47% of stream cells and 30% of structured cells on the first try, and no QBE cell (0/74; 282 of its 669 function-battery calls
+  ended in a QBE compile failure). Token budgets bind on the adversarial battery (24,576 tokens: 52 of 176 calls
+  hit it) and rarely elsewhere (2, 2 and 10 calls on rounds 1, 2 and long; 1 of 363 app calls). At ~21 tokens/s
+  a call takes 10-18 minutes on average; the four function batteries took 151 hours.
 - **Open coding models with strong published scores fail at tool-less machine code.** Qwen3-Coder-Next, Qwen's
   dedicated agentic coding model, passes 12/224 first try (5%), all on the stream path; 0/74 structured and 0/74
   QBE. The older Qwen3-30B-A3B and Qwen2.5-14B do no better on the cells they ran (5% and 3%).
@@ -173,11 +185,16 @@ battery.
   first-attempt count could be at most one higher; details in the run's `ADJUSTMENTS.md`.
   Qwen3.6-35B-A3B (both modes, 790 failed attempts): none; the one `crosscheck` reject (`lea r9, [r13 - r13]`) is
   refused by GNU as too.
-- **Conclusion.** No open-weight model that runs on this desktop machine writes tool-less machine code usefully:
-  the best manage 5-8% first try and about 14% within four attempts, almost all of it on easy stream cells; no local model
-  passes a single QBE cell on the first try, and structured passes are a handful. Published agentic-coding scores
+  Kolibri-1 (all failed first attempts in every battery, read by hand): none. Its errors are its own:
+  `movzx rax, eax`, `{"reg": "rdi"}` operands, invalid QBE, `idiv` without `cqo`, an unhandled `INT_MIN / -1`,
+  a clobbered callee-saved `x19`.
+- **Conclusion.** No open-weight model that runs on this desktop machine writes tool-less machine code usefully.
+  The Qwen models manage 3-8% first try and about 14% within four attempts, almost all of it on easy stream
+  cells. Kolibri-1, given as many output tokens as any vendor model used, reaches 26% first try and 43% within
+  four, but only half the weakest frontier model's first-try rate and 3% on the app battery. No local model
+  passes a single QBE cell on the first try. Published agentic-coding scores
   (Qwen3-Coder-Next, Qwen3.6) do not transfer to this task; the gap to the weakest frontier model here (Claude
-  Haiku 4.5, 52%) is an order of magnitude.
+  Haiku 4.5, 52%) is an order of magnitude for them.
 
 ## Adversarial prompt variants
 
