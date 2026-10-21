@@ -914,6 +914,185 @@ def spearman(x, y):
     return pearson(ranks(x), ranks(y))
 
 
+# ------------------------------------------------------------------------------------------------ 10. code quality
+def geomean(xs):
+    return math.exp(sum(math.log(x) for x in xs) / len(xs)) if xs else None
+
+
+def code_quality(path="eval/code_quality.jsonl"):
+    print("## 10. Quality of passing code\n")
+    if not os.path.exists(path):
+        print("(no measurements: run `.venv/bin/python eval/code_quality.py` first)\n")
+        return
+    recs = [json.loads(line) for line in open(path)]
+    bad = [r for r in recs if not r["ok"]]
+    ok = [r for r in recs if r["ok"]]
+    print("Every passing baseline solution was rebuilt from its recorded final answer and re-run on its task's")
+    print("own tests with instruction counting on (`eval/code_quality.py`; no model calls). *Executed")
+    print("instructions* is the total over the task's test cases, the same inputs for every model, so it measures")
+    print("the algorithm and the code the model wrote; it is not a cycle count. Each cell's solutions are compared")
+    print("with that cell's median over the models that passed it, and a model's figure is the geometric mean of")
+    print("those ratios over its passing cells (1.00 = the median solution; below 1 = fewer instructions or")
+    print("bytes). On the QBE path the instructions come from the `qbe` compiler, so differences there reflect")
+    print("the model's IR, not its instruction selection.\n")
+    print(f"{len(recs)} passing cells re-run; {len(ok)} passed again"
+          + (f", {len(bad)} did not (left out): " + "; ".join(
+              f"{name(r['model'])} `{r['cell']}` ({r.get('why', 'tests failed')[:80]})" for r in bad[:8])
+             if bad else ", all of them") + ".\n")
+    by_cell = collections.defaultdict(list)
+    for r in ok:
+        by_cell[(r["kind"], r["battery"], r["cell"])].append(r)
+    groups = {"fn": [("stream", "Stream"), ("structured", "Structured"), ("ir", "IR (QBE)")],
+              "apps": [("asm", "asm"), ("stream", "stream")]}
+    for kind, title in (("fn", "Function batteries"), ("apps", "App battery")):
+        ratios = collections.defaultdict(lambda: collections.defaultdict(list))
+        sizes = collections.defaultdict(list)
+        fastest = collections.Counter()
+        cells_n = collections.Counter()
+        for (k, b, c), rs in by_cell.items():
+            if k != kind or len(rs) < 3:  # a median of fewer than three solutions says little
+                continue
+            mi = median([r["insns"] for r in rs])
+            ms = median([r["code_size"] for r in rs])
+            best = min(r["insns"] for r in rs)
+            for r in rs:
+                if mi and r["insns"]:
+                    ratios[r["model"]][r["path"]].append(r["insns"] / mi)
+                    ratios[r["model"]]["all"].append(r["insns"] / mi)
+                if ms and r["code_size"]:
+                    sizes[r["model"]].append(r["code_size"] / ms)
+                cells_n[r["model"]] += 1
+                fastest[r["model"]] += r["insns"] == best
+        models = sorted((m for m in cells_n if cells_n[m] >= 20), key=lambda m: geomean(ratios[m]["all"]))
+        print(f"### {title}\n")
+        print("Models with at least 20 compared cells, fewest executed instructions first. *Fewest* = cells where")
+        print("the model's solution executed the fewest instructions of all passing solutions (ties count for each).\n")
+        cols = groups[kind]
+        print("| Model | Cells | Executed instructions | " + " | ".join(c[1] for c in cols)
+              + " | Code size | Fewest |")
+        print("|---|---|---|" + "---|" * len(cols) + "---|---|")
+        for m in models:
+            per = [geomean(ratios[m][p]) for p, _ in cols]
+            print(f"| {name(m)} | {cells_n[m]} | {geomean(ratios[m]['all']):.2f} | "
+                  + " | ".join(f"{x:.2f}" if x else "—" for x in per)
+                  + f" | {geomean(sizes[m]):.2f} | {fastest[m]} |")
+        print()
+
+
+# ------------------------------------------------------------------------------------------------ 11. audit
+HARNESS_FIXES = [
+    ("32d73541", "2026-09-29", "App battery, asm path: a program could read host files (a `.macro` body pasting "
+     "`.incbin` together with `\\()`). The asm path now refuses the stream path's whole not-allowed list, "
+     "backslashes outside literals, and runs GNU as under a 1 GiB address-space limit.",
+     "Found by adversarial review before any live app run; no verdict affected."),
+    ("c4ea602c", "2026-09-29", "Stream: keystone and GNU as encoded AArch64 `uxtw x0, w2` differently (both "
+     "valid, same size) and the cross-check refused it; same-size disagreements now take GNU as's bytes.",
+     "Codex Daybreak Blue `max_byte.stream.aarch64` attempt 1 counted as a pass (ADJ +1)."),
+    ("95dcdb0b", "2026-09-29", "Stream: refused `lt` as a label name, which GNU as accepts.",
+     "Claude Sonnet 5.5 `json_lint.stream.aarch64.s1` (apps) superseded and re-run: passed on attempt 1."),
+    ("c7df64d0", "2026-09-29", "App battery, asm path: did not enforce the placement and constant rules the prompt "
+     "states and the stream path enforced (data in `.text`, constants before use).",
+     "Claude Opus 5.5 `rpn.asm.aarch64.s1` (apps) superseded and re-run under the rule: passed on attempt 1."),
+    ("47576eca", "2026-09-29", "Grok CLI 1.0.41's streaming output repeated a text chunk (`{\"`) the model never "
+     "wrote; the adapter now scores grok's own session record.",
+     "Grok 4.7 build-fast: 3 long-battery structured cells counted as passes (ADJ +3)."),
+    ("c1c1df7f", "2026-09-30", "Stream: keystone refused valid lines GNU as accepts (e.g. AArch64 "
+     "`mov x17, x20, lsl #3`, an `orr` alias); the stream path now takes GNU as's bytes for them.",
+     "GPT-6 Luna via Copilot `mat_pow.stream.aarch64` counted as a pass (ADJ +1). Qwen2.5-14B: 6 attempts were "
+     "cut off at such lines and cannot be rescored (its count could be at most 1 higher)."),
+    ("79a275c1", "2026-09-30", "Stream and asm paths treated `.end`, `.arch armv8-a` / `.cpu generic` and GNU's "
+     "one-quote `'c` literal differently from GNU as and from each other.",
+     "MAI-Code `wc.stream.aarch64.s2` and `json_lint.stream.aarch64.s1` (apps) superseded and re-run."),
+    ("929d4577", "2026-09-30", "Copilot: the runtime's output-cap continuation event aborted the subject as an "
+     "isolation failure; the capped answer is now scored as it stands.",
+     "Claude Sonnet 5.5 via Copilot `vm_run.structured.aarch64`: the fresh re-run's pass replaced by the capped "
+     "answer's failure (ADJ −1)."),
+    ("d7df9dda", "2026-09-30", "Structured x86-64: a label named like a register (`cl`) is now refused at its "
+     "definition with a clear message (the prompt and GNU as already forbid it).", "No verdict changed."),
+    ("5dd977b1", "2026-10-01", "Hex path: capstone does not decode some valid ARMv8.0 words (`ldtrb`); GNU objdump "
+     "now decodes them.", "Claude Sonnet 4.5 `sort_lines.hex.aarch64` attempt 3 still fails at runtime: no "
+     "verdict changed."),
+    ("not fixed", "2026-10-20", "The linker refuses a section alignment above 4 KiB, which real ld accepts.",
+     "Kolibri-1 `sort_lines.asm.aarch64.s3` (`.align 16` = 64 KiB on AArch64): the program fails its tests "
+     "regardless; no verdict changed."),
+]
+
+
+def infra_kind_of(err: str) -> str:
+    e = err.lower()
+    if any(k in e for k in ("usage limit", "quota", "resource_exhausted", "upgrade to pro", "http 402", "402")):
+        return "plan quota"
+    if "copilot model call failed (api)" in e:  # HTTP 402: Copilot's monthly credits ran out (copilot-r2 ADJUSTMENTS.md)
+        return "plan quota"
+    if e.startswith("isolation"):
+        return "isolation check"
+    return "transient service error"
+
+
+def audit():
+    print("## 11. Harness and infrastructure audit\n")
+    print("### Harness false rejects and harness fixes\n")
+    print("Every failed attempt of every model was reviewed by hand before its results were committed (the per-run")
+    print("`ADJUSTMENTS.md` files and the reports' false-reject sections). Everything the reviews found in the")
+    print("harness, in order:\n")
+    print("| Commit | Date | Problem | Effect on recorded verdicts |")
+    print("|---|---|---|---|")
+    for c, d, what, eff in HARNESS_FIXES:
+        print(f"| `{c}` | {d} | {what} | {eff} |")
+    net = sum(n for adj in ADJ.values() for _, _, n in adj)
+    print(f"\nNet effect on the published function-battery counts: {len(CELL_ADJ)} cells corrected "
+          f"({net:+d} first-attempt passes in total; `CELL_ADJ` in this script, `ADJ` in `eval/xv_tables.py`). App")
+    print("cells affected by a fix were moved to the run's `superseded/` directory and re-run from scratch, never")
+    print("rescored by hand.\n")
+
+    print("### Infrastructure errors\n")
+    print("Calls that failed for reasons outside the model's answer, from every run's `infra.jsonl`. They are never")
+    print("scored: a transient error is retried (the attempt is void), a fatal one stops the subject's run until it")
+    print("is resumed. A run directory without `infra.jsonl` had none, except the two earliest Claude runs")
+    print("(2026-09-27, before the log existed).\n")
+    cnt = collections.defaultdict(collections.Counter)
+    first_last = {}
+    for f in glob.glob("eval/runs/*/**/infra.jsonl", recursive=True) + glob.glob("eval/runs/*/infra.jsonl"):
+        if "smoke" in f:
+            continue
+        for line in open(f):
+            try:
+                a = json.loads(line)
+            except ValueError:
+                continue
+            m = label_of(a)
+            k = infra_kind_of(a.get("error") or "")
+            cnt[m][k] += 1
+            t = a.get("time")
+            if t and k == "plan quota":
+                lo, hi = first_last.get(m, (t, t))
+                first_last[m] = (min(lo, t), max(hi, t))
+    attempts = collections.Counter()
+    for f in glob.glob("eval/runs/*/**/attempts.jsonl", recursive=True):
+        if "smoke" in f:
+            continue
+        for line in open(f):
+            attempts[label_of(json.loads(line))] += 1
+    print("| Model | Scored attempts | Plan quota | Transient service errors | Isolation checks | Quota hits, first → last |")
+    print("|---|---|---|---|---|---|")
+    for m in sorted(cnt, key=lambda m: -sum(cnt[m].values())):
+        c = cnt[m]
+        span = " → ".join(x[:10] for x in first_last[m]) if m in first_last else "—"
+        print(f"| {name(m)} | {attempts[m]} | {c['plan quota'] or '·'} | {c['transient service error'] or '·'} | "
+              f"{c['isolation check'] or '·'} | {span} |")
+    clean = sorted(name(m) for m in attempts if m not in cnt)
+    print(f"\nNo infrastructure error recorded: {', '.join(clean)}.\n")
+    print("**Isolation checks** are the harness refusing to score a call that may not have been a clean, tool-less")
+    print("model answer (an unexpected CLI event, a second assistant message, a cached prefix it did not send):")
+    print("an isolation failure stops the subject's run, nothing from that call is scored, and the run resumes")
+    print("only after a person has looked at it. **Plan quota** errors are each plan's")
+    print("usage limits: they stop the run cleanly and it resumes after the reset, so they cost time, never")
+    print("verdicts. The quota counts include the hourly resume loops' probes, which is why Antigravity's is so")
+    print("high (its Google AI Plus weekly quota allows about 12-20 cells per window). Claude Sonnet 5.5 via")
+    print("Copilot's are HTTP 402s: Copilot's monthly credits ran out at 203 of 224 cells, and the rest ran after")
+    print("the reset.\n")
+
+
 def main():
     by_fn, by_apps = load()
     confidence(by_fn, by_apps)
@@ -925,6 +1104,8 @@ def main():
     refusals_section(load_all())
     generations(by_fn)
     efficiency(by_fn, by_apps)
+    code_quality()
+    audit()
 
 
 if __name__ == "__main__":

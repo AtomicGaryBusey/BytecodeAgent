@@ -1,6 +1,6 @@
 # Live-model evaluation: analytics
 
-Nine analyses of the recorded runs, using only data already committed (no new model calls):
+Eleven analyses of the recorded runs, using only data already committed (no new model calls):
 
 1. how confident each pass rate is, and which ranking gaps are real;
 2. how well models repair their own failures;
@@ -10,7 +10,9 @@ Nine analyses of the recorded runs, using only data already committed (no new mo
 6. what each prompt variant changes, measured cell by cell against baseline;
 7. where models refuse;
 8. how each vendor's models changed from one generation to the next;
-9. what each model spends in output tokens and time.
+9. what each model spends in output tokens and time;
+10. how efficient the passing code is (every passing solution re-run with instruction counting; no model calls);
+11. what the harness got wrong, and how often the infrastructure failed.
 
 Records are selected exactly as in the cross-vendor and app reports: baseline variant, no smokes, no hex path.
 The reviewed false-reject corrections are applied cell by cell, so every count matches the published tables.
@@ -144,6 +146,37 @@ analyses is in [`TODO.md`](../TODO.md).
   - The Claude 5.5 generation answers fastest (median 6-7 s per function attempt). Astra takes 11 s, the
     Grok models 32-61 s and Kimi K2.8 148 s.
   - Tokenisers differ, so cross-vendor token comparisons are approximate.
+- **Passing code differs less between the top models than how often it passes.**
+  - All 5,448 passing solutions were rebuilt from their recorded answers and passed again, with instruction
+    counting on.
+  - On the function batteries the seven top-tier models' solutions run within 7% of each cell's median
+    (geometric means of 0.93 to 0.99; Gemini 3.8 Flash High, on its partial run, 0.88).
+  - Weaker models write slower code when they pass:
+    - Claude Opus 4.8: 1.13;
+    - Codex GPT-6 Luna: 1.15;
+    - MAI-Code: 1.24;
+    - Kolibri-1: 1.31;
+    - Qwen3-Coder-Next: 1.50.
+  - On the app battery, Claude Fable 5.1 writes the fastest programs (0.87 of the median, fewest
+    instructions on 31 of 96 cells), then Opus 5.5 (0.92) and Astra (0.94).
+  - Sonnet 5.5's app programs are among the smallest (0.90 of median size) yet execute the most instructions
+    of the frontier models (1.16). MAI-Code's execute about 1.6 times the median.
+- **Every harness problem the reviews found was fixed early.**
+  - Ten fixes, all between 2026-09-29 and 10-01, plus one limit left unfixed because it changes no verdict.
+  - The one security fix (an asm-path host-file read) was found by adversarial review before any live app
+    run.
+  - Four corrected verdicts reach the published function counts (`CELL_ADJ` / `ADJ`): +1 Daybreak Blue, +3
+    Grok 4.7 build-fast, +1 GPT-6 Luna via Copilot, −1 Sonnet 5.5 via Copilot. Four app cells were re-run
+    from scratch instead of rescored.
+  - One Qwen2.5-14B group cannot be rescored and is disclosed (at most +1).
+- **Infrastructure failures cost time, never verdicts.**
+  - No infrastructure error was ever scored.
+  - Plan quotas account for almost all recorded errors: Antigravity's 1,065 include the hourly loop's probes,
+    and Kimi's 173 are its 5-hour and 7-day caps. Copilot's credits ran out once (129 voided calls), and
+    Codex's limits were hit 25 times.
+  - Service errors were rare (Grok 15 stream or 500 errors, Kimi 10 Cloudflare errors).
+  - 9 isolation failures stopped runs for inspection rather than score a doubtful call.
+  - No infrastructure error was recorded for any Claude, local or Kolibri run, nor for Codex GPT-5.5 or Sol.
 
 ## 1. Statistical confidence
 
@@ -731,4 +764,125 @@ Across the 6 complete vendor models, the rank correlation between median output 
 
 Token counts come from each vendor's CLI and are not audited across vendors; tokenisers differ, so a
 token is not the same unit for every model. Compare within a vendor with more confidence than across.
+
+## 10. Quality of passing code
+
+Every passing baseline solution was rebuilt from its recorded final answer and re-run on its task's
+own tests with instruction counting on (`eval/code_quality.py`; no model calls). *Executed
+instructions* is the total over the task's test cases, the same inputs for every model, so it measures
+the algorithm and the code the model wrote; it is not a cycle count. Each cell's solutions are compared
+with that cell's median over the models that passed it, and a model's figure is the geometric mean of
+those ratios over its passing cells (1.00 = the median solution; below 1 = fewer instructions or
+bytes). On the QBE path the instructions come from the `qbe` compiler, so differences there reflect
+the model's IR, not its instruction selection.
+
+5448 passing cells re-run; 5448 passed again, all of them.
+
+### Function batteries
+
+Models with at least 20 compared cells, fewest executed instructions first. *Fewest* = cells where
+the model's solution executed the fewest instructions of all passing solutions (ties count for each).
+
+| Model | Cells | Executed instructions | Stream | Structured | IR (QBE) | Code size | Fewest |
+|---|---|---|---|---|---|---|---|
+| Gemini 3.8 Flash High (Antigravity) | 163 | 0.88 | 0.82 | 0.95 | 0.88 | 0.97 | 45 |
+| Grok 4.6 | 223 | 0.93 | 0.84 | 0.91 | 1.04 | 0.99 | 70 |
+| Claude Opus 5.5 | 224 | 0.94 | 0.91 | 0.96 | 0.95 | 0.94 | 51 |
+| Codex GPT-5.5 | 224 | 0.94 | 0.91 | 0.94 | 0.98 | 1.06 | 43 |
+| Claude Fable 5.1 | 223 | 0.95 | 0.93 | 0.96 | 0.95 | 0.94 | 47 |
+| Codex GPT-6 Astra | 224 | 0.95 | 0.90 | 0.95 | 0.99 | 0.92 | 66 |
+| Codex GPT-6 Sol | 224 | 0.96 | 0.91 | 0.97 | 1.01 | 0.95 | 44 |
+| Kimi K2.8 (for-coding) | 213 | 0.97 | 0.93 | 0.98 | 1.01 | 1.06 | 39 |
+| Grok 4.7 | 220 | 0.98 | 0.97 | 0.95 | 1.00 | 1.01 | 47 |
+| Grok 4.5 | 222 | 0.98 | 0.97 | 0.97 | 0.99 | 1.05 | 31 |
+| Grok 4.7 build-fast | 223 | 0.99 | 0.95 | 0.96 | 1.05 | 1.02 | 52 |
+| Claude Sonnet 5.5 via Copilot | 219 | 0.99 | 0.98 | 1.01 | 0.98 | 0.97 | 38 |
+| Codex Daybreak Blue | 224 | 0.99 | 0.99 | 0.96 | 1.03 | 0.99 | 45 |
+| Claude Sonnet 4.5 | 221 | 1.00 | 0.91 | 1.04 | 1.05 | 1.09 | 32 |
+| Claude Sonnet 5.5 | 223 | 1.00 | 0.98 | 1.02 | 1.01 | 0.96 | 37 |
+| Kimi K3 | 224 | 1.02 | 0.99 | 1.00 | 1.08 | 1.01 | 37 |
+| Claude Sonnet 5 | 222 | 1.02 | 1.07 | 1.00 | 1.00 | 1.08 | 29 |
+| GPT-6 Luna via Copilot | 224 | 1.08 | 1.08 | 1.06 | 1.09 | 1.04 | 25 |
+| Claude Haiku 4.5 | 158 | 1.10 | 1.13 | 1.08 | 1.01 | 1.15 | 16 |
+| Claude Opus 4.8 | 222 | 1.13 | 1.08 | 1.09 | 1.24 | 1.01 | 28 |
+| Codex GPT-6 Luna | 209 | 1.15 | 1.26 | 1.18 | 1.02 | 1.05 | 26 |
+| Microsoft MAI-Code 1.1 Flash (Copilot) | 151 | 1.24 | 1.22 | 1.32 | 1.01 | 1.28 | 15 |
+| Aleph Alpha Kolibri-1 FP8, token budget (local) | 97 | 1.31 | 1.41 | 1.19 | — | 1.20 | 5 |
+| Qwen3-Coder-Next Q4 (local) | 31 | 1.50 | 1.54 | 1.02 | — | 1.42 | 4 |
+
+### App battery
+
+Models with at least 20 compared cells, fewest executed instructions first. *Fewest* = cells where
+the model's solution executed the fewest instructions of all passing solutions (ties count for each).
+
+| Model | Cells | Executed instructions | asm | stream | Code size | Fewest |
+|---|---|---|---|---|---|---|
+| Claude Fable 5.1 | 96 | 0.87 | 0.91 | 0.83 | 1.01 | 31 |
+| Claude Opus 5.5 | 96 | 0.92 | 0.93 | 0.90 | 0.99 | 18 |
+| Codex GPT-6 Astra | 96 | 0.94 | 0.94 | 0.94 | 0.87 | 25 |
+| Grok 4.7 build-fast | 96 | 1.07 | 1.05 | 1.08 | 1.15 | 7 |
+| Kimi K3 | 32 | 1.07 | 0.98 | 1.17 | 1.05 | 3 |
+| Claude Sonnet 5.5 | 96 | 1.16 | 1.21 | 1.12 | 0.90 | 13 |
+| Microsoft MAI-Code 1.1 Flash (Copilot) | 64 | 1.58 | 1.62 | 1.55 | 1.48 | 0 |
+
+## 11. Harness and infrastructure audit
+
+### Harness false rejects and harness fixes
+
+Every failed attempt of every model was reviewed by hand before its results were committed (the per-run
+`ADJUSTMENTS.md` files and the reports' false-reject sections). Everything the reviews found in the
+harness, in order:
+
+| Commit | Date | Problem | Effect on recorded verdicts |
+|---|---|---|---|
+| `32d73541` | 2026-09-29 | App battery, asm path: a program could read host files (a `.macro` body pasting `.incbin` together with `\()`). The asm path now refuses the stream path's whole not-allowed list, backslashes outside literals, and runs GNU as under a 1 GiB address-space limit. | Found by adversarial review before any live app run; no verdict affected. |
+| `c4ea602c` | 2026-09-29 | Stream: keystone and GNU as encoded AArch64 `uxtw x0, w2` differently (both valid, same size) and the cross-check refused it; same-size disagreements now take GNU as's bytes. | Codex Daybreak Blue `max_byte.stream.aarch64` attempt 1 counted as a pass (ADJ +1). |
+| `95dcdb0b` | 2026-09-29 | Stream: refused `lt` as a label name, which GNU as accepts. | Claude Sonnet 5.5 `json_lint.stream.aarch64.s1` (apps) superseded and re-run: passed on attempt 1. |
+| `c7df64d0` | 2026-09-29 | App battery, asm path: did not enforce the placement and constant rules the prompt states and the stream path enforced (data in `.text`, constants before use). | Claude Opus 5.5 `rpn.asm.aarch64.s1` (apps) superseded and re-run under the rule: passed on attempt 1. |
+| `47576eca` | 2026-09-29 | Grok CLI 1.0.41's streaming output repeated a text chunk (`{"`) the model never wrote; the adapter now scores grok's own session record. | Grok 4.7 build-fast: 3 long-battery structured cells counted as passes (ADJ +3). |
+| `c1c1df7f` | 2026-09-30 | Stream: keystone refused valid lines GNU as accepts (e.g. AArch64 `mov x17, x20, lsl #3`, an `orr` alias); the stream path now takes GNU as's bytes for them. | GPT-6 Luna via Copilot `mat_pow.stream.aarch64` counted as a pass (ADJ +1). Qwen2.5-14B: 6 attempts were cut off at such lines and cannot be rescored (its count could be at most 1 higher). |
+| `79a275c1` | 2026-09-30 | Stream and asm paths treated `.end`, `.arch armv8-a` / `.cpu generic` and GNU's one-quote `'c` literal differently from GNU as and from each other. | MAI-Code `wc.stream.aarch64.s2` and `json_lint.stream.aarch64.s1` (apps) superseded and re-run. |
+| `929d4577` | 2026-09-30 | Copilot: the runtime's output-cap continuation event aborted the subject as an isolation failure; the capped answer is now scored as it stands. | Claude Sonnet 5.5 via Copilot `vm_run.structured.aarch64`: the fresh re-run's pass replaced by the capped answer's failure (ADJ −1). |
+| `d7df9dda` | 2026-09-30 | Structured x86-64: a label named like a register (`cl`) is now refused at its definition with a clear message (the prompt and GNU as already forbid it). | No verdict changed. |
+| `5dd977b1` | 2026-10-01 | Hex path: capstone does not decode some valid ARMv8.0 words (`ldtrb`); GNU objdump now decodes them. | Claude Sonnet 4.5 `sort_lines.hex.aarch64` attempt 3 still fails at runtime: no verdict changed. |
+| `not fixed` | 2026-10-20 | The linker refuses a section alignment above 4 KiB, which real ld accepts. | Kolibri-1 `sort_lines.asm.aarch64.s3` (`.align 16` = 64 KiB on AArch64): the program fails its tests regardless; no verdict changed. |
+
+Net effect on the published function-battery counts: 6 cells corrected (+4 first-attempt passes in total; `CELL_ADJ` in this script, `ADJ` in `eval/xv_tables.py`). App
+cells affected by a fix were moved to the run's `superseded/` directory and re-run from scratch, never
+rescored by hand.
+
+### Infrastructure errors
+
+Calls that failed for reasons outside the model's answer, from every run's `infra.jsonl`. They are never
+scored: a transient error is retried (the attempt is void), a fatal one stops the subject's run until it
+is resumed. A run directory without `infra.jsonl` had none, except the two earliest Claude runs
+(2026-09-27, before the log existed).
+
+| Model | Scored attempts | Plan quota | Transient service errors | Isolation checks | Quota hits, first → last |
+|---|---|---|---|---|---|
+| Gemini 3.8 Flash High (Antigravity) | 175 | 1065 | 1 | 1 | 2026-09-28 → 2026-10-20 |
+| Claude Sonnet 5.5 via Copilot | 396 | 129 | · | 1 | 2026-09-30 → 2026-09-30 |
+| Kimi K3 | 344 | 94 | · | · | 2026-09-29 → 2026-10-11 |
+| Kimi K2.8 (for-coding) | 434 | 79 | 10 | · | 2026-09-29 → 2026-10-11 |
+| Codex GPT-6 Astra | 376 | 17 | 1 | · | 2026-09-29 → 2026-09-29 |
+| Grok 4.7 | 287 | · | 7 | 1 | — |
+| Microsoft MAI-Code 1.1 Flash (Copilot) | 930 | · | 3 | 5 | — |
+| Grok 4.5 | 323 | · | 4 | · | — |
+| Codex GPT-6 Luna | 616 | 4 | · | · | 2026-10-01 → 2026-10-01 |
+| Codex Daybreak Blue | 311 | 4 | · | · | 2026-10-01 → 2026-10-01 |
+| Grok 4.6 | 283 | · | 2 | · | — |
+| Grok 4.7 build-fast | 387 | · | 2 | · | — |
+| GPT-6 Luna via Copilot | 361 | · | · | 1 | — |
+
+No infrastructure error recorded: Aleph Alpha Kolibri-1 FP8, token budget (local), Claude Fable 5.1, Claude Haiku 4.5, Claude Opus 4.8, Claude Opus 5.5, Claude Sonnet 4.5, Claude Sonnet 5, Claude Sonnet 5.5, Codex GPT-5.5, Codex GPT-6 Sol, Qwen2.5-14B Q4 (local), Qwen3-30B-A3B Instruct 2507 Q8 (local), Qwen3-Coder-Next Q4 (local), Qwen3.6-35B-A3B Q8, thinking off (local), Qwen3.6-35B-A3B Q8, thinking on (local).
+
+**Isolation checks** are the harness refusing to score a call that may not have been a clean, tool-less
+model answer (an unexpected CLI event, a second assistant message, a cached prefix it did not send):
+an isolation failure stops the subject's run, nothing from that call is scored, and the run resumes
+only after a person has looked at it. **Plan quota** errors are each plan's
+usage limits: they stop the run cleanly and it resumes after the reset, so they cost time, never
+verdicts. The quota counts include the hourly resume loops' probes, which is why Antigravity's is so
+high (its Google AI Plus weekly quota allows about 12-20 cells per window). Claude Sonnet 5.5 via
+Copilot's are HTTP 402s: Copilot's monthly credits ran out at 203 of 224 cells, and the rest ran after
+the reset.
 

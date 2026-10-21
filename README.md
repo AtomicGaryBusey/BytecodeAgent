@@ -112,7 +112,7 @@ SuperGrok, GitHub Copilot Pro (details in the methodology report). Full comparis
 [`reports/live-model-eval-cross-vendor.md`](reports/live-model-eval-cross-vendor.md); per-run write-ups in
 [`reports/`](reports/). The top of the table is a statistical tie: on paired tests, six models are level with
 Codex GPT-6 Astra (Opus 5.5, GPT-6 Sol, Grok 4.7 build-fast, Fable 5.1, Grok 4.7, Grok 4.6). Confidence
-intervals, repair rates, per-cell difficulty, ISA and path gaps, a shared error classification, prompt-variant effects, refusals, within-vendor generations and token efficiency: [`reports/live-model-eval-analytics.md`](reports/live-model-eval-analytics.md).
+intervals, repair rates, per-cell difficulty, ISA and path gaps, a shared error classification, prompt-variant effects, refusals, within-vendor generations, token efficiency, the quality of passing code and a harness and infrastructure audit: [`reports/live-model-eval-analytics.md`](reports/live-model-eval-analytics.md).
 
 ### App battery (whole programs, 96 cells per model)
 

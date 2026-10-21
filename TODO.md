@@ -26,13 +26,13 @@ re-executes passing programs in the emulator. Each item lands as a script in `ev
    (Luna / Sol / Astra).
 9. **Efficiency.** Output tokens and wall time per passing cell; accuracy against tokens spent. Caveat: local
    latencies include queue waits (Ollama's `eval_count` gives the Qwen models' token counts).
-
-## Backlog
-
 10. **Quality of passing code.** Code size (recorded) plus executed instruction counts from re-running each
     passing program in the emulator: how fast correct solutions are, not only whether they pass.
+    → `eval/code_quality.py` writes `eval/code_quality.jsonl`; section 10 of the report reads it.
 11. **Harness and infrastructure audit.** One summary of false rejects found and fixed, infra error rates per
     vendor, and quota behaviour (now spread across per-run notes).
+
+## Backlog
 
 Optional: an interactive dashboard (filter by model, battery, path, ISA) over the same data.
 
