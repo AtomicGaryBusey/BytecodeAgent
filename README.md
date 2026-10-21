@@ -110,7 +110,9 @@ Verification Program and the ChatGPT account in OpenAI's Daybreak (Blue), so tre
 bounds for ordinary accounts. Accounts used: Claude Max 20x, ChatGPT Plus, Kimi Allegretto, Google AI Plus (2 TB),
 SuperGrok, GitHub Copilot Pro (details in the methodology report). Full comparison, per-path results and the false-reject review:
 [`reports/live-model-eval-cross-vendor.md`](reports/live-model-eval-cross-vendor.md); per-run write-ups in
-[`reports/`](reports/).
+[`reports/`](reports/). The top of the table is a statistical tie: on paired tests, six models are level with
+Codex GPT-6 Astra (Opus 5.5, GPT-6 Sol, Grok 4.7 build-fast, Fable 5.1, Grok 4.7, Grok 4.6). Confidence
+intervals, repair rates and per-cell difficulty: [`reports/live-model-eval-analytics.md`](reports/live-model-eval-analytics.md).
 
 ### App battery (whole programs, 96 cells per model)
 
