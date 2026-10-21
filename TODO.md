@@ -34,7 +34,8 @@ re-executes passing programs in the emulator. Each item lands as a script in `ev
 
 ## Backlog
 
-Optional: an interactive dashboard (filter by model, battery, path, ISA) over the same data.
+Nothing left. The optional interactive dashboard is built: `eval/dashboard.py` writes `reports/dashboard.html`
+(open locally) and the same page is published as a private claude.ai artifact; re-run the script after any new run.
 
 ## Proposed pick-up runs (flagged 2026-10-20, none run yet)
 
