@@ -97,18 +97,18 @@ change the picture; see the local section of the cross-vendor report).
 
 ### First-attempt failure categories
 
-| Model | bad_syscall | crash | crosscheck | format | link | no_exit | oob | subject_timeout | syntax | wrong_output |
-|---|---|---|---|---|---|---|---|---|---|---|
-| Grok 4.6 | · | · | · | · | · | · | · | · | 1 | · |
-| Codex GPT-6 Astra | · | · | · | · | · | · | · | · | 2 | · |
-| Claude Opus 5.5 | · | · | 1 | · | · | · | · | · | 6 | · |
-| Grok 4.7 | · | · | · | 6 | · | · | · | 1 | · | · |
-| Grok 4.7 build-fast | · | · | · | 6 | · | · | · | · | · | 1 |
-| Claude Fable 5.1 | · | · | · | · | · | · | · | · | 9 | 3 |
-| Claude Sonnet 5.5 | · | · | · | · | · | · | · | · | 11 | 1 |
-| Kimi K3 | · | · | · | · | · | · | 1 | · | · | 12 |
-| Microsoft MAI-Code 1.1 Flash (Copilot) | 2 | 1 | · | · | · | 3 | 8 | · | 39 | 20 |
-| Aleph Alpha Kolibri-1 FP8, token budget (local) | 16 | 1 | · | · | 1 | · | 7 | · | 39 | 29 |
+| Model | bad_syscall | crash | crosscheck | format | no_exit | oob | subject_timeout | syntax | wrong_output |
+|---|---|---|---|---|---|---|---|---|---|
+| Grok 4.6 | · | · | · | · | · | · | · | 1 | · |
+| Codex GPT-6 Astra | · | · | · | · | · | · | · | 2 | · |
+| Claude Opus 5.5 | · | · | 1 | · | · | · | · | 6 | · |
+| Grok 4.7 | · | · | · | 6 | · | · | 1 | · | · |
+| Grok 4.7 build-fast | · | · | · | 6 | · | · | · | · | 1 |
+| Claude Fable 5.1 | · | · | · | · | · | · | · | 9 | 3 |
+| Claude Sonnet 5.5 | · | · | · | · | · | · | · | 11 | 1 |
+| Kimi K3 | · | · | · | · | · | 1 | · | · | 12 |
+| Microsoft MAI-Code 1.1 Flash (Copilot) | 2 | 1 | · | · | 3 | 8 | · | 39 | 20 |
+| Aleph Alpha Kolibri-1 FP8, token budget (local) | 16 | 1 | · | · | · | 7 | · | 40 | 29 |
 
 ## Findings
 
@@ -186,8 +186,8 @@ change the picture; see the local section of the cross-vendor report).
   as a broken stream or a network timeout, void the attempt and are retried, never scored). Kolibri-1: no false rejects. Its
   `sort_lines.asm.aarch64.s3` attempt 1 hit the same alignment limit (`.align 16`). The verdict stands, since the
   31-line program never sorts and reads with a zero length, but attempts 2-4 got link feedback instead of
-  wrong-output feedback. Under the rule above the cell should be re-run; that needs the Kolibri server restarted
-  (about 1-1.5 hours) and is pending the user's decision. Kimi K3 (samples 2 and 3) and Grok 4.7: no false
+  wrong-output feedback, so it was re-run from scratch under the fixed linker (2026-10-23): it failed all four
+  attempts again, genuinely, and Kolibri-1's totals are unchanged. Kimi K3 (samples 2 and 3) and Grok 4.7: no false
   rejects.
 
 ## Raw machine code: the opt-in hex path (Codex GPT-6 Astra)

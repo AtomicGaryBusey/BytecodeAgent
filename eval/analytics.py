@@ -1015,7 +1015,7 @@ HARNESS_FIXES = [
     ("linker", "2026-10-22", "The linker refused a section alignment above 4 KiB, which GNU ld accepts (AArch64 "
      "`.align 16` is 64 KiB); it now accepts up to 16 MiB, on both app paths.",
      "Grok 4.6 `hexdump.asm.aarch64.s2` (apps) superseded and re-run: passed on attempt 1. Kolibri-1 "
-     "`sort_lines.asm.aarch64.s3` fails its tests regardless; its re-run (for the repair feedback) is pending."),
+     "`sort_lines.asm.aarch64.s3` re-run too (for the repair feedback): failed all four attempts again, totals unchanged."),
 ]
 
 

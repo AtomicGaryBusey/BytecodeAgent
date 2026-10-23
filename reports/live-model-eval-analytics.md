@@ -169,7 +169,7 @@ analyses is in [`TODO.md`](../TODO.md).
     run.
   - Four corrected verdicts reach the published function counts (`CELL_ADJ` / `ADJ`): +1 Daybreak Blue, +3
     Grok 4.7 build-fast, +1 GPT-6 Luna via Copilot, −1 Sonnet 5.5 via Copilot. Five app cells were re-run
-    from scratch instead of rescored; a sixth (Kolibri-1, verdict unaffected) awaits a re-run.
+    from scratch instead of rescored, plus a sixth (Kolibri-1) whose verdict did not change.
   - One Qwen2.5-14B group cannot be rescored and is disclosed (at most +1).
 - **Infrastructure failures cost time, never verdicts.**
   - No infrastructure error was ever scored.
@@ -363,7 +363,7 @@ Vendor and local models are counted separately; categories with fewer than 10 ce
 | First failure | Vendor cells | Vendor recovered | Local cells | Local recovered |
 |---|---|---|---|---|
 | `compile` | 384 | 251/384 (65%) | 247 | 0/247 (0%) |
-| `syntax` | 169 | 133/169 (79%) | 246 | 30/246 (12%) |
+| `syntax` | 169 | 133/169 (79%) | 247 | 30/247 (12%) |
 | `wrong_result` | 136 | 117/136 (86%) | 68 | 28/68 (41%) |
 | `subject_timeout` | 44 | 32/44 (73%) | 146 | 8/146 (5%) |
 | `format` | 49 | 44/49 (90%) | 47 | 4/47 (9%) |
@@ -539,12 +539,12 @@ failures by kind. Counts are cells.
 | invalid operand combination | 17 | 46 | 63 |
 | invented / malformed instruction | 0 | 18 | 18 |
 | wrong assembler dialect (NASM) | 0 | 7 | 7 |
-| program-format rule broken | 12 | 19 | 31 |
+| program-format rule broken | 12 | 20 | 32 |
 | label / symbol error | 10 | 14 | 24 |
 | structured: schema violation | 56 | 119 | 175 |
 | malformed JSON | 27 | 46 | 73 |
 | prose / markup instead of code | 34 | 2 | 36 |
-| other assembler / encoder reject | 8 | 11 | 19 |
+| other assembler / encoder reject | 8 | 10 | 18 |
 | calling-convention violation | 17 | 29 | 46 |
 | memory fault / crash | 77 | 58 | 135 |
 | syscall / exit misuse | 5 | 16 | 21 |
@@ -591,7 +591,7 @@ syscall misuse. The largest group per model is in bold.
 | Qwen3-30B-A3B Instruct 2507 Q8 (local) † | 109 | **28** | 7 | 1 | 20 | 21 | 14 | 18 | · | · |
 | Qwen2.5-14B Q4 (local) † | 111 | **36** | 14 | 1 | 26 | 17 | 9 | 8 | · | · |
 | Qwen3-Coder-Next Q4 (local) | 212 | **73** | 25 | 6 | 66 | 26 | 14 | 2 | · | · |
-| Aleph Alpha Kolibri-1 FP8, token budget (local) | 259 | **70** | 32 | 25 | 25 | 33 | 54 | 20 | · | · |
+| Aleph Alpha Kolibri-1 FP8, token budget (local) | 259 | **70** | 31 | 26 | 25 | 33 | 54 | 20 | · | · |
 
 The QBE classes in detail, vendor models only (where QBE failures cluster):
 
@@ -766,7 +766,7 @@ Across the 21 complete vendor models, the rank correlation between median output
 | Claude Sonnet 5.5 | default | 84/96 (88%) | 109 | 2,464 | 3,158 | 94% | 20 |
 | Kimi K3 | default | 83/96 (86%) | 110 | 5,085 | 7,039 | 100% | 459 |
 | Microsoft MAI-Code 1.1 Flash (Copilot) | default | 23/96 (24%) | 251 | 14,708 | 63,612 | 100% | 137 |
-| Aleph Alpha Kolibri-1 FP8, token budget (local) | default | 3/96 (3%) | 363 | 30,928 | 684,522 | 79% | 1149 |
+| Aleph Alpha Kolibri-1 FP8, token budget (local) | default | 3/96 (3%) | 363 | 30,854 | 683,107 | 79% | 1143 |
 
 Across the 9 complete vendor models, the rank correlation between median output tokens per attempt and first-attempt pass rate is -0.09.
 
@@ -855,7 +855,7 @@ harness, in order:
 | `929d4577` | 2026-09-30 | Copilot: the runtime's output-cap continuation event aborted the subject as an isolation failure; the capped answer is now scored as it stands. | Claude Sonnet 5.5 via Copilot `vm_run.structured.aarch64`: the fresh re-run's pass replaced by the capped answer's failure (ADJ −1). |
 | `d7df9dda` | 2026-09-30 | Structured x86-64: a label named like a register (`cl`) is now refused at its definition with a clear message (the prompt and GNU as already forbid it). | No verdict changed. |
 | `5dd977b1` | 2026-10-01 | Hex path: capstone does not decode some valid ARMv8.0 words (`ldtrb`); GNU objdump now decodes them. | Claude Sonnet 4.5 `sort_lines.hex.aarch64` attempt 3 still fails at runtime: no verdict changed. |
-| `linker` | 2026-10-22 | The linker refused a section alignment above 4 KiB, which GNU ld accepts (AArch64 `.align 16` is 64 KiB); it now accepts up to 16 MiB, on both app paths. | Grok 4.6 `hexdump.asm.aarch64.s2` (apps) superseded and re-run: passed on attempt 1. Kolibri-1 `sort_lines.asm.aarch64.s3` fails its tests regardless; its re-run (for the repair feedback) is pending. |
+| `linker` | 2026-10-22 | The linker refused a section alignment above 4 KiB, which GNU ld accepts (AArch64 `.align 16` is 64 KiB); it now accepts up to 16 MiB, on both app paths. | Grok 4.6 `hexdump.asm.aarch64.s2` (apps) superseded and re-run: passed on attempt 1. Kolibri-1 `sort_lines.asm.aarch64.s3` re-run too (for the repair feedback): failed all four attempts again, totals unchanged. |
 
 Net effect on the published function-battery counts: 6 cells corrected (+4 first-attempt passes in total; `CELL_ADJ` in this script, `ADJ` in `eval/xv_tables.py`). App
 cells affected by a fix were moved to the run's `superseded/` directory and re-run from scratch, never
@@ -870,7 +870,7 @@ is resumed. A run directory without `infra.jsonl` had none, except the two earli
 
 | Model | Scored attempts | Plan quota | Transient service errors | Isolation checks | Quota hits, first → last |
 |---|---|---|---|---|---|
-| Gemini 3.8 Flash High (Antigravity) | 175 | 1155 | 1 | 1 | 2026-09-28 → 2026-10-22 |
+| Gemini 3.8 Flash High (Antigravity) | 175 | 1171 | 1 | 1 | 2026-09-28 → 2026-10-23 |
 | Kimi K3 | 419 | 134 | · | · | 2026-09-29 → 2026-10-22 |
 | Claude Sonnet 5.5 via Copilot | 396 | 129 | · | 1 | 2026-09-30 → 2026-09-30 |
 | Kimi K2.8 (for-coding) | 434 | 79 | 10 | · | 2026-09-29 → 2026-10-11 |

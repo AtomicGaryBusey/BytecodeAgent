@@ -44,9 +44,8 @@ Approved by the user on 2026-10-22. After each: by-hand false-reject review, the
 - [x] **Linker false reject found in the Grok 4.6 review**: section alignment above 4 KiB (AArch64 `.align 16`)
   was refused although GNU ld accepts it. Fixed in `bca/image.py` with a test; the Grok 4.6 cell was superseded
   and re-run (passed on attempt 1).
-- [ ] **Re-run Kolibri-1 `sort_lines.asm.aarch64.s3`** under the fixed linker: its verdict stands (the program
-  fails regardless), but attempts 2-4 got link feedback instead of wrong-output feedback. Needs the Kolibri vLLM
-  container restarted (~1-1.5 h). The user's decision.
+- [x] **Re-run Kolibri-1 `sort_lines.asm.aarch64.s3`** under the fixed linker: done 2026-10-23. Failed all four
+  attempts again, genuinely; totals unchanged. Container stopped again afterwards.
 - [x] **Hex runs for Claude Sonnet 5**: done 2026-10-22 (functions 13/16 first try, 16/16 within four; whole
   programs 7/16 and 9/16). Reviewed: no false rejects. In `reports/live-model-eval-hex.md`.
 - [x] **Stale "Pending" table in `reports/live-model-eval-hex.md`** (it said the local Qwen hex runs were waiting
