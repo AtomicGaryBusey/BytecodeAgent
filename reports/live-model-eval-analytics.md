@@ -37,8 +37,8 @@ analyses is in [`TODO.md`](../TODO.md).
   - A 95% interval is about ±3 points wide for the top models and about ±6 for those near 50%.
 - **One app sample would not rank the frontier models.**
   - Fable 5.1's three samples score 26, 27 and 31 of 32.
-  - For every frontier model, 2 to 9 of the 32 (task, path, ISA) groups give different first-attempt verdicts
-    across the three samples.
+  - For every frontier model, 1 to 11 of the 32 (task, path, ISA) groups give different first-attempt verdicts
+    across the three samples (Grok 4.6 1, Astra 2, Kimi K3 11).
   - The three-sample design is doing real work.
 - **Strong models repair almost everything; per-retry success splits them.**
   - Every model in the top two tiers recovers 86-100% of its first-attempt function failures within four
@@ -65,8 +65,8 @@ analyses is in [`TODO.md`](../TODO.md).
     other 137 are passed or failed by all ten.
   - The 15 cells with a negative item-rest correlation are all near-ceiling (pass rates 81-95%): occasional
     misses by strong models, not suspect tasks.
-- **App tasks:** `json_lint` (69% first attempt across the six complete vendor models) and `rpn` (74%) are the
-  hardest; `sort_lines` (89%) is the easiest.
+- **App tasks:** `json_lint` (75% first attempt across the nine complete vendor models) and `rpn` (77%) are the
+  hardest; `wc` and `sort_lines` (90% each) are the easiest.
 - **No model is significantly better on one ISA than the other.**
   - After correction across 28 models, no ISA gap holds. The largest raw gaps all favour AArch64: Claude
     Sonnet 5 (30 tasks passed only on AArch64 against 15 only on x86-64, raw p = 0.036), Codex GPT-6 Luna (24
@@ -74,21 +74,22 @@ analyses is in [`TODO.md`](../TODO.md).
   - Pooled over the 21 complete vendor models, the ISAs are level on stream (91% x86-64, 92% AArch64) and on
     QBE (71% each). Structured is the one place x86-64 trails (84% against 90%); this is descriptive, not
     tested.
-  - On the app battery the asm path is level (81% against 83%) and stream AArch64 trails (76% against 81%).
+  - On the app battery the asm path is level (85% each) and stream AArch64 trails slightly (82% against 86%).
   - The path matters far more than the ISA. QBE takes the top-tier models from 95-100% on stream down to
     86-96%, while Haiku 4.5 passes 1% of QBE cells, MAI-Code 5% and every local model 0%.
 - **QBE accounts for most vendor static failures, and it is two mistakes.**
-  - 380 of the 915 vendor first-attempt failures are QBE.
+  - 380 of the 933 vendor first-attempt failures are QBE.
   - The two commonest are a missing or wrong type class on a result or parameter (131), and invented opcodes
     such as `addl` or `mulw`, where QBE puts the class on the result instead (96). Hex literals, which QBE
     does not accept, add another 35.
   - 20 of Opus 4.8's 27 QBE failures are type classes.
-  - Once code assembles, wrong results are the largest single vendor class (174).
+  - Once code assembles, wrong results are the largest single vendor class (184).
 - **Weaker models fail in other ways.**
   - Local models write malformed QBE function signatures (124, mostly parameters without `%`), break the
     structured schema (119, mostly `{"reg": ...}` operands) and time out (146).
   - Some per-model profiles stand out:
-    - Grok 4.7: 10 of its 13 failures are timeouts.
+    - Grok 4.7: 11 of its 20 failures are timeouts (10 of them on the function batteries); 6 more are prose
+      before the code on the app battery.
     - Sonnet 5.5 via Copilot: 29 of 54 are output-format failures, mostly prose plans before the code.
     - Opus 5.5, Fable 5.1 and Sonnet 5.5: their largest group is encoding errors, mostly an AArch64 `mov` of
       a constant no single instruction can hold (`mov x2, #65600`). Fable 5.1 has as many wrong results.
@@ -157,24 +158,25 @@ analyses is in [`TODO.md`](../TODO.md).
     - MAI-Code: 1.24;
     - Kolibri-1: 1.31;
     - Qwen3-Coder-Next: 1.50.
-  - On the app battery, Claude Fable 5.1 writes the fastest programs (0.87 of the median, fewest
-    instructions on 31 of 96 cells), then Opus 5.5 (0.92) and Astra (0.94).
-  - Sonnet 5.5's app programs are among the smallest (0.90 of median size) yet execute the most instructions
-    of the frontier models (1.16). MAI-Code's execute about 1.6 times the median.
-- **Every harness problem the reviews found was fixed early.**
-  - Ten fixes, all between 2026-09-29 and 10-01, plus one limit left unfixed because it changes no verdict.
+  - On the app battery, Claude Fable 5.1 writes the fastest programs (0.83 of the median, fewest
+    instructions on 24 of 96 cells), then Opus 5.5 (0.88) and Astra (0.90).
+  - Sonnet 5.5's app programs are among the smallest (0.87 of median size) yet execute the most instructions
+    of the frontier models (1.11). MAI-Code's execute about 1.5 times the median.
+- **Every harness problem the reviews found was fixed.**
+  - Eleven fixes: ten between 2026-09-29 and 10-01, and a linker limit on section alignment found in the
+    2026-10-22 pick-up runs (it had cost Grok 4.6 one app cell).
   - The one security fix (an asm-path host-file read) was found by adversarial review before any live app
     run.
   - Four corrected verdicts reach the published function counts (`CELL_ADJ` / `ADJ`): +1 Daybreak Blue, +3
-    Grok 4.7 build-fast, +1 GPT-6 Luna via Copilot, −1 Sonnet 5.5 via Copilot. Four app cells were re-run
-    from scratch instead of rescored.
+    Grok 4.7 build-fast, +1 GPT-6 Luna via Copilot, −1 Sonnet 5.5 via Copilot. Five app cells were re-run
+    from scratch instead of rescored; a sixth (Kolibri-1, verdict unaffected) awaits a re-run.
   - One Qwen2.5-14B group cannot be rescored and is disclosed (at most +1).
 - **Infrastructure failures cost time, never verdicts.**
   - No infrastructure error was ever scored.
-  - Plan quotas account for almost all recorded errors: Antigravity's 1,065 include the hourly loop's probes,
-    and Kimi's 173 are its 5-hour and 7-day caps. Copilot's credits ran out once (129 voided calls), and
+  - Plan quotas account for almost all recorded errors: Antigravity's 1,155 include the hourly loop's probes,
+    and Kimi's 213 are its 5-hour and 7-day caps. Copilot's credits ran out once (129 voided calls), and
     Codex's limits were hit 25 times.
-  - Service errors were rare (Grok 15 stream or 500 errors, Kimi 10 Cloudflare errors).
+  - Service errors were rare (Grok 19 stream or 500 errors, Kimi 10 Cloudflare errors).
   - 9 isolation failures stopped runs for inspection rather than score a doubtful call.
   - No infrastructure error was recorded for any Claude, local or Kolibri run, nor for Codex GPT-5.5 or Sol.
 
@@ -287,14 +289,16 @@ spread* is the range of the three 32-cell first-attempt scores; *groups agreeing
 
 | Model | First attempt | 95% CI | Samples (s1 / s2 / s3) | Spread | Groups agreeing |
 |---|---|---|---|---|---|
+| Grok 4.6 | 95/96 (99%) | 94-100% | 31 / 32 / 32 | 1 | 31/32 |
 | Codex GPT-6 Astra | 94/96 (98%) | 93-99% | 32 / 32 / 30 | 2 | 30/32 |
 | Claude Opus 5.5 | 89/96 (93%) | 86-96% | 31 / 28 / 30 | 3 | 25/32 |
+| Grok 4.7 | 89/96 (93%) | 86-96% | 31 / 29 / 29 | 2 | 25/32 |
 | Grok 4.7 build-fast | 89/96 (93%) | 86-96% | 30 / 29 / 30 | 1 | 26/32 |
 | Claude Fable 5.1 | 84/96 (88%) | 79-93% | 26 / 27 / 31 | 5 | 24/32 |
 | Claude Sonnet 5.5 | 84/96 (88%) | 79-93% | 29 / 28 / 27 | 2 | 23/32 |
+| Kimi K3 | 83/96 (86%) | 78-92% | 29 / 26 / 28 | 3 | 21/32 |
 | Microsoft MAI-Code 1.1 Flash (Copilot) | 23/96 (24%) | 17-33% | 6 / 7 / 10 | 4 | 18/32 |
 | Aleph Alpha Kolibri-1 FP8, token budget (local) | 3/96 (3%) | 1-9% | 1 / 1 / 1 | 0 | 30/32 |
-| Kimi K3 † | 29/32 (91%) | 76-97% | 29 / — / — | — | — |
 
 ## 2. Repair dynamics
 
@@ -343,7 +347,9 @@ Models with fewer than 5 first-attempt failures are left out (nothing to measure
 | Claude Fable 5.1 | 84/96 (88%) | 12 | 12/12 (100%) | 10 / 2 / 0 | 86% |
 | Claude Opus 5.5 | 89/96 (93%) | 7 | 7/7 (100%) | 7 / 0 / 0 | 100% |
 | Claude Sonnet 5.5 | 84/96 (88%) | 12 | 12/12 (100%) | 11 / 1 / 0 | 92% |
+| Grok 4.7 | 89/96 (93%) | 7 | 7/7 (100%) | 6 / 1 / 0 | 88% |
 | Grok 4.7 build-fast | 89/96 (93%) | 7 | 7/7 (100%) | 6 / 1 / 0 | 88% |
+| Kimi K3 | 83/96 (86%) | 13 | 13/13 (100%) | 12 / 1 / 0 | 93% |
 | Microsoft MAI-Code 1.1 Flash (Copilot) | 23/96 (24%) | 73 | 41/73 (56%) | 26 / 12 / 3 | 26% |
 | Aleph Alpha Kolibri-1 FP8, token budget (local) | 3/96 (3%) | 93 | 13/93 (14%) | 3 / 6 / 4 | 5% |
 
@@ -357,12 +363,12 @@ Vendor and local models are counted separately; categories with fewer than 10 ce
 | First failure | Vendor cells | Vendor recovered | Local cells | Local recovered |
 |---|---|---|---|---|
 | `compile` | 384 | 251/384 (65%) | 247 | 0/247 (0%) |
-| `syntax` | 168 | 132/168 (79%) | 246 | 30/246 (12%) |
+| `syntax` | 169 | 133/169 (79%) | 246 | 30/246 (12%) |
 | `wrong_result` | 136 | 117/136 (86%) | 68 | 28/68 (41%) |
-| `subject_timeout` | 43 | 31/43 (72%) | 146 | 8/146 (5%) |
-| `format` | 43 | 38/43 (88%) | 47 | 4/47 (9%) |
+| `subject_timeout` | 44 | 32/44 (73%) | 146 | 8/146 (5%) |
+| `format` | 49 | 44/49 (90%) | 47 | 4/47 (9%) |
 | `crash` | 43 | 41/43 (95%) | 30 | 5/30 (17%) |
-| `wrong_output` | 27 | 23/27 (85%) | 29 | 3/29 (10%) |
+| `wrong_output` | 37 | 33/37 (89%) | 29 | 3/29 (10%) |
 | `abi` | 15 | 15/15 (100%) | 27 | 8/27 (30%) |
 | `oob_read` | 19 | 19/19 (100%) | 13 | 0/13 (0%) |
 | `oob` | 15 | 11/15 (73%) | 15 | 4/15 (27%) |
@@ -446,18 +452,18 @@ failed) by all ten, so the top of the ranking rests on those cells:
 | long | 7 | 12 | 15 |
 | adversarial | 6 | 8 | 9 |
 
-### App battery tasks (the 6 complete vendor models, 12 cells each)
+### App battery tasks (the 9 complete vendor models, 12 cells each)
 
 | Task | First attempt | Within 4 |
 |---|---|---|
-| `wc` | 61/72 (85%) | 70/72 (97%) |
-| `rev_lines` | 60/72 (83%) | 71/72 (99%) |
-| `hexdump` | 57/72 (79%) | 69/72 (96%) |
-| `sort_lines` | 64/72 (89%) | 69/72 (96%) |
-| `rpn` | 53/72 (74%) | 63/72 (88%) |
-| `base64` | 58/72 (81%) | 71/72 (99%) |
-| `bf` | 60/72 (83%) | 70/72 (97%) |
-| `json_lint` | 50/72 (69%) | 61/72 (85%) |
+| `wc` | 97/108 (90%) | 106/108 (98%) |
+| `rev_lines` | 95/108 (88%) | 107/108 (99%) |
+| `hexdump` | 89/108 (82%) | 105/108 (97%) |
+| `sort_lines` | 97/108 (90%) | 105/108 (97%) |
+| `rpn` | 83/108 (77%) | 99/108 (92%) |
+| `base64` | 92/108 (85%) | 107/108 (99%) |
+| `bf` | 96/108 (89%) | 106/108 (98%) |
+| `json_lint` | 81/108 (75%) | 97/108 (90%) |
 
 ## 4. ISA and path gap
 
@@ -506,12 +512,12 @@ Models with a significant ISA gap: none.
 | structured | 84% | 90% |
 | IR (QBE) | 71% | 71% |
 
-**App battery, the 6 complete vendor models** (first attempt, 144 cells each):
+**App battery, the 9 complete vendor models** (first attempt, 216 cells each):
 
 | Path | x86-64 | AArch64 |
 |---|---|---|
-| asm | 117/144 (81%) | 119/144 (83%) |
-| stream | 117/144 (81%) | 110/144 (76%) |
+| asm | 184/216 (85%) | 184/216 (85%) |
+| stream | 185/216 (86%) | 177/216 (82%) |
 
 ## 5. One error classification across models
 
@@ -529,24 +535,24 @@ failures by kind. Counts are cells.
 | QBE: hex literal (decimal only) | 35 | 15 | 50 |
 | QBE: type or SSA error | 33 | 0 | 33 |
 | QBE: other syntax | 83 | 79 | 162 |
-| operand not encodable (immediate / addressing) | 58 | 15 | 73 |
+| operand not encodable (immediate / addressing) | 59 | 15 | 74 |
 | invalid operand combination | 17 | 46 | 63 |
 | invented / malformed instruction | 0 | 18 | 18 |
 | wrong assembler dialect (NASM) | 0 | 7 | 7 |
 | program-format rule broken | 12 | 19 | 31 |
 | label / symbol error | 10 | 14 | 24 |
 | structured: schema violation | 56 | 119 | 175 |
-| malformed JSON | 24 | 46 | 70 |
-| prose / markup instead of code | 31 | 2 | 33 |
+| malformed JSON | 27 | 46 | 73 |
+| prose / markup instead of code | 34 | 2 | 36 |
 | other assembler / encoder reject | 8 | 11 | 19 |
 | calling-convention violation | 17 | 29 | 46 |
 | memory fault / crash | 77 | 58 | 135 |
 | syscall / exit misuse | 5 | 16 | 21 |
-| wrong result / runs forever | 174 | 105 | 279 |
-| timeout (no complete answer) | 43 | 146 | 189 |
+| wrong result / runs forever | 184 | 105 | 289 |
+| timeout (no complete answer) | 44 | 146 | 190 |
 | refusal | 1 | 0 | 1 |
 | other | 2 | 0 | 2 |
-| **total** | 915 | 898 | 1813 |
+| **total** | 933 | 898 | 1831 |
 
 ### Per model
 
@@ -561,16 +567,16 @@ syscall misuse. The largest group per model is in bold.
 | Codex GPT-6 Astra | 5 | **3** | 2 | · | · | · | · | · | · | · |
 | Gemini 3.8 Flash High (Antigravity) † | 10 | **6** | · | · | 3 | · | · | 1 | · | · |
 | Codex GPT-6 Sol | 11 | **5** | · | · | 1 | · | **5** | · | · | · |
-| Grok 4.7 | 13 | 2 | · | · | · | · | 1 | **10** | · | · |
-| Grok 4.6 | 13 | **7** | 1 | · | · | · | 4 | 1 | · | · |
+| Grok 4.6 | 14 | **7** | 2 | · | · | · | 4 | 1 | · | · |
 | Claude Opus 5.5 | 16 | 3 | **7** | · | 4 | 2 | · | · | · | · |
 | Codex GPT-5.5 | 17 | **9** | · | · | · | 2 | 6 | · | · | · |
 | Grok 4.7 build-fast | 18 | **6** | · | · | **6** | · | 3 | 3 | · | · |
+| Grok 4.7 | 20 | 2 | · | · | 6 | · | 1 | **11** | · | · |
 | Claude Sonnet 4.5 | 21 | **9** | · | · | 2 | · | 5 | 5 | · | · |
 | Codex Daybreak Blue | 23 | **12** | 1 | · | 1 | 4 | 5 | · | · | · |
-| Kimi K3 | 23 | 5 | · | 1 | 3 | 3 | **9** | 2 | · | · |
 | Claude Fable 5.1 | 24 | 2 | **7** | 2 | 4 | 1 | **7** | · | 1 | · |
 | Grok 4.5 | 27 | **17** | 1 | · | · | 3 | 6 | · | · | · |
+| Kimi K3 | 33 | 5 | · | 1 | 3 | 3 | **19** | 2 | · | · |
 | Claude Sonnet 5.5 | 35 | 10 | **11** | 1 | 6 | 2 | 5 | · | · | · |
 | GPT-6 Luna via Copilot | 48 | **22** | 3 | · | 2 | 6 | 15 | · | · | · |
 | Claude Sonnet 5 | 49 | **14** | 3 | 1 | 12 | 13 | 6 | · | · | · |
@@ -594,16 +600,16 @@ The QBE classes in detail, vendor models only (where QBE failures cluster):
 | Codex GPT-6 Astra | 2 | 0 | 0 | 0 | 1 | 0 |
 | Gemini 3.8 Flash High (Antigravity) | 0 | 0 | 1 | 4 | 0 | 1 |
 | Codex GPT-6 Sol | 1 | 0 | 3 | 1 | 0 | 0 |
-| Grok 4.7 | 0 | 0 | 1 | 1 | 0 | 0 |
 | Grok 4.6 | 1 | 0 | 0 | 6 | 0 | 0 |
 | Claude Opus 5.5 | 3 | 0 | 0 | 0 | 0 | 0 |
 | Codex GPT-5.5 | 1 | 0 | 0 | 1 | 1 | 6 |
 | Grok 4.7 build-fast | 1 | 0 | 2 | 1 | 0 | 2 |
+| Grok 4.7 | 0 | 0 | 1 | 1 | 0 | 0 |
 | Claude Sonnet 4.5 | 1 | 0 | 1 | 2 | 3 | 2 |
 | Codex Daybreak Blue | 1 | 0 | 5 | 2 | 4 | 0 |
-| Kimi K3 | 1 | 0 | 0 | 3 | 1 | 0 |
 | Claude Fable 5.1 | 0 | 0 | 1 | 0 | 1 | 0 |
 | Grok 4.5 | 3 | 0 | 4 | 4 | 0 | 6 |
+| Kimi K3 | 1 | 0 | 0 | 3 | 1 | 0 |
 | Claude Sonnet 5.5 | 1 | 1 | 0 | 0 | 4 | 4 |
 | GPT-6 Luna via Copilot | 7 | 0 | 13 | 0 | 1 | 1 |
 | Claude Sonnet 5 | 4 | 0 | 2 | 0 | 5 | 3 |
@@ -751,16 +757,18 @@ Across the 21 complete vendor models, the rank correlation between median output
 
 | Model | Effort | First attempt | Attempts | Median output tokens / attempt | Output tokens / solved cell | Coverage | Median wall s / attempt |
 |---|---|---|---|---|---|---|---|
+| Grok 4.6 | default | 95/96 (99%) | 97 | 13,197 | 14,907 | 100% | 200 |
 | Codex GPT-6 Astra | default (low) | 94/96 (98%) | 98 | 1,105 | 1,154 | 100% | 36 |
 | Claude Opus 5.5 | default | 89/96 (93%) | 103 | 2,659 | 3,324 | 95% | 24 |
+| Grok 4.7 | default | 89/96 (93%) | 104 | 22,897 | 27,689 | 99% | 281 |
 | Grok 4.7 build-fast | default | 89/96 (93%) | 104 | 22,677 | 28,513 | 100% | 180 |
 | Claude Fable 5.1 | default | 84/96 (88%) | 110 | 3,380 | 4,942 | 94% | 36 |
 | Claude Sonnet 5.5 | default | 84/96 (88%) | 109 | 2,464 | 3,158 | 94% | 20 |
+| Kimi K3 | default | 83/96 (86%) | 110 | 5,085 | 7,039 | 100% | 459 |
 | Microsoft MAI-Code 1.1 Flash (Copilot) | default | 23/96 (24%) | 251 | 14,708 | 63,612 | 100% | 137 |
-| Kimi K3 † | default | 29/32 (91%) | 35 | 4,703 | 6,831 | 100% | 448 |
 | Aleph Alpha Kolibri-1 FP8, token budget (local) | default | 3/96 (3%) | 363 | 30,928 | 684,522 | 79% | 1149 |
 
-Across the 6 complete vendor models, the rank correlation between median output tokens per attempt and first-attempt pass rate is -0.41.
+Across the 9 complete vendor models, the rank correlation between median output tokens per attempt and first-attempt pass rate is -0.09.
 
 Token counts come from each vendor's CLI and are not audited across vendors; tokenisers differ, so a
 token is not the same unit for every model. Compare within a vendor with more confidence than across.
@@ -776,7 +784,7 @@ those ratios over its passing cells (1.00 = the median solution; below 1 = fewer
 bytes). On the QBE path the instructions come from the `qbe` compiler, so differences there reflect
 the model's IR, not its instruction selection.
 
-5448 passing cells re-run; 5448 passed again, all of them.
+5704 passing cells re-run; 5704 passed again, all of them.
 
 ### Function batteries
 
@@ -817,13 +825,15 @@ the model's solution executed the fewest instructions of all passing solutions (
 
 | Model | Cells | Executed instructions | asm | stream | Code size | Fewest |
 |---|---|---|---|---|---|---|
-| Claude Fable 5.1 | 96 | 0.87 | 0.91 | 0.83 | 1.01 | 31 |
-| Claude Opus 5.5 | 96 | 0.92 | 0.93 | 0.90 | 0.99 | 18 |
-| Codex GPT-6 Astra | 96 | 0.94 | 0.94 | 0.94 | 0.87 | 25 |
-| Grok 4.7 build-fast | 96 | 1.07 | 1.05 | 1.08 | 1.15 | 7 |
-| Kimi K3 | 32 | 1.07 | 0.98 | 1.17 | 1.05 | 3 |
-| Claude Sonnet 5.5 | 96 | 1.16 | 1.21 | 1.12 | 0.90 | 13 |
-| Microsoft MAI-Code 1.1 Flash (Copilot) | 64 | 1.58 | 1.62 | 1.55 | 1.48 | 0 |
+| Claude Fable 5.1 | 96 | 0.83 | 0.89 | 0.77 | 0.98 | 24 |
+| Claude Opus 5.5 | 96 | 0.88 | 0.91 | 0.84 | 0.96 | 16 |
+| Codex GPT-6 Astra | 96 | 0.90 | 0.92 | 0.87 | 0.84 | 18 |
+| Grok 4.7 | 96 | 1.01 | 1.04 | 0.97 | 1.07 | 5 |
+| Grok 4.7 build-fast | 96 | 1.02 | 1.03 | 1.01 | 1.11 | 4 |
+| Grok 4.6 | 96 | 1.09 | 1.17 | 1.00 | 0.97 | 8 |
+| Kimi K3 | 96 | 1.09 | 1.12 | 1.06 | 1.04 | 12 |
+| Claude Sonnet 5.5 | 96 | 1.11 | 1.18 | 1.04 | 0.87 | 9 |
+| Microsoft MAI-Code 1.1 Flash (Copilot) | 64 | 1.50 | 1.59 | 1.44 | 1.46 | 0 |
 
 ## 11. Harness and infrastructure audit
 
@@ -845,7 +855,7 @@ harness, in order:
 | `929d4577` | 2026-09-30 | Copilot: the runtime's output-cap continuation event aborted the subject as an isolation failure; the capped answer is now scored as it stands. | Claude Sonnet 5.5 via Copilot `vm_run.structured.aarch64`: the fresh re-run's pass replaced by the capped answer's failure (ADJ −1). |
 | `d7df9dda` | 2026-09-30 | Structured x86-64: a label named like a register (`cl`) is now refused at its definition with a clear message (the prompt and GNU as already forbid it). | No verdict changed. |
 | `5dd977b1` | 2026-10-01 | Hex path: capstone does not decode some valid ARMv8.0 words (`ldtrb`); GNU objdump now decodes them. | Claude Sonnet 4.5 `sort_lines.hex.aarch64` attempt 3 still fails at runtime: no verdict changed. |
-| `not fixed` | 2026-10-20 | The linker refuses a section alignment above 4 KiB, which real ld accepts. | Kolibri-1 `sort_lines.asm.aarch64.s3` (`.align 16` = 64 KiB on AArch64): the program fails its tests regardless; no verdict changed. |
+| `linker` | 2026-10-22 | The linker refused a section alignment above 4 KiB, which GNU ld accepts (AArch64 `.align 16` is 64 KiB); it now accepts up to 16 MiB, on both app paths. | Grok 4.6 `hexdump.asm.aarch64.s2` (apps) superseded and re-run: passed on attempt 1. Kolibri-1 `sort_lines.asm.aarch64.s3` fails its tests regardless; its re-run (for the repair feedback) is pending. |
 
 Net effect on the published function-battery counts: 6 cells corrected (+4 first-attempt passes in total; `CELL_ADJ` in this script, `ADJ` in `eval/xv_tables.py`). App
 cells affected by a fix were moved to the run's `superseded/` directory and re-run from scratch, never
@@ -860,17 +870,17 @@ is resumed. A run directory without `infra.jsonl` had none, except the two earli
 
 | Model | Scored attempts | Plan quota | Transient service errors | Isolation checks | Quota hits, first → last |
 |---|---|---|---|---|---|
-| Gemini 3.8 Flash High (Antigravity) | 175 | 1065 | 1 | 1 | 2026-09-28 → 2026-10-20 |
+| Gemini 3.8 Flash High (Antigravity) | 175 | 1155 | 1 | 1 | 2026-09-28 → 2026-10-22 |
+| Kimi K3 | 419 | 134 | · | · | 2026-09-29 → 2026-10-22 |
 | Claude Sonnet 5.5 via Copilot | 396 | 129 | · | 1 | 2026-09-30 → 2026-09-30 |
-| Kimi K3 | 344 | 94 | · | · | 2026-09-29 → 2026-10-11 |
 | Kimi K2.8 (for-coding) | 434 | 79 | 10 | · | 2026-09-29 → 2026-10-11 |
 | Codex GPT-6 Astra | 376 | 17 | 1 | · | 2026-09-29 → 2026-09-29 |
-| Grok 4.7 | 287 | · | 7 | 1 | — |
+| Grok 4.7 | 391 | · | 9 | 1 | — |
 | Microsoft MAI-Code 1.1 Flash (Copilot) | 930 | · | 3 | 5 | — |
 | Grok 4.5 | 323 | · | 4 | · | — |
+| Grok 4.6 | 380 | · | 4 | · | — |
 | Codex GPT-6 Luna | 616 | 4 | · | · | 2026-10-01 → 2026-10-01 |
 | Codex Daybreak Blue | 311 | 4 | · | · | 2026-10-01 → 2026-10-01 |
-| Grok 4.6 | 283 | · | 2 | · | — |
 | Grok 4.7 build-fast | 387 | · | 2 | · | — |
 | GPT-6 Luna via Copilot | 361 | · | · | 1 | — |
 

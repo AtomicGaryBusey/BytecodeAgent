@@ -32,12 +32,72 @@ re-executes passing programs in the emulator. Each item lands as a script in `ev
 11. **Harness and infrastructure audit.** One summary of false rejects found and fixed, infra error rates per
     vendor, and quota behaviour (now spread across per-run notes).
 
+## Approved pick-up runs (2026-10-22, in progress)
+
+Approved by the user on 2026-10-22. After each: by-hand false-reject review, then regenerate the tables,
+`eval/analytics.py` and `eval/dashboard.py`, and update the reports.
+
+- [x] **App battery, Grok 4.7 and Grok 4.6**: done 2026-10-22. Grok 4.7 89/96 first try, Grok 4.6 95/96 (after one
+  harness false reject was fixed and its cell re-run), both 96/96 within four. Reviewed.
+- [x] **Kimi K3 app samples 2 and 3**: done 2026-10-22. 83/96 first try, 96/96 within four; the † is gone. Reviewed:
+  no false rejects.
+- [x] **Linker false reject found in the Grok 4.6 review**: section alignment above 4 KiB (AArch64 `.align 16`)
+  was refused although GNU ld accepts it. Fixed in `bca/image.py` with a test; the Grok 4.6 cell was superseded
+  and re-run (passed on attempt 1).
+- [ ] **Re-run Kolibri-1 `sort_lines.asm.aarch64.s3`** under the fixed linker: its verdict stands (the program
+  fails regardless), but attempts 2-4 got link feedback instead of wrong-output feedback. Needs the Kolibri vLLM
+  container restarted (~1-1.5 h). The user's decision.
+- [x] **Hex runs for Claude Sonnet 5**: done 2026-10-22 (functions 13/16 first try, 16/16 within four; whole
+  programs 7/16 and 9/16). Reviewed: no false rejects. In `reports/live-model-eval-hex.md`.
+- [x] **Stale "Pending" table in `reports/live-model-eval-hex.md`** (it said the local Qwen hex runs were waiting
+  for the GPU; they were never run and are not planned). Fixed 2026-10-22.
+
+## Waiting
+
+- [ ] **Antigravity (Gemini 3.8 Flash High)**: 61 cells left (adversarial 60, long 1). The hourly resume loop
+  picks them up as Google AI Plus quota allows (next reset estimated Fri 2026-10-23 ~15:00). After each window:
+  review new first-attempt failures, regenerate with `eval/xv_tables.py`, update the row and † note in
+  README.md and `reports/live-model-eval-cross-vendor.md`, commit and push.
+
 ## Backlog
 
-Nothing left. The optional interactive dashboard is built: `eval/dashboard.py` writes `reports/dashboard.html`
-(open locally) and the same page is published as a private claude.ai artifact; re-run the script after any new run.
+**New subjects (deferred by the user)**
 
-## Proposed pick-up runs (flagged 2026-10-20, none run yet)
+- [ ] **Qwen3.8-27B**, the model behind Ring0-Agent ("close the loop"). To be served from the user's other DGX
+  cluster. The time-limit blocker for a dense 27B is gone (token-budget mode, built for Kolibri). Needs from the
+  user: endpoint URL and serving stack, model id, quantisation, and Ring0-Agent's sampling settings.
+- [ ] **Apple Foundation Models** (`apple:` adapter via the user's MacBook: on-device ~3B model with a 4K
+  context, Private Cloud Compute with 32K). Needs macOS 27, SSH from the Spark, and the user's Apple Developer
+  account status.
+- [ ] **Apriel-1.6-15B-Thinker** (ServiceNow, MIT): optional local baseline, practical now that token-budget mode
+  exists. Its answer follows `[BEGIN FINAL RESPONSE]`, which the adapter must strip.
+
+**Harness improvements for a new round** (each changes what models see, so not a patch to the current runs)
+
+- [ ] Echo the offending source line with QBE compile errors (`reports/live-model-eval-haiku-sonnet.md`).
+- [ ] Rename the structured schema's `$defs/reg` (e.g. `register_name`) so bare register strings are more
+  obvious (same report).
+- [ ] Add `movsx` / `adc` to the structured x86 schema; models keep reaching for them
+  (`reports/live-model-eval-adversarial.md`).
+- [ ] When a checked output buffer differs, show the first differing index, not only the first 12 elements
+  (`reports/live-model-eval-long.md`).
+
+**Housekeeping**
+
+- [ ] Antigravity's run directory holds hundreds of untracked quota-retry artifacts (`attempt*.infra*.raw.jsonl`
+  and `.response.txt`) and modified logs; decide keep or prune at its next reported update.
+- [ ] Leftovers of the Kimi round-2 run never committed: `eval/runs/vendors-r2-20260929-080743.out`,
+  `calls.log`, `plan.json`.
+- [ ] Docker images (~72 GB): `bca-vllm-kolibri` (22 GB, needed only to re-run Kolibri), the GB10-native test
+  image `bca-vllm-kolibri-native` (25 GB, offered for deletion), `eugr/spark-vllm:nightly-20261002` (25 GB).
+  The user's call.
+- [ ] Tooling note: the CodeGraph MCP server in the eval session fails with the stale-build error
+  (`statInode is not a function`); the CLI works and `/mcp` reconnect fixes it. Not a project bug.
+
+**Done:** the optional interactive dashboard (`eval/dashboard.py` writes `reports/dashboard.html`; also published
+as a private claude.ai artifact). Re-run the script after any new run.
+
+## Remaining proposed pick-up runs (flagged 2026-10-20; not approved)
 
 Gaps in the recorded data that small runs could fill. Each needs the user's go-ahead before it starts; call
 counts are estimates (~1.1 attempts per cell for top models). After any of them: by-hand false-reject review,
@@ -45,15 +105,30 @@ then regenerate the tables and `eval/analytics.py`.
 
 **Worth filling (they limit published conclusions)**
 
-- [ ] **App battery for the models tied at the top**: Codex GPT-6 Sol, Grok 4.7, Grok 4.6 have function results
-  level with Astra but no app results (only the 16-cell hex apps). `--tasks apps --samples 3`, 96 cells each,
-  ~105 calls each. Plans: ChatGPT Pro (Sol), SuperGrok weekly allowance (Groks).
-- [ ] **Kimi K3 app samples 2 and 3**: its app row is † (sample 1 only). 64 cells, ~70 calls, after the next
-  7-day window.
-- [ ] **`misleading_hint` and `terse` on non-Claude models**: both variants (adversarial, 60 cells) ran only on
-  four Claude models, so "misleading hints change no model significantly" and the variant's refusals are
-  Claude-only findings. Astra, Sol, Grok 4.7, Kimi K3: ~65 calls per model per variant (~520 in all).
-- [ ] **Antigravity's last 61 cells** (adversarial 60 + long 1): the hourly loop covers it; quota only.
+- [ ] **App battery for Codex GPT-6 Sol** (tied with Astra; Grok 4.7 and 4.6 were approved, Sol was not):
+  96 cells, ~105 calls, ChatGPT Pro.
+
+**Prompt variants on non-Claude models (backlogged 2026-10-22, not approved; recommendation below)**
+
+- [ ] **`misleading_hint` and `terse`, adversarial battery, on four non-Claude models** that mirror the spread of
+  the four Claude models already run (adversarial first-try passes out of 60: Opus 5.5 57, Fable 5.1 54, Sonnet 5
+  45, Haiku 4.5 35). Today both variant findings are Claude-only: "misleading hints change no model
+  significantly" (they leaned on Haiku, −11 / +3, and Sonnet 5, −12 / +5) and the variant's refusals.
+
+  | Tier | Model | Adversarial baseline | Matches | Plan |
+  |---|---|---|---|---|
+  | Strong | Grok 4.7 | 56/60 | Opus 5.5 (57) | SuperGrok |
+  | Strong | Kimi K3 | 56/60 | Opus 5.5 (57) | Kimi Allegretto |
+  | Mid | Kimi K2.8 (for-coding) | 46/60 | Sonnet 5 (45) | Kimi Allegretto |
+  | Weak | MAI-Code 1.1 Flash | 35/60 | Haiku 4.5 (35) | Copilot Pro credits |
+
+  ~690 calls (~65 per variant per strong model, ~90 for K2.8, ~125 for MAI-Code). Order: Grok 4.7 after its app
+  run (same weekly allowance); the Kimis after K3's app samples (~310 calls: several 5-hour windows, maybe a 7-day
+  cap); MAI-Code may not fit the month's remaining Copilot credits (reset on the 1st). Smaller option: Grok 4.7 +
+  MAI-Code (~380 calls, no Kimi). Excluded: any Codex (the ChatGPT plan is reserved), Astra and Sol (60/60 at
+  baseline, nothing to gain), other Groks (same vendor as 4.7), Kolibri (its adversarial token budget already cut
+  52 of 176 calls; days of GPU), the Qwens (2/60), Gemini (no quota), GPT-6 Luna via Copilot (an OpenAI model;
+  left out given the Codex instruction). Needs the user's choice of set before anything runs.
 
 **Optional (statistical power)**
 
@@ -69,7 +144,7 @@ then regenerate the tables and `eval/analytics.py`.
 
 **Hex-path holes**
 
-- [ ] **No hex results for Gemini 3.8 Flash High, Kolibri-1 or Claude Sonnet 5**: hex functions (16 cells) each;
+- [ ] **No hex results for Gemini 3.8 Flash High or Kolibri-1** (Sonnet 5 approved above): hex functions (16 cells) each;
   whole-program hex follows only at ≥ 12/16 within four (so Haiku and MAI-Code missing from hex apps is by
   design). Gemini after its function run completes; Kolibri ~5 GPU hours.
 

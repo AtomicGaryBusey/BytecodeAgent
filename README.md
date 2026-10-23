@@ -124,16 +124,18 @@ interpreter and a JSON validator, asm and stream paths, both ISAs, 3 samples, up
 
 | Model | First attempt | Within 4 | Mean attempts |
 |---|---|---|---|
+| Grok 4.6 | **95/96 (99%)** | 96/96 (100%) | 1.01 |
 | Codex GPT-6 Astra | **94/96 (98%)** | 96/96 (100%) | 1.02 |
 | Claude Opus 5.5 | **89/96 (93%)** | 96/96 (100%) | 1.07 |
+| Grok 4.7 | **89/96 (93%)** | 96/96 (100%) | 1.08 |
 | Grok 4.7 build-fast | **89/96 (93%)** | 96/96 (100%) | 1.08 |
 | Claude Fable 5.1 | **84/96 (88%)** | 96/96 (100%) | 1.15 |
 | Claude Sonnet 5.5 | **84/96 (88%)** | 96/96 (100%) | 1.14 |
+| Kimi K3 | **83/96 (86%)** | 96/96 (100%) | 1.15 |
 | Microsoft MAI-Code 1.1 Flash (Copilot) | **23/96 (24%)** | 64/96 (67%) | 2.61 |
 | Aleph Alpha Kolibri-1 FP8, token budget (local) | **3/96 (3%)** | 16/96 (17%) | 3.78 |
-| Kimi K3 † | **29/32 (91%)** | 32/32 (100%) | 1.09 |
 
-† Kimi K3 ran sample 1 only (32 of 96 cells) before its plan window ran out. Of the local models only Kolibri-1 runs the app battery (token-budget mode); the Ollama-served Qwen models do not, by decision. The frontier models' most common first-attempt error is an AArch64
+Grok 4.6 and Astra are one cell apart, which is within noise. Of the local models only Kolibri-1 runs the app battery (token-budget mode); the Ollama-served Qwen models do not, by decision. The frontier models' most common first-attempt error is an AArch64
 `mov` of an immediate no single instruction can encode. Report, including the sandbox-escape fix and the
 asm/stream acceptance parity work: [`reports/live-model-eval-apps.md`](reports/live-model-eval-apps.md).
 

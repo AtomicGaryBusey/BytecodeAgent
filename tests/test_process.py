@@ -391,6 +391,17 @@ def test_link_errors(isa):
         link_program(b"\x7fELF" + b"\0" * 10, isa)
 
 
+@both
+def test_section_alignment_above_a_page_links_like_gnu_ld(isa):
+    # AArch64 `.align 16` (and `.balign 65536` anywhere) asks for 64 KiB; GNU ld accepts it, so the linker must too
+    src = prog(isa, "nop", "nop", ".data\n.balign 65536\nd: .quad 1\n.bss\n.balign 65536\nbuf: .zero 64\n")
+    im = build(src, isa)
+    assert im.symbols["d"] % 65536 == 0 and im.symbols["buf"] % 65536 == 0
+    assert run_program(im, b"").fault is None
+    with pytest.raises(LinkError, match="unsupported alignment"):
+        build(prog(isa, "nop", "nop", ".bss\n.balign 33554432\nbig: .zero 8\n"), isa)
+
+
 @pytest.mark.skipif("aarch64" not in ISAS, reason="no aarch64 assembler")
 def test_misaligned_lo12_is_rejected():
     isa = "aarch64"

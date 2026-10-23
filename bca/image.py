@@ -30,6 +30,9 @@ from bca.ir.elf import MACHINES, SHF_ALLOC, SHF_EXECINSTR, SHT_NOBITS, SHT_REL, 
 
 TEXT_BASE = 0x400000
 PAGE = 0x1000
+# Largest section alignment accepted. GNU ld takes any power of two (AArch64 `.align 16` is 64 KiB); each segment
+# starts on its largest section alignment, never less than a page.
+MAX_ALIGN = 1 << 24
 SEGMENT_LIMIT = 1 << 26  # text / rodata / data each at most 64 MiB
 ASM_TIMEOUT = 20.0
 ASM_OBJECT_LIMIT = 1 << 26
@@ -84,6 +87,16 @@ class Image:
 
 def _page_up(n: int) -> int:
     return (n + PAGE - 1) & ~(PAGE - 1)
+
+
+def _align_up(n: int, align: int) -> int:
+    return (n + align - 1) & ~(align - 1)
+
+
+def _check_align(align: int, what: str) -> int:
+    if align & (align - 1) or align > MAX_ALIGN:
+        raise LinkError(f"{what}: unsupported alignment {align}")
+    return align
 
 
 # -- assembling ------------------------------------------------------------------------------
@@ -439,12 +452,16 @@ def link_program(obj: bytes, isa_name: str, *, entry_symbol: str = "_start",
     addr: dict[int, int] = {}
     sections: dict[str, tuple[int, int]] = {}
 
+    def seg_align(secs) -> int:
+        """A segment's start alignment: a page, or its largest section alignment if that is larger."""
+        return max([PAGE] + [_check_align(max(sec.align, 1), f"section {sec.name}") for sec in secs])
+
     def place(secs, start: int) -> tuple[int, bytearray]:
         blob = bytearray()
         for sec in secs:
-            align = max(sec.align, 1)
-            if align & (align - 1) or align > PAGE:
-                raise LinkError(f"section {sec.name}: unsupported alignment {align}")
+            align = _check_align(max(sec.align, 1), f"section {sec.name}")
+            if start % align:  # only .text has a fixed start (TEXT_BASE); the others start on seg_align
+                raise LinkError(f"section {sec.name}: alignment {align} exceeds the fixed load address {start:#x}")
             blob.extend(b"\0" * (-len(blob) % align))
             addr[sec.index] = start + len(blob)
             sections.setdefault(sec.name, (start + len(blob), sec.size))
@@ -460,7 +477,7 @@ def link_program(obj: bytes, isa_name: str, *, entry_symbol: str = "_start",
         raise LinkError("no code: the object has no executable section")
     text_addr, text_blob = place(text, TEXT_BASE)
     text_end = text_addr + len(text_blob)
-    ro_addr = _page_up(text_end + 1)  # +1: always leave room for at least one trap
+    ro_addr = _align_up(text_end + 1, seg_align(rodata))  # +1: always leave room for at least one trap
     _, ro_blob = place(rodata, ro_addr)
     got_addr = {}
     if got_syms:
@@ -468,14 +485,13 @@ def link_program(obj: bytes, isa_name: str, *, entry_symbol: str = "_start",
         for si in got_syms:
             got_addr[si] = ro_addr + len(ro_blob)
             ro_blob.extend(b"\0" * 8)
-    data_addr = _page_up(ro_addr + len(ro_blob))
+    data_addr = _align_up(ro_addr + len(ro_blob), seg_align(data))
     _, data_blob = place(data, data_addr)
-    bss_addr = _page_up(data_addr + len(data_blob))
+    common_aligns = [_check_align(max(s.value, 1), f"common symbol {s.name!r}") for s in syms if s.shndx == SHN_COMMON]
+    bss_addr = _align_up(data_addr + len(data_blob), max([seg_align(bss)] + common_aligns))
     bss_size = 0
     for sec in bss:
         align = max(sec.align, 1)
-        if align & (align - 1) or align > PAGE:
-            raise LinkError(f"section {sec.name}: unsupported alignment {align}")
         bss_size += -bss_size % align
         addr[sec.index] = bss_addr + bss_size
         sections.setdefault(sec.name, (bss_addr + bss_size, sec.size))
@@ -508,9 +524,7 @@ def link_program(obj: bytes, isa_name: str, *, entry_symbol: str = "_start",
     common: dict[int, int] = {}
     for si, s in enumerate(syms):
         if s.shndx == SHN_COMMON:  # .comm: value is the alignment
-            align = max(s.value, 1)
-            if align & (align - 1) or align > PAGE:
-                raise LinkError(f"common symbol {s.name!r}: unsupported alignment {align}")
+            align = max(s.value, 1)  # checked above, with the .bss start
             bss_size += -bss_size % align
             common[si] = bss_addr + bss_size
             bss_size += s.size

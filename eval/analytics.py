@@ -1012,9 +1012,10 @@ HARNESS_FIXES = [
     ("5dd977b1", "2026-10-01", "Hex path: capstone does not decode some valid ARMv8.0 words (`ldtrb`); GNU objdump "
      "now decodes them.", "Claude Sonnet 4.5 `sort_lines.hex.aarch64` attempt 3 still fails at runtime: no "
      "verdict changed."),
-    ("not fixed", "2026-10-20", "The linker refuses a section alignment above 4 KiB, which real ld accepts.",
-     "Kolibri-1 `sort_lines.asm.aarch64.s3` (`.align 16` = 64 KiB on AArch64): the program fails its tests "
-     "regardless; no verdict changed."),
+    ("linker", "2026-10-22", "The linker refused a section alignment above 4 KiB, which GNU ld accepts (AArch64 "
+     "`.align 16` is 64 KiB); it now accepts up to 16 MiB, on both app paths.",
+     "Grok 4.6 `hexdump.asm.aarch64.s2` (apps) superseded and re-run: passed on attempt 1. Kolibri-1 "
+     "`sort_lines.asm.aarch64.s3` fails its tests regardless; its re-run (for the repair feedback) is pending."),
 ]
 
 

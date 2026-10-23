@@ -26,7 +26,7 @@ for f in sorted(glob.glob("eval/runs/apps-*/*/baseline/results.jsonl") + glob.gl
         else:
             label = subj
         recs[(label, r["cell"])] = r
-names = {"codex:gpt-6-astra": "Codex GPT-6 Astra", "grok:grok-4.7-build-fast": "Grok 4.7 build-fast",
+names = {"codex:gpt-6-astra": "Codex GPT-6 Astra", "grok:grok-4.7-build-fast": "Grok 4.7 build-fast", "grok:grok-4.7": "Grok 4.7", "grok:grok-4.6": "Grok 4.6",
          "claude-opus-5-5": "Claude Opus 5.5", "claude-fable-5-1": "Claude Fable 5.1",
          "claude-sonnet-5-5": "Claude Sonnet 5.5", "copilot:mai-code-1.1-flash": "Microsoft MAI-Code 1.1 Flash (Copilot)",
          "kimi:kimi-code/k3": "Kimi K3", "local:vllm:Aleph-Alpha/Kolibri-1": "Aleph Alpha Kolibri-1 FP8, token budget (local)",

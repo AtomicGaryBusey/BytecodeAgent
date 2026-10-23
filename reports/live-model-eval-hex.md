@@ -41,6 +41,7 @@ results on the other paths (16 cells each):
 | Claude Opus 4.8 | **14/16** | 16/16 | 13/16 | 15/16 | 7/16 |
 | Claude Sonnet 5.5 | **14/16** | 16/16 | 16/16 | 15/16 | 16/16 |
 | Kimi K3 | **13/16** | 16/16 | 16/16 | 14/16 | 15/16 |
+| Claude Sonnet 5 | **13/16** | 16/16 | 16/16 | 10/16 | 14/16 |
 | GPT-6 Luna via Copilot | **12/16** | 16/16 | 16/16 | 15/16 | 11/16 |
 | Grok 4.6 | **12/16** | 16/16 | 15/16 | 16/16 | 14/16 |
 | Grok 4.5 | **10/16** | 16/16 | 16/16 | 16/16 | 15/16 |
@@ -66,6 +67,7 @@ Per ISA, hex first attempt:
 | Claude Opus 4.8 | 6/8 | 8/8 |
 | Claude Sonnet 5.5 | 6/8 | 8/8 |
 | Kimi K3 | 5/8 | 8/8 |
+| Claude Sonnet 5 | 7/8 | 6/8 |
 | GPT-6 Luna via Copilot | 6/8 | 6/8 |
 | Grok 4.6 | 5/8 | 7/8 |
 | Grok 4.5 | 5/8 | 5/8 |
@@ -91,6 +93,7 @@ results (— where that model did not run the app battery):
 | Grok 4.7 build-fast | **10/16** | 16/16 | 16/16 | 14/16 |
 | Grok 4.7 | **10/16** | 16/16 | — | — |
 | Claude Opus 5.5 | **7/16** | 12/16 | 16/16 | 15/16 |
+| Claude Sonnet 5 | **7/16** | 9/16 | — | — |
 | Codex GPT-6 Sol | **6/16** | 14/16 | — | — |
 | Codex GPT-5.5 | **3/16** | 12/16 | — | — |
 | Codex Daybreak Blue | **2/16** | 11/16 | — | — |
@@ -115,6 +118,7 @@ apart (first attempts only, except the last column):
 | Grok 4.6 | 16 | 11 | 0 | 5 | 11/16 (69%) | 0 of 23 |
 | Grok 4.7 build-fast | 16 | 10 | 0 | 6 | 10/16 (62%) | 0 of 23 |
 | Grok 4.7 | 16 | 10 | 0 | 6 | 10/16 (62%) | 0 of 22 |
+| Claude Sonnet 5 | 16 | 7 | 0 | 9 | 7/16 (44%) | 0 of 40 |
 | Codex GPT-6 Sol | 16 | 6 | 0 | 10 | 6/16 (38%) | 0 of 33 |
 | Codex GPT-5.5 | 16 | 3 | 0 | 13 | 3/16 (19%) | 0 of 37 |
 | Codex Daybreak Blue | 16 | 2 | 0 | 14 | 2/16 (12%) | 0 of 42 |
@@ -248,10 +252,16 @@ maxed 7-day windows on Kimi Allegretto). Their failures were reviewed by hand: n
 (lines that are not one instruction, 9-digit AArch64 words, wrong syscall use, out-of-bounds accesses; every
 Kimi timeout is a genuine wall-clock timeout, since Kimi's CLI prints its answer only when the call ends).
 
-## Pending
+**Claude Sonnet 5 (2026-10-22): no false rejects.** Hex functions 13/16 first try, 16/16 within four; whole
+programs 7/16 first try, 9/16 within four. Of its 31 failed whole-program attempts, 20 are 900 s wall-clock
+timeouts (every attempt on `rpn` and `json_lint`, both ISAs); its 4 failed function attempts are 3 wrong results
+and 1 timeout. The others are runtime faults, wrong output, and three malformed words: a 9-digit AArch64 word (`17fffffed`, twice) and `8be00164`, which GNU
+objdump also decodes as undefined (an ADD with the reserved shift type).
 
-| Models | Waiting for |
+## Pending and not run
+
+| Models | Status |
 |---|---|
-| Gemini 3.8 Flash (Antigravity) | Google quota (the function battery is quota-paced, 163/224 on 2026-10-17) |
-| Local Qwen models | the GPU (used by the assisted-variant runs); expected near 0 given 3-8% on assembly |
-| Haiku 4.5, MAI-Code (apps) | below the 12/16 bar in stage 1 (8/16 and 11/16 within four) |
+| Gemini 3.8 Flash High (Antigravity) | waiting: its hex runs follow its quota-paced function battery (163/224 on 2026-10-22) |
+| Local Qwen models, Kolibri-1 | not run, and not planned: they score 3-26% on the assembly paths, so the hex path would add nothing |
+| Haiku 4.5, MAI-Code (apps) | not run by design: below the 12/16 bar in stage 1 (8/16 and 11/16 within four) |

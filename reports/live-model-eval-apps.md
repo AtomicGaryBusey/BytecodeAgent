@@ -2,7 +2,7 @@
 
 > **Account caveat.** The Claude account is enrolled in Anthropic's **Cyber Verification Program** and the
 > ChatGPT account in OpenAI's **Daybreak** (Blue tier); both relax cyber safeguards, so treat those rows as upper
-> bounds for ordinary accounts. Plans: Claude Max 20x, ChatGPT Plus, SuperGrok, GitHub Copilot Pro. Method and
+> bounds for ordinary accounts. Plans: Claude Max 20x, ChatGPT Plus, SuperGrok, Kimi Allegretto, GitHub Copilot Pro. Method and
 > fairness contract: [cross-vendor-methodology.md](cross-vendor-methodology.md); design and decisions:
 > [design-app-battery.md](design-app-battery.md).
 
@@ -48,16 +48,18 @@ samples passed on its first attempt.
 
 | Model | First attempt | Within 4 | Mean attempts | Sample 1 | Sample 2 | Sample 3 | pass@3 (groups) |
 |---|---|---|---|---|---|---|---|
+| Grok 4.6 | **95/96 (99%)** | 96/96 (100%) | 1.01 | 31/32 | 32/32 | 32/32 | 32/32 |
 | Codex GPT-6 Astra | **94/96 (98%)** | 96/96 (100%) | 1.02 | 32/32 | 32/32 | 30/32 | 32/32 |
 | Claude Opus 5.5 | **89/96 (93%)** | 96/96 (100%) | 1.07 | 31/32 | 28/32 | 30/32 | 32/32 |
+| Grok 4.7 | **89/96 (93%)** | 96/96 (100%) | 1.08 | 31/32 | 29/32 | 29/32 | 32/32 |
 | Grok 4.7 build-fast | **89/96 (93%)** | 96/96 (100%) | 1.08 | 30/32 | 29/32 | 30/32 | 32/32 |
 | Claude Fable 5.1 | **84/96 (88%)** | 96/96 (100%) | 1.15 | 26/32 | 27/32 | 31/32 | 31/32 |
 | Claude Sonnet 5.5 | **84/96 (88%)** | 96/96 (100%) | 1.14 | 29/32 | 28/32 | 27/32 | 32/32 |
+| Kimi K3 | **83/96 (86%)** | 96/96 (100%) | 1.15 | 29/32 | 26/32 | 28/32 | 32/32 |
 | Microsoft MAI-Code 1.1 Flash (Copilot) | **23/96 (24%)** | 64/96 (67%) | 2.61 | 6/32 | 7/32 | 10/32 | 15/32 |
 | Aleph Alpha Kolibri-1 FP8, token budget (local) | **3/96 (3%)** | 16/96 (17%) | 3.78 | 1/32 | 1/32 | 1/32 | 2/32 |
-| Kimi K3 † | **29/32 (91%)** | 32/32 (100%) | 1.09 | 29/32 | — | — | 29/32 |
 
-† Kimi K3 is partial: sample 1 only (32 of 96 cells); Kimi Allegretto's 7-day window ran out before samples 2 and 3, and its failures were reviewed by hand (no harness false rejects). Of the local open-weight models only
+Kimi K3 ran sample 1 on 2026-10-03 and samples 2 and 3 on 2026-10-22, after Kimi Allegretto's 7-day window had stopped it; Grok 4.7 and Grok 4.6 ran on 2026-10-22. Their failures were reviewed by hand: one harness false reject (Grok 4.6, see Harness integrity), otherwise genuine. Of the local open-weight models only
 Aleph Alpha Kolibri-1 runs the app battery, in token-budget mode (81,920 output tokens per call, the most any
 vendor model used for one app call; `vllm:<model>@budget`, see the methodology report). The Ollama-served Qwen models
 do not (decision 2026-10-01: at 3-8% first-attempt on the function batteries, days of 900 s app attempts would not
@@ -67,40 +69,46 @@ change the picture; see the local section of the cross-vendor report).
 
 | Model | wc | rev_lines | hexdump | sort_lines | rpn | base64 | bf | json_lint |
 |---|---|---|---|---|---|---|---|---|
+| Grok 4.6 | 12/12 | 12/12 | 11/12 | 12/12 | 12/12 | 12/12 | 12/12 | 12/12 |
 | Codex GPT-6 Astra | 12/12 | 12/12 | 12/12 | 12/12 | 12/12 | 12/12 | 10/12 | 12/12 |
 | Claude Opus 5.5 | 11/12 | 11/12 | 10/12 | 11/12 | 11/12 | 12/12 | 11/12 | 12/12 |
+| Grok 4.7 | 12/12 | 12/12 | 10/12 | 11/12 | 11/12 | 12/12 | 12/12 | 9/12 |
 | Grok 4.7 build-fast | 11/12 | 12/12 | 12/12 | 12/12 | 12/12 | 10/12 | 11/12 | 9/12 |
 | Claude Fable 5.1 | 12/12 | 9/12 | 10/12 | 12/12 | 9/12 | 10/12 | 11/12 | 11/12 |
 | Claude Sonnet 5.5 | 12/12 | 11/12 | 11/12 | 12/12 | 9/12 | 11/12 | 12/12 | 6/12 |
+| Kimi K3 | 12/12 | 11/12 | 11/12 | 10/12 | 7/12 | 10/12 | 12/12 | 10/12 |
 | Microsoft MAI-Code 1.1 Flash (Copilot) | 3/12 | 5/12 | 2/12 | 5/12 | 0/12 | 3/12 | 5/12 | 0/12 |
 | Aleph Alpha Kolibri-1 FP8, token budget (local) | 0/12 | 3/12 | 0/12 | 0/12 | 0/12 | 0/12 | 0/12 | 0/12 |
-| Kimi K3 † | 4/4 | 4/4 | 4/4 | 3/4 | 3/4 | 4/4 | 4/4 | 3/4 |
 
 ### Per path and ISA (first-attempt passes, 24 cells each)
 
 | Model | asm x86-64 | asm AArch64 | stream x86-64 | stream AArch64 |
 |---|---|---|---|---|
+| Grok 4.6 | 24/24 | 24/24 | 24/24 | 23/24 |
 | Codex GPT-6 Astra | 24/24 | 23/24 | 24/24 | 23/24 |
 | Claude Opus 5.5 | 23/24 | 23/24 | 23/24 | 20/24 |
+| Grok 4.7 | 23/24 | 21/24 | 23/24 | 22/24 |
 | Grok 4.7 build-fast | 24/24 | 22/24 | 23/24 | 20/24 |
 | Claude Fable 5.1 | 19/24 | 23/24 | 23/24 | 19/24 |
 | Claude Sonnet 5.5 | 23/24 | 20/24 | 22/24 | 19/24 |
+| Kimi K3 | 20/24 | 20/24 | 21/24 | 22/24 |
 | Microsoft MAI-Code 1.1 Flash (Copilot) | 4/24 | 8/24 | 2/24 | 9/24 |
 | Aleph Alpha Kolibri-1 FP8, token budget (local) | 0/24 | 2/24 | 0/24 | 1/24 |
-| Kimi K3 † | 7/8 | 8/8 | 7/8 | 7/8 |
 
 ### First-attempt failure categories
 
-| Model | bad_syscall | crash | crosscheck | format | link | no_exit | oob | syntax | wrong_output |
-|---|---|---|---|---|---|---|---|---|---|
-| Codex GPT-6 Astra | · | · | · | · | · | · | · | 2 | · |
-| Claude Opus 5.5 | · | · | 1 | · | · | · | · | 6 | · |
-| Grok 4.7 build-fast | · | · | · | 6 | · | · | · | · | 1 |
-| Claude Fable 5.1 | · | · | · | · | · | · | · | 9 | 3 |
-| Claude Sonnet 5.5 | · | · | · | · | · | · | · | 11 | 1 |
-| Microsoft MAI-Code 1.1 Flash (Copilot) | 2 | 1 | · | · | · | 3 | 8 | 39 | 20 |
-| Aleph Alpha Kolibri-1 FP8, token budget (local) | 16 | 1 | · | · | 1 | · | 7 | 39 | 29 |
-| Kimi K3 † | · | · | · | · | · | · | 1 | · | 2 |
+| Model | bad_syscall | crash | crosscheck | format | link | no_exit | oob | subject_timeout | syntax | wrong_output |
+|---|---|---|---|---|---|---|---|---|---|---|
+| Grok 4.6 | · | · | · | · | · | · | · | · | 1 | · |
+| Codex GPT-6 Astra | · | · | · | · | · | · | · | · | 2 | · |
+| Claude Opus 5.5 | · | · | 1 | · | · | · | · | · | 6 | · |
+| Grok 4.7 | · | · | · | 6 | · | · | · | 1 | · | · |
+| Grok 4.7 build-fast | · | · | · | 6 | · | · | · | · | · | 1 |
+| Claude Fable 5.1 | · | · | · | · | · | · | · | · | 9 | 3 |
+| Claude Sonnet 5.5 | · | · | · | · | · | · | · | · | 11 | 1 |
+| Kimi K3 | · | · | · | · | · | · | 1 | · | · | 12 |
+| Microsoft MAI-Code 1.1 Flash (Copilot) | 2 | 1 | · | · | · | 3 | 8 | · | 39 | 20 |
+| Aleph Alpha Kolibri-1 FP8, token budget (local) | 16 | 1 | · | · | 1 | · | 7 | · | 39 | 29 |
 
 ## Findings
 
@@ -108,6 +116,13 @@ change the picture; see the local section of the cross-vendor report).
   correctly on the first try (samples 1 and 2 perfect); Opus 5.5 and Grok 4.7 build-fast 89; Fable 5.1 and
   Sonnet 5.5 84. Every one of these five models passed **every** cell within four attempts, including the
   Brainfuck interpreter and the recursive-descent JSON validator, run whole and with 7-byte short reads.
+- **Three more models, added 2026-10-22, reach the same level.** Grok 4.6 passes 95/96 on the first try (31,
+  32 and 32 by sample), one cell more than Astra, which is well within noise (see the paired tests in the
+  analytics report). Grok 4.7 passes 89/96: six of its seven misses are prose preambles before the code, the same
+  habit as Grok 4.7 build-fast, and one is a 900 s timeout. Kimi K3 passes 83/96 over all three samples (29, 26,
+  28), and all 13 misses are runtime errors: a missing final newline, a typo in its error message, a bare final
+  number treated as an error in `rpn`, lines with NUL bytes sorted wrongly, one out-of-bounds write. All three
+  passed every cell within four attempts.
 - **Their first-attempt misses are mostly assembler errors, not wrong programs.** Of the five frontier models'
   40 first-attempt failures, 35 were rejected before running (`syntax`, `crosscheck`, `format`) and only 5 were
   wrong output. The single most common mistake, for every frontier model, is an **AArch64 `mov` of an immediate
@@ -163,11 +178,17 @@ change the picture; see the local section of the cross-vendor report).
   - MAI-Code `wc.stream.aarch64.s2` (refused `.arch armv8-a`) and `json_lint.stream.aarch64.s1` (refused `.end`,
     which changed the repair feedback): re-run; the first now passes on attempt 2 after a genuine failure, the
     second failed all four attempts genuinely.
+  - Grok 4.6 `hexdump.asm.aarch64.s2` (2026-10-22): attempt 1 was refused at link time for `.align 16` in
+    `.bss` (64 KiB on AArch64), which GNU ld accepts. With only that line changed to a 4 KiB alignment the
+    recorded answer passes all 42 test runs, so this was a harness false reject. Fixed: the linker now accepts
+    section alignments up to 16 MiB, on both paths (`tests/test_process.py`). The re-run passed on attempt 1.
 - **Every failure was reviewed by hand** for every model (the Copilot adapter's own transient errors, such
-  as a broken stream or a network timeout, void the attempt and are retried, never scored). Kolibri-1: no false rejects. One
-  harness limit showed up: the linker refuses a section alignment above 4 KiB, which real ld accepts
-  (`sort_lines.asm.aarch64.s3`, where `.align 16` on AArch64 means 64 KiB). The verdict stands either way: the
-  31-line program never sorts and reads with a zero length, so it fails the tests regardless.
+  as a broken stream or a network timeout, void the attempt and are retried, never scored). Kolibri-1: no false rejects. Its
+  `sort_lines.asm.aarch64.s3` attempt 1 hit the same alignment limit (`.align 16`). The verdict stands, since the
+  31-line program never sorts and reads with a zero length, but attempts 2-4 got link feedback instead of
+  wrong-output feedback. Under the rule above the cell should be re-run; that needs the Kolibri server restarted
+  (about 1-1.5 hours) and is pending the user's decision. Kimi K3 (samples 2 and 3) and Grok 4.7: no false
+  rejects.
 
 ## Raw machine code: the opt-in hex path (Codex GPT-6 Astra)
 
