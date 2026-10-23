@@ -1,0 +1,522 @@
+.equ SYS_read, 63
+.equ SYS_write, 64
+.equ SYS_exit, 93
+.equ CH_TAB, 0x09
+.equ CH_LF, 0x0A
+.equ CH_CR, 0x0D
+.equ CH_SP, 0x20
+.equ CH_QUOTE, 0x22
+.equ CH_PLUS, 0x2B
+.equ CH_COMMA, 0x2C
+.equ CH_MINUS, 0x2D
+.equ CH_DOT, 0x2E
+.equ CH_SLASH, 0x2F
+.equ CH_0, 0x30
+.equ CH_9, 0x39
+.equ CH_COLON, 0x3A
+.equ CH_UP_A, 0x41
+.equ CH_UP_E, 0x45
+.equ CH_UP_F, 0x46
+.equ CH_LBRACK, 0x5B
+.equ CH_BSLASH, 0x5C
+.equ CH_RBRACK, 0x5D
+.equ CH_LO_A, 0x61
+.equ CH_LO_B, 0x62
+.equ CH_LO_E, 0x65
+.equ CH_LO_F, 0x66
+.equ CH_LO_N, 0x6E
+.equ CH_LO_R, 0x72
+.equ CH_LO_T, 0x74
+.equ CH_LO_U, 0x75
+.equ CH_LBRACE, 0x7B
+.equ CH_RBRACE, 0x7D
+
+.section .rodata
+msg_ok:
+    .ascii "ok"
+    .byte CH_LF
+msg_err:
+    .ascii "error at "
+lit_true:
+    .ascii "true"
+lit_false:
+    .ascii "false"
+lit_null:
+    .ascii "null"
+
+.bss
+.align 3
+inbuf:
+    .zero 65536
+outbuf:
+    .zero 32
+digbuf:
+    .zero 16
+
+.text
+.globl _start
+_start:
+    adrp x19, inbuf
+    add x19, x19, :lo12:inbuf
+    mov x20, #0
+.Lread:
+    movz x2, #1, lsl #16
+    sub x2, x2, x20
+    cbz x2, .Lread_done
+    mov x0, #0
+    add x1, x19, x20
+    mov x8, #SYS_read
+    svc #0
+    cbz x0, .Lread_done
+    add x20, x20, x0
+    movz x3, #1, lsl #16
+    cmp x20, x3
+    b.lo .Lread
+.Lread_done:
+    mov x21, #0
+    mov x22, #0
+    bl parse_document
+    cbnz x22, .Lfail
+    adrp x1, msg_ok
+    add x1, x1, :lo12:msg_ok
+    mov x0, #1
+    mov x2, #3
+    mov x8, #SYS_write
+    svc #0
+    mov x0, #0
+    mov x8, #SYS_exit
+    svc #0
+.Lfail:
+    bl format_error
+    mov x2, x0
+    adrp x1, outbuf
+    add x1, x1, :lo12:outbuf
+    mov x0, #1
+    mov x8, #SYS_write
+    svc #0
+    mov x0, #1
+    mov x8, #SYS_exit
+    svc #0
+
+parse_document:
+    stp x29, x30, [sp, #-16]!
+    bl skip_ws
+    cmp x21, x20
+    b.hs .Ldoc_err
+    bl parse_value
+    cbnz x22, .Ldoc_ret
+    bl skip_ws
+    cmp x21, x20
+    b.lo .Ldoc_err
+    b .Ldoc_ret
+.Ldoc_err:
+    mov x22, #1
+.Ldoc_ret:
+    ldp x29, x30, [sp], #16
+    ret
+
+skip_ws:
+    cmp x21, x20
+    b.hs .Lws_done
+    ldrb w0, [x19, x21]
+    cmp w0, #CH_SP
+    b.eq .Lws_yes
+    cmp w0, #CH_TAB
+    b.eq .Lws_yes
+    cmp w0, #CH_LF
+    b.eq .Lws_yes
+    cmp w0, #CH_CR
+    b.eq .Lws_yes
+    ret
+.Lws_yes:
+    add x21, x21, #1
+    b skip_ws
+.Lws_done:
+    ret
+
+parse_value:
+    stp x29, x30, [sp, #-16]!
+    cmp x21, x20
+    b.hs .Lval_fail
+    ldrb w0, [x19, x21]
+    cmp w0, #CH_LBRACE
+    b.eq .Lval_obj
+    cmp w0, #CH_LBRACK
+    b.eq .Lval_arr
+    cmp w0, #CH_QUOTE
+    b.eq .Lval_str
+    cmp w0, #CH_LO_T
+    b.eq .Lval_true
+    cmp w0, #CH_LO_F
+    b.eq .Lval_false
+    cmp w0, #CH_LO_N
+    b.eq .Lval_null
+    cmp w0, #CH_MINUS
+    b.eq .Lval_num
+    cmp w0, #CH_0
+    b.lo .Lval_fail
+    cmp w0, #CH_9
+    b.ls .Lval_num
+    b .Lval_fail
+.Lval_obj:
+    bl parse_object
+    b .Lval_ret
+.Lval_arr:
+    bl parse_array
+    b .Lval_ret
+.Lval_str:
+    bl parse_string
+    b .Lval_ret
+.Lval_true:
+    bl parse_true
+    b .Lval_ret
+.Lval_false:
+    bl parse_false
+    b .Lval_ret
+.Lval_null:
+    bl parse_null
+    b .Lval_ret
+.Lval_num:
+    bl parse_number
+    b .Lval_ret
+.Lval_fail:
+    mov x22, #1
+.Lval_ret:
+    ldp x29, x30, [sp], #16
+    ret
+
+parse_true:
+    adrp x0, lit_true
+    add x0, x0, :lo12:lit_true
+    mov x1, #4
+    b match_lit
+
+parse_false:
+    adrp x0, lit_false
+    add x0, x0, :lo12:lit_false
+    mov x1, #5
+    b match_lit
+
+parse_null:
+    adrp x0, lit_null
+    add x0, x0, :lo12:lit_null
+    mov x1, #4
+    b match_lit
+
+match_lit:
+    cbz x1, .Lml_ok
+    cmp x21, x20
+    b.hs .Lml_fail
+    ldrb w2, [x19, x21]
+    ldrb w3, [x0]
+    cmp w2, w3
+    b.ne .Lml_fail
+    add x21, x21, #1
+    add x0, x0, #1
+    sub x1, x1, #1
+    b match_lit
+.Lml_ok:
+    ret
+.Lml_fail:
+    mov x22, #1
+    ret
+
+parse_object:
+    stp x29, x30, [sp, #-16]!
+    add x21, x21, #1
+    bl skip_ws
+    cmp x21, x20
+    b.hs .Lobj_fail
+    ldrb w0, [x19, x21]
+    cmp w0, #CH_RBRACE
+    b.eq .Lobj_close
+.Lobj_mem:
+    cmp x21, x20
+    b.hs .Lobj_fail
+    ldrb w0, [x19, x21]
+    cmp w0, #CH_QUOTE
+    b.ne .Lobj_fail
+    bl parse_string
+    cbnz x22, .Lobj_ret
+    bl skip_ws
+    cmp x21, x20
+    b.hs .Lobj_fail
+    ldrb w0, [x19, x21]
+    cmp w0, #CH_COLON
+    b.ne .Lobj_fail
+    add x21, x21, #1
+    bl skip_ws
+    bl parse_value
+    cbnz x22, .Lobj_ret
+    bl skip_ws
+    cmp x21, x20
+    b.hs .Lobj_fail
+    ldrb w0, [x19, x21]
+    cmp w0, #CH_COMMA
+    b.eq .Lobj_comma
+    cmp w0, #CH_RBRACE
+    b.eq .Lobj_close
+    b .Lobj_fail
+.Lobj_comma:
+    add x21, x21, #1
+    bl skip_ws
+    b .Lobj_mem
+.Lobj_close:
+    add x21, x21, #1
+.Lobj_ret:
+    ldp x29, x30, [sp], #16
+    ret
+.Lobj_fail:
+    mov x22, #1
+    b .Lobj_ret
+
+parse_array:
+    stp x29, x30, [sp, #-16]!
+    add x21, x21, #1
+    bl skip_ws
+    cmp x21, x20
+    b.hs .Larr_fail
+    ldrb w0, [x19, x21]
+    cmp w0, #CH_RBRACK
+    b.eq .Larr_close
+.Larr_elem:
+    bl parse_value
+    cbnz x22, .Larr_ret
+    bl skip_ws
+    cmp x21, x20
+    b.hs .Larr_fail
+    ldrb w0, [x19, x21]
+    cmp w0, #CH_COMMA
+    b.eq .Larr_comma
+    cmp w0, #CH_RBRACK
+    b.eq .Larr_close
+    b .Larr_fail
+.Larr_comma:
+    add x21, x21, #1
+    bl skip_ws
+    b .Larr_elem
+.Larr_close:
+    add x21, x21, #1
+.Larr_ret:
+    ldp x29, x30, [sp], #16
+    ret
+.Larr_fail:
+    mov x22, #1
+    b .Larr_ret
+
+parse_string:
+    add x21, x21, #1
+.Lstr_loop:
+    cmp x21, x20
+    b.hs .Lstr_fail
+    ldrb w0, [x19, x21]
+    cmp w0, #CH_QUOTE
+    b.eq .Lstr_end
+    cmp w0, #CH_BSLASH
+    b.eq .Lstr_esc
+    cmp w0, #CH_SP
+    b.lo .Lstr_fail
+    add x21, x21, #1
+    b .Lstr_loop
+.Lstr_end:
+    add x21, x21, #1
+    ret
+.Lstr_esc:
+    add x21, x21, #1
+    cmp x21, x20
+    b.hs .Lstr_fail
+    ldrb w0, [x19, x21]
+    cmp w0, #CH_QUOTE
+    b.eq .Lstr_esc_ok
+    cmp w0, #CH_BSLASH
+    b.eq .Lstr_esc_ok
+    cmp w0, #CH_SLASH
+    b.eq .Lstr_esc_ok
+    cmp w0, #CH_LO_B
+    b.eq .Lstr_esc_ok
+    cmp w0, #CH_LO_F
+    b.eq .Lstr_esc_ok
+    cmp w0, #CH_LO_N
+    b.eq .Lstr_esc_ok
+    cmp w0, #CH_LO_R
+    b.eq .Lstr_esc_ok
+    cmp w0, #CH_LO_T
+    b.eq .Lstr_esc_ok
+    cmp w0, #CH_LO_U
+    b.eq .Lstr_u
+    b .Lstr_fail
+.Lstr_esc_ok:
+    add x21, x21, #1
+    b .Lstr_loop
+.Lstr_u:
+    add x21, x21, #1
+    mov x1, #4
+.Lstr_hex:
+    cbz x1, .Lstr_loop
+    cmp x21, x20
+    b.hs .Lstr_fail
+    ldrb w0, [x19, x21]
+    cmp w0, #CH_0
+    b.lo .Lstr_fail
+    cmp w0, #CH_9
+    b.ls .Lstr_hex_ok
+    cmp w0, #CH_UP_A
+    b.lo .Lstr_fail
+    cmp w0, #CH_UP_F
+    b.ls .Lstr_hex_ok
+    cmp w0, #CH_LO_A
+    b.lo .Lstr_fail
+    cmp w0, #CH_LO_F
+    b.hi .Lstr_fail
+.Lstr_hex_ok:
+    add x21, x21, #1
+    sub x1, x1, #1
+    b .Lstr_hex
+.Lstr_fail:
+    mov x22, #1
+    ret
+
+parse_number:
+    ldrb w0, [x19, x21]
+    cmp w0, #CH_MINUS
+    b.ne .Lnum_int
+    add x21, x21, #1
+    cmp x21, x20
+    b.hs .Lnum_fail
+    ldrb w0, [x19, x21]
+    cmp w0, #CH_0
+    b.lo .Lnum_fail
+    cmp w0, #CH_9
+    b.hi .Lnum_fail
+.Lnum_int:
+    ldrb w0, [x19, x21]
+    cmp w0, #CH_0
+    b.eq .Lnum_zero
+    cmp w0, #CH_0
+    b.lo .Lnum_fail
+    cmp w0, #CH_9
+    b.hi .Lnum_fail
+    add x21, x21, #1
+.Lnum_digits:
+    cmp x21, x20
+    b.hs .Lnum_ok
+    ldrb w0, [x19, x21]
+    cmp w0, #CH_0
+    b.lo .Lnum_after
+    cmp w0, #CH_9
+    b.hi .Lnum_after
+    add x21, x21, #1
+    b .Lnum_digits
+.Lnum_zero:
+    add x21, x21, #1
+.Lnum_after:
+    cmp x21, x20
+    b.hs .Lnum_ok
+    ldrb w0, [x19, x21]
+    cmp w0, #CH_DOT
+    b.ne .Lnum_exp
+    add x21, x21, #1
+    cmp x21, x20
+    b.hs .Lnum_fail
+    ldrb w0, [x19, x21]
+    cmp w0, #CH_0
+    b.lo .Lnum_fail
+    cmp w0, #CH_9
+    b.hi .Lnum_fail
+.Lnum_frac_more:
+    add x21, x21, #1
+    cmp x21, x20
+    b.hs .Lnum_ok
+    ldrb w0, [x19, x21]
+    cmp w0, #CH_0
+    b.lo .Lnum_exp
+    cmp w0, #CH_9
+    b.hi .Lnum_exp
+    b .Lnum_frac_more
+.Lnum_exp:
+    cmp x21, x20
+    b.hs .Lnum_ok
+    ldrb w0, [x19, x21]
+    cmp w0, #CH_LO_E
+    b.eq .Lnum_ex2
+    cmp w0, #CH_UP_E
+    b.ne .Lnum_ok
+.Lnum_ex2:
+    add x21, x21, #1
+    cmp x21, x20
+    b.hs .Lnum_fail
+    ldrb w0, [x19, x21]
+    cmp w0, #CH_PLUS
+    b.eq .Lnum_sgn
+    cmp w0, #CH_MINUS
+    b.eq .Lnum_sgn
+    b .Lnum_edig
+.Lnum_sgn:
+    add x21, x21, #1
+    cmp x21, x20
+    b.hs .Lnum_fail
+    ldrb w0, [x19, x21]
+.Lnum_edig:
+    cmp w0, #CH_0
+    b.lo .Lnum_fail
+    cmp w0, #CH_9
+    b.hi .Lnum_fail
+.Lnum_emore:
+    add x21, x21, #1
+    cmp x21, x20
+    b.hs .Lnum_ok
+    ldrb w0, [x19, x21]
+    cmp w0, #CH_0
+    b.lo .Lnum_ok
+    cmp w0, #CH_9
+    b.hi .Lnum_ok
+    b .Lnum_emore
+.Lnum_ok:
+    ret
+.Lnum_fail:
+    mov x22, #1
+    ret
+
+format_error:
+    adrp x9, outbuf
+    add x9, x9, :lo12:outbuf
+    adrp x1, msg_err
+    add x1, x1, :lo12:msg_err
+    mov x2, #9
+.Lfe_pref:
+    ldrb w3, [x1], #1
+    strb w3, [x9], #1
+    subs x2, x2, #1
+    b.ne .Lfe_pref
+    mov x1, x21
+    cbz x1, .Lfe_zero
+    adrp x10, digbuf
+    add x10, x10, :lo12:digbuf
+    add x10, x10, #16
+    mov x4, #0
+    mov x5, #10
+.Lfe_div:
+    udiv x6, x1, x5
+    msub x3, x6, x5, x1
+    add w3, w3, #CH_0
+    sub x10, x10, #1
+    strb w3, [x10]
+    add x4, x4, #1
+    mov x1, x6
+    cbnz x1, .Lfe_div
+.Lfe_emitd:
+    cbz x4, .Lfe_nl
+    ldrb w3, [x10], #1
+    strb w3, [x9], #1
+    sub x4, x4, #1
+    b .Lfe_emitd
+.Lfe_zero:
+    mov w3, #CH_0
+    strb w3, [x9], #1
+.Lfe_nl:
+    mov w3, #CH_LF
+    strb w3, [x9], #1
+    adrp x1, outbuf
+    add x1, x1, :lo12:outbuf
+    sub x0, x9, x1
+    ret

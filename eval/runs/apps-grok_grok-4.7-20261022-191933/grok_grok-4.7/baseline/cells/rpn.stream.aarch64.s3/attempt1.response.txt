@@ -1,0 +1,290 @@
+.globl _start
+
+.equ SYS_read, 63
+.equ SYS_write, 64
+.equ SYS_exit, 93
+.equ IN_CAP, 65536
+.equ STK_BYTES, 8192
+.equ CH_TAB, 9
+.equ CH_NL, 10
+.equ CH_SP, 32
+.equ CH_PCT, 37
+.equ CH_STAR, 42
+.equ CH_PLUS, 43
+.equ CH_MINUS, 45
+.equ CH_SLASH, 47
+.equ CH_0, 48
+
+.data
+err_s:
+	.ascii "error"
+	.byte CH_NL
+err_len = . - err_s
+min_s:
+	.ascii "-9223372036854775808"
+	.byte CH_NL
+min_len = . - min_s
+
+.bss
+.balign 8
+inbuf:
+	.zero IN_CAP
+numbuf:
+	.zero 32
+.balign 8
+valstack:
+	.zero STK_BYTES
+
+.text
+.balign 4
+_start:
+	adrp x19, inbuf
+	add x19, x19, :lo12:inbuf
+	mov x20, x19
+	mov x2, #IN_CAP
+	add x21, x19, x2
+
+read_loop:
+	sub x2, x21, x20
+	cbz x2, read_done
+	mov x0, #0
+	mov x1, x20
+	mov x8, #SYS_read
+	svc #0
+	cmp x0, #0
+	b.le read_done
+	add x20, x20, x0
+	b read_loop
+
+read_done:
+	adrp x21, valstack
+	add x21, x21, :lo12:valstack
+	mov x2, #STK_BYTES
+	add x23, x21, x2
+
+line_loop:
+	cmp x19, x20
+	b.hs exit_ok
+	mov x22, x21
+
+tok_loop:
+skip_sep:
+	cmp x19, x20
+	b.hs end_line
+	ldrb w0, [x19]
+	cmp w0, #CH_SP
+	b.eq eat_sep
+	cmp w0, #CH_TAB
+	b.eq eat_sep
+	cmp w0, #CH_NL
+	b.eq end_line
+	b parse_tok
+
+eat_sep:
+	add x19, x19, #1
+	b skip_sep
+
+parse_tok:
+	mov x24, x19
+scan_tok:
+	cmp x24, x20
+	b.hs have_tok
+	ldrb w0, [x24]
+	cmp w0, #CH_SP
+	b.eq have_tok
+	cmp w0, #CH_TAB
+	b.eq have_tok
+	cmp w0, #CH_NL
+	b.eq have_tok
+	add x24, x24, #1
+	b scan_tok
+
+have_tok:
+	sub x25, x24, x19
+	ldrb w0, [x19]
+	cmp x25, #1
+	b.ne multi_tok
+	cmp w0, #CH_PLUS
+	b.eq op_add
+	cmp w0, #CH_MINUS
+	b.eq op_sub
+	cmp w0, #CH_STAR
+	b.eq op_mul
+	cmp w0, #CH_SLASH
+	b.eq op_div
+	cmp w0, #CH_PCT
+	b.eq op_mod
+	mov x26, x19
+	mov x27, #0
+	b parse_digits
+
+multi_tok:
+	cmp w0, #CH_MINUS
+	b.ne pos_num
+	add x26, x19, #1
+	sub x25, x25, #1
+	mov x27, #1
+	b parse_digits
+
+pos_num:
+	mov x26, x19
+	mov x27, #0
+
+parse_digits:
+	cbz x25, bad_line
+	cmp x25, #18
+	b.hi bad_line
+	mov x28, #0
+	mov x3, #10
+dig_loop:
+	ldrb w0, [x26], #1
+	sub w1, w0, #CH_0
+	cmp w1, #9
+	b.hi bad_line
+	mul x28, x28, x3
+	add x28, x28, x1
+	subs x25, x25, #1
+	b.ne dig_loop
+	cbz x27, do_push
+	neg x28, x28
+do_push:
+	cmp x22, x23
+	b.hs bad_line
+	str x28, [x22], #8
+	mov x19, x24
+	b tok_loop
+
+op_add:
+	bl pop2
+	add x0, x0, x1
+	b push_res
+
+op_sub:
+	bl pop2
+	sub x0, x0, x1
+	b push_res
+
+op_mul:
+	bl pop2
+	mul x0, x0, x1
+	b push_res
+
+op_div:
+	bl pop2
+	cbz x1, bad_line
+	movz x2, #0x8000, lsl #48
+	cmp x0, x2
+	b.ne div_ok
+	cmn x1, #1
+	b.eq bad_line
+div_ok:
+	sdiv x0, x0, x1
+	b push_res
+
+op_mod:
+	bl pop2
+	cbz x1, bad_line
+	movz x2, #0x8000, lsl #48
+	cmp x0, x2
+	b.ne mod_ok
+	cmn x1, #1
+	b.eq bad_line
+mod_ok:
+	sdiv x2, x0, x1
+	msub x0, x2, x1, x0
+	b push_res
+
+push_res:
+	str x0, [x22], #8
+	mov x19, x24
+	b tok_loop
+
+end_line:
+	sub x0, x22, x21
+	cmp x0, #8
+	b.ne eol_bad
+	ldr x0, [x21]
+	bl print_num
+	b eol_next
+eol_bad:
+	bl print_error
+eol_next:
+	cmp x19, x20
+	b.hs exit_ok
+	add x19, x19, #1
+	b line_loop
+
+bad_line:
+	bl print_error
+skip_rest:
+	cmp x19, x20
+	b.hs exit_ok
+	ldrb w0, [x19], #1
+	cmp w0, #CH_NL
+	b.ne skip_rest
+	b line_loop
+
+exit_ok:
+	mov x0, #0
+	mov x8, #SYS_exit
+	svc #0
+	b exit_ok
+
+pop2:
+	sub x0, x22, x21
+	cmp x0, #16
+	b.lo bad_line
+	sub x22, x22, #16
+	ldr x0, [x22]
+	ldr x1, [x22, #8]
+	ret
+
+print_error:
+	adrp x1, err_s
+	add x1, x1, :lo12:err_s
+	mov x2, #err_len
+	b write_stdout
+
+print_num:
+	movz x1, #0x8000, lsl #48
+	cmp x0, x1
+	b.ne pn_norm
+	adrp x1, min_s
+	add x1, x1, :lo12:min_s
+	mov x2, #min_len
+	b write_stdout
+pn_norm:
+	adrp x9, numbuf
+	add x9, x9, :lo12:numbuf
+	add x10, x9, #31
+	mov w11, #CH_NL
+	strb w11, [x10]
+	mov x12, #0
+	cmp x0, #0
+	b.ge pn_digs
+	neg x0, x0
+	mov x12, #1
+pn_digs:
+	mov x3, #10
+	udiv x4, x0, x3
+	msub x5, x4, x3, x0
+	add w5, w5, #CH_0
+	sub x10, x10, #1
+	strb w5, [x10]
+	mov x0, x4
+	cbnz x0, pn_digs
+	cbz x12, pn_out
+	mov w5, #CH_MINUS
+	sub x10, x10, #1
+	strb w5, [x10]
+pn_out:
+	add x11, x9, #32
+	sub x2, x11, x10
+	mov x1, x10
+	b write_stdout
+
+write_stdout:
+	mov x0, #1
+	mov x8, #SYS_write
+	svc #0
+	ret

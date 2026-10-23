@@ -1,0 +1,412 @@
+.section .rodata
+ok_msg:
+  .ascii "ok"
+  .byte 0x0A
+err_msg:
+  .ascii "error at "
+nl_msg:
+  .byte 0x0A
+lit_true:
+  .ascii "true"
+lit_false:
+  .ascii "false"
+lit_null:
+  .ascii "null"
+
+.bss
+.align 8
+input_buf:
+  .zero 65536
+pos:
+  .zero 8
+in_len:
+  .zero 8
+numbuf:
+  .zero 32
+
+.text
+.globl _start
+_start:
+  xor r12, r12
+read_loop:
+  xor rax, rax
+  xor rdi, rdi
+  lea rsi, [rip + input_buf]
+  add rsi, r12
+  mov rdx, 65536
+  sub rdx, r12
+  syscall
+  test rax, rax
+  jle read_done
+  add r12, rax
+  cmp r12, 65536
+  jb read_loop
+read_done:
+  mov qword ptr [rip + in_len], r12
+  mov qword ptr [rip + pos], 0
+  call parse_document
+  mov rax, 1
+  mov rdi, 1
+  lea rsi, [rip + ok_msg]
+  mov rdx, 3
+  syscall
+  mov rax, 60
+  xor rdi, rdi
+  syscall
+halt_ok:
+  jmp halt_ok
+
+parse_document:
+  call skip_ws
+  call parse_value
+  call skip_ws
+  call peek
+  jnc report_error
+  ret
+
+parse_value:
+  call peek
+  jc report_error
+  cmp al, '{'
+  je parse_object
+  cmp al, '['
+  je parse_array
+  cmp al, '"'
+  je parse_string
+  cmp al, 't'
+  je parse_true
+  cmp al, 'f'
+  je parse_false
+  cmp al, 'n'
+  je parse_null
+  cmp al, '-'
+  je parse_number
+  cmp al, '0'
+  jb report_error
+  cmp al, '9'
+  ja report_error
+  jmp parse_number
+
+parse_object:
+  call advance
+  call skip_ws
+  call peek
+  jc report_error
+  cmp al, '}'
+  je obj_end
+obj_loop:
+  call peek
+  jc report_error
+  cmp al, '"'
+  jne report_error
+  call parse_string
+  call skip_ws
+  call peek
+  jc report_error
+  cmp al, ':'
+  jne report_error
+  call advance
+  call skip_ws
+  call parse_value
+  call skip_ws
+  call peek
+  jc report_error
+  cmp al, ','
+  je obj_comma
+  cmp al, '}'
+  jne report_error
+obj_end:
+  call advance
+  ret
+obj_comma:
+  call advance
+  call skip_ws
+  jmp obj_loop
+
+parse_array:
+  call advance
+  call skip_ws
+  call peek
+  jc report_error
+  cmp al, ']'
+  je arr_end
+arr_loop:
+  call parse_value
+  call skip_ws
+  call peek
+  jc report_error
+  cmp al, ','
+  je arr_comma
+  cmp al, ']'
+  jne report_error
+arr_end:
+  call advance
+  ret
+arr_comma:
+  call advance
+  call skip_ws
+  jmp arr_loop
+
+parse_string:
+  call advance
+str_loop:
+  call peek
+  jc report_error
+  cmp al, '"'
+  je str_end
+  cmp al, 0x5C
+  je str_esc
+  cmp al, 0x20
+  jb report_error
+  call advance
+  jmp str_loop
+str_end:
+  call advance
+  ret
+str_esc:
+  call advance
+  call peek
+  jc report_error
+  cmp al, '"'
+  je str_esc_ok
+  cmp al, 0x5C
+  je str_esc_ok
+  cmp al, '/'
+  je str_esc_ok
+  cmp al, 'b'
+  je str_esc_ok
+  cmp al, 'f'
+  je str_esc_ok
+  cmp al, 'n'
+  je str_esc_ok
+  cmp al, 'r'
+  je str_esc_ok
+  cmp al, 't'
+  je str_esc_ok
+  cmp al, 'u'
+  je str_u
+  jmp report_error
+str_esc_ok:
+  call advance
+  jmp str_loop
+str_u:
+  call advance
+  mov r12, 4
+str_hex:
+  call peek
+  jc report_error
+  cmp al, '0'
+  jb report_error
+  cmp al, '9'
+  jbe str_hex_ok
+  cmp al, 'A'
+  jb report_error
+  cmp al, 'F'
+  jbe str_hex_ok
+  cmp al, 'a'
+  jb report_error
+  cmp al, 'f'
+  ja report_error
+str_hex_ok:
+  call advance
+  dec r12
+  jnz str_hex
+  jmp str_loop
+
+parse_number:
+  call peek
+  jc report_error
+  cmp al, '-'
+  jne num_int
+  call advance
+  call peek
+  jc report_error
+num_int:
+  cmp al, '0'
+  jb report_error
+  cmp al, '9'
+  ja report_error
+  cmp al, '0'
+  jne num_digs
+  call advance
+  jmp num_after_int
+num_digs:
+  call advance
+num_digs_loop:
+  call peek
+  jc num_ret
+  cmp al, '0'
+  jb num_after_int
+  cmp al, '9'
+  ja num_after_int
+  call advance
+  jmp num_digs_loop
+num_after_int:
+  call peek
+  jc num_ret
+  cmp al, '.'
+  je num_frac
+  cmp al, 'e'
+  je num_exp
+  cmp al, 'E'
+  je num_exp
+  jmp num_ret
+num_frac:
+  call advance
+  call peek
+  jc report_error
+  cmp al, '0'
+  jb report_error
+  cmp al, '9'
+  ja report_error
+num_frac_loop:
+  call advance
+  call peek
+  jc num_ret
+  cmp al, '0'
+  jb num_frac_end
+  cmp al, '9'
+  ja num_frac_end
+  jmp num_frac_loop
+num_frac_end:
+  cmp al, 'e'
+  je num_exp
+  cmp al, 'E'
+  je num_exp
+  jmp num_ret
+num_exp:
+  call advance
+  call peek
+  jc report_error
+  cmp al, '+'
+  je num_exp_sign
+  cmp al, '-'
+  je num_exp_sign
+  jmp num_exp_first
+num_exp_sign:
+  call advance
+  call peek
+  jc report_error
+num_exp_first:
+  cmp al, '0'
+  jb report_error
+  cmp al, '9'
+  ja report_error
+num_exp_loop:
+  call advance
+  call peek
+  jc num_ret
+  cmp al, '0'
+  jb num_ret
+  cmp al, '9'
+  ja num_ret
+  jmp num_exp_loop
+num_ret:
+  ret
+
+parse_true:
+  lea r13, [rip + lit_true]
+  mov r12, 4
+  jmp parse_lit
+
+parse_false:
+  lea r13, [rip + lit_false]
+  mov r12, 5
+  jmp parse_lit
+
+parse_null:
+  lea r13, [rip + lit_null]
+  mov r12, 4
+  jmp parse_lit
+
+parse_lit:
+  test r12, r12
+  jz parse_lit_done
+  call peek
+  jc report_error
+  movzx edx, byte ptr [r13]
+  cmp al, dl
+  jne report_error
+  call advance
+  inc r13
+  dec r12
+  jmp parse_lit
+parse_lit_done:
+  ret
+
+skip_ws:
+  call peek
+  jc skip_ws_done
+  cmp al, ' '
+  je skip_ws_next
+  cmp al, 0x09
+  je skip_ws_next
+  cmp al, 0x0A
+  je skip_ws_next
+  cmp al, 0x0D
+  je skip_ws_next
+skip_ws_done:
+  ret
+skip_ws_next:
+  call advance
+  jmp skip_ws
+
+peek:
+  mov rax, qword ptr [rip + pos]
+  cmp rax, qword ptr [rip + in_len]
+  jae peek_eof
+  lea rcx, [rip + input_buf]
+  movzx eax, byte ptr [rcx + rax]
+  clc
+  ret
+peek_eof:
+  xor eax, eax
+  stc
+  ret
+
+advance:
+  inc qword ptr [rip + pos]
+  ret
+
+report_error:
+  mov rax, qword ptr [rip + pos]
+  lea rsi, [rip + numbuf + 24]
+  mov r15, 10
+  test rax, rax
+  jnz err_digits
+  dec rsi
+  mov byte ptr [rsi], '0'
+  jmp err_print
+err_digits:
+  xor rdx, rdx
+  div r15
+  add dl, '0'
+  dec rsi
+  mov byte ptr [rsi], dl
+  test rax, rax
+  jnz err_digits
+err_print:
+  lea rax, [rip + numbuf + 24]
+  sub rax, rsi
+  mov r13, rsi
+  mov r14, rax
+  mov rax, 1
+  mov rdi, 1
+  lea rsi, [rip + err_msg]
+  mov rdx, 9
+  syscall
+  mov rax, 1
+  mov rdi, 1
+  mov rsi, r13
+  mov rdx, r14
+  syscall
+  mov rax, 1
+  mov rdi, 1
+  lea rsi, [rip + nl_msg]
+  mov rdx, 1
+  syscall
+  mov rax, 60
+  mov rdi, 1
+  syscall
+halt_err:
+  jmp halt_err

@@ -1,0 +1,261 @@
+.text
+.globl _start
+_start:
+    adrp x19, inbuf
+    add x19, x19, :lo12:inbuf
+    mov x20, #0
+read_loop:
+    mov x2, #65536
+    sub x2, x2, x20
+    cbz x2, read_done
+    mov x0, #0
+    adrp x1, inbuf
+    add x1, x1, :lo12:inbuf
+    add x1, x1, x20
+    mov x8, #63
+    svc #0
+    cbz x0, read_done
+    add x20, x20, x0
+    b read_loop
+read_done:
+    adrp x19, inbuf
+    add x19, x19, :lo12:inbuf
+    add x20, x19, x20
+
+line_loop:
+    cmp x19, x20
+    b.hs done_all
+    mov x21, x19
+find_nl:
+    cmp x21, x20
+    b.hs have_line
+    ldrb w0, [x21]
+    cmp w0, #10
+    b.eq have_line
+    add x21, x21, #1
+    b find_nl
+have_line:
+    bl process_line
+    cmp x21, x20
+    b.hs 1f
+    add x21, x21, #1
+1:
+    mov x19, x21
+    b line_loop
+done_all:
+    mov x0, #0
+    mov x8, #93
+    svc #0
+
+// process_line: line is [x19, x21)
+process_line:
+    stp x29, x30, [sp, #-16]!
+    mov x22, x19
+    mov x23, #0
+    mov x24, #0
+    adrp x25, vstack
+    add x25, x25, :lo12:vstack
+skip_sep:
+    cmp x22, x21
+    b.hs line_finish
+    ldrb w0, [x22]
+    cmp w0, #32
+    b.eq 2f
+    cmp w0, #9
+    b.eq 2f
+    b tok_begins
+2:
+    add x22, x22, #1
+    b skip_sep
+tok_begins:
+    mov x26, x22
+find_te:
+    cmp x26, x21
+    b.hs have_tok
+    ldrb w0, [x26]
+    cmp w0, #32
+    b.eq have_tok
+    cmp w0, #9
+    b.eq have_tok
+    add x26, x26, #1
+    b find_te
+have_tok:
+    sub x1, x26, x22
+    ldrb w0, [x22]
+    cmp x1, #1
+    b.ne literal_parse
+    cmp w0, #43
+    b.eq op_plus
+    cmp w0, #45
+    b.eq op_minus
+    cmp w0, #42
+    b.eq op_mul
+    cmp w0, #47
+    b.eq op_div
+    cmp w0, #37
+    b.eq op_mod
+    sub w2, w0, #48
+    cmp w2, #9
+    b.hi set_error
+    b push_val
+literal_parse:
+    mov x3, #0
+    mov x4, #0
+    cmp w0, #45
+    b.ne 3f
+    mov x4, #1
+    mov x3, #1
+3:
+    sub x5, x1, x3
+    cbz x5, set_error
+    cmp x5, #18
+    b.hi set_error
+    mov x2, #0
+    mov x7, #10
+dig_loop:
+    cmp x3, x1
+    b.hs dig_done
+    ldrb w6, [x22, x3]
+    sub w6, w6, #48
+    cmp w6, #9
+    b.hi set_error
+    madd x2, x2, x7, x6
+    add x3, x3, #1
+    b dig_loop
+dig_done:
+    cbz x4, push_val
+    neg x2, x2
+push_val:
+    str x2, [x25, x23, lsl #3]
+    add x23, x23, #1
+    b next_tok
+
+op_plus:
+    bl load_ab
+    add x2, x2, x3
+    b store_op
+op_minus:
+    bl load_ab
+    sub x2, x2, x3
+    b store_op
+op_mul:
+    bl load_ab
+    mul x2, x2, x3
+    b store_op
+op_div:
+    bl load_ab
+    cbz x3, set_error
+    bl chk_ovf
+    sdiv x2, x2, x3
+    b store_op
+op_mod:
+    bl load_ab
+    cbz x3, set_error
+    bl chk_ovf
+    sdiv x11, x2, x3
+    msub x2, x11, x3, x2
+    b store_op
+
+// load_ab: a -> x2, b -> x3, x9 = index of a (depth-2)
+load_ab:
+    cmp x23, #2
+    b.lo set_error
+    sub x9, x23, #1
+    ldr x3, [x25, x9, lsl #3]
+    sub x9, x23, #2
+    ldr x2, [x25, x9, lsl #3]
+    ret
+
+// chk_ovf: error if a == INT64_MIN and b == -1
+chk_ovf:
+    movz x10, #0x8000, lsl #48
+    cmp x2, x10
+    b.ne 4f
+    cmn x3, #1
+    b.eq set_error
+4:
+    ret
+
+store_op:
+    str x2, [x25, x9, lsl #3]
+    sub x23, x23, #1
+    b next_tok
+
+next_tok:
+    mov x22, x26
+    b skip_sep
+
+set_error:
+    mov x24, #1
+    b line_finish
+
+line_finish:
+    cbnz x24, pr_err
+    cmp x23, #1
+    b.ne pr_err
+    ldr x0, [x25]
+    bl print_number
+    b pr_done
+pr_err:
+    mov x0, #1
+    adrp x1, errstr
+    add x1, x1, :lo12:errstr
+    mov x2, #6
+    mov x8, #64
+    svc #0
+pr_done:
+    ldp x29, x30, [sp], #16
+    ret
+
+// print_number: x0 = signed value, prints decimal + newline
+print_number:
+    stp x29, x30, [sp, #-16]!
+    adrp x9, numbuf
+    add x9, x9, :lo12:numbuf
+    add x10, x9, #32
+    mov w11, #10
+    strb w11, [x10, #-1]!
+    mov x2, x0
+    mov x12, #0
+    cmp x2, #0
+    b.ge 5f
+    neg x2, x2
+    mov x12, #1
+5:
+    mov x13, #10
+pnum_loop:
+    udiv x14, x2, x13
+    msub x15, x14, x13, x2
+    add w15, w15, #48
+    strb w15, [x10, #-1]!
+    mov x2, x14
+    cbnz x2, pnum_loop
+    cbz x12, 6f
+    mov w15, #45
+    strb w15, [x10, #-1]!
+6:
+    adrp x9, numbuf
+    add x9, x9, :lo12:numbuf
+    add x9, x9, #32
+    sub x2, x9, x10
+    mov x1, x10
+    mov x0, #1
+    mov x8, #64
+    svc #0
+    ldp x29, x30, [sp], #16
+    ret
+
+.section .rodata
+errstr:
+    .ascii "error\n"
+
+.bss
+.align 3
+inbuf:
+    .zero 65536
+.align 3
+vstack:
+    .zero 8192
+.align 3
+numbuf:
+    .zero 32

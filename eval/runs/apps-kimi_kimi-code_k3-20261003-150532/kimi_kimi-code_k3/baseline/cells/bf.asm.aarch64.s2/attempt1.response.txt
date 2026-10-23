@@ -1,0 +1,190 @@
+// Brainfuck interpreter, AArch64 Linux, no libc.
+// stdin layout: program bytes, then first '!', then the program's input.
+
+.equ SYS_READ,  63
+.equ SYS_WRITE, 64
+.equ SYS_EXIT,  93
+.equ BUFSZ,     65536
+
+.text
+.globl _start
+_start:
+    // ---- read all of stdin into inbuf ----
+    adrp x10, inbuf
+    add  x10, x10, :lo12:inbuf     // x10 = buffer base
+    mov  x9,  #0                   // x9  = total bytes read
+    mov  x11, #BUFSZ               // capacity
+1:
+    sub  x2, x11, x9               // remaining space
+    cbz  x2, 2f
+    mov  w0, #0                    // fd 0
+    add  x1, x10, x9
+    mov  w8, #SYS_READ
+    svc  #0
+    cmp  x0, #0
+    b.le 2f                        // 0 = EOF, <0 = error: stop
+    add  x9, x9, x0
+    b    1b
+2:
+    // ---- split at the first '!' ----
+    mov  x12, #0
+3:
+    cmp  x12, x9
+    b.ge 4f                        // no '!' found
+    ldrb w13, [x10, x12]
+    cmp  w13, #0x21                // '!'
+    b.eq 5f
+    add  x12, x12, #1
+    b    3b
+4:
+    // whole stdin is the program, input is empty
+    mov  x23, x9                   // x23 = program length
+    mov  x24, x10                  // x24 = program base
+    mov  x22, #0                   // x22 = input length
+    mov  x27, x10                  // x27 = input base (unused)
+    b    6f
+5:
+    mov  x23, x12                  // program = bytes before '!'
+    mov  x24, x10
+    add  x27, x10, x12
+    add  x27, x27, #1              // input = bytes after '!'
+    sub  x22, x9, x12
+    sub  x22, x22, #1
+6:
+    // ---- check brackets are balanced, build jump table ----
+    adrp x15, brkstack
+    add  x15, x15, :lo12:brkstack  // stack of '[' positions
+    adrp x17, jumptab
+    add  x17, x17, :lo12:jumptab   // matching-bracket table
+    mov  x14, #0                   // depth
+    mov  x16, #0                   // index
+7:
+    cmp  x16, x23
+    b.ge 8f
+    ldrb w13, [x24, x16]
+    cmp  w13, #0x5B                // '['
+    b.eq 9f
+    cmp  w13, #0x5D                // ']'
+    b.eq 10f
+    add  x16, x16, #1
+    b    7b
+9:                                   // '[': push position
+    cmp  x14, #1000
+    b.ge 12f                       // deeper than the guaranteed limit
+    str  w16, [x15, x14, lsl #2]
+    add  x14, x14, #1
+    add  x16, x16, #1
+    b    7b
+10:                                  // ']': pop and link both ways
+    cbz  x14, 12f                  // ']' without a '[': unbalanced
+    sub  x14, x14, #1
+    ldr  w13, [x15, x14, lsl #2]   // matching '[' position
+    str  w16, [x17, x13, lsl #2]   // jump[open]  = close position
+    str  w13, [x17, x16, lsl #2]   // jump[close] = open position
+    add  x16, x16, #1
+    b    7b
+8:
+    cbnz x14, 12f                  // '[' left open: unbalanced
+
+    // ---- run the program ----
+    adrp x25, tape
+    add  x25, x25, :lo12:tape      // x25 = tape base (zeroed .bss)
+    mov  x26, x17                  // x26 = jump table base
+    mov  x19, #0                   // x19 = program counter
+    mov  x20, #0                   // x20 = data pointer
+    mov  x21, #0                   // x21 = input index
+11:
+    cmp  x19, x23
+    b.hs 13f                       // end of program
+    ldrb w7, [x24, x19]
+    cmp  w7, #0x3E                 // '>'
+    b.eq 14f
+    cmp  w7, #0x3C                 // '<'
+    b.eq 15f
+    cmp  w7, #0x2B                 // '+'
+    b.eq 16f
+    cmp  w7, #0x2D                 // '-'
+    b.eq 17f
+    cmp  w7, #0x2E                 // '.'
+    b.eq 18f
+    cmp  w7, #0x2C                 // ','
+    b.eq 19f
+    cmp  w7, #0x5B                 // '['
+    b.eq 20f
+    cmp  w7, #0x5D                 // ']'
+    b.eq 21f
+    add  x19, x19, #1              // comment byte: ignore
+    b    11b
+14:                                  // '>'
+    add  x20, x20, #1
+    add  x19, x19, #1
+    b    11b
+15:                                  // '<'
+    sub  x20, x20, #1
+    add  x19, x19, #1
+    b    11b
+16:                                  // '+'
+    ldrb w7, [x25, x20]
+    add  w7, w7, #1                // wraps 255 -> 0 on byte store
+    strb w7, [x25, x20]
+    add  x19, x19, #1
+    b    11b
+17:                                  // '-'
+    ldrb w7, [x25, x20]
+    sub  w7, w7, #1                // wraps 0 -> 255 on byte store
+    strb w7, [x25, x20]
+    add  x19, x19, #1
+    b    11b
+18:                                  // '.'
+    mov  w0, #1                    // fd 1
+    add  x1, x25, x20
+    mov  w2, #1
+    mov  w8, #SYS_WRITE
+    svc  #0
+    add  x19, x19, #1
+    b    11b
+19:                                  // ','
+    mov  w7, #0                    // 0 when input is exhausted
+    cmp  x21, x22
+    b.hs 22f
+    ldrb w7, [x27, x21]
+    add  x21, x21, #1
+22:
+    strb w7, [x25, x20]
+    add  x19, x19, #1
+    b    11b
+20:                                  // '['
+    ldrb w7, [x25, x20]
+    cbnz w7, 23f                   // cell != 0: enter loop
+    ldr  w7, [x26, x19, lsl #2]    // cell == 0: jump past matching ']'
+    add  x19, x7, #1
+    b    11b
+23:
+    add  x19, x19, #1
+    b    11b
+21:                                  // ']'
+    ldrb w7, [x25, x20]
+    cbz  w7, 24f                   // cell == 0: leave loop
+    ldr  w7, [x26, x19, lsl #2]    // cell != 0: jump past matching '['
+    add  x19, x7, #1
+    b    11b
+24:
+    add  x19, x19, #1
+    b    11b
+13:
+    // success: exit(0)
+    mov  w0, #0
+    mov  w8, #SYS_EXIT
+    svc  #0
+12:
+    // unbalanced brackets: print nothing, exit(1)
+    mov  w0, #1
+    mov  w8, #SYS_EXIT
+    svc  #0
+
+.bss
+.align 4
+inbuf:    .zero 65536              // raw stdin contents
+tape:     .zero 30000              // 30000 cells, all 0
+jumptab:  .zero 262144             // 4-byte match per program byte
+brkstack: .zero 4096               // bracket stack, depth <= 1000

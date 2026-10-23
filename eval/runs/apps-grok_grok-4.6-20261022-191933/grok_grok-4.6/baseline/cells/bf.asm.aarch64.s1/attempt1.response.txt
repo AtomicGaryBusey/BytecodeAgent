@@ -1,0 +1,223 @@
+.globl _start
+
+.equ SYS_read, 63
+.equ SYS_write, 64
+.equ SYS_exit, 93
+.equ BUF_SIZE, 65536
+
+.text
+_start:
+    // Initialize command dispatch table (all entries -> next_cmd, then fill the 8 commands)
+    adrp x26, dispatch
+    add x26, x26, :lo12:dispatch
+    mov x0, x26
+    adr x1, next_cmd
+    mov x2, #256
+fill_dispatch:
+    str x1, [x0], #8
+    subs x2, x2, #1
+    b.ne fill_dispatch
+    adr x1, cmd_gt
+    mov x2, #'>'
+    str x1, [x26, x2, lsl #3]
+    adr x1, cmd_lt
+    mov x2, #'<'
+    str x1, [x26, x2, lsl #3]
+    adr x1, cmd_plus
+    mov x2, #'+'
+    str x1, [x26, x2, lsl #3]
+    adr x1, cmd_minus
+    mov x2, #'-'
+    str x1, [x26, x2, lsl #3]
+    adr x1, cmd_dot
+    mov x2, #'.'
+    str x1, [x26, x2, lsl #3]
+    adr x1, cmd_comma
+    mov x2, #','
+    str x1, [x26, x2, lsl #3]
+    adr x1, cmd_lbrack
+    mov x2, #'['
+    str x1, [x26, x2, lsl #3]
+    adr x1, cmd_rbrack
+    mov x2, #']'
+    str x1, [x26, x2, lsl #3]
+
+    // Read all of stdin into input_buf
+    adrp x19, input_buf
+    add x19, x19, :lo12:input_buf
+    mov x20, x19
+    mov x21, #BUF_SIZE
+read_loop:
+    cbz x21, read_done
+    mov x8, #SYS_read
+    mov x0, #0
+    mov x1, x20
+    mov x2, x21
+    svc #0
+    cmp x0, #0
+    b.le read_done
+    add x20, x20, x0
+    sub x21, x21, x0
+    b read_loop
+read_done:
+
+    // Split on the first '!': program [x19, x27), input [x23, x24)
+    mov x0, x19
+find_bang:
+    cmp x0, x20
+    b.eq no_bang
+    ldrb w1, [x0]
+    cmp w1, #'!'
+    b.eq found_bang
+    add x0, x0, #1
+    b find_bang
+found_bang:
+    mov x27, x0
+    add x23, x0, #1
+    mov x24, x20
+    b got_split
+no_bang:
+    mov x27, x20
+    mov x23, x20
+    mov x24, x20
+got_split:
+
+    // Compact the program in place, keeping only the eight commands
+    mov x0, x19
+    mov x1, x19
+    adr x3, next_cmd
+compact_loop:
+    cmp x1, x27
+    b.eq compact_done
+    ldrb w2, [x1], #1
+    ldr x4, [x26, x2, lsl #3]
+    cmp x4, x3
+    b.eq compact_loop
+    strb w2, [x0], #1
+    b compact_loop
+compact_done:
+    mov x20, x0
+
+    // Check brackets are balanced and fill jump_table with matching offsets
+    adrp x25, jump_table
+    add x25, x25, :lo12:jump_table
+    mov x0, x19
+    mov x28, sp
+bracket_loop:
+    cmp x0, x20
+    b.eq bracket_end
+    ldrb w2, [x0]
+    cmp w2, #'['
+    b.eq handle_open
+    cmp w2, #']'
+    b.eq handle_close
+    add x0, x0, #1
+    b bracket_loop
+handle_open:
+    str x0, [sp, #-16]!
+    add x0, x0, #1
+    b bracket_loop
+handle_close:
+    cmp sp, x28
+    b.eq unbalanced
+    ldr x3, [sp], #16
+    sub x4, x3, x19
+    sub x5, x0, x19
+    str w5, [x25, x4, lsl #2]
+    str w4, [x25, x5, lsl #2]
+    add x0, x0, #1
+    b bracket_loop
+bracket_end:
+    cmp sp, x28
+    b.ne unbalanced
+
+    // Execute
+    adrp x22, tape
+    add x22, x22, :lo12:tape
+    mov x21, x19
+exec_loop:
+    cmp x21, x20
+    b.eq exec_done
+    ldrb w0, [x21]
+    ldr x1, [x26, x0, lsl #3]
+    br x1
+
+next_cmd:
+    add x21, x21, #1
+    b exec_loop
+
+cmd_gt:
+    add x22, x22, #1
+    b next_cmd
+
+cmd_lt:
+    sub x22, x22, #1
+    b next_cmd
+
+cmd_plus:
+    ldrb w0, [x22]
+    add w0, w0, #1
+    strb w0, [x22]
+    b next_cmd
+
+cmd_minus:
+    ldrb w0, [x22]
+    sub w0, w0, #1
+    strb w0, [x22]
+    b next_cmd
+
+cmd_dot:
+    mov x8, #SYS_write
+    mov x0, #1
+    mov x1, x22
+    mov x2, #1
+    svc #0
+    b next_cmd
+
+cmd_comma:
+    cmp x23, x24
+    b.hs comma_eof
+    ldrb w0, [x23], #1
+    strb w0, [x22]
+    b next_cmd
+comma_eof:
+    strb wzr, [x22]
+    b next_cmd
+
+cmd_lbrack:
+    ldrb w0, [x22]
+    cbnz w0, next_cmd
+    sub x0, x21, x19
+    ldr w0, [x25, x0, lsl #2]
+    add x21, x19, x0
+    b next_cmd
+
+cmd_rbrack:
+    ldrb w0, [x22]
+    cbz w0, next_cmd
+    sub x0, x21, x19
+    ldr w0, [x25, x0, lsl #2]
+    add x21, x19, x0
+    b next_cmd
+
+exec_done:
+    mov x8, #SYS_exit
+    mov x0, #0
+    svc #0
+
+unbalanced:
+    mov x8, #SYS_exit
+    mov x0, #1
+    svc #0
+
+.bss
+.balign 8
+dispatch:
+    .space 2048
+input_buf:
+    .space 65536
+tape:
+    .space 30000
+.balign 4
+jump_table:
+    .space 262144

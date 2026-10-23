@@ -1,0 +1,260 @@
+.section .rodata
+error_msg:
+    .ascii "error"
+    .byte 0x0A
+error_len = . - error_msg
+min_str:
+    .ascii "-9223372036854775808"
+    .byte 0x0A
+min_len = . - min_str
+
+.bss
+.align 8
+input_buf:
+    .zero 65536
+rpn_stack:
+    .zero 16384
+out_buf:
+    .zero 32
+
+.text
+.globl _start
+
+_start:
+    lea r8, [rip + input_buf]
+    xor r14, r14
+read_loop:
+    mov rdx, 65536
+    sub rdx, r14
+    jz read_done
+    xor eax, eax
+    xor edi, edi
+    mov rsi, r8
+    add rsi, r14
+    syscall
+    test rax, rax
+    jle read_done
+    add r14, rax
+    jmp read_loop
+read_done:
+    lea r10, [rip + rpn_stack]
+    xor r15, r15
+
+line_loop:
+    cmp r15, r14
+    jae all_done
+    xor r13, r13
+
+token_loop:
+    cmp r15, r14
+    jae end_line
+    movzx eax, byte ptr [r8 + r15]
+    cmp al, 0x20
+    je skip_ws
+    cmp al, 0x09
+    je skip_ws
+    cmp al, 0x0A
+    je end_line
+    jmp parse_token
+skip_ws:
+    inc r15
+    jmp token_loop
+
+parse_token:
+    mov r12, r15
+find_end:
+    cmp r15, r14
+    jae have_token
+    movzx eax, byte ptr [r8 + r15]
+    cmp al, 0x20
+    je have_token
+    cmp al, 0x09
+    je have_token
+    cmp al, 0x0A
+    je have_token
+    inc r15
+    jmp find_end
+have_token:
+    mov rcx, r15
+    sub rcx, r12
+    cmp rcx, 1
+    jne parse_num
+    movzx eax, byte ptr [r8 + r12]
+    cmp al, 0x2B
+    je do_add
+    cmp al, 0x2D
+    je do_sub
+    cmp al, 0x2A
+    je do_mul
+    cmp al, 0x2F
+    je do_div
+    cmp al, 0x25
+    je do_mod
+
+parse_num:
+    mov rsi, r12
+    mov rdx, rcx
+    xor r9d, r9d
+    movzx eax, byte ptr [r8 + rsi]
+    cmp al, 0x2D
+    jne check_len
+    cmp rdx, 1
+    jbe line_error
+    mov r9d, 1
+    inc rsi
+    dec rdx
+check_len:
+    cmp rdx, 1
+    jb line_error
+    cmp rdx, 18
+    ja line_error
+    xor eax, eax
+digit_loop:
+    movzx ecx, byte ptr [r8 + rsi]
+    sub ecx, 0x30
+    cmp ecx, 9
+    ja line_error
+    imul rax, rax, 10
+    add rax, rcx
+    inc rsi
+    dec rdx
+    jnz digit_loop
+    test r9d, r9d
+    jz push_res
+    neg rax
+    jmp push_res
+
+do_add:
+    call pop2
+    jc line_error
+    add rax, rbx
+    jmp push_res
+do_sub:
+    call pop2
+    jc line_error
+    sub rax, rbx
+    jmp push_res
+do_mul:
+    call pop2
+    jc line_error
+    imul rax, rbx
+    jmp push_res
+do_div:
+    call pop2
+    jc line_error
+    xor r9d, r9d
+    jmp do_divmod
+do_mod:
+    call pop2
+    jc line_error
+    mov r9d, 1
+do_divmod:
+    test rbx, rbx
+    jz line_error
+    mov rcx, 1
+    shl rcx, 63
+    cmp rax, rcx
+    jne divmod_do
+    cmp rbx, -1
+    je line_error
+divmod_do:
+    cqo
+    idiv rbx
+    test r9, r9
+    jz push_res
+    mov rax, rdx
+
+push_res:
+    cmp r13, 2048
+    jae line_error
+    mov qword ptr [r10 + r13*8], rax
+    inc r13
+    jmp token_loop
+
+end_line:
+    cmp r13, 1
+    jne line_error
+    mov rax, qword ptr [r10]
+    call print_i64
+    cmp r15, r14
+    jae line_loop
+    inc r15
+    jmp line_loop
+
+line_error:
+    mov eax, 1
+    mov edi, 1
+    lea rsi, [rip + error_msg]
+    mov edx, error_len
+    syscall
+skip_rest:
+    cmp r15, r14
+    jae line_loop
+    movzx eax, byte ptr [r8 + r15]
+    inc r15
+    cmp al, 0x0A
+    jne skip_rest
+    jmp line_loop
+
+all_done:
+    mov eax, 60
+    xor edi, edi
+    syscall
+    jmp all_done
+
+pop2:
+    cmp r13, 2
+    jb pop2_fail
+    dec r13
+    mov rbx, qword ptr [r10 + r13*8]
+    dec r13
+    mov rax, qword ptr [r10 + r13*8]
+    clc
+    ret
+pop2_fail:
+    stc
+    ret
+
+print_i64:
+    mov rcx, 1
+    shl rcx, 63
+    cmp rax, rcx
+    jne print_normal
+    mov eax, 1
+    mov edi, 1
+    lea rsi, [rip + min_str]
+    mov edx, min_len
+    syscall
+    ret
+print_normal:
+    lea rbx, [rip + out_buf]
+    add rbx, 31
+    mov byte ptr [rbx], 0x0A
+    xor r9d, r9d
+    test rax, rax
+    jns print_digits
+    neg rax
+    mov r9d, 1
+print_digits:
+    mov rcx, 10
+print_digit_loop:
+    xor edx, edx
+    div rcx
+    add dl, 0x30
+    dec rbx
+    mov byte ptr [rbx], dl
+    test rax, rax
+    jnz print_digit_loop
+    test r9d, r9d
+    jz print_write
+    dec rbx
+    mov byte ptr [rbx], 0x2D
+print_write:
+    lea rdx, [rip + out_buf]
+    add rdx, 32
+    sub rdx, rbx
+    mov rsi, rbx
+    mov eax, 1
+    mov edi, 1
+    syscall
+    ret

@@ -1,0 +1,478 @@
+.globl _start
+
+.section .rodata
+okmsg:      .ascii "ok\n"
+errprefix:  .ascii "error at "
+lit_true:   .ascii "true"
+lit_false:  .ascii "false"
+lit_null:   .ascii "null"
+
+.bss
+.align 4
+input:      .zero 65536
+outbuf:     .zero 40
+
+.text
+_start:
+    mov x9, #0
+read_loop:
+    adr x1, input
+    add x1, x1, x9
+    mov x2, #65536
+    sub x2, x2, x9
+    cbz x2, read_done
+    mov x0, #0
+    mov x8, #63
+    svc #0
+    cbz x0, read_done
+    add x9, x9, x0
+    cmp x9, #65536
+    b.lo read_loop
+read_done:
+    adr x19, input
+    mov x20, x9
+    mov x21, #0
+    bl parse_document
+    cbz w0, report_error
+    mov x0, #1
+    adr x1, okmsg
+    mov x2, #3
+    mov x8, #64
+    svc #0
+    mov x0, #0
+    mov x8, #93
+    svc #0
+
+report_error:
+    adr x10, outbuf
+    adr x0, errprefix
+    mov x1, #9
+    mov x2, x10
+copy_prefix:
+    ldrb w3, [x0], #1
+    strb w3, [x2], #1
+    subs x1, x1, #1
+    b.ne copy_prefix
+    mov x0, x21
+    cbnz x0, convert_digits
+    mov w6, #48
+    strb w6, [x2], #1
+    b finish_message
+convert_digits:
+    adr x5, outbuf
+    add x5, x5, #31
+    mov x4, x5
+    mov x3, #10
+digit_loop:
+    udiv x7, x0, x3
+    msub x8, x7, x3, x0
+    add w8, w8, #48
+    strb w8, [x4, #-1]!
+    mov x0, x7
+    cbnz x0, digit_loop
+copy_digits:
+    cmp x4, x5
+    b.hs digits_done
+    ldrb w6, [x4], #1
+    strb w6, [x2], #1
+    b copy_digits
+digits_done:
+finish_message:
+    mov w6, #10
+    strb w6, [x2], #1
+    adr x1, outbuf
+    sub x2, x2, x1
+    mov x0, #1
+    mov x8, #64
+    svc #0
+    mov x0, #1
+    mov x8, #93
+    svc #0
+
+skip_ws:
+SW_loop:
+    cmp x21, x20
+    b.hs SW_done
+    ldrb w0, [x19, x21]
+    cmp w0, #0x20
+    b.eq SW_adv
+    cmp w0, #0x09
+    b.eq SW_adv
+    cmp w0, #0x0a
+    b.eq SW_adv
+    cmp w0, #0x0d
+    b.ne SW_done
+SW_adv:
+    add x21, x21, #1
+    b SW_loop
+SW_done:
+    ret
+
+parse_lit:
+    mov x2, x21
+    mov x3, #0
+PL_loop:
+    cmp x3, x1
+    b.hs PL_ok
+    add x4, x2, x3
+    cmp x4, x20
+    b.hs PL_fail
+    ldrb w5, [x0, x3]
+    ldrb w6, [x19, x4]
+    cmp w5, w6
+    b.ne PL_fail
+    add x3, x3, #1
+    b PL_loop
+PL_fail:
+    mov x21, x4
+    mov w0, #0
+    ret
+PL_ok:
+    add x21, x2, x1
+    mov w0, #1
+    ret
+
+parse_string:
+    add x21, x21, #1
+PS_loop:
+    cmp x21, x20
+    b.hs PS_eof
+    ldrb w5, [x19, x21]
+    cmp w5, #0x22
+    b.eq PS_done
+    cmp w5, #0x5c
+    b.eq PS_escape
+    cmp w5, #0x20
+    b.lo PS_bad
+    add x21, x21, #1
+    b PS_loop
+PS_done:
+    add x21, x21, #1
+    mov w0, #1
+    ret
+PS_bad:
+    mov w0, #0
+    ret
+PS_eof:
+    mov x21, x20
+    mov w0, #0
+    ret
+PS_escape:
+    add x21, x21, #1
+    cmp x21, x20
+    b.hs PS_eof
+    ldrb w5, [x19, x21]
+    cmp w5, #0x75
+    b.eq PS_unicode
+    cmp w5, #0x22
+    b.eq PS_simple
+    cmp w5, #0x5c
+    b.eq PS_simple
+    cmp w5, #0x2f
+    b.eq PS_simple
+    cmp w5, #0x62
+    b.eq PS_simple
+    cmp w5, #0x66
+    b.eq PS_simple
+    cmp w5, #0x6e
+    b.eq PS_simple
+    cmp w5, #0x72
+    b.eq PS_simple
+    cmp w5, #0x74
+    b.eq PS_simple
+    mov w0, #0
+    ret
+PS_simple:
+    add x21, x21, #1
+    b PS_loop
+PS_unicode:
+    add x21, x21, #1
+    mov w7, #4
+PS_uloop:
+    cmp x21, x20
+    b.hs PS_eof
+    ldrb w5, [x19, x21]
+    sub w6, w5, #0x30
+    cmp w6, #9
+    b.ls PS_hexok
+    sub w6, w5, #0x41
+    cmp w6, #5
+    b.ls PS_hexok
+    sub w6, w5, #0x61
+    cmp w6, #5
+    b.ls PS_hexok
+    mov w0, #0
+    ret
+PS_hexok:
+    add x21, x21, #1
+    subs w7, w7, #1
+    b.ne PS_uloop
+    b PS_loop
+
+parse_number:
+    ldrb w5, [x19, x21]
+    cmp w5, #0x2d
+    b.ne PN_int
+    add x21, x21, #1
+PN_int:
+    cmp x21, x20
+    b.hs PN_eof
+    ldrb w5, [x19, x21]
+    cmp w5, #0x30
+    b.eq PN_zero
+    sub w6, w5, #0x31
+    cmp w6, #8
+    b.hi PN_bad
+PN_idigits:
+    add x21, x21, #1
+    cmp x21, x20
+    b.hs PN_frac
+    ldrb w5, [x19, x21]
+    sub w6, w5, #0x30
+    cmp w6, #9
+    b.ls PN_idigits
+    b PN_frac
+PN_zero:
+    add x21, x21, #1
+PN_frac:
+    cmp x21, x20
+    b.hs PN_ok
+    ldrb w5, [x19, x21]
+    cmp w5, #0x2e
+    b.ne PN_exp
+    add x21, x21, #1
+    cmp x21, x20
+    b.hs PN_eof
+    ldrb w5, [x19, x21]
+    sub w6, w5, #0x30
+    cmp w6, #9
+    b.hi PN_bad
+PN_fdigits:
+    add x21, x21, #1
+    cmp x21, x20
+    b.hs PN_exp
+    ldrb w5, [x19, x21]
+    sub w6, w5, #0x30
+    cmp w6, #9
+    b.ls PN_fdigits
+PN_exp:
+    cmp x21, x20
+    b.hs PN_ok
+    ldrb w5, [x19, x21]
+    cmp w5, #0x65
+    b.eq PN_e
+    cmp w5, #0x45
+    b.eq PN_e
+    b PN_ok
+PN_e:
+    add x21, x21, #1
+    cmp x21, x20
+    b.hs PN_eof
+    ldrb w5, [x19, x21]
+    cmp w5, #0x2b
+    b.eq PN_sign
+    cmp w5, #0x2d
+    b.ne PN_edig0
+PN_sign:
+    add x21, x21, #1
+PN_edig0:
+    cmp x21, x20
+    b.hs PN_eof
+    ldrb w5, [x19, x21]
+    sub w6, w5, #0x30
+    cmp w6, #9
+    b.hi PN_bad
+PN_edigits:
+    add x21, x21, #1
+    cmp x21, x20
+    b.hs PN_ok
+    ldrb w5, [x19, x21]
+    sub w6, w5, #0x30
+    cmp w6, #9
+    b.ls PN_edigits
+PN_ok:
+    mov w0, #1
+    ret
+PN_bad:
+    mov w0, #0
+    ret
+PN_eof:
+    mov x21, x20
+    mov w0, #0
+    ret
+
+parse_value:
+    stp x29, x30, [sp, #-16]!
+    mov x29, sp
+    cmp x21, x20
+    b.hs PV_eof
+    ldrb w0, [x19, x21]
+    cmp w0, #0x7b
+    b.eq PV_object
+    cmp w0, #0x5b
+    b.eq PV_array
+    cmp w0, #0x22
+    b.eq PV_string
+    cmp w0, #0x74
+    b.eq PV_true
+    cmp w0, #0x66
+    b.eq PV_false
+    cmp w0, #0x6e
+    b.eq PV_null
+    cmp w0, #0x2d
+    b.eq PV_number
+    sub w1, w0, #0x30
+    cmp w1, #9
+    b.ls PV_number
+    mov w0, #0
+    b PV_ep
+PV_object:
+    bl parse_object
+    b PV_ep
+PV_array:
+    bl parse_array
+    b PV_ep
+PV_string:
+    bl parse_string
+    b PV_ep
+PV_number:
+    bl parse_number
+    b PV_ep
+PV_true:
+    adr x0, lit_true
+    mov x1, #4
+    bl parse_lit
+    b PV_ep
+PV_false:
+    adr x0, lit_false
+    mov x1, #5
+    bl parse_lit
+    b PV_ep
+PV_null:
+    adr x0, lit_null
+    mov x1, #4
+    bl parse_lit
+    b PV_ep
+PV_eof:
+    mov x21, x20
+    mov w0, #0
+PV_ep:
+    ldp x29, x30, [sp], #16
+    ret
+
+parse_array:
+    stp x29, x30, [sp, #-16]!
+    mov x29, sp
+    add x21, x21, #1
+    bl skip_ws
+    cmp x21, x20
+    b.hs PA_eof
+    ldrb w0, [x19, x21]
+    cmp w0, #0x5d
+    b.eq PA_empty
+PA_loop:
+    bl parse_value
+    cbz w0, PA_ep
+    bl skip_ws
+    cmp x21, x20
+    b.hs PA_eof
+    ldrb w0, [x19, x21]
+    cmp w0, #0x2c
+    b.eq PA_comma
+    cmp w0, #0x5d
+    b.eq PA_close
+    mov w0, #0
+    b PA_ep
+PA_comma:
+    add x21, x21, #1
+    bl skip_ws
+    b PA_loop
+PA_empty:
+PA_close:
+    add x21, x21, #1
+    mov w0, #1
+    b PA_ep
+PA_eof:
+    mov x21, x20
+    mov w0, #0
+PA_ep:
+    ldp x29, x30, [sp], #16
+    ret
+
+parse_object:
+    stp x29, x30, [sp, #-16]!
+    mov x29, sp
+    add x21, x21, #1
+    bl skip_ws
+    cmp x21, x20
+    b.hs PO_eof
+    ldrb w0, [x19, x21]
+    cmp w0, #0x7d
+    b.eq PO_empty
+PO_loop:
+    cmp x21, x20
+    b.hs PO_eof
+    ldrb w0, [x19, x21]
+    cmp w0, #0x22
+    b.ne PO_bad
+    bl parse_string
+    cbz w0, PO_ep
+    bl skip_ws
+    cmp x21, x20
+    b.hs PO_eof
+    ldrb w0, [x19, x21]
+    cmp w0, #0x3a
+    b.ne PO_bad
+    add x21, x21, #1
+    bl skip_ws
+    bl parse_value
+    cbz w0, PO_ep
+    bl skip_ws
+    cmp x21, x20
+    b.hs PO_eof
+    ldrb w0, [x19, x21]
+    cmp w0, #0x2c
+    b.eq PO_comma
+    cmp w0, #0x7d
+    b.eq PO_close
+PO_bad:
+    mov w0, #0
+    b PO_ep
+PO_comma:
+    add x21, x21, #1
+    bl skip_ws
+    b PO_loop
+PO_empty:
+PO_close:
+    add x21, x21, #1
+    mov w0, #1
+    b PO_ep
+PO_eof:
+    mov x21, x20
+    mov w0, #0
+PO_ep:
+    ldp x29, x30, [sp], #16
+    ret
+
+parse_document:
+    stp x29, x30, [sp, #-16]!
+    mov x29, sp
+    bl skip_ws
+    cmp x21, x20
+    b.hs PD_eof
+    bl parse_value
+    cbz w0, PD_ep
+    bl skip_ws
+    cmp x21, x20
+    b.ne PD_extra
+    mov w0, #1
+    b PD_ep
+PD_extra:
+    mov w0, #0
+    b PD_ep
+PD_eof:
+    mov x21, x20
+    mov w0, #0
+PD_ep:
+    ldp x29, x30, [sp], #16
+    ret

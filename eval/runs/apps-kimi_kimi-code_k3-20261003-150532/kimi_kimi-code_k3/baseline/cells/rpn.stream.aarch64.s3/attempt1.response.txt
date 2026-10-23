@@ -1,0 +1,253 @@
+// rpn: evaluate one Reverse Polish Notation expression per input line.
+// AArch64 (ARMv8-A) static Linux executable, no libc, direct syscalls.
+
+.equ SYS_READ, 63
+.equ SYS_WRITE, 64
+.equ SYS_EXIT, 93
+
+.section .rodata
+errstr: .ascii "error\n"
+
+.bss
+.align 3
+inbuf:  .zero 65536
+rpnstk: .zero 8192
+numbuf: .zero 32
+
+.text
+.globl _start
+
+_start:
+    mov x19, #0                     // total bytes read
+rd_loop:
+    adrp x1, inbuf
+    add x1, x1, :lo12:inbuf
+    add x1, x1, x19
+    mov x2, #65536
+    sub x2, x2, x19
+    cbz x2, rd_done
+    mov x0, #0
+    mov x8, #SYS_READ
+    svc #0
+    cmp x0, #0
+    b.le rd_done
+    add x19, x19, x0
+    b rd_loop
+rd_done:
+    adrp x20, inbuf
+    add x20, x20, :lo12:inbuf       // x20 = cursor
+    add x21, x20, x19               // x21 = end of input
+line_loop:
+    cmp x20, x21
+    b.hs all_done
+    mov x22, x20                    // scan for newline
+find_nl:
+    cmp x22, x21
+    b.hs got_line
+    ldrb w0, [x22]
+    cmp w0, #10
+    b.eq got_line
+    add x22, x22, #1
+    b find_nl
+got_line:
+    mov x0, x20
+    mov x1, x22
+    bl process_line
+    add x20, x22, #1
+    b line_loop
+all_done:
+    mov x0, #0
+    mov x8, #SYS_EXIT
+    svc #0
+
+// process_line(x0 = line start, x1 = line end exclusive)
+process_line:
+    stp x19, x20, [sp, #-64]!
+    stp x21, x22, [sp, #16]
+    stp x23, x24, [sp, #32]
+    stp x25, x30, [sp, #48]
+    mov x19, x0                     // cursor
+    mov x20, x1                     // line end
+    mov x21, #0                     // stack depth
+    adrp x22, rpnstk
+    add x22, x22, :lo12:rpnstk
+
+skip_sep:
+    cmp x19, x20
+    b.hs finalize
+    ldrb w0, [x19]
+    cmp w0, #32
+    b.eq sep_adv
+    cmp w0, #9
+    b.ne tok_begin
+sep_adv:
+    add x19, x19, #1
+    b skip_sep
+
+tok_begin:
+    mov x23, x19                    // token start
+tok_scan:
+    cmp x19, x20
+    b.hs tok_end
+    ldrb w1, [x19]
+    cmp w1, #32
+    b.eq tok_end
+    cmp w1, #9
+    b.eq tok_end
+    add x19, x19, #1
+    b tok_scan
+tok_end:
+    sub x24, x19, x23               // token length
+    ldrb w0, [x23]                  // first byte
+    cmp x24, #1
+    b.ne lit_check
+    cmp w0, #43                     // '+'
+    b.eq op_common
+    cmp w0, #45                     // '-'
+    b.eq op_common
+    cmp w0, #42                     // '*'
+    b.eq op_common
+    cmp w0, #47                     // '/'
+    b.eq op_common
+    cmp w0, #37                     // '%'
+    b.eq op_common
+    sub w1, w0, #48
+    cmp w1, #9
+    b.hi line_error
+    mov x25, x1                     // single-digit literal
+    b push_value
+
+lit_check:
+    mov w2, #0                      // negative flag
+    mov x3, #0                      // index
+    mov x5, x24                     // digit count
+    cmp w0, #45                     // '-'
+    b.ne lit_digits
+    mov w2, #1
+    mov x3, #1
+    sub x5, x24, #1
+lit_digits:
+    cmp x5, #18
+    b.hi line_error
+    mov x6, #10
+    mov x25, #0
+lit_loop:
+    ldrb w1, [x23, x3]
+    sub w1, w1, #48
+    cmp w1, #9
+    b.hi line_error
+    mul x25, x25, x6
+    add x25, x25, w1, uxtw
+    add x3, x3, #1
+    cmp x3, x24
+    b.lo lit_loop
+    cbz w2, push_value
+    neg x25, x25
+
+push_value:
+    str x25, [x22, x21, lsl #3]
+    add x21, x21, #1
+    b skip_sep
+
+op_common:
+    cmp x21, #2
+    b.lo line_error
+    sub x21, x21, #1
+    ldr x7, [x22, x21, lsl #3]      // b (top)
+    sub x9, x21, #1
+    ldr x6, [x22, x9, lsl #3]       // a
+    cmp w0, #43
+    b.eq op_add
+    cmp w0, #45
+    b.eq op_sub
+    cmp w0, #42
+    b.eq op_mul
+    cmp w0, #47
+    b.eq op_div
+    b op_mod
+op_add:
+    add x6, x6, x7
+    b op_store
+op_sub:
+    sub x6, x6, x7
+    b op_store
+op_mul:
+    mul x6, x6, x7
+    b op_store
+op_div:
+    cbz x7, line_error
+    movz x10, #0x8000, lsl #48
+    cmp x6, x10
+    b.ne div_ok
+    cmn x7, #1
+    b.eq line_error
+div_ok:
+    sdiv x6, x6, x7
+    b op_store
+op_mod:
+    cbz x7, line_error
+    movz x10, #0x8000, lsl #48
+    cmp x6, x10
+    b.ne mod_ok
+    cmn x7, #1
+    b.eq line_error
+mod_ok:
+    sdiv x10, x6, x7
+    msub x6, x10, x7, x6            // a - (a/b)*b
+op_store:
+    str x6, [x22, x9, lsl #3]
+    b skip_sep
+
+finalize:
+    cmp x21, #1
+    b.ne line_error
+    ldr x0, [x22]
+    bl print_num
+    b line_done
+line_error:
+    adrp x1, errstr
+    add x1, x1, :lo12:errstr
+    mov x2, #6
+    mov x0, #1
+    mov x8, #SYS_WRITE
+    svc #0
+line_done:
+    ldp x21, x22, [sp, #16]
+    ldp x23, x24, [sp, #32]
+    ldp x25, x30, [sp, #48]
+    ldp x19, x20, [sp], #64
+    ret
+
+// print_num(x0 = signed value): print decimal + newline to stdout
+print_num:
+    adrp x1, numbuf
+    add x1, x1, :lo12:numbuf
+    add x1, x1, #32                 // one past end
+    mov w2, #10
+    strb w2, [x1, #-1]!             // trailing newline
+    mov x3, #0                      // negative flag
+    mov x4, x0                      // unsigned magnitude
+    tbz x0, #63, pn_digits
+    mov x3, #1
+    neg x4, x4
+pn_digits:
+    mov x5, #10
+pn_loop:
+    udiv x6, x4, x5
+    msub x7, x6, x5, x4
+    add w7, w7, #48
+    strb w7, [x1, #-1]!
+    mov x4, x6
+    cbnz x4, pn_loop
+    cbz x3, pn_write
+    mov w7, #45                     // '-'
+    strb w7, [x1, #-1]!
+pn_write:
+    adrp x2, numbuf
+    add x2, x2, :lo12:numbuf
+    add x2, x2, #32
+    sub x2, x2, x1                  // length
+    mov x0, #1
+    mov x8, #SYS_WRITE
+    svc #0
+    ret

@@ -1,0 +1,322 @@
+.equ SYS_read, 63
+.equ SYS_write, 64
+.equ SYS_exit, 93
+.equ STK_CAP, 512
+
+.section .rodata
+errstr:
+    .ascii "error"
+    .byte 10
+err_len = . - errstr
+minstr:
+    .ascii "-9223372036854775808"
+    .byte 10
+min_len = . - minstr
+
+.bss
+.balign 8
+inbuf:
+    .zero 65536
+.balign 8
+rpnstack:
+    .zero 4096
+numbuf:
+    .zero 32
+
+.text
+.balign 4
+.globl _start
+_start:
+    adrp x20, inbuf
+    add x20, x20, :lo12:inbuf
+    mov x19, #0
+
+read_loop:
+    movz x2, #1, lsl #16
+    sub x2, x2, x19
+    cbz x2, read_done
+    mov x0, #0
+    add x1, x20, x19
+    mov x8, #SYS_read
+    svc #0
+    cmp x0, #0
+    b.le read_done
+    add x19, x19, x0
+    b read_loop
+
+read_done:
+    mov x21, #0
+
+line_loop:
+    cmp x21, x19
+    b.hs exit_ok
+    mov x22, x21
+
+find_nl:
+    cmp x21, x19
+    b.hs line_eof
+    ldrb w0, [x20, x21]
+    cmp w0, #10
+    b.eq line_nl
+    add x21, x21, #1
+    b find_nl
+
+line_nl:
+    mov x23, x21
+    add x21, x21, #1
+    b line_go
+
+line_eof:
+    mov x23, x19
+
+line_go:
+    bl evaluate
+    b line_loop
+
+exit_ok:
+    mov x0, #0
+    mov x8, #SYS_exit
+    svc #0
+    b exit_ok
+
+evaluate:
+    stp x29, x30, [sp, #-16]!
+    adrp x26, rpnstack
+    add x26, x26, :lo12:rpnstack
+    mov x24, x22
+    mov x25, #0
+
+token_loop:
+    cmp x24, x23
+    b.hs end_tokens
+    ldrb w0, [x20, x24]
+    cmp w0, #32
+    b.eq skip_sep
+    cmp w0, #9
+    b.ne parse_token
+
+skip_sep:
+    add x24, x24, #1
+    b token_loop
+
+parse_token:
+    cmp w0, #'+'
+    b.eq check_op
+    cmp w0, #'*'
+    b.eq check_op
+    cmp w0, #'/'
+    b.eq check_op
+    cmp w0, #'%'
+    b.eq check_op
+    cmp w0, #'-'
+    b.eq check_minus
+    b parse_number
+
+check_minus:
+    add x1, x24, #1
+    cmp x1, x23
+    b.hs do_op
+    ldrb w1, [x20, x1]
+    cmp w1, #'0'
+    b.lo minus_not_num
+    cmp w1, #'9'
+    b.ls parse_number
+
+minus_not_num:
+    cmp w1, #32
+    b.eq do_op
+    cmp w1, #9
+    b.eq do_op
+    b eval_err
+
+check_op:
+    add x1, x24, #1
+    cmp x1, x23
+    b.hs do_op
+    ldrb w1, [x20, x1]
+    cmp w1, #32
+    b.eq do_op
+    cmp w1, #9
+    b.eq do_op
+    b eval_err
+
+do_op:
+    cmp x25, #2
+    b.lo eval_err
+    sub x25, x25, #1
+    ldr x2, [x26, x25, lsl #3]
+    sub x25, x25, #1
+    ldr x1, [x26, x25, lsl #3]
+    cmp w0, #'+'
+    b.eq op_add
+    cmp w0, #'-'
+    b.eq op_sub
+    cmp w0, #'*'
+    b.eq op_mul
+    b op_divmod
+
+op_add:
+    add x1, x1, x2
+    b push_op
+
+op_sub:
+    sub x1, x1, x2
+    b push_op
+
+op_mul:
+    mul x1, x1, x2
+    b push_op
+
+op_divmod:
+    cbz x2, eval_err
+    mov x4, #1
+    lsl x4, x4, #63
+    cmp x1, x4
+    b.ne div_do
+    mov x5, #-1
+    cmp x2, x5
+    b.eq eval_err
+
+div_do:
+    sdiv x3, x1, x2
+    cmp w0, #'%'
+    b.ne div_quot
+    msub x1, x3, x2, x1
+    b push_op
+
+div_quot:
+    mov x1, x3
+
+push_op:
+    cmp x25, #STK_CAP
+    b.hs eval_err
+    str x1, [x26, x25, lsl #3]
+    add x25, x25, #1
+    add x24, x24, #1
+    b token_loop
+
+parse_number:
+    mov x1, #0
+    mov x3, #0
+    mov x4, #0
+    mov x5, #10
+    ldrb w0, [x20, x24]
+    cmp w0, #'-'
+    b.ne num_loop
+    mov x3, #1
+    add x24, x24, #1
+
+num_loop:
+    cmp x24, x23
+    b.hs num_end
+    ldrb w0, [x20, x24]
+    cmp w0, #'0'
+    b.lo num_end
+    cmp w0, #'9'
+    b.hi num_end
+    cmp x4, #18
+    b.hs eval_err
+    sub w0, w0, #'0'
+    mul x1, x1, x5
+    add x1, x1, x0
+    add x4, x4, #1
+    add x24, x24, #1
+    b num_loop
+
+num_end:
+    cbz x4, eval_err
+    cmp x24, x23
+    b.hs num_ok
+    ldrb w0, [x20, x24]
+    cmp w0, #32
+    b.eq num_ok
+    cmp w0, #9
+    b.eq num_ok
+    b eval_err
+
+num_ok:
+    cbz x3, num_store
+    neg x1, x1
+
+num_store:
+    cmp x25, #STK_CAP
+    b.hs eval_err
+    str x1, [x26, x25, lsl #3]
+    add x25, x25, #1
+    b token_loop
+
+end_tokens:
+    cmp x25, #1
+    b.ne eval_err
+    ldr x0, [x26]
+    bl print_i64
+    b eval_ret
+
+eval_err:
+    bl print_error
+
+eval_ret:
+    ldp x29, x30, [sp], #16
+    ret
+
+print_i64:
+    cmp x0, #0
+    b.ge pi_pos
+    mov x1, #1
+    lsl x1, x1, #63
+    cmp x0, x1
+    b.eq print_min
+    neg x0, x0
+    mov x7, #1
+    b pi_conv
+
+pi_pos:
+    mov x7, #0
+
+pi_conv:
+    adrp x1, numbuf
+    add x1, x1, :lo12:numbuf
+    add x1, x1, #31
+    mov x6, x1
+    mov x2, #10
+
+pi_loop:
+    udiv x3, x0, x2
+    msub x4, x3, x2, x0
+    add w4, w4, #'0'
+    sub x1, x1, #1
+    strb w4, [x1]
+    mov x0, x3
+    cbnz x0, pi_loop
+    cbz x7, pi_nl
+    sub x1, x1, #1
+    mov w4, #'-'
+    strb w4, [x1]
+
+pi_nl:
+    mov w4, #10
+    strb w4, [x6]
+    add x2, x6, #1
+    sub x2, x2, x1
+    mov x0, #1
+    mov x8, #SYS_write
+    svc #0
+    ret
+
+print_min:
+    mov x0, #1
+    adrp x1, minstr
+    add x1, x1, :lo12:minstr
+    mov x2, #min_len
+    mov x8, #SYS_write
+    svc #0
+    ret
+
+print_error:
+    mov x0, #1
+    adrp x1, errstr
+    add x1, x1, :lo12:errstr
+    mov x2, #err_len
+    mov x8, #SYS_write
+    svc #0
+    ret

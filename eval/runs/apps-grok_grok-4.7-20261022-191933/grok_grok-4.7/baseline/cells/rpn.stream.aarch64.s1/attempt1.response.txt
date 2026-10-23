@@ -1,0 +1,303 @@
+.equ SYS_read, 63
+.equ SYS_write, 64
+.equ SYS_exit, 93
+.equ IN_CAP, 65536
+.equ STK_BYTES, 8192
+.equ NUM_END, 32
+
+.section .rodata
+err_msg:
+    .ascii "error\n"
+.equ err_len, . - err_msg
+min_msg:
+    .ascii "-9223372036854775808\n"
+.equ min_len, . - min_msg
+
+.bss
+.balign 8
+inbuf:
+    .zero 65536
+.balign 8
+rpnstack:
+    .zero 8192
+numbuf:
+    .zero 32
+
+.text
+.balign 4
+.globl _start
+
+_start:
+    adrp x19, inbuf
+    add x19, x19, :lo12:inbuf
+    mov x20, #0
+    movz x21, #1, lsl #16
+
+read_loop:
+    sub x2, x21, x20
+    cbz x2, process
+    mov x0, #0
+    add x1, x19, x20
+    mov x8, #SYS_read
+    svc #0
+    cmp x0, #0
+    b.le process
+    add x20, x20, x0
+    b read_loop
+
+process:
+    mov x21, #0
+
+line_loop:
+    cmp x21, x20
+    b.hs exit_ok
+    mov x22, x21
+
+find_nl:
+    cmp x22, x20
+    b.hs line_last
+    ldrb w0, [x19, x22]
+    cmp w0, #10
+    b.eq line_nl
+    add x22, x22, #1
+    b find_nl
+
+line_nl:
+    add x0, x19, x21
+    sub x1, x22, x21
+    add x23, x22, #1
+    bl eval_line
+    mov x21, x23
+    b line_loop
+
+line_last:
+    add x0, x19, x21
+    sub x1, x20, x21
+    bl eval_line
+
+exit_ok:
+    mov x0, #0
+    mov x8, #SYS_exit
+    svc #0
+    b exit_ok
+
+// eval_line(x0 = line ptr, x1 = length). Preserves x19-x24.
+eval_line:
+    stp x29, x30, [sp, #-64]!
+    stp x19, x20, [sp, #16]
+    stp x21, x22, [sp, #32]
+    stp x23, x24, [sp, #48]
+
+    mov x21, x0
+    add x22, x0, x1
+    adrp x19, rpnstack
+    add x19, x19, :lo12:rpnstack
+    mov x20, x19
+
+token_loop:
+    cmp x21, x22
+    b.hs check_done
+    ldrb w2, [x21]
+    cmp w2, #32
+    b.eq skip_sep
+    cmp w2, #9
+    b.ne parse_token
+skip_sep:
+    add x21, x21, #1
+    b token_loop
+
+parse_token:
+    mov x23, x21
+scan_tok:
+    cmp x21, x22
+    b.hs end_tok
+    ldrb w2, [x21]
+    cmp w2, #32
+    b.eq end_tok
+    cmp w2, #9
+    b.eq end_tok
+    add x21, x21, #1
+    b scan_tok
+end_tok:
+    sub x4, x21, x23
+    cmp x4, #1
+    b.ne try_number
+    ldrb w2, [x23]
+    cmp w2, #43
+    b.eq op_add
+    cmp w2, #45
+    b.eq op_sub
+    cmp w2, #42
+    b.eq op_mul
+    cmp w2, #47
+    b.eq op_div
+    cmp w2, #37
+    b.eq op_mod
+
+try_number:
+    mov x5, #0
+    ldrb w2, [x23]
+    cmp w2, #45
+    b.ne digits_start
+    add x23, x23, #1
+    sub x4, x4, #1
+    mov x5, #1
+digits_start:
+    cmp x4, #1
+    b.lo fail
+    cmp x4, #18
+    b.hi fail
+    mov x6, #0
+    mov x3, #10
+dig_loop:
+    ldrb w2, [x23], #1
+    sub w2, w2, #48
+    cmp w2, #9
+    b.hi fail
+    mul x6, x6, x3
+    add x6, x6, x2
+    subs x4, x4, #1
+    b.ne dig_loop
+    cbz x5, push_val
+    neg x6, x6
+    b push_val
+
+op_add:
+    bl pop2
+    cbnz x0, fail
+    add x6, x6, x7
+    b push_val
+
+op_sub:
+    bl pop2
+    cbnz x0, fail
+    sub x6, x6, x7
+    b push_val
+
+op_mul:
+    bl pop2
+    cbnz x0, fail
+    mul x6, x6, x7
+    b push_val
+
+op_div:
+    bl pop2
+    cbnz x0, fail
+    cbz x7, fail
+    movz x2, #0x8000, lsl #48
+    cmp x6, x2
+    b.ne div_ok
+    cmn x7, #1
+    b.eq fail
+div_ok:
+    sdiv x6, x6, x7
+    b push_val
+
+op_mod:
+    bl pop2
+    cbnz x0, fail
+    cbz x7, fail
+    movz x2, #0x8000, lsl #48
+    cmp x6, x2
+    b.ne mod_ok
+    cmn x7, #1
+    b.eq fail
+mod_ok:
+    sdiv x2, x6, x7
+    mul x2, x2, x7
+    sub x6, x6, x2
+    b push_val
+
+push_val:
+    movz x2, #STK_BYTES
+    add x2, x19, x2
+    cmp x20, x2
+    b.hs fail
+    str x6, [x20], #8
+    b token_loop
+
+check_done:
+    sub x2, x20, x19
+    cmp x2, #8
+    b.ne fail
+    ldr x0, [x19]
+    bl print_num
+    b epilogue
+
+fail:
+    bl print_error
+
+epilogue:
+    ldp x23, x24, [sp, #48]
+    ldp x21, x22, [sp, #32]
+    ldp x19, x20, [sp, #16]
+    ldp x29, x30, [sp], #64
+    ret
+
+// pop b into x7, a into x6. x0 = 0 on success, 1 on underflow.
+pop2:
+    sub x2, x20, x19
+    cmp x2, #16
+    b.lo pop_fail
+    ldr x7, [x20, #-8]
+    ldr x6, [x20, #-16]
+    sub x20, x20, #16
+    mov x0, #0
+    ret
+pop_fail:
+    mov x0, #1
+    ret
+
+print_error:
+    adrp x1, err_msg
+    add x1, x1, :lo12:err_msg
+    mov x2, #err_len
+    mov x0, #1
+    mov x8, #SYS_write
+    svc #0
+    ret
+
+print_num:
+    movz x3, #0x8000, lsl #48
+    cmp x0, x3
+    b.eq print_min
+    mov x9, #0
+    cmp x0, #0
+    b.ge pn_pos
+    mov x9, #1
+    neg x0, x0
+pn_pos:
+    adrp x1, numbuf
+    add x1, x1, :lo12:numbuf
+    add x1, x1, #NUM_END
+    mov w2, #10
+    strb w2, [x1, #-1]!
+    mov x5, #10
+pn_digits:
+    udiv x6, x0, x5
+    msub x7, x6, x5, x0
+    add w7, w7, #48
+    strb w7, [x1, #-1]!
+    mov x0, x6
+    cbnz x0, pn_digits
+    cbz x9, pn_write
+    mov w2, #45
+    strb w2, [x1, #-1]!
+pn_write:
+    adrp x4, numbuf
+    add x4, x4, :lo12:numbuf
+    add x4, x4, #NUM_END
+    sub x2, x4, x1
+    mov x0, #1
+    mov x8, #SYS_write
+    svc #0
+    ret
+
+print_min:
+    adrp x1, min_msg
+    add x1, x1, :lo12:min_msg
+    mov x2, #min_len
+    mov x0, #1
+    mov x8, #SYS_write
+    svc #0
+    ret
