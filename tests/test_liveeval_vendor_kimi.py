@@ -348,6 +348,17 @@ def test_unknown_benign_wire_record_is_tolerated(tmp_path, kimi_home):
     assert subject(tmp_path, kimi_home, wire_records=recs).complete("p").ok
 
 
+def test_change_notifier_snapshot_is_checked(tmp_path, kimi_home):
+    # kimi-code 2.3.1 bookkeeping record (shape captured from a live call): fine without an AGENTS.md
+    snap = {"type": "changeNotifier.snapshot", "agentId": "main", "agentsMdHash": None, "agentsMdFiles": {},
+            "skillsHash": "18df", "subagentNames": ["plan", "agent", "coder", "explore", "bca-subject"],
+            "modelPool": None}
+    assert subject(tmp_path, kimi_home, wire_records=wire("p") + [snap]).complete("p").ok
+    loaded = dict(snap, agentsMdHash="ab12", agentsMdFiles={"AGENTS.md": "ab12"})
+    r = subject(tmp_path, kimi_home, wire_records=wire("p") + [loaded]).complete("p")
+    assert not r.ok and r.error.startswith("isolation:") and "AGENTS.md loaded" in r.error
+
+
 def test_model_reroute_is_an_error(tmp_path, kimi_home):
     recs = wire("p")
     for rec in recs:

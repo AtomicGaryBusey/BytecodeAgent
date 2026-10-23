@@ -39,6 +39,12 @@ kimi never retries it (packages/kosong/src/errors.ts isRetryableGenerateError). 
 it too (step.end finishReason "filtered", turn.ended error.code "provider.filtered"). Either is a
 scored refusal, and the request is still verified.
 
+kimi-code 2.3.1 (re-audited 2026-10-23, two live calls, K3 and K3.1 Pro): the same profile binding, request
+hashes, context (the prompt plus the same two injections) and stream-json events as 2.1.1. One new wire record,
+`changeNotifier.snapshot` (agentsMdHash, agentsMdFiles, skillsHash, subagentNames), is bookkeeping never sent to the
+model; it fails closed if it reports an AGENTS.md. Model catalog refreshed by a fresh `kimi login`: k3.1-pro and
+k3.1-pro-highspeed appear, both with default_effort `max` (k3: `high`).
+
 Credentials: kimi refreshes its OAuth token when fewer than max(300 s, expires_in / 2) remain before
 `expires_at` (packages/oauth/src/oauth-manager.ts defaultRefreshThreshold); cred_expiry reports that
 moment so CredHome serialises refreshes.
@@ -84,7 +90,7 @@ _WIRE_KNOWN = frozenset({"metadata", "runtime.set_binding", "profile.bind", "per
                          "agent.turn.started", "turn.prompt", "context.append_message", "plugin.session_start",
                          "context.append_loop_event", "llm.tools_snapshot", "llm.request", "usage.record",
                          "token_counting.measured", "agent.turn.ended", "turn.ended", "token_counting.turn_recorded",
-                         "prompt.completed"})
+                         "prompt.completed", "changeNotifier.snapshot"})
 # config.toml tables the subject needs: the provider (base_url, OAuth key) and the model catalog.
 KIMI_CONFIG_TABLES = ("providers", "models")
 KIMI_REFUSAL = "Provider safety policy blocked the response"  # print mode's text for provider.filtered
@@ -123,7 +129,7 @@ class KimiSubject(CliSubject):
     vendor = "kimi"
     binary_name = "kimi"
     efforts = ("low", "high", "max")
-    audited_versions = ("2.1.1",)
+    audited_versions = ("2.1.1", "2.3.1")  # 2.3.1 re-audited 2026-10-23 (module docstring)
     streams_text = False
     # The OAuth token file is credentials/<key>.json, where config.toml names the key
     # (kimi-code-env-<hash> for a CLI login); copy whatever credential files there are.
@@ -339,6 +345,11 @@ class KimiSubject(CliSubject):
             err = r.get("error")
             if isinstance(err, dict) and err.get("code") == KIMI_FILTERED:
                 self._refuse(p, f"{KIMI_FILTERED}: {err.get('message') or KIMI_REFUSAL}")
+        elif t == "changeNotifier.snapshot":
+            # kimi-code 2.3.1 bookkeeping, not sent to the model: the CLI's installed subagents and a hash of its
+            # bundled skills (neither usable: the request's tool list is empty). An AGENTS.md it loaded is not ok.
+            if r.get("agentsMdHash") is not None or r.get("agentsMdFiles"):
+                bad(f"AGENTS.md loaded: {str(r.get('agentsMdFiles'))[:100]!r}")
         elif t == "plugin.session_start":
             if r.get("content"):
                 bad(f"plugin session_start content {str(r.get('content'))[:100]!r}")
