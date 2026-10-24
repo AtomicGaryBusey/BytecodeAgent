@@ -37,7 +37,7 @@ system and task prompts, and its CLI's default effort (as the Claude runs did). 
 | Codex GPT-6 Luna | 33 | 41 | 10 | 46 | **130/224 (58%)** | 209/224 (93%) | 1.71 |
 | Claude Haiku 4.5 | 30 | 34 | 17 | 35 | **116/224 (52%)** | 158/224 (71%) | 2.19 |
 | Microsoft MAI-Code 1.1 Flash (Copilot) | 26 | 34 | 12 | 35 | **107/224 (48%)** | 151/224 (67%) | 2.29 |
-| Gemini 3.8 Flash High (Antigravity) † | 46 | 60 | 47/53 | — | **153/163 (94%)** | 163/163 (100%) | 1.07 |
+| Gemini 3.8 Flash High (Antigravity) † | 46 | 60 | 48 | 57/59 | **211/223 (95%)** | 223/223 (100%) | 1.06 |
 
 Codex Daybreak Blue includes one reviewed harness false reject counted as a pass, Grok 4.7 build-fast
 three and GPT-6 Luna via Copilot one; Claude Sonnet 5.5 via Copilot is one lower than recorded (a pre-fix
@@ -48,7 +48,7 @@ prints the answer only when the call ends, so a timeout carries no text; these a
 every CLI vendor, not stalls. Failures reviewed by hand: no harness false rejects (QBE compares without a
 result class, `xor eax, 0` used to zero a register, malformed JSON, unencodable AArch64 immediates).
 
-† Partial, quota-paced (Google AI Plus): rounds 1 + 2 complete, long 53/54, adversarial not yet run; the hourly resume loop adds cells as the weekly quota allows. Like for like on the complete batteries, rounds 1 + 2: **106/110 (96%)**, level with Claude Fable 5.1 (106) and behind Codex GPT-6 Astra, Grok 4.7 and Grok 4.7 build-fast (107 each). Its first-attempt failures were reviewed by hand: no harness false rejects (hex literals in QBE, `%x =l %y` without `copy`, malformed JSON, an invented `subl` opcode, and one 400 s timeout spent thinking: 62,910 of 65,532 output tokens).
+† Partial, quota-paced (Google AI Plus): rounds 1 + 2 and long complete, adversarial 59/60 (one cell, `stats_f.ir.aarch64`, left); the hourly resume loop adds cells as the weekly quota allows. Like for like on the complete batteries, rounds 1 + 2 + long: **154/164 (94%)**, level with Grok 4.6 (154), just behind Grok 4.7 (155), Grok 4.7 build-fast (156), Claude Opus 5.5 and Fable 5.1 (158 each) and Codex GPT-6 Astra (161), and ahead of Codex GPT-6 Sol (153). Its first-attempt failures were reviewed by hand: no harness false rejects (hex literals in QBE, `%x =l %y` without `copy`, malformed JSON, an invented `subl` opcode, a 400 s timeout spent thinking: 62,910 of 65,532 output tokens, and two 180 s timeouts on adversarial `stats_f`).
 
 ## By emission path (first-attempt passes, complete runs)
 
