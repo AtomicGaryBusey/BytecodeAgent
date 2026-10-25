@@ -70,6 +70,7 @@ its plan quota is spent.
 | Model | Round 1 (48) | Round 2 (62) | Long (54) | Adversarial (60) | Pass@1 | Within 4 | Mean attempts |
 |---|---|---|---|---|---|---|---|
 | Codex GPT-6 Astra | 46 | 61 | 54 | 60 | **221/224 (99%)** | 224/224 (100%) | 1.01 |
+| Kimi K3.1 Pro | 47 | 60 | 52 | 59 | **218/224 (97%)** | 223/224 (100%) | 1.04 |
 | Claude Opus 5.5 | 45 | 60 | 53 | 57 | **215/224 (96%)** | 224/224 (100%) | 1.04 |
 | Codex GPT-6 Sol | 43 | 62 | 48 | 60 | **213/224 (95%)** | 224/224 (100%) | 1.05 |
 | Grok 4.7 build-fast | 47 | 60 | 49 | 57 | **213/224 (95%)** | 223/224 (100%) | 1.08 |
@@ -110,8 +111,8 @@ Verification Program and the ChatGPT account in OpenAI's Daybreak (Blue), so tre
 bounds for ordinary accounts. Accounts used: Claude Max 20x, ChatGPT Plus, Kimi Allegretto, Google AI Plus (2 TB),
 SuperGrok, GitHub Copilot Pro (details in the methodology report). Full comparison, per-path results and the false-reject review:
 [`reports/live-model-eval-cross-vendor.md`](reports/live-model-eval-cross-vendor.md); per-run write-ups in
-[`reports/`](reports/). The top of the table is a statistical tie: on paired tests, six models are level with
-Codex GPT-6 Astra (Opus 5.5, GPT-6 Sol, Grok 4.7 build-fast, Fable 5.1, Grok 4.7, Grok 4.6). Confidence
+[`reports/`](reports/). The top of the table is a statistical tie: on paired tests, seven models are level with
+Codex GPT-6 Astra (Kimi K3.1 Pro, Opus 5.5, GPT-6 Sol, Grok 4.7 build-fast, Fable 5.1, Grok 4.7, Grok 4.6). Confidence
 intervals, repair rates, per-cell difficulty, ISA and path gaps, a shared error classification, prompt-variant effects, refusals, within-vendor generations, token efficiency, the quality of passing code and a harness and infrastructure audit: [`reports/live-model-eval-analytics.md`](reports/live-model-eval-analytics.md).
 To explore the cells yourself, open [`reports/dashboard.html`](reports/dashboard.html) in a browser (filters, a cell grid with each
 cell's attempt history, head-to-head tests; built by `eval/dashboard.py`).

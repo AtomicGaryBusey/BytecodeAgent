@@ -10,13 +10,14 @@ Every model got the same 224 cells: rounds 1 + 2, the long-program battery and t
 (baseline prompts), across the stream, structured-JSON and QBE-IR paths on x86-64 and AArch64, with up to
 four attempts and repair feedback. Each ran through its vendor's own coding CLI with zero tools, the same
 system and task prompts, and its CLI's default effort (as the Claude runs did). Runs date from
-2026-09-27/29; CLI versions: claude 2.1.283-2.1.285, codex 0.157.1, kimi 2.1.1, agy 1.2.12, grok 1.0.41.
+2026-09-27/29; CLI versions: claude 2.1.283-2.1.285, codex 0.157.1, kimi 2.1.1 (Kimi K3.1 Pro: kimi 2.3.1, re-audited 2026-10-23), agy 1.2.12, grok 1.0.41.
 
 ## Results (first-attempt passes per battery)
 
 | Model | Round 1 (48) | Round 2 (62) | Long (54) | Adversarial (60) | Pass@1 | Within 4 | Mean attempts |
 |---|---|---|---|---|---|---|---|
 | Codex GPT-6 Astra | 46 | 61 | 54 | 60 | **221/224 (99%)** | 224/224 (100%) | 1.01 |
+| Kimi K3.1 Pro | 47 | 60 | 52 | 59 | **218/224 (97%)** | 223/224 (100%) | 1.04 |
 | Claude Opus 5.5 | 45 | 60 | 53 | 57 | **215/224 (96%)** | 224/224 (100%) | 1.04 |
 | Codex GPT-6 Sol | 43 | 62 | 48 | 60 | **213/224 (95%)** | 224/224 (100%) | 1.05 |
 | Grok 4.7 build-fast | 47 | 60 | 49 | 57 | **213/224 (95%)** | 223/224 (100%) | 1.08 |
@@ -42,6 +43,16 @@ system and task prompts, and its CLI's default effort (as the Claude runs did). 
 Codex Daybreak Blue includes one reviewed harness false reject counted as a pass, Grok 4.7 build-fast
 three and GPT-6 Luna via Copilot one; Claude Sonnet 5.5 via Copilot is one lower than recorded (a pre-fix
 output-cap do-over counted as the failure it would be now; see the false-reject review below). 
+Kimi K3.1 Pro, completed 2026-10-24: **218/224 first try (97%)**, second only to Codex GPT-6 Astra (221) and
+statistically level with it on the same cells (they disagree on 9 cells, exact McNemar p = 0.51). Its gain over Kimi
+K3 (204) is significant: 19 cells passed that K3 failed, 5 the other way (p = 0.007). It ran through Kimi Code CLI
+2.3.1, re-audited for the harness on 2026-10-23 (the model appeared after a fresh `kimi login`), at that CLI's default
+effort for the model, `max` (K3's default is `high`); median call 43 s. Its first-attempt failures were reviewed by
+hand: no harness false rejects. Three are 180 s timeouts; one is a wrong base64 result; one is invalid QBE (`%digit
+ch`, a missing `%`); and two answers had nothing to do with the task although the adapter verified the request
+exactly: an "I do not have access to your previous conversation" reply that drifts into mixed English and Chinese,
+and "Ready when you are." (`count_nonzero_prefix.structured.aarch64`, its one cell not passed within four).
+
 Kimi K2.8 (kimi-for-coding), completed 2026-10-17: 157/224 first try. 40 of its 128 failed attempts are
 wall-clock timeouts: its median call took 113 s against the 180 s round-1/2 limit (Kimi K3: 51 s). Kimi's CLI
 prints the answer only when the call ends, so a timeout carries no text; these are the same timeout rule as
@@ -55,6 +66,7 @@ result class, `xor eax, 0` used to zero a register, malformed JSON, unencodable 
 | Model | Stream | Structured | IR (QBE) |
 |---|---|---|---|
 | Codex GPT-6 Astra | 76/76 (100%) | 74/74 (100%) | 71/74 (96%) |
+| Kimi K3.1 Pro | 74/76 (97%) | 72/74 (97%) | 72/74 (97%) |
 | Claude Opus 5.5 | 74/76 (97%) | 71/74 (96%) | 70/74 (95%) |
 | Codex GPT-6 Sol | 73/76 (96%) | 71/74 (96%) | 69/74 (93%) |
 | Grok 4.7 build-fast | 75/76 (99%) | 72/74 (97%) | 66/74 (89%) |

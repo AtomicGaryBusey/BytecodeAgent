@@ -7,7 +7,7 @@ Adapters: `bca/liveeval/vendor_base.py` (shared), `vendor_codex.py`, `vendor_kim
 `<vendor>:<model>` (`codex:gpt-6-luna`, `kimi:kimi-code/k3`, `agy:gemini-3.8-flash-high`, `grok:grok-4.7`,
 `copilot:mai-code-1.1-flash`) or a Claude model (`opus`, `claude-sonnet-5-5`, `claude-fable-5-1`, ...). Built and
 verified 2026-09-28 against claude 2.1.284, codex 0.157.1, kimi 2.1.1, agy 1.2.12 and grok 1.0.41 (Grok Build;
-pinned binary, see below); GitHub Copilot added 2026-09-30 (CLI 1.0.89 driven through the Copilot SDK 1.0.15).
+pinned binary, see below); GitHub Copilot added 2026-09-30 (CLI 1.0.89 driven through the Copilot SDK 1.0.15); kimi 2.3.1 re-audited 2026-10-23 for Kimi K3.1 Pro (one new bookkeeping record in its request log, now checked; otherwise identical).
 Codex was updated to 0.160.0 on 2026-10-01 and re-audited before use (same request recorder, gpt-6-luna and
 gpt-6-astra: still zero tools, SYSTEM_PROMPT and the prompt only, 48 input tokens for a one-line prompt); the
 committed Codex runs used 0.157.1, and each result records its CLI version.

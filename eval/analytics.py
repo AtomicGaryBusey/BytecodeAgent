@@ -783,7 +783,7 @@ GENERATIONS = [
     ("Anthropic Sonnet", ["claude-sonnet-4-5-20250929", "claude-sonnet-5", "claude-sonnet-5-5"]),
     ("xAI Grok", ["grok:grok-4.5", "grok:grok-4.6", "grok:grok-4.7"]),
     ("OpenAI (Codex CLI)", ["codex:gpt-5.5", "codex:gpt-6-luna", "codex:gpt-6-sol", "codex:gpt-6-astra"]),
-    ("Moonshot Kimi", ["kimi:kimi-code/kimi-for-coding", "kimi:kimi-code/k3"]),
+    ("Moonshot Kimi", ["kimi:kimi-code/kimi-for-coding", "kimi:kimi-code/k3", "kimi:kimi-code/k3.1-pro"]),
 ]
 
 

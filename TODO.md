@@ -51,10 +51,19 @@ Approved by the user on 2026-10-22. After each: by-hand false-reject review, the
 - [x] **Stale "Pending" table in `reports/live-model-eval-hex.md`** (it said the local Qwen hex runs were waiting
   for the GPU; they were never run and are not planned). Fixed 2026-10-22.
 
+## Done (pick-up, 2026-10-24)
+
+- [x] **Kimi K3.1 Pro, function batteries**: 218/224 first try (97%), 223/224 within four; second to Astra (221)
+  and statistically level with it. Kimi CLI 2.3.1 re-audited (f9078a56). Reviewed: no false rejects; one odd
+  reply is logged for follow-up in the gitignored `followups/` folder. Not yet decided: apps (96 cells), hex
+  (32 cells), and the K3.1 Pro Highspeed variant.
+
 ## Waiting
 
-- [ ] **Antigravity (Gemini 3.8 Flash High)**: 61 cells left (adversarial 60, long 1). The hourly resume loop
-  picks them up as Google AI Plus quota allows (next reset estimated Fri 2026-10-23 ~15:00). After each window:
+- [ ] **Antigravity (Gemini 3.8 Flash High)**: 1 cell left (`stats_f.ir.aarch64`, adversarial). The hourly loop
+  was stopped on 2026-10-24 at the user's request; the user triggers it manually (next reset estimated
+  ~2026-10-30 15:00): `.venv/bin/python -m bca.liveeval run --run-dir eval/runs/vendors-all-20260928-202226 --tasks
+  round1,round2,long,adversarial --subjects agy:gemini-3.8-flash-high --max-calls 3000 --jobs 2`. After it:
   review new first-attempt failures, regenerate with `eval/xv_tables.py`, update the row and † note in
   README.md and `reports/live-model-eval-cross-vendor.md`, commit and push.
 

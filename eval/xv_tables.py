@@ -23,7 +23,7 @@ for f in sorted(glob.glob("eval/runs/*/**/results.jsonl", recursive=True) + glob
         if r.get("path", r["cell"].split(".")[1]) == "hex": continue  # the opt-in hex path: eval/hex_tables.py
         recs[(label, bat, r["cell"])] = r
 names = {"claude-opus-5-5": "Claude Opus 5.5", "claude-fable-5-1": "Claude Fable 5.1", "grok:grok-4.7": "Grok 4.7",
- "grok:grok-4.7-build-fast": "Grok 4.7 build-fast", "kimi:kimi-code/k3": "Kimi K3", "kimi:kimi-code/kimi-for-coding": "Kimi K2.8 (for-coding)",
+ "grok:grok-4.7-build-fast": "Grok 4.7 build-fast", "kimi:kimi-code/k3": "Kimi K3", "kimi:kimi-code/kimi-for-coding": "Kimi K2.8 (for-coding)", "kimi:kimi-code/k3.1-pro": "Kimi K3.1 Pro",
  "claude-sonnet-5-5": "Claude Sonnet 5.5", "codex:gpt-daybreak-blue-latest": "Codex Daybreak Blue", "codex:gpt-6-astra": "Codex GPT-6 Astra",
  "codex:gpt-6-sol": "Codex GPT-6 Sol", "codex:gpt-5.5": "Codex GPT-5.5", "grok:grok-4.6": "Grok 4.6", "grok:grok-4.5": "Grok 4.5",
  "claude-sonnet-5": "Claude Sonnet 5", "codex:gpt-6-luna": "Codex GPT-6 Luna", "claude-haiku-4-5-20251001": "Claude Haiku 4.5",
