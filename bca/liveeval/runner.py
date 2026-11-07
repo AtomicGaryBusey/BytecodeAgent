@@ -130,7 +130,7 @@ class RunLock:
 _FATAL_RE = re.compile(
     r"(?:status|error|code|http)[\"':= ]{0,4}40[134]\b|\b40[134] (?:unauthorized|forbidden)|authenticat|unauthori[sz]ed|forbidden|invalid[ _-]?api[ _-]?key|x-api-key|not logged in|"
     r"/login|oauth token|not_found_error|permission_error|invalid model|model[^\n]{0,40}not (?:found|exist|available|"
-    r"supported)|unknown model|no such model|credit balance|"
+    r"supported)|unknown model|no such model|credits? balance|"
     r"local server unreachable|not an audited version|"  # vendor_local: the Ollama server is down or changed
     r"vllm server unreachable|vllm model [^\n]{0,80} not served|"  # vendor_vllm: likewise for the vLLM server
     # a subscription's usage window is spent: retrying in minutes cannot help; resume the run later

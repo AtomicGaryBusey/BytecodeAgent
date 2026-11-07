@@ -26,7 +26,17 @@ Model identity (A5). The record's model field (request field 19) is written on t
 is the base id agy asked for (`gemini-3.8-flash` for `gemini-3.8-flash-high`), never a name the API
 sent back, and neither the stream-json events nor the record hold a response-side model name
 (checked on agy 1.2.12). So the model is "requested, not reported"; a field 19 that is neither the
-requested id nor its base is noted and recorded as the model agy actually asked for.
+requested id nor its base is noted and recorded as the model agy actually asked for. From agy 1.5.3 it
+is a backend routing name that is neither: `gemini-3.8-flash-n` for gemini-3.8-flash-high,
+`gemini-4-argon-c` for gemini-4-argon-high, `gemini-4-argon-trial` for gemini-4-argon-low (seen live
+2026-11-07). It does not spell the effort; it is still request side, so it is recorded, not trusted.
+
+agy 1.5.3 (re-audited 2026-11-07): the same stream-json events and step types, the same request record
+layout, the same agent frontmatter and `useG1Credits` keys; the request still declares only
+manage_task. New since 1.2.12 and handled: a result `finished_reason` (an early-ended, possibly partial
+turn: an error), and the out-of-credits wording "Your AI credits balance is too low" (fatal in the
+runner). Not relevant here: hooks, plugins, rules wording, `agy acp` (none of them reach the private
+home or print mode).
 
 Safety blocks (Parsed.refusal). agy 1.2.12 surfaces a content-filter stop (its changelog: "the CLI now
 surfaces a clear content-filter stop reason"; the binary's enums STOP_REASON_CONTENT_FILTER,
@@ -188,7 +198,7 @@ class AgySubject(CliSubject):
     vendor = "agy"
     binary_name = "agy"
     efforts = ("low", "medium", "high", "max")  # `--effort`; `agy models` ids carry it as a suffix
-    audited_versions = ("1.2.12",)
+    audited_versions = ("1.2.12", "1.5.3")
     # Not killed on an early abort: agy writes its request record (conversations/*.db) only when the turn
     # ends, so a killed call could never be verified (seen live, 2026-09-28). The rest of the answer is
     # read but never scored: the scorer already stopped.
@@ -304,6 +314,11 @@ class AgySubject(CliSubject):
             self._safety(body, p, "result")
             if body.get("status") != "SUCCESS":
                 p.error = f"agy {body.get('status') or 'no status'}: {body.get('error') or ''}".strip()
+                return None
+            if body.get("finished_reason"):
+                # agy >= 1.4.11 names a turn that ended early (print_timeout, interrupted, error); omitted
+                # when it finished normally. The answer may be partial: never scored, retried as transient.
+                p.error = f"agy turn ended early: finished_reason {str(body['finished_reason'])[:80]}"
                 return None
             final = body.get("response")
             if final is not None and not isinstance(final, str):

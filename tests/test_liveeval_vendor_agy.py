@@ -277,6 +277,22 @@ def test_early_abort_lets_agy_finish_and_verifies(tmp_path, real_home):
     assert not r.ok and "request declares tools run_command" in r.error
 
 
+@pytest.mark.parametrize("reason", ["print_timeout", "interrupted", "error"])
+def test_finished_reason_is_an_unscored_error(tmp_path, real_home, reason):
+    # agy >= 1.4.11: a result that names finished_reason ended early and may be partial
+    res = result("mov x0, #1\nret\n")
+    res["result"]["finished_reason"] = reason
+    events = [init(), step("agent_response", "mov x0, #1\nret\n"), res]
+    r = subject(tmp_path, real_home, binary=fake_agy(tmp_path, events)).complete("p")
+    assert not r.ok and f"finished_reason {reason}" in r.error
+    assert runner.infra_kind(r.error) == "transient"
+
+
+def test_out_of_credits_is_fatal():
+    # agy 1.5.3 wording once the plan quota is spent and AI credits cannot cover the call
+    assert runner.infra_kind("exit status 1: AGY_ERROR Your AI credits balance is too low to continue.") == "fatal"
+
+
 def test_audited_version_only(tmp_path, real_home):
     script = fake_agy(tmp_path)
     script.write_text(script.read_text().replace('print("1.2.12")', 'print("1.3.0")'))
