@@ -23,6 +23,13 @@ collaboration.* agent tools), the ~18 KB vendor base prompt and ~10 KB of inject
 exec event types, catalog fields (every field served for both models is in CATALOG_AUDITED) and auth.json
 format and refresh constants are unchanged.
 
+Re-audited on codex 0.167.0 (2026-11-07; gpt-6.1-terra, which the server lists only to clients >= 0.165.0)
+with the adapter's own per-call checks, NOT the request recorder: the same exec event types, every catalog
+field within CATALOG_AUDITED, 59 input tokens for a one-line prompt (so no tool or vendor prompt got in).
+Release notes 0.160.1-0.167.0 read: `cli_daybreak` (automatic Cyber routing) and
+`api_key_cyber_access_programs` are on by default since 0.163.0 and are disabled here like every other
+default-on feature (enabled_features); the 1 MiB model_catalog_json limit is gone (0.166.0).
+
 The model's catalog entry is taken from the CLI itself (`codex debug models`: the live catalog the
 CLI would use), stripped of every tool-bearing field and passed back as an authoritative
 `model_catalog_json`, so reasoning effort, verbosity, service tier and wire format stay the CLI's own
@@ -195,7 +202,7 @@ class CodexSubject(CliSubject):
     _bundled: dict | None = None
     binary_name = "codex"
     efforts = ("low", "medium", "high", "xhigh", "max", "ultra")  # models_cache.json; luna has no ultra
-    audited_versions = ("0.157.1", "0.160.0")
+    audited_versions = ("0.157.1", "0.160.0", "0.167.0")
     streams_text = False
     home_files = ("auth.json",)
     home_required = ("auth.json",)
