@@ -26,7 +26,7 @@ names = {"claude-opus-5-5": "Claude Opus 5.5", "claude-fable-5-1": "Claude Fable
  "grok:grok-4.7-build-fast": "Grok 4.7 build-fast", "kimi:kimi-code/k3": "Kimi K3", "kimi:kimi-code/kimi-for-coding": "Kimi K2.8 (for-coding)", "kimi:kimi-code/k3.1-pro": "Kimi K3.1 Pro",
  "claude-sonnet-5-5": "Claude Sonnet 5.5", "codex:gpt-daybreak-blue-latest": "Codex Daybreak Blue", "codex:gpt-6-astra": "Codex GPT-6 Astra",
  "codex:gpt-6-sol": "Codex GPT-6 Sol", "codex:gpt-5.5": "Codex GPT-5.5", "grok:grok-4.6": "Grok 4.6", "grok:grok-4.5": "Grok 4.5",
- "claude-sonnet-5": "Claude Sonnet 5", "codex:gpt-6-luna": "Codex GPT-6 Luna", "claude-haiku-4-5-20251001": "Claude Haiku 4.5",
+ "claude-sonnet-5": "Claude Sonnet 5", "codex:gpt-6-luna": "Codex GPT-6 Luna", "claude-haiku-4-5-20251001": "Claude Haiku 4.5", "claude-haiku-5-5": "Claude Haiku 5.5",
  "claude-opus-4-8": "Claude Opus 4.8", "claude-sonnet-4-5-20250929": "Claude Sonnet 4.5",
  "agy:gemini-3.8-flash-high": "Gemini 3.8 Flash High (Antigravity)",
  "copilot:gpt-6-luna": "GPT-6 Luna via Copilot", "copilot:mai-code-1.1-flash": "Microsoft MAI-Code 1.1 Flash (Copilot)",

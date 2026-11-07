@@ -26,6 +26,7 @@ system and task prompts, and its CLI's default effort (as the Claude runs did). 
 | Grok 4.6 | 45 | 59 | 50 | 57 | **211/224 (94%)** | 223/224 (100%) | 1.07 |
 | Codex GPT-5.5 | 47 | 57 | 45 | 58 | **207/224 (92%)** | 224/224 (100%) | 1.08 |
 | Kimi K3 | 45 | 58 | 45 | 56 | **204/224 (91%)** | 224/224 (100%) | 1.11 |
+| Claude Haiku 5.5 | 42 | 58 | 46 | 57 | **203/224 (91%)** | 222/224 (99%) | 1.11 |
 | Claude Sonnet 4.5 | 48 | 55 | 44 | 56 | **203/224 (91%)** | 221/224 (99%) | 1.14 |
 | Codex Daybreak Blue | 45 | 55 | 42 | 59 | **201/224 (90%)** | 224/224 (100%) | 1.12 |
 | Claude Sonnet 5.5 | 47 | 56 | 45 | 53 | **201/224 (90%)** | 223/224 (100%) | 1.12 |
@@ -75,6 +76,7 @@ result class, `xor eax, 0` used to zero a register, malformed JSON, unencodable 
 | Grok 4.6 | 73/76 (96%) | 73/74 (99%) | 65/74 (88%) |
 | Codex GPT-5.5 | 72/76 (95%) | 71/74 (96%) | 64/74 (86%) |
 | Kimi K3 | 75/76 (99%) | 66/74 (89%) | 63/74 (85%) |
+| Claude Haiku 5.5 | 75/76 (99%) | 59/74 (80%) | 69/74 (93%) |
 | Claude Sonnet 4.5 | 74/76 (97%) | 67/74 (91%) | 62/74 (84%) |
 | Codex Daybreak Blue | 71/76 (93%) | 69/74 (93%) | 61/74 (82%) |
 | Claude Sonnet 5.5 | 73/76 (96%) | 68/74 (92%) | 60/74 (81%) |
@@ -111,6 +113,13 @@ result class, `xor eax, 0` used to zero a register, malformed JSON, unencodable 
   edges out Sonnet 5.5 (90%) and far exceeds Sonnet 5 (78%); Opus 4.8 (78%) trails Opus 5.5 (96%) by 18
   points, mostly on QBE (46/74: 23 answers omit parameter types the prompt requires). Grok descends
   4.7 / 4.6 (94%) to 4.5 (88%); Codex GPT-6 Sol (95%) and GPT-5.5 (92%) sit between Astra and Luna.
+- **Claude Haiku 5.5 jumps 39 points over Haiku 4.5** (91% vs 52%, 203/224; 222/224 within four), level
+  with Kimi K3 and Sonnet 4.5 and just ahead of Sonnet 5.5 (90%). Run 2026-11-07 through `claude -p` on the
+  Claude Max account (CVP caveat as for every Claude row), never through another vendor. QBE went from 1/74
+  to 69/74. Its weak spot is the structured path on AArch64 (25/37 first attempt): in 11 cells it wrote the
+  schema's family title as the opcode (`"op": "arith"` with `add` in the comment), which the schema's `op`
+  enum rules out; every such cell passed on the retry. All 21 first-attempt failures were reviewed by hand;
+  none is a false reject. The README's earlier "Haiku" rows are Haiku 4.5 (`claude-haiku-4-5-20251001`).
 - **The front end matters as much as the effort label.** GPT-6 Luna scores 58% through Codex and 79% through
   GitHub Copilot, with byte-identical prompts, zero tools and the same served effort (medium). Through Copilot
   it reasoned 2.7x as many tokens on first attempts (3.4x on the long battery, where its passes tripled, 10 to
