@@ -171,7 +171,7 @@ python3 -m venv .venv && .venv/bin/pip install keystone-engine unicorn iced-x86 
 
 The live eval additionally needs each vendor's CLI installed and logged in (`claude`, `codex`, `kimi`,
 `agy`, `grok`); the adapters refuse to run on CLI versions they were not audited against. The Copilot
-subject needs Node.js, `@github/copilot` 1.0.89 and `@github/copilot-sdk` 1.0.15 (installed under
+subject needs Node.js, `@github/copilot` 1.0.107 and `@github/copilot-sdk` 1.0.29 (installed under
 `~/.local/opt/copilot/`, or set `BCA_COPILOT_CLI` / `BCA_COPILOT_SDK`) and a logged-in `gh` (its headless
 runtime authenticates through the GitHub CLI).
 

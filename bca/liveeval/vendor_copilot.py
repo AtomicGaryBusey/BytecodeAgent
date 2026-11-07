@@ -50,6 +50,14 @@ Refusals: a response finished with `content_filter` (Anthropic `refusal` is norm
 authentication, authorization and quota errors (and a weekly rate limit) as fatal, other rate limits as
 transient. Usage: token counts, the nano-AIU the runtime billed (1e9 nano-AIU = 1 AI credit; Copilot Pro has
 1500 a month) and the plan's remaining AI credits.
+
+Re-audited on CLI 1.0.107 / SDK 1.0.29 (2026-11-07; mai-code-1.1-flash and claude-haiku-5.5): the same
+event stream plus one event, model.call_final_result ({model, isByok, result}); one new wire key,
+copilotRequestHeaderFingerprints (hashes of the request headers, written next to copilotToolsFingerprint in
+the runtime's log: not model input); the request still carries no tools (count 0, `tools: []`), SYSTEM_PROMPT
+as the only system text and the prompt verbatim (59 input tokens for a one-line prompt). The driver's
+session options are unchanged. Both audited pairs (COPILOT_PAIRS) stay accepted, so the 1.0.89 fixtures and a
+rollback keep working; SDK 1.0.29 adds a koffi (FFI) dependency, installed with --ignore-scripts.
 """
 
 from __future__ import annotations
@@ -67,8 +75,10 @@ from pathlib import Path
 from bca.liveeval.subject import _VERSION_RE, SYSTEM_PROMPT, child_env
 from bca.liveeval.vendor_base import CliSubject, IsolationError, Parsed
 
-COPILOT_CLI_VERSION = "1.0.89"
-COPILOT_SDK_VERSION = "1.0.15"
+# Audited runtime -> the SDK release that pins it (the pair must match). The newest is the default install.
+COPILOT_PAIRS = {"1.0.89": "1.0.15", "1.0.107": "1.0.29"}
+COPILOT_CLI_VERSION = "1.0.107"
+COPILOT_SDK_VERSION = COPILOT_PAIRS[COPILOT_CLI_VERSION]
 DRIVER = Path(__file__).with_name("copilot_driver.mjs")
 # The runtime's flags besides the SDK's own (--headless --no-auto-update --stdio --log-level all).
 COPILOT_CLI_ARGS = ("--disable-builtin-mcps",)
@@ -84,6 +94,7 @@ COPILOT_EVENTS = frozenset({
     "model.call_start", "model.model_call_started", "assistant.message_start", "assistant.message_delta",
     "assistant.streaming_delta", "assistant.reasoning", "assistant.reasoning_delta",
     "model.captured_assignment_context", "assistant.usage", "model.model_call_success", "model.call_finished",
+    "model.call_final_result",  # 1.0.107: {model, isByok, result}; the served model is still checked elsewhere
     "model.message", "assistant.message", "model.response", "model.turn_ended", "assistant.turn_end",
     "model.messages_snapshot", "session.usage_checkpoint", "assistant.idle", "session.idle", "session.shutdown",
     "session.error", "model.call_failure", "session.warning", "session.info",
@@ -96,6 +107,7 @@ COPILOT_WIRE_KEYS = frozenset({
     "model", "instructions", "input", "reasoning", "store", "stream", "include", "copilotToolsFingerprint", "type",
     "headers", "agent_task_id", "initiator", "messages", "system", "max_tokens", "output_config", "temperature",
     "thinking", "reasoning_effort", "snippy", "stream_options",
+    "copilotRequestHeaderFingerprints",  # 1.0.107: log-side hashes of the HTTP headers, not model input
 })  # fmt: skip
 COPILOT_TOOL_KEYS = ("tools", "tool_choice", "functions", "function_call", "parallel_tool_calls", "mcp_servers",
                      "web_search_options")
@@ -183,7 +195,7 @@ class CopilotSubject(CliSubject):
     binary_name = "copilot"
     # the union of the catalog's reasoning efforts (per model: listModels supportedReasoningEfforts)
     efforts = ("none", "minimal", "low", "medium", "high", "xhigh", "max")
-    audited_versions = (COPILOT_CLI_VERSION,)
+    audited_versions = tuple(COPILOT_PAIRS)
     deliver_at_end = True  # the answer is the recorded assistant message, handed over after verification
     streams_text = False
     home_files: tuple[str, ...] = ()  # nothing of the user's is copied: auth goes through gh (module docstring)
@@ -210,7 +222,7 @@ class CopilotSubject(CliSubject):
             except (OSError, subprocess.SubprocessError):
                 version = "unknown"
             sdk = self._sdk_version()
-            if sdk != (COPILOT_SDK_VERSION, COPILOT_CLI_VERSION):
+            if version not in COPILOT_PAIRS or sdk != (COPILOT_PAIRS[version], version):
                 version = f"{version} (sdk {sdk[0]} pinning cli {sdk[1]})"
             self._version = version
         return self._version

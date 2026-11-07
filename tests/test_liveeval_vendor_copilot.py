@@ -426,11 +426,19 @@ def test_unaudited_cli_or_sdk_is_refused(env, monkeypatch):
     (env / "copilot-native").write_text(NATIVE.format(version="1.0.90"))
     s = subject(env, load("luna"), "gpt-6-luna")
     r = s.complete(PROMPT)
-    assert not r.ok and r.error.startswith("isolation: copilot CLI 1.0.90 is not an audited version")
+    assert not r.ok and r.error.startswith("isolation: copilot CLI 1.0.90 ") and "not an audited version" in r.error
     (env / "copilot-native").write_text(NATIVE.format(version="1.0.89"))
     (env / "sdk" / "dist" / "cliVersion.js").write_text('const COPILOT_CLI_VERSION = "1.0.91";\n')
     s = subject(env, load("luna"), "gpt-6-luna")
     assert s.cli_version == "1.0.89 (sdk 1.0.15 pinning cli 1.0.91)" and not s.complete(PROMPT).ok
+    # two audited pairs (COPILOT_PAIRS): a mixed pair is refused, the newer matched pair is accepted
+    (env / "copilot-native").write_text(NATIVE.format(version="1.0.107"))
+    (env / "sdk" / "dist" / "cliVersion.js").write_text('const COPILOT_CLI_VERSION = "1.0.89";\n')
+    s = subject(env, load("luna"), "gpt-6-luna")
+    assert s.cli_version == "1.0.107 (sdk 1.0.15 pinning cli 1.0.89)" and not s.complete(PROMPT).ok
+    (env / "sdk" / "package.json").write_text(json.dumps({"version": "1.0.29"}))
+    (env / "sdk" / "dist" / "cliVersion.js").write_text('const COPILOT_CLI_VERSION = "1.0.107";\n')
+    assert subject(env, load("luna"), "gpt-6-luna").cli_version == "1.0.107"
 
 
 def test_registry_and_efforts():
