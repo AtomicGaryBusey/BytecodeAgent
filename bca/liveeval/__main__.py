@@ -1,4 +1,4 @@
-"""python -m bca.liveeval {run,summarize,compare,probe} -- see bca/liveeval/__init__.py."""
+"""python -m bca.liveeval {run,summarize,compare,probe,models} -- see bca/liveeval/__init__.py."""
 
 import argparse
 import json
@@ -102,6 +102,11 @@ def main(argv=None, *, subject_factory=None) -> int:
     s.add_argument("run_dir", type=Path)
     c = sub.add_parser("compare", help="markdown comparison of several run dirs (model x battery, ...)")
     c.add_argument("run_dirs", type=Path, nargs="+")
+    mo = sub.add_parser("models", help="per vendor: CLI version vs audited, sign-in, the account's models, and "
+                                       "which no run has benchmarked (no model call)")
+    mo.add_argument("--vendors", default="", help="comma-separated (default: claude,codex,agy,grok,kimi,copilot)")
+    mo.add_argument("--latest", action="store_true", help="also ask npm for the newest Codex/Copilot releases")
+    mo.add_argument("--json", action="store_true")
     pr = sub.add_parser("probe", help="one tiny isolated call per model; prints the model id the stream reports")
     pr.add_argument("models", nargs="+")
     pr.add_argument("--timeout", type=float, default=90.0)
@@ -119,6 +124,11 @@ def _dispatch(args, subject_factory) -> int:
         return 0
     if args.cmd == "compare":
         print(compare(args.run_dirs))
+        return 0
+    if args.cmd == "models":
+        from bca.liveeval.models import main as models_main
+
+        print(models_main(_split(args.vendors) or None, latest=args.latest, as_json=args.json))
         return 0
     if args.cmd == "probe":
         if len(args.models) > 5:

@@ -231,6 +231,38 @@ class CopilotSubject(CliSubject):
         d["auth"] = "gh-cli (headless runtime)"
         return d
 
+    def list_models(self, timeout: float = 120.0) -> tuple[list[dict], dict]:
+        """The account's model catalog (SDK listModels) and auth status, for `python -m bca.liveeval models`.
+        No session and no model call; runs in a throwaway private home exactly like a call's."""
+        if not DRIVER.is_file() or not (_sdk_entry() / "dist/index.js").is_file():
+            raise IsolationError(f"isolation: copilot driver or SDK missing ({DRIVER}, {_sdk_entry()})")
+        with tempfile.TemporaryDirectory(prefix="bca-copilot-models-") as tmp:
+            home = Path(tmp)
+            for d in ("copilot", "home/.config", "home/.cache", "home/.local/share", "home/.local/state", "tmp"):
+                (home / d).mkdir(parents=True, mode=0o700)
+            cfg = home / "bca-list.json"
+            cfg.write_text(json.dumps({"sdk": str(_sdk_entry() / "dist/index.js"), "cli": self.native,
+                                       "home": str(home / "copilot"), "listModels": True,
+                                       "cliArgs": [*COPILOT_CLI_ARGS, "--log-dir", str(home / "copilot/logs")]}))
+            out = subprocess.run([self.node, str(DRIVER), str(cfg)], capture_output=True, text=True,
+                                 timeout=timeout, env={**child_env(), **self.extra_env(home)},
+                                 stdin=subprocess.DEVNULL, cwd=tmp)
+        models, auth, err = None, {}, ""
+        for line in out.stdout.splitlines():
+            try:
+                ev = json.loads(line)
+            except ValueError:
+                continue
+            if ev.get("type") == "bca.models":
+                models = ev.get("data")
+            elif ev.get("type") == "bca.auth":
+                auth = ev.get("data") or {}
+            elif ev.get("type") == "bca.error":
+                err = (ev.get("data") or {}).get("message", "")
+        if not isinstance(models, list):
+            raise RuntimeError(f"copilot listModels failed: {err or out.stderr.strip()[-300:] or 'no output'}")
+        return models, auth
+
     # -- the call -----------------------------------------------------------------------------------
 
     def prepare_home(self, home: Path) -> None:

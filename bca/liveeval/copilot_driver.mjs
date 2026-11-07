@@ -2,6 +2,7 @@
 //
 // Usage: node copilot_driver.mjs <config.json>
 //   config: {sdk, cli, home, work?, model, effort?, system, prompt, cliArgs}   (work: default the cwd)
+//   or {sdk, cli, home, cliArgs, listModels: true}: print the account's model catalog and exit (no session)
 //
 // Drives the Copilot CLI runtime (`copilot --headless --stdio`, spawned by the Copilot SDK) with a session
 // whose system prompt is replaced by ours, every tool source excluded, no MCP server, no custom
@@ -27,6 +28,10 @@ let exitCode = 0;
 try {
   await client.start();
   out({ type: "bca.auth", data: await client.getAuthStatus() });
+  if (cfg.listModels) {
+    // `python -m bca.liveeval models`: the account's model catalog only; no session, no model call.
+    out({ type: "bca.models", data: await client.listModels() });
+  } else {
   const session = await client.createSession({
     model: cfg.model,
     ...(cfg.effort ? { reasoningEffort: cfg.effort } : {}),
@@ -68,6 +73,7 @@ try {
   await session.send({ prompt: cfg.prompt });
   await idle;
   await session.disconnect?.();
+  }
 } catch (e) {
   out({ type: "bca.error", data: { message: String((e && e.message) || e) } });
   exitCode = 1;

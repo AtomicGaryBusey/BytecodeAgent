@@ -175,6 +175,10 @@ subject needs Node.js, `@github/copilot` 1.0.89 and `@github/copilot-sdk` 1.0.15
 `~/.local/opt/copilot/`, or set `BCA_COPILOT_CLI` / `BCA_COPILOT_SDK`) and a logged-in `gh` (its headless
 runtime authenticates through the GitHub CLI).
 
+`python -m bca.liveeval models [--latest]` checks all six vendors at once without calling a model: each
+CLI's version against the audited ones (and, with `--latest`, the newest Codex/Copilot on npm), the
+sign-in state, the account's current model list, and which of those models no run has benchmarked yet.
+
 ## Layout
 
 ```
