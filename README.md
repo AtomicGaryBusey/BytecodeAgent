@@ -198,3 +198,9 @@ examples/stream_demo.py           the stream path end to end
 demo/editor/                      a model-written text editor (AArch64 assembly -> GNU as -> static ELF), sandbox tests
 demo/editor-hex/                  the same editor written directly as machine code (hex -> ELF container, no assembler)
 ```
+
+## License
+
+Code is under the [MIT license](LICENSE). The reports in `reports/` and the recorded run data in `eval/runs/`
+are under [CC BY 4.0](LICENSE-CC-BY-4.0): reuse them freely, with credit. `eval/runs/` holds raw model outputs
+recorded from each vendor's service; those vendors' own terms may also apply to their outputs.
