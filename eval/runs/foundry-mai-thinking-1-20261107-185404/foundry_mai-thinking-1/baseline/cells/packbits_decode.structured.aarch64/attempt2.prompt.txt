@@ -1,0 +1,888 @@
+Implement the function `int64_t packbits_decode(const uint8_t *src, int64_t n, uint8_t *out, int64_t cap)`.
+
+Target: AArch64 (ARMv8-A), Linux AAPCS64. Integer/pointer arguments in x0-x7; 64-bit result in x0. Callee-saved: x19-x28, x29 (frame pointer) and d8-d15 (restore them if you use them); x9-x15 are free scratch registers. sp must stay 16-byte aligned and be back to its entry value when you return with ret (return address in x30). More ABI facts: arguments beyond the eighth are passed on the stack (the 9th at [sp] at entry). A call (bl/blr) overwrites x30, so save x30 (e.g. stp x29, x30, [sp, #-16]!) before calling and restore it before ret. A call clobbers the caller-saved registers x0-x18, x30, v0-v7 and v16-v31 (and the upper halves of v8-v15) and the flags, so keep values that must survive a call in callee-saved registers x19-x28 (saved/restored by you) or in your own stack frame. sp must be 16-byte aligned at every call (and whenever it is used as a base register). Anything below sp may be overwritten by a callee.
+
+Output format: a single JSON object {"instructions": [...]} that is valid input for this tool (the instructions are encoded directly into machine code, no assembler):
+Tool name: emit_program
+Tool description: Emit a complete aarch64 function as structured instructions; they are encoded directly to machine code (no assembler). AArch64 (AAPCS64: args x0-x7, return x0, x19-x28 callee-saved, return with ret). Operands follow assembly order: dst is the written register, src the rest. Registers are strings ("x3", "w3", "sp", "xzr"); immediates are {"imm": n}; shifted registers {"reg":"x2","shift":"lsl","amount":3}; memory {"mem":{"base":"x1","disp":8}} or {"mem":{"base":"x1","index":"x2","scale":8}} or with "writeback":"pre"|"post". Stores put the value first: {"op":"str","src":["x0",{"mem":...}]}. Branch targets are label names. The result reports the encoded bytes and disassembly, or per-instruction errors (instruction index, field path, reason).
+Input JSON Schema: {"type":"object","properties":{"instructions":{"type":"array","description":"The function body in order. Labels are {\"label\": name} entries.","items":{"anyOf":[{"type":"object","title":"label","description":"Defines a branch target at the position of the next instruction.","properties":{"label":{"type":"string","pattern":"^[A-Za-z_.][A-Za-z0-9_.]*$"},"comment":{"type":"string"}},"required":["label"],"additionalProperties":false},{"type":"object","title":"mov","description":"mov dst, src \u2014 register copy or any 64-bit immediate (expanded to movz/movn/movk or orr as needed).","properties":{"op":{"type":"string","enum":["mov"]},"dst":{"$ref":"#/$defs/reg"},"src":{"type":"array","items":{"anyOf":[{"$ref":"#/$defs/reg"},{"type":"object","properties":{"imm":{"type":"integer"},"lsl":{"type":"integer","enum":[0,12,16,32,48]}},"required":["imm"],"additionalProperties":false}]},"minItems":1,"maxItems":1},"comment":{"type":"string","description":"optional free-text note; ignored"}},"required":["op","dst","src"],"additionalProperties":false},{"type":"object","title":"movwide","description":"16-bit move-wide: src [{imm: 0..65535, lsl: 0|16|32|48}]. movk keeps the other bits.","properties":{"op":{"type":"string","enum":["movz","movn","movk"]},"dst":{"$ref":"#/$defs/reg"},"src":{"type":"array","items":{"type":"object","properties":{"imm":{"type":"integer"},"lsl":{"type":"integer","enum":[0,12,16,32,48]}},"required":["imm"],"additionalProperties":false},"minItems":1,"maxItems":1},"comment":{"type":"string","description":"optional free-text note; ignored"}},"required":["op","dst","src"],"additionalProperties":false},{"type":"object","title":"arith","description":"dst = src[0] op src[1]. src[1]: register, shifted register, or imm12 (0..4095, optionally lsl 12). Negative immediates flip add<->sub. The *s forms set flags.","properties":{"op":{"type":"string","enum":["add","sub","adds","subs"]},"dst":{"$ref":"#/$defs/reg"},"src":{"type":"array","items":{"anyOf":[{"$ref":"#/$defs/reg"},{"type":"object","properties":{"imm":{"type":"integer"},"lsl":{"type":"integer","enum":[0,12,16,32,48]}},"required":["imm"],"additionalProperties":false},{"type":"object","description":"register with a shift applied, e.g. x2, lsl #3","properties":{"reg":{"$ref":"#/$defs/reg"},"shift":{"type":"string","enum":["lsl","lsr","asr","ror"]},"amount":{"type":"integer","minimum":0,"maximum":63}},"required":["reg","shift","amount"],"additionalProperties":false}]},"minItems":2,"maxItems":2},"comment":{"type":"string","description":"optional free-text note; ignored"}},"required":["op","dst","src"],"additionalProperties":false},{"type":"object","title":"compare","description":"Set flags from src[0] vs src[1] (cmp=subs, cmn=adds, tst=ands; result discarded).","properties":{"op":{"type":"string","enum":["cmp","cmn","tst"]},"src":{"type":"array","items":{"anyOf":[{"$ref":"#/$defs/reg"},{"type":"object","properties":{"imm":{"type":"integer"},"lsl":{"type":"integer","enum":[0,12,16,32,48]}},"required":["imm"],"additionalProperties":false},{"type":"object","description":"register with a shift applied, e.g. x2, lsl #3","properties":{"reg":{"$ref":"#/$defs/reg"},"shift":{"type":"string","enum":["lsl","lsr","asr","ror"]},"amount":{"type":"integer","minimum":0,"maximum":63}},"required":["reg","shift","amount"],"additionalProperties":false}]},"minItems":2,"maxItems":2},"comment":{"type":"string","description":"optional free-text note; ignored"}},"required":["op","src"],"additionalProperties":false},{"type":"object","title":"logic","description":"Bitwise dst = src[0] op src[1]; immediates must be valid bitmask immediates.","properties":{"op":{"type":"string","enum":["and","orr","eor","ands","bic","orn","eon","bics"]},"dst":{"$ref":"#/$defs/reg"},"src":{"type":"array","items":{"anyOf":[{"$ref":"#/$defs/reg"},{"type":"object","properties":{"imm":{"type":"integer"},"lsl":{"type":"integer","enum":[0,12,16,32,48]}},"required":["imm"],"additionalProperties":false},{"type":"object","description":"register with a shift applied, e.g. x2, lsl #3","properties":{"reg":{"$ref":"#/$defs/reg"},"shift":{"type":"string","enum":["lsl","lsr","asr","ror"]},"amount":{"type":"integer","minimum":0,"maximum":63}},"required":["reg","shift","amount"],"additionalProperties":false}]},"minItems":2,"maxItems":2},"comment":{"type":"string","description":"optional free-text note; ignored"}},"required":["op","dst","src"],"additionalProperties":false},{"type":"object","title":"unary","description":"neg: dst = -src; mvn: dst = ~src.","properties":{"op":{"type":"string","enum":["neg","negs","mvn"]},"dst":{"$ref":"#/$defs/reg"},"src":{"type":"array","items":{"anyOf":[{"$ref":"#/$defs/reg"},{"type":"object","description":"register with a shift applied, e.g. x2, lsl #3","properties":{"reg":{"$ref":"#/$defs/reg"},"shift":{"type":"string","enum":["lsl","lsr","asr","ror"]},"amount":{"type":"integer","minimum":0,"maximum":63}},"required":["reg","shift","amount"],"additionalProperties":false}]},"minItems":1,"maxItems":1},"comment":{"type":"string","description":"optional free-text note; ignored"}},"required":["op","dst","src"],"additionalProperties":false},{"type":"object","title":"shift","description":"dst = src[0] shifted by src[1] (register or immediate 0..width-1).","properties":{"op":{"type":"string","enum":["lsl","lsr","asr","ror"]},"dst":{"$ref":"#/$defs/reg"},"src":{"type":"array","items":{"anyOf":[{"$ref":"#/$defs/reg"},{"type":"object","properties":{"imm":{"type":"integer"},"lsl":{"type":"integer","enum":[0,12,16,32,48]}},"required":["imm"],"additionalProperties":false}]},"minItems":2,"maxItems":2},"comment":{"type":"string","description":"optional free-text note; ignored"}},"required":["op","dst","src"],"additionalProperties":false},{"type":"object","title":"mul","description":"dst = src[0] op src[1]. Division by zero yields 0.","properties":{"op":{"type":"string","enum":["mul","mneg","sdiv","udiv","smulh","umulh"]},"dst":{"$ref":"#/$defs/reg"},"src":{"type":"array","items":{"$ref":"#/$defs/reg"},"minItems":2,"maxItems":2},"comment":{"type":"string","description":"optional free-text note; ignored"}},"required":["op","dst","src"],"additionalProperties":false},{"type":"object","title":"muladd","description":"madd: dst = src[2] + src[0]*src[1]; msub: dst = src[2] - src[0]*src[1].","properties":{"op":{"type":"string","enum":["madd","msub"]},"dst":{"$ref":"#/$defs/reg"},"src":{"type":"array","items":{"$ref":"#/$defs/reg"},"minItems":3,"maxItems":3},"comment":{"type":"string","description":"optional free-text note; ignored"}},"required":["op","dst","src"],"additionalProperties":false},{"type":"object","title":"csel","description":"dst = cond ? src[0] : f(src[1]) (f = id / +1 / ~ / -).","properties":{"op":{"type":"string","enum":["csel","csinc","csinv","csneg"]},"dst":{"$ref":"#/$defs/reg"},"src":{"type":"array","items":{"$ref":"#/$defs/reg"},"minItems":2,"maxItems":2},"cond":{"type":"string","enum":["eq","ne","cs","hs","cc","lo","mi","pl","vs","vc","hi","ls","ge","lt","gt","le","al","nv"]},"comment":{"type":"string","description":"optional free-text note; ignored"}},"required":["op","dst","src","cond"],"additionalProperties":false},{"type":"object","title":"cset","description":"cset: dst = cond ? 1 : 0; csetm: dst = cond ? -1 : 0.","properties":{"op":{"type":"string","enum":["cset","csetm"]},"dst":{"$ref":"#/$defs/reg"},"cond":{"type":"string","enum":["eq","ne","cs","hs","cc","lo","mi","pl","vs","vc","hi","ls","ge","lt","gt","le","al","nv"]},"comment":{"type":"string","description":"optional free-text note; ignored"}},"required":["op","dst","cond"],"additionalProperties":false},{"type":"object","title":"cinc","description":"dst = cond ? f(src) : src (f = +1 / ~ / -).","properties":{"op":{"type":"string","enum":["cinc","cinv","cneg"]},"dst":{"$ref":"#/$defs/reg"},"src":{"type":"array","items":{"$ref":"#/$defs/reg"},"minItems":1,"maxItems":1},"cond":{"type":"string","enum":["eq","ne","cs","hs","cc","lo","mi","pl","vs","vc","hi","ls","ge","lt","gt","le","al","nv"]},"comment":{"type":"string","description":"optional free-text note; ignored"}},"required":["op","dst","src","cond"],"additionalProperties":false},{"type":"object","title":"load","description":"Load into dst. ldr x=8 bytes, ldr w=4; ldrb/ldrh zero-extend into w; ldrs* sign-extend.","properties":{"op":{"type":"string","enum":["ldr","ldrb","ldrh","ldrsb","ldrsh","ldrsw"]},"dst":{"$ref":"#/$defs/reg"},"src":{"type":"array","items":{"type":"object","properties":{"mem":{"type":"object","description":"[base, #disp] | [base, index, lsl #log2(scale)] | pre/post-index writeback","properties":{"base":{"$ref":"#/$defs/reg"},"index":{"$ref":"#/$defs/reg"},"scale":{"type":"integer","enum":[1,2,4,8]},"disp":{"type":"integer","description":"byte displacement (default 0)"},"writeback":{"type":"string","enum":["pre","post"],"description":"pre: [base, #disp]!  post: [base], #disp"},"extend":{"type":"string","enum":["uxtw","sxtw","sxtx"],"description":"index extension; required for a w index register"}},"required":["base"],"additionalProperties":false}},"required":["mem"],"additionalProperties":false},"minItems":1,"maxItems":1},"comment":{"type":"string","description":"optional free-text note; ignored"}},"required":["op","dst","src"],"additionalProperties":false},{"type":"object","title":"store","description":"Store src[0] to memory src[1]. strb/strh take a w register.","properties":{"op":{"type":"string","enum":["str","strb","strh"]},"src":{"type":"array","items":{"anyOf":[{"$ref":"#/$defs/reg"},{"type":"object","properties":{"mem":{"type":"object","description":"[base, #disp] | [base, index, lsl #log2(scale)] | pre/post-index writeback","properties":{"base":{"$ref":"#/$defs/reg"},"index":{"$ref":"#/$defs/reg"},"scale":{"type":"integer","enum":[1,2,4,8]},"disp":{"type":"integer","description":"byte displacement (default 0)"},"writeback":{"type":"string","enum":["pre","post"],"description":"pre: [base, #disp]!  post: [base], #disp"},"extend":{"type":"string","enum":["uxtw","sxtw","sxtx"],"description":"index extension; required for a w index register"}},"required":["base"],"additionalProperties":false}},"required":["mem"],"additionalProperties":false}]},"minItems":2,"maxItems":2},"comment":{"type":"string","description":"optional free-text note; ignored"}},"required":["op","src"],"additionalProperties":false},{"type":"object","title":"ldp","description":"Load pair. disp must be a multiple of the register size in [-64, 63] * size.","properties":{"op":{"type":"string","enum":["ldp"]},"dst":{"type":"array","items":{"$ref":"#/$defs/reg"},"minItems":2,"maxItems":2},"src":{"type":"array","items":{"type":"object","properties":{"mem":{"type":"object","description":"[base, #disp] | [base, index, lsl #log2(scale)] | pre/post-index writeback","properties":{"base":{"$ref":"#/$defs/reg"},"index":{"$ref":"#/$defs/reg"},"scale":{"type":"integer","enum":[1,2,4,8]},"disp":{"type":"integer","description":"byte displacement (default 0)"},"writeback":{"type":"string","enum":["pre","post"],"description":"pre: [base, #disp]!  post: [base], #disp"},"extend":{"type":"string","enum":["uxtw","sxtw","sxtx"],"description":"index extension; required for a w index register"}},"required":["base"],"additionalProperties":false}},"required":["mem"],"additionalProperties":false},"minItems":1,"maxItems":1},"comment":{"type":"string","description":"optional free-text note; ignored"}},"required":["op","dst","src"],"additionalProperties":false},{"type":"object","title":"stp","description":"Store pair src[0], src[1].","properties":{"op":{"type":"string","enum":["stp"]},"src":{"type":"array","items":{"anyOf":[{"$ref":"#/$defs/reg"},{"type":"object","properties":{"mem":{"type":"object","description":"[base, #disp] | [base, index, lsl #log2(scale)] | pre/post-index writeback","properties":{"base":{"$ref":"#/$defs/reg"},"index":{"$ref":"#/$defs/reg"},"scale":{"type":"integer","enum":[1,2,4,8]},"disp":{"type":"integer","description":"byte displacement (default 0)"},"writeback":{"type":"string","enum":["pre","post"],"description":"pre: [base, #disp]!  post: [base], #disp"},"extend":{"type":"string","enum":["uxtw","sxtw","sxtx"],"description":"index extension; required for a w index register"}},"required":["base"],"additionalProperties":false}},"required":["mem"],"additionalProperties":false}]},"minItems":3,"maxItems":3},"comment":{"type":"string","description":"optional free-text note; ignored"}},"required":["op","src"],"additionalProperties":false},{"type":"object","title":"branch","description":"Unconditional branch / call a label.","properties":{"op":{"type":"string","enum":["b","bl"]},"target":{"type":"string","pattern":"^[A-Za-z_.][A-Za-z0-9_.]*$"},"comment":{"type":"string","description":"optional free-text note; ignored"}},"required":["op","target"],"additionalProperties":false},{"type":"object","title":"bcond","description":"Conditional branch on flags.","properties":{"op":{"type":"string","enum":["b.eq","b.ne","b.cs","b.hs","b.cc","b.lo","b.mi","b.pl","b.vs","b.vc","b.hi","b.ls","b.ge","b.lt","b.gt","b.le","b.al"]},"target":{"type":"string","pattern":"^[A-Za-z_.][A-Za-z0-9_.]*$"},"comment":{"type":"string","description":"optional free-text note; ignored"}},"required":["op","target"],"additionalProperties":false},{"type":"object","title":"cbz","description":"Branch if src[0] is zero / non-zero.","properties":{"op":{"type":"string","enum":["cbz","cbnz"]},"src":{"type":"array","items":{"$ref":"#/$defs/reg"},"minItems":1,"maxItems":1},"target":{"type":"string","pattern":"^[A-Za-z_.][A-Za-z0-9_.]*$"},"comment":{"type":"string","description":"optional free-text note; ignored"}},"required":["op","src","target"],"additionalProperties":false},{"type":"object","title":"tbz","description":"Branch if bit src[1] of src[0] is zero / non-zero.","properties":{"op":{"type":"string","enum":["tbz","tbnz"]},"src":{"type":"array","items":{"anyOf":[{"$ref":"#/$defs/reg"},{"type":"object","properties":{"imm":{"type":"integer"},"lsl":{"type":"integer","enum":[0,12,16,32,48]}},"required":["imm"],"additionalProperties":false}]},"minItems":2,"maxItems":2},"target":{"type":"string","pattern":"^[A-Za-z_.][A-Za-z0-9_.]*$"},"comment":{"type":"string","description":"optional free-text note; ignored"}},"required":["op","src","target"],"additionalProperties":false},{"type":"object","title":"adr","description":"dst = address of label.","properties":{"op":{"type":"string","enum":["adr"]},"dst":{"$ref":"#/$defs/reg"},"target":{"type":"string","pattern":"^[A-Za-z_.][A-Za-z0-9_.]*$"},"comment":{"type":"string","description":"optional free-text note; ignored"}},"required":["op","dst","target"],"additionalProperties":false},{"type":"object","title":"branch_reg","description":"Branch / call via register.","properties":{"op":{"type":"string","enum":["br","blr"]},"src":{"type":"array","items":{"$ref":"#/$defs/reg"},"minItems":1,"maxItems":1},"comment":{"type":"string","description":"optional free-text note; ignored"}},"required":["op","src"],"additionalProperties":false},{"type":"object","title":"ret","description":"Return (via x30 unless src given).","properties":{"op":{"type":"string","enum":["ret"]},"src":{"type":"array","items":{"$ref":"#/$defs/reg"},"minItems":0,"maxItems":1},"comment":{"type":"string","description":"optional free-text note; ignored"}},"required":["op"],"additionalProperties":false},{"type":"object","title":"nop","description":"No operation.","properties":{"op":{"type":"string","enum":["nop"]},"comment":{"type":"string","description":"optional free-text note; ignored"}},"required":["op"],"additionalProperties":false}]}}},"required":["instructions"],"additionalProperties":false,"$defs":{"reg":{"type":"string","enum":["x0","w0","x1","w1","x2","w2","x3","w3","x4","w4","x5","w5","x6","w6","x7","w7","x8","w8","x9","w9","x10","w10","x11","w11","x12","w12","x13","w13","x14","w14","x15","w15","x16","w16","x17","w17","x18","w18","x19","w19","x20","w20","x21","w21","x22","w22","x23","w23","x24","w24","x25","w25","x26","w26","x27","w27","x28","w28","x29","w29","x30","w30","xzr","wzr","sp","wsp","fp","lr"]}}}
+The first instruction is the entry point; labels are {"label": "name"} entries and branch targets are label names. Output only the JSON object: no Markdown fences, no prose.
+
+Specification: Decompress PackBits data: src holds n bytes (0 <= n <= 600) of packets, decoded left to right into out, which has room for cap bytes (0 <= cap <= 1200). Each packet starts with a header byte h read as a signed byte: 0 <= h <= 127: a literal packet, the next h + 1 bytes are copied to the output; -127 <= h <= -1: a repeat packet, the next byte is written 1 - h times; h = -128: no operation (the packet is just that byte). Return the number of bytes written. Errors: if a packet needs more source bytes than remain in src[0..n-1] (checked when its header is read, before any of its output is written), return -2 (the output of earlier packets stays written). If the output would exceed cap bytes, write exactly the first cap bytes of the output (out[0..cap-1] completely filled) and return -1. Example: 01 'a' 'b' FE 'c' 00 'd' decodes to "abcccd" (returns 6); with cap = 4 it writes "abcc" and returns -1. Read only src[0..n-1] and write only out[0..cap-1] (both are checked: never write out[cap], even when cap is 0).
+
+Your previous attempt was:
+<previous>
+{
+  "instructions": [
+    {
+      "op": "stp",
+      "src": [
+        "x29",
+        "x30",
+        {
+          "mem": {
+            "base": "sp",
+            "disp": -32,
+            "writeback": "pre"
+          }
+        }
+      ],
+      "comment": "prologue"
+    },
+    {
+      "op": "mov",
+      "dst": "x29",
+      "src": [
+        "sp"
+      ],
+      "comment": "frame pointer"
+    },
+    {
+      "op": "stp",
+      "src": [
+        "x19",
+        "x20",
+        {
+          "mem": {
+            "base": "x29",
+            "disp": 16
+          }
+        }
+      ],
+      "comment": "callee saved"
+    },
+    {
+      "op": "mov",
+      "dst": "x19",
+      "src": [
+        "x0"
+      ],
+      "comment": "src pointer"
+    },
+    {
+      "op": "mov",
+      "dst": "x20",
+      "src": [
+        "x1"
+      ],
+      "comment": "n"
+    },
+    {
+      "op": "mov",
+      "dst": "x21",
+      "src": [
+        "x2"
+      ],
+      "comment": "out pointer"
+    },
+    {
+      "op": "mov",
+      "dst": "x22",
+      "src": [
+        "x3"
+      ],
+      "comment": "cap"
+    },
+    {
+      "op": "add",
+      "dst": "x23",
+      "src": [
+        "x19",
+        "x20"
+      ],
+      "comment": "src_end = src + n"
+    },
+    {
+      "op": "add",
+      "dst": "x24",
+      "src": [
+        "x21",
+        "x22"
+      ],
+      "comment": "out_end = out + cap"
+    },
+    {
+      "op": "mov",
+      "dst": "x25",
+      "src": [
+        {
+          "imm": 0
+        }
+      ],
+      "comment": "written = 0"
+    },
+    {
+      "label": "loop_start"
+    },
+    {
+      "op": "cmp",
+      "src": [
+        "x19",
+        "x23"
+      ],
+      "comment": "src >= src_end?"
+    },
+    {
+      "op": "b.lt",
+      "target": "read_header",
+      "comment": "if not, read header"
+    },
+    {
+      "op": "mov",
+      "dst": "x0",
+      "src": [
+        "x25"
+      ],
+      "comment": "return written"
+    },
+    {
+      "op": "b",
+      "target": "done",
+      "comment": "exit"
+    },
+    {
+      "label": "read_header"
+    },
+    {
+      "op": "ldrb",
+      "dst": "w26",
+      "src": [
+        {
+          "mem": {
+            "base": "x19"
+          }
+        }
+      ],
+      "comment": "read header byte"
+    },
+    {
+      "op": "add",
+      "dst": "x19",
+      "src": [
+        "x19",
+        {
+          "imm": 1
+        }
+      ],
+      "comment": "src++"
+    },
+    {
+      "op": "sxtb",
+      "dst": "x26",
+      "src": [
+        "w26"
+      ],
+      "comment": "signed header in x26"
+    },
+    {
+      "op": "cmp",
+      "src": [
+        "x26",
+        {
+          "imm": -128
+        }
+      ],
+      "comment": "h == -128?"
+    },
+    {
+      "op": "b.eq",
+      "target": "loop_start",
+      "comment": "nop packet"
+    },
+    {
+      "op": "cmp",
+      "src": [
+        "x26",
+        {
+          "imm": 0
+        }
+      ],
+      "comment": "h >= 0?"
+    },
+    {
+      "op": "b.ge",
+      "target": "literal_packet",
+      "comment": "literal"
+    },
+    {
+      "label": "repeat_packet"
+    },
+    {
+      "op": "cmp",
+      "src": [
+        "x19",
+        "x23"
+      ],
+      "comment": "need 1 byte value"
+    },
+    {
+      "op": "b.ge",
+      "target": "err_src",
+      "comment": "not enough source"
+    },
+    {
+      "op": "ldrb",
+      "dst": "w27",
+      "src": [
+        {
+          "mem": {
+            "base": "x19"
+          }
+        }
+      ],
+      "comment": "value byte"
+    },
+    {
+      "op": "add",
+      "dst": "x19",
+      "src": [
+        "x19",
+        {
+          "imm": 1
+        }
+      ],
+      "comment": "src++"
+    },
+    {
+      "op": "neg",
+      "dst": "x28",
+      "src": [
+        "x26"
+      ],
+      "comment": "k = -h (1..127)"
+    },
+    {
+      "op": "add",
+      "dst": "x28",
+      "src": [
+        "x28",
+        {
+          "imm": 1
+        }
+      ],
+      "comment": "count = k+1 = 1-h"
+    },
+    {
+      "op": "add",
+      "dst": "x9",
+      "src": [
+        "x25",
+        "x28"
+      ],
+      "comment": "new_written = written + count"
+    },
+    {
+      "op": "cmp",
+      "src": [
+        "x9",
+        "x22"
+      ],
+      "comment": "new_written > cap?"
+    },
+    {
+      "op": "b.le",
+      "target": "repeat_copy_full",
+      "comment": "enough output space"
+    },
+    {
+      "label": "repeat_copy_partial"
+    },
+    {
+      "op": "sub",
+      "dst": "x9",
+      "src": [
+        "x22",
+        "x25"
+      ],
+      "comment": "rem = cap - written"
+    },
+    {
+      "op": "cmp",
+      "src": [
+        "x9",
+        {
+          "imm": 0
+        }
+      ],
+      "comment": "rem <= 0?"
+    },
+    {
+      "op": "b.le",
+      "target": "err_out",
+      "comment": "already full"
+    },
+    {
+      "label": "repeat_fill_rem"
+    },
+    {
+      "op": "add",
+      "dst": "x10",
+      "src": [
+        "x21",
+        "x25"
+      ],
+      "comment": "dst = out + written"
+    },
+    {
+      "label": "repeat_fill_loop"
+    },
+    {
+      "op": "cmp",
+      "src": [
+        "x9",
+        {
+          "imm": 0
+        }
+      ],
+      "comment": "rem == 0?"
+    },
+    {
+      "op": "b.eq",
+      "target": "err_out",
+      "comment": "done filling to cap"
+    },
+    {
+      "op": "strb",
+      "src": [
+        "w27",
+        {
+          "mem": {
+            "base": "x10"
+          }
+        }
+      ],
+      "comment": "store byte"
+    },
+    {
+      "op": "add",
+      "dst": "x10",
+      "src": [
+        "x10",
+        {
+          "imm": 1
+        }
+      ],
+      "comment": "dst++"
+    },
+    {
+      "op": "sub",
+      "dst": "x9",
+      "src": [
+        "x9",
+        {
+          "imm": 1
+        }
+      ],
+      "comment": "rem--"
+    },
+    {
+      "op": "b",
+      "target": "repeat_fill_loop",
+      "comment": "loop"
+    },
+    {
+      "label": "repeat_copy_full"
+    },
+    {
+      "op": "add",
+      "dst": "x10",
+      "src": [
+        "x21",
+        "x25"
+      ],
+      "comment": "dst = out + written"
+    },
+    {
+      "op": "mov",
+      "dst": "x9",
+      "src": [
+        "x28"
+      ],
+      "comment": "count"
+    },
+    {
+      "label": "repeat_copy_loop"
+    },
+    {
+      "op": "cmp",
+      "src": [
+        "x9",
+        {
+          "imm": 0
+        }
+      ],
+      "comment": "count == 0?"
+    },
+    {
+      "op": "b.eq",
+      "target": "repeat_done",
+      "comment": "done"
+    },
+    {
+      "op": "strb",
+      "src": [
+        "w27",
+        {
+          "mem": {
+            "base": "x10"
+          }
+        }
+      ],
+      "comment": "store"
+    },
+    {
+      "op": "add",
+      "dst": "x10",
+      "src": [
+        "x10",
+        {
+          "imm": 1
+        }
+      ],
+      "comment": "dst++"
+    },
+    {
+      "op": "sub",
+      "dst": "x9",
+      "src": [
+        "x9",
+        {
+          "imm": 1
+        }
+      ],
+      "comment": "count--"
+    },
+    {
+      "op": "b",
+      "target": "repeat_copy_loop",
+      "comment": "loop"
+    },
+    {
+      "label": "repeat_done"
+    },
+    {
+      "op": "add",
+      "dst": "x25",
+      "src": [
+        "x25",
+        "x28"
+      ],
+      "comment": "written += count"
+    },
+    {
+      "op": "b",
+      "target": "loop_start",
+      "comment": "next packet"
+    },
+    {
+      "label": "literal_packet"
+    },
+    {
+      "op": "add",
+      "dst": "x28",
+      "src": [
+        "x26",
+        {
+          "imm": 1
+        }
+      ],
+      "comment": "count = h+1"
+    },
+    {
+      "op": "add",
+      "dst": "x9",
+      "src": [
+        "x19",
+        "x28"
+      ],
+      "comment": "src_needed = src + count"
+    },
+    {
+      "op": "cmp",
+      "src": [
+        "x9",
+        "x23"
+      ],
+      "comment": "src_needed > src_end?"
+    },
+    {
+      "op": "b.hi",
+      "target": "err_src",
+      "comment": "not enough source"
+    },
+    {
+      "op": "add",
+      "dst": "x9",
+      "src": [
+        "x25",
+        "x28"
+      ],
+      "comment": "new_written = written + count"
+    },
+    {
+      "op": "cmp",
+      "src": [
+        "x9",
+        "x22"
+      ],
+      "comment": "new_written > cap?"
+    },
+    {
+      "op": "b.le",
+      "target": "literal_copy_full",
+      "comment": "enough space"
+    },
+    {
+      "label": "literal_copy_partial"
+    },
+    {
+      "op": "sub",
+      "dst": "x9",
+      "src": [
+        "x22",
+        "x25"
+      ],
+      "comment": "rem = cap - written"
+    },
+    {
+      "op": "cmp",
+      "src": [
+        "x9",
+        {
+          "imm": 0
+        }
+      ],
+      "comment": "rem <= 0?"
+    },
+    {
+      "op": "b.le",
+      "target": "err_out",
+      "comment": "full"
+    },
+    {
+      "op": "add",
+      "dst": "x10",
+      "src": [
+        "x21",
+        "x25"
+      ],
+      "comment": "dst = out + written"
+    },
+    {
+      "op": "mov",
+      "dst": "x11",
+      "src": [
+        "x19"
+      ],
+      "comment": "src_cur"
+    },
+    {
+      "label": "literal_copy_part_loop"
+    },
+    {
+      "op": "cmp",
+      "src": [
+        "x9",
+        {
+          "imm": 0
+        }
+      ],
+      "comment": "rem == 0?"
+    },
+    {
+      "op": "b.eq",
+      "target": "literal_partial_done_src",
+      "comment": "copied rem"
+    },
+    {
+      "op": "ldrb",
+      "dst": "w12",
+      "src": [
+        {
+          "mem": {
+            "base": "x11"
+          }
+        }
+      ],
+      "comment": "load byte"
+    },
+    {
+      "op": "strb",
+      "src": [
+        "w12",
+        {
+          "mem": {
+            "base": "x10"
+          }
+        }
+      ],
+      "comment": "store byte"
+    },
+    {
+      "op": "add",
+      "dst": "x11",
+      "src": [
+        "x11",
+        {
+          "imm": 1
+        }
+      ],
+      "comment": "src_cur++"
+    },
+    {
+      "op": "add",
+      "dst": "x10",
+      "src": [
+        "x10",
+        {
+          "imm": 1
+        }
+      ],
+      "comment": "dst++"
+    },
+    {
+      "op": "sub",
+      "dst": "x9",
+      "src": [
+        "x9",
+        {
+          "imm": 1
+        }
+      ],
+      "comment": "rem--"
+    },
+    {
+      "op": "b",
+      "target": "literal_copy_part_loop",
+      "comment": "loop"
+    },
+    {
+      "label": "literal_partial_done_src"
+    },
+    {
+      "op": "add",
+      "dst": "x19",
+      "src": [
+        "x19",
+        "x28"
+      ],
+      "comment": "src += count (skip rest)"
+    },
+    {
+      "op": "b",
+      "target": "err_out",
+      "comment": "return -1"
+    },
+    {
+      "label": "literal_copy_full"
+    },
+    {
+      "op": "add",
+      "dst": "x10",
+      "src": [
+        "x21",
+        "x25"
+      ],
+      "comment": "dst = out + written"
+    },
+    {
+      "op": "mov",
+      "dst": "x11",
+      "src": [
+        "x19"
+      ],
+      "comment": "src_cur"
+    },
+    {
+      "op": "mov",
+      "dst": "x9",
+      "src": [
+        "x28"
+      ],
+      "comment": "count"
+    },
+    {
+      "label": "literal_copy_full_loop"
+    },
+    {
+      "op": "cmp",
+      "src": [
+        "x9",
+        {
+          "imm": 0
+        }
+      ],
+      "comment": "count == 0?"
+    },
+    {
+      "op": "b.eq",
+      "target": "literal_done",
+      "comment": "done"
+    },
+    {
+      "op": "ldrb",
+      "dst": "w12",
+      "src": [
+        {
+          "mem": {
+            "base": "x11"
+          }
+        }
+      ],
+      "comment": "load"
+    },
+    {
+      "op": "strb",
+      "src": [
+        "w12",
+        {
+          "mem": {
+            "base": "x10"
+          }
+        }
+      ],
+      "comment": "store"
+    },
+    {
+      "op": "add",
+      "dst": "x11",
+      "src": [
+        "x11",
+        {
+          "imm": 1
+        }
+      ],
+      "comment": "src_cur++"
+    },
+    {
+      "op": "add",
+      "dst": "x10",
+      "src": [
+        "x10",
+        {
+          "imm": 1
+        }
+      ],
+      "comment": "dst++"
+    },
+    {
+      "op": "sub",
+      "dst": "x9",
+      "src": [
+        "x9",
+        {
+          "imm": 1
+        }
+      ],
+      "comment": "count--"
+    },
+    {
+      "op": "b",
+      "target": "literal_copy_full_loop",
+      "comment": "loop"
+    },
+    {
+      "label": "literal_done"
+    },
+    {
+      "op": "add",
+      "dst": "x19",
+      "src": [
+        "x19",
+        "x28"
+      ],
+      "comment": "src += count"
+    },
+    {
+      "op": "add",
+      "dst": "x25",
+      "src": [
+        "x25",
+        "x28"
+      ],
+      "comment": "written += count"
+    },
+    {
+      "op": "b",
+      "target": "loop_start",
+      "comment": "next"
+    },
+    {
+      "label": "err_src"
+    },
+    {
+      "op": "mov",
+      "dst": "x0",
+      "src": [
+        {
+          "imm": -2
+        }
+      ],
+      "comment": "return -2"
+    },
+    {
+      "op": "b",
+      "target": "done",
+      "comment": "exit"
+    },
+    {
+      "label": "err_out"
+    },
+    {
+      "op": "mov",
+      "dst": "x0",
+      "src": [
+        {
+          "imm": -1
+        }
+      ],
+      "comment": "return -1"
+    },
+    {
+      "label": "done"
+    },
+    {
+      "op": "ldp",
+      "dst": [
+        "x19",
+        "x20"
+      ],
+      "src": [
+        {
+          "mem": {
+            "base": "x29",
+            "disp": 16
+          }
+        }
+      ],
+      "comment": "restore"
+    },
+    {
+      "op": "ldp",
+      "src": [
+        "x29",
+        "x30",
+        {
+          "mem": {
+            "base": "x29",
+            "disp": 0
+          },
+          "writeback": "post"
+        }
+      ],
+      "comment": "epilogue"
+    },
+    {
+      "op": "ret",
+      "comment": "return"
+    }
+  ]
+}
+</previous>
+It failed:
+<failure>
+The encoder rejected the program:
+  instruction 18 (sxtb) op: unknown aarch64 op 'sxtb'; did you mean 'strb'?
+  instruction 109 (ldp) dst: ldp requires field 'dst'
+</failure>
+Write a corrected, complete version. Same output format; output only the code.

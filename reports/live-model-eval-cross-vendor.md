@@ -3,7 +3,8 @@
 > **Account caveat.** The Claude account is enrolled in Anthropic's **Cyber Verification Program** and the
 > ChatGPT account in OpenAI's **Daybreak** (Blue tier; no Red / `*-cyber` models); both relax cyber safeguards,
 > so treat those rows as upper bounds for ordinary accounts. The Kimi, Google and xAI accounts have no known
-> equivalent. Plans: Claude Max 20x, ChatGPT Plus, Kimi Allegretto, Google AI Plus (2 TB), SuperGrok.
+> equivalent. Plans: Claude Max 20x, ChatGPT Plus, Kimi Allegretto, Google AI Plus (2 TB), SuperGrok. The Azure Foundry rows
+> are pay-as-you-go API calls on the user's Azure subscription, with Azure's default content filter on.
 > Method, fairness contract and known limits: [cross-vendor-methodology.md](cross-vendor-methodology.md).
 
 Every model got the same 224 cells: rounds 1 + 2, the long-program battery and the adversarial battery
@@ -36,9 +37,11 @@ system and task prompts, and its CLI's default effort (as the Claude runs did). 
 | Claude Opus 4.8 | 35 | 48 | 49 | 43 | **175/224 (78%)** | 222/224 (99%) | 1.27 |
 | Claude Sonnet 5.5 via Copilot | 45 | 55 | 19 | 51 | **170/224 (76%)** | 219/224 (98%) | 1.35 |
 | Kimi K2.8 (for-coding) | 37 | 46 | 28 | 46 | **157/224 (70%)** | 213/224 (95%) | 1.52 |
+| DeepSeek-V4-Pro high (Azure Foundry) | 33 | 45 | 20 | 41 | **139/224 (62%)** | 217/224 (97%) | 1.60 |
 | Codex GPT-6 Luna | 33 | 41 | 10 | 46 | **130/224 (58%)** | 209/224 (93%) | 1.71 |
 | Claude Haiku 4.5 | 30 | 34 | 17 | 35 | **116/224 (52%)** | 158/224 (71%) | 2.19 |
 | Microsoft MAI-Code 1.1 Flash (Copilot) | 26 | 34 | 12 | 35 | **107/224 (48%)** | 151/224 (67%) | 2.29 |
+| Microsoft MAI-Thinking-1 (Azure Foundry) | 22 | 22 | 2 | 26 | **72/224 (32%)** | 144/224 (64%) | 2.58 |
 | Gemini 3.8 Flash High (Antigravity) † | 46 | 60 | 48 | 57/59 | **211/223 (95%)** | 223/223 (100%) | 1.06 |
 
 Codex Daybreak Blue includes one reviewed harness false reject counted as a pass, Grok 4.7 build-fast
@@ -86,9 +89,11 @@ result class, `xor eax, 0` used to zero a register, malformed JSON, unencodable 
 | Claude Opus 4.8 | 63/76 (83%) | 66/74 (89%) | 46/74 (62%) |
 | Claude Sonnet 5.5 via Copilot | 61/76 (80%) | 62/74 (84%) | 47/74 (64%) |
 | Kimi K2.8 (for-coding) | 67/76 (88%) | 52/74 (70%) | 38/74 (51%) |
+| DeepSeek-V4-Pro high (Azure Foundry) | 67/76 (88%) | 42/74 (57%) | 30/74 (41%) |
 | Codex GPT-6 Luna | 60/76 (79%) | 45/74 (61%) | 25/74 (34%) |
 | Claude Haiku 4.5 | 61/76 (80%) | 54/74 (73%) | 1/74 (1%) |
 | Microsoft MAI-Code 1.1 Flash (Copilot) | 59/76 (78%) | 44/74 (59%) | 4/74 (5%) |
+| Microsoft MAI-Thinking-1 (Azure Foundry) | 40/76 (53%) | 24/74 (32%) | 8/74 (11%) |
 
 ## Findings
 
@@ -141,6 +146,22 @@ result class, `xor eax, 0` used to zero a register, malformed JSON, unencodable 
   answers are often malformed JSON. On the app battery (whole programs) it managed 23/96 first attempt and 64/96
   within four (two cells re-run after a stream fix; the totals did not change): the only model tested so far that does not
   eventually write every program.
+- **Two Azure Foundry models, run 2026-11-07/08: Microsoft MAI-Thinking-1 at 32% (72/224; 144/224 within four)
+  and DeepSeek-V4-Pro at 62% (139/224; 217/224 within four).** They are the first rows not reached through a coding
+  CLI: `foundry:<deployment>` calls the Foundry chat-completions API directly on the user's pay-as-you-go Azure
+  subscription (Global Standard, serverless), with the same system and task prompts, no tools, the same time
+  limits, and the served model checked on every chunk. Azure's content filter stays on (MAI-Thinking-1:
+  `Microsoft.MAIDefault`; DeepSeek: `Microsoft.DefaultV2`); neither model had a refusal or a filter block.
+  Cost: MAI-Thinking-1 $24.52 for 577 attempts (the $25 per-model cap stopped it with 10 cells left, and the
+  user raised it to $28 to finish them); DeepSeek-V4-Pro $11.88 for 359. **DeepSeek ran at `reasoning_effort`
+  high**, not the API default: at the default a 12-cell smoke test returned no reasoning and passed 4/12,
+  against 10/12 at high, so the default row would have measured the switch rather than the model.
+  MAI-Thinking-1 ran at its default. MAI-Thinking-1 is weakest on the long battery (2/54) and on QBE (8/74):
+  most QBE answers omit the result class (`%c = ceql %n, 0` for `%c =w ceql`) or invent opcodes (`addl`,
+  `mull`, `shrl`, `copyl`), and its structured answers often misplace fields (an `ldp` with its destination
+  registers in `src`). DeepSeek's 7 never-passed cells are block-argument SSA and hex literals in QBE, and
+  XXH64 wrong on every case. Both runs were reviewed by hand: no harness false rejects. Three MAI-Thinking-1
+  attempts hit the 180 s limit, scored as failures like any other model's.
 - **Fable 5.1's** one final failure is a refusal: Anthropic's cyber classifier blocked
   `fill_down.ir.x86_64` on all four attempts, even on the CVP account.
 
@@ -252,7 +273,7 @@ usable as labels, and GNU as also rejects `jmp cl` with a label `cl` defined (d7
 its definition, with a clearer message; no verdict changes). Also, `vm_run.structured.aarch64` passed on a fresh re-run after the pre-fix output-cap abort (the runtime's
 continuation event stopped the subject); under the current rule the capped 34,574-character answer (ending in a
 run of repeated characters) is scored, and it fails as `format`, so that cell counts as a first-attempt failure.
-Kimi K3, Grok 4.7, Grok 4.6, Grok 4.5, Codex Astra, Sol and GPT-5.5, Claude Sonnet 4.5, Opus 4.8 and MAI-Code: none
+Kimi K3, Grok 4.7, Grok 4.6, Grok 4.5, Codex Astra, Sol and GPT-5.5, Claude Sonnet 4.5, Opus 4.8, MAI-Code, MAI-Thinking-1 and DeepSeek-V4-Pro: none
 (Astra's 227 attempts were all rescored and reproduced; 181 failed attempts reviewed across the last six).
 
 Latency figures are not comparable across vendors (whole-message CLIs; and Kimi's recorded durations in

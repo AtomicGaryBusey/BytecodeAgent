@@ -1,0 +1,243 @@
+Implement the function `int64_t mp_mul(const uint64_t *a, int64_t na, const uint64_t *b, int64_t nb, uint64_t *r)`.
+
+Target: x86-64, Linux System V ABI. Integer/pointer arguments in rdi, rsi, rdx, rcx, r8, r9; 64-bit result in rax. Callee-saved: rbx, rbp, r12, r13, r14, r15 (restore them if you use them); all other registers may be clobbered. rsp is 16-byte aligned before the call, so it is 8 mod 16 at entry; it must be back to its entry value when you return with ret. Never write to the caller's frame (at or above the return address). More ABI facts: arguments beyond the sixth are passed on the stack; at entry the return address is at [rsp], the 7th argument at [rsp+8], the 8th at [rsp+16]. A call clobbers the caller-saved registers rax, rcx, rdx, rsi, rdi, r8-r11, all xmm registers and the flags, so keep values that must survive a call in callee-saved registers (saved/restored by you) or in your own stack frame. rsp must be 16-byte aligned at every call instruction (at entry rsp is 8 mod 16, so an odd number of 8-byte pushes, or `sub rsp, 8` plus any multiple of 16, re-aligns it). Anything below rsp may be overwritten by a callee. The direction flag must be clear at calls and on return.
+
+Output format: QBE intermediate language (the IL of the QBE compiler backend, c9x.me/compile). Write exactly one function, `export function l $mp_mul(...)`, taking every argument as `l` (64-bit; pointers are `l` too) and returning `l`. QBE will compile it for the target above, so you do not handle registers or the ABI yourself. Remember: every block starts with an `@label`; temporaries are `%name`; comparisons such as `csltl`/`ceql` produce a `w` value; `jnz` tests a `w`; loads/stores are `loadl`/`storel`. No data definitions, no calls, no other functions. Output only the QBE code: no Markdown fences, no prose. QBE has no high-multiply instruction: build the 128-bit product of two limbs from 32-bit halves (`and`, `shr` (logical), `mul`, `add`) with explicit carries; an unsigned carry out of `%s =l add %x, %y` is `%c =w cultl %s, %x`.
+
+Specification: Multi-precision multiplication. a holds na and b holds nb 64-bit limbs (0 <= na, nb <= 8), each an unsigned number in little-endian limb order: A = a[0] + a[1]*2^64 + ... . Write the full product A*B to r[0..na+nb-1] (little-endian limbs, every one of the na+nb limbs written, including high zero limbs; r starts out as garbage and does not overlap a or b) and return the number of significant limbs: the smallest k such that r[k..na+nb-1] are all 0 (so 0 when the product is 0, e.g. when na or nb is 0). Limbs are full unsigned 64-bit values (up to 2^64 - 1): the schoolbook method needs the full 128-bit product of two limbs and carries that propagate. Example: a = {2^64-1}, b = {2^64-1} gives r = {1, 2^64-2} and returns 2. Read only a[0..na-1], b[0..nb-1] and r[0..na+nb-1]; write only r[0..na+nb-1] (all checked).
+
+Your previous attempt was:
+<previous>
+export function l $mp_mul(l %a, l %na, l %b, l %nb, l %r) {
+@start
+	%zero =l add 0, 0
+	%ff32 =l add 0, 4294967295
+
+	# Handle edge cases: if na <= 0 or nb <= 0, return 0
+	%nacmpz =w ceql %na, %zero
+	jnz %nacmpz, @ret_zero, @check_nb
+@check_nb
+	%nbcmpz =w ceql %nb, %zero
+	jnz %nbcmpz, @ret_zero, @init_clear
+
+@init_clear
+	# Compute total size rn_total = na + nb
+	%rn_total =l add %na, %nb
+
+	# Clear result array r[0 .. rn_total-1] to zero
+	%ridx =l add 0, 0
+@clear_loop
+	%clr_cmp =w csltl %ridx, %rn_total
+	jnz %clr_cmp, @clear_store, @mul_init
+@clear_store
+	# Compute address r + ridx * 8
+	%roff =l shl %ridx, 3
+	%raddr_c =l add %r, %roff
+	storel %zero, %raddr_c
+	%ridx_n =l add %ridx, 1
+	%ridx =l copy %ridx_n
+	jmp @clear_loop
+
+@mul_init
+	%i =l add 0, 0
+@i_loop
+	%icmp =w csltl %i, %na
+	jnz %icmp, @i_body, @norm_start
+@i_body
+	# Load a[i]
+	%aoff_i =l shl %i, 3
+	%aaddr_i =l add %a, %aoff_i
+	%ai =l loadl %aaddr_i
+
+	%j =l add 0, 0
+	%carry =l add 0, 0
+@j_loop
+	%jcmp =w csltl %j, %nb
+	jnz %jcmp, @j_body, @prop_carry_block
+@j_body
+	# Load b[j]
+	%boff_j =l shl %j, 3
+	%baddr_j =l add %b, %boff_j
+	%bj =l loadl %baddr_j
+
+	# Multiply ai * bj -> (hi_prod, lo_prod)
+	# Split ai into ai0 (low 32), ai1 (high 32)
+	%ai0 =l and %ai, %ff32
+	%ai1 =l shr %ai, 32
+
+	# Split bj into bj0, bj1
+	%bj0 =l and %bj, %ff32
+	%bj1 =l shr %bj, 32
+
+	# Compute partial products: t00, t01, t10, t11
+	%t00 =l mul %ai0, %bj0
+	%t01 =l mul %ai0, %bj1
+	%t10 =l mul %ai1, %bj0
+	%t11 =l mul %ai1, %bj1
+
+	# Compute m = t01 + t10
+	%m =l add %t01, %t10
+	# m1h = high 32 of m
+	%m1h =l shr %m, 32
+
+	# Compute lo_prod = t00 + (m << 32)
+	%mlsh =l shl %m, 32
+	%lo_prod =l add %t00, %mlsh
+	# Carry from lo_prod addition
+	%c1_lo_flag =w cultl %lo_prod, %t00
+	%c1_lo =l extuw %c1_lo_flag
+
+	# Compute hi_prod = t11 + m1h + c1_lo
+	%hi_prod1 =l add %t11, %m1h
+	%c2_h_flag =w cultl %hi_prod1, %t11
+	%c2_h =l extuw %c2_h_flag
+	%hi_prod2 =l add %hi_prod1, %c2_h
+	%c3_h_flag =w cultl %hi_prod2, %hi_prod1
+	%c3_h =l extuw %c3_h_flag
+	%hi_prod3 =l add %hi_prod2, %c1_lo
+	%c4_h_flag =w cultl %hi_prod3, %hi_prod2
+	%c4_h =l extuw %c4_h_flag
+	%hi_prod4 =l add %hi_prod3, %c3_h
+	%c5_h_flag =w cultl %hi_prod4, %hi_prod3
+	%c5_h =l extuw %c5_h_flag
+	%hi_prod =l add %hi_prod4, %c4_h
+	%c6_h_flag =w cultl %hi_prod, %hi_prod4
+	%c6_h =l extuw %c6_h_flag
+	%hi_prod_res =l add %hi_prod, %c5_h
+	%c7_h_flag =w cultl %hi_prod_res, %hi_prod
+	%c7_h =l extuw %c7_h_flag
+	%hi_prod_final =l add %hi_prod_res, %c6_h
+	%c8_h_flag =w cultl %hi_prod_final, %hi_prod_res
+	%c8_h =l extuw %c8_h_flag
+	%hi_f =l add %hi_prod_final, %c7_h
+	%c9_h_flag =w cultl %hi_f, %hi_prod_final
+	%c9_h =l extuw %c9_h_flag
+	%hi_out =l add %hi_f, %c8_h
+	%c10_h_flag =w cultl %hi_out, %hi_f
+	%c10_h =l extuw %c10_h_flag
+	%hi_res_mul =l add %hi_out, %c9_h
+
+	# Accumulate into r[i + j]
+	%rij_idx =l add %i, %j
+	%r_ij_off =l shl %rij_idx, 3
+	%raddr_ij =l add %r, %r_ij_off
+	%rij_cur =l loadl %raddr_ij
+
+	# s1 = rij_cur + lo_prod
+	%s1 =l add %rij_cur, %lo_prod
+	%cs1_flag_a =w cultl %s1, %rij_cur
+	%cs1_a =l extuw %cs1_flag_a
+	%cs1_flag_b =w cultl %s1, %lo_prod
+	%cs1_b =l extuw %cs1_flag_b
+	%cs1 =l add %cs1_a, %cs1_b
+
+	# s2 = s1 + carry
+	%s2 =l add %s1, %carry
+	%cs2_flag_a =w cultl %s2, %s1
+	%cs2_a =l extuw %cs2_flag_a
+	%cs2_flag_b =w cultl %s2, %carry
+	%cs2_b =l extuw %cs2_flag_b
+	%cs2 =l add %cs2_a, %cs2_b
+
+	# Store s2
+	storel %s2, %raddr_ij
+
+	# new_carry = hi_res_mul + cs1 + cs2
+	%cnew1 =l add %hi_res_mul, %cs1
+	%ccn1_flag =w cultl %cnew1, %hi_res_mul
+	%ccn1 =l extuw %ccn1_flag
+	%cnew2 =l add %cnew1, %cs2
+	%ccn2_flag =w cultl %cnew2, %cnew1
+	%ccn2 =l extuw %ccn2_flag
+	%cnew3 =l add %cnew2, %ccn1
+	%ccn3_flag =w cultl %cnew3, %cnew2
+	%ccn3 =l extuw %ccn3_flag
+	%cnew =l add %cnew3, %ccn2
+	%ccn4_flag =w cultl %cnew, %cnew3
+	%ccn4 =l extuw %ccn4_flag
+	%carry_new_res =l add %cnew, %ccn3
+	%ccn5_flag =w cultl %carry_new_res, %cnew
+	%ccn5 =l extuw %ccn5_flag
+	%carry_res_final =l add %carry_new_res, %ccn4
+
+	%carry =l copy %carry_res_final
+
+	# j++
+	%jnext =l add %j, 1
+	%j =l copy %jnext
+	jmp @j_loop
+
+@prop_carry_block
+	# Propagate carry to r[i + nb ...]
+	%rinh_idx =l add %i, %nb
+	%rn_tot_chk =l add %na, %nb
+@prop_loop
+	%inh_cmp_cur =w csltl %rinh_idx, %rn_tot_chk
+	jnz %inh_cmp_cur, @prop_do, @i_inc
+@prop_do
+	# Load current
+	%rinh_off =l shl %rinh_idx, 3
+	%raddr_inh =l add %r, %rinh_off
+	%rin_cur =l loadl %raddr_inh
+	# Add carry
+	%rnewv =l add %rin_cur, %carry
+	%ccp_flag =w cultl %rnewv, %rin_cur
+	%ccp =l extuw %ccp_flag
+	%rnewv2 =l add %rnewv, %ccp
+	# Store
+	storel %rnewv2, %raddr_inh
+	# Check if carry propagated: if rnewv2 == rin_cur and carry != 0? Or if no unsigned overflow, carry becomes 0
+	# Carry out is 1 if wrapped, else 0 (and value was added)
+	%wrapped =w ceql %rnewv2, %rin_cur
+	jnz %wrapped, @check_carry_nonzero, @carry_zero_now
+@check_carry_nonzero
+	# Wrapped means carry out occurred (value same as old only in some cases? no, 64-bit: old=0xFFFFFFFFFFFFFFFF, carry=1 -> newv=0, rnewv2=0 == rin_cur? 0 == 0xFFFFFFFFFFFFFFFF no; so wrapped flag as equality means no wrap? better: overflow if rnewv < rin_cur
+	%ovf_flag =w cultl %rnewv, %rin_cur
+	jnz %ovf_flag, @carry_still_one, @carry_zero_now
+@carry_still_one
+	%carry =l add 0, 1
+	%rinh_nxt =l add %rinh_idx, 1
+	%rinh_idx =l copy %rinh_nxt
+	jmp @prop_loop
+@carry_zero_now
+	%carry =l add 0, 0
+	jmp @i_inc
+
+@i_inc
+	%inext =l add %i, 1
+	%i =l copy %inext
+	jmp @i_loop
+
+@norm_start
+	%k =l add %rn_total, 0
+@norm_loop
+	%kcmpz =w ceql %k, %zero
+	jnz %kcmpz, @ret_zero, @norm_check
+@norm_check
+	%km1 =l add %k, -1
+	%kidx_n =l copy %km1
+	%koff_n =l shl %kidx_n, 3
+	%raddr_n =l add %r, %koff_n
+	%rnval =l loadl %raddr_n
+	%rnz_flag =w ceql %rnval, %zero
+	jnz %rnz_flag, @norm_dec, @ret_k
+@norm_dec
+	%k =l copy %km1
+	jmp @norm_loop
+
+@ret_k
+	%kres =l add %k, 1
+	ret %kres
+
+@ret_zero
+	ret %zero
+}
+</previous>
+It failed:
+<failure>
+39 of 45 test cases failed. First failures:
+  mp_mul(a=[], na=0, b=[0x5], nb=1, r): expected 0, got 0; r[0..1) (memory [48, 56) of the block) after the call: expected [0], got [8466728950379372875]
+  mp_mul(a=[0x5], na=1, b=[], nb=0, r): expected 0, got 0; r[0..1) (memory [64, 72) of the block) after the call: expected [0], got [10793833783818521439]
+  mp_mul(a=[0x1], na=1, b=[0x1], nb=1, r): expected 1, got 2
+</failure>
+Write a corrected, complete version. Same output format; output only the code.

@@ -47,7 +47,8 @@ ISAs, with up to four attempts and repair feedback.
 - **Subjects:** Claude models via `claude -p`; `codex:<model>` (OpenAI Codex CLI), `kimi:<model>`
   (Kimi Code), `agy:<model>` (Google Antigravity), `grok:<model>` (xAI Grok Build) and `copilot:<model>`
   (GitHub Copilot CLI through the Copilot SDK: Microsoft's MAI-Code, plus other vendors' models served by
-  GitHub for harness comparisons), and `local:<model>` (open-weight models served by Ollama on this
+  GitHub for harness comparisons), `foundry:<deployment>` (Azure Foundry pay-per-token, called through its
+  API directly, with a per-model spend cap), `fireworks:<model>` (Fireworks.ai serverless, the same way), and `local:<model>` (open-weight models served by Ollama on this
   machine, called through its API directly).
 - **Fair comparison:** every subject runs with zero tools, the same system and task prompts, a private
   home per call, and a pinned CLI version; each call is verified against the CLI's own record of the
@@ -89,9 +90,11 @@ its plan quota is spent.
 | Claude Opus 4.8 | 35 | 48 | 49 | 43 | **175/224 (78%)** | 222/224 (99%) | 1.27 |
 | Claude Sonnet 5.5 via Copilot | 45 | 55 | 19 | 51 | **170/224 (76%)** | 219/224 (98%) | 1.35 |
 | Kimi K2.8 (for-coding) | 37 | 46 | 28 | 46 | **157/224 (70%)** | 213/224 (95%) | 1.52 |
+| DeepSeek-V4-Pro high (Azure Foundry) | 33 | 45 | 20 | 41 | **139/224 (62%)** | 217/224 (97%) | 1.60 |
 | Codex GPT-6 Luna | 33 | 41 | 10 | 46 | **130/224 (58%)** | 209/224 (93%) | 1.71 |
 | Claude Haiku 4.5 | 30 | 34 | 17 | 35 | **116/224 (52%)** | 158/224 (71%) | 2.19 |
 | Microsoft MAI-Code 1.1 Flash (Copilot) | 26 | 34 | 12 | 35 | **107/224 (48%)** | 151/224 (67%) | 2.29 |
+| Microsoft MAI-Thinking-1 (Azure Foundry) | 22 | 22 | 2 | 26 | **72/224 (32%)** | 144/224 (64%) | 2.58 |
 | Gemini 3.8 Flash High (Antigravity) † | 46 | 60 | 48 | 57/59 | **211/223 (95%)** | 223/223 (100%) | 1.06 |
 
 

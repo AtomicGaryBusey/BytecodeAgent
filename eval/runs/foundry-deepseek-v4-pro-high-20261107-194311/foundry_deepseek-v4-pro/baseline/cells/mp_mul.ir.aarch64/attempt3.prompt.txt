@@ -1,0 +1,149 @@
+Implement the function `int64_t mp_mul(const uint64_t *a, int64_t na, const uint64_t *b, int64_t nb, uint64_t *r)`.
+
+Target: AArch64 (ARMv8-A), Linux AAPCS64. Integer/pointer arguments in x0-x7; 64-bit result in x0. Callee-saved: x19-x28, x29 (frame pointer) and d8-d15 (restore them if you use them); x9-x15 are free scratch registers. sp must stay 16-byte aligned and be back to its entry value when you return with ret (return address in x30). More ABI facts: arguments beyond the eighth are passed on the stack (the 9th at [sp] at entry). A call (bl/blr) overwrites x30, so save x30 (e.g. stp x29, x30, [sp, #-16]!) before calling and restore it before ret. A call clobbers the caller-saved registers x0-x18, x30, v0-v7 and v16-v31 (and the upper halves of v8-v15) and the flags, so keep values that must survive a call in callee-saved registers x19-x28 (saved/restored by you) or in your own stack frame. sp must be 16-byte aligned at every call (and whenever it is used as a base register). Anything below sp may be overwritten by a callee.
+
+Output format: QBE intermediate language (the IL of the QBE compiler backend, c9x.me/compile). Write exactly one function, `export function l $mp_mul(...)`, taking every argument as `l` (64-bit; pointers are `l` too) and returning `l`. QBE will compile it for the target above, so you do not handle registers or the ABI yourself. Remember: every block starts with an `@label`; temporaries are `%name`; comparisons such as `csltl`/`ceql` produce a `w` value; `jnz` tests a `w`; loads/stores are `loadl`/`storel`. No data definitions, no calls, no other functions. Output only the QBE code: no Markdown fences, no prose. QBE has no high-multiply instruction: build the 128-bit product of two limbs from 32-bit halves (`and`, `shr` (logical), `mul`, `add`) with explicit carries; an unsigned carry out of `%s =l add %x, %y` is `%c =w cultl %s, %x`.
+
+Specification: Multi-precision multiplication. a holds na and b holds nb 64-bit limbs (0 <= na, nb <= 8), each an unsigned number in little-endian limb order: A = a[0] + a[1]*2^64 + ... . Write the full product A*B to r[0..na+nb-1] (little-endian limbs, every one of the na+nb limbs written, including high zero limbs; r starts out as garbage and does not overlap a or b) and return the number of significant limbs: the smallest k such that r[k..na+nb-1] are all 0 (so 0 when the product is 0, e.g. when na or nb is 0). Limbs are full unsigned 64-bit values (up to 2^64 - 1): the schoolbook method needs the full 128-bit product of two limbs and carries that propagate. Example: a = {2^64-1}, b = {2^64-1} gives r = {1, 2^64-2} and returns 2. Read only a[0..na-1], b[0..nb-1] and r[0..na+nb-1]; write only r[0..na+nb-1] (all checked).
+
+Your previous attempt was:
+<previous>
+export function l $mp_mul(l %a, l %na, l %b, l %nb, l %r) {
+@start
+	%total =l add %na, %nb
+	%k_zero =l copy $0
+@zero_loop
+	%cond_zero =w csltl %k_zero, %total
+	jnz %cond_zero, @zero_body, @zero_done
+@zero_body
+	%off_z =l shl %k_zero, $3
+	%ptr_z =l add %r, %off_z
+	storel $0, %ptr_z
+	%k_zero =l add %k_zero, $1
+	jmp @zero_loop
+@zero_done
+	%is_na_zero =w ceql %na, $0
+	jnz %is_na_zero, @return_zero, @check_nb
+@check_nb
+	%is_nb_zero =w ceql %nb, $0
+	jnz %is_nb_zero, @return_zero, @mult_start
+
+@return_zero
+	ret $0
+
+@mult_start
+	%i =l copy $0
+@outer_loop
+	%cond_i =w csltl %i, %na
+	jnz %cond_i, @outer_body, @outer_loop_done
+@outer_body
+	%j =l copy $0
+@inner_loop
+	%cond_j =w csltl %j, %nb
+	jnz %cond_j, @inner_body, @inner_loop_done
+@inner_body
+	%ai_off =l shl %i, $3
+	%ai_ptr =l add %a, %ai_off
+	%ai =l loadl %ai_ptr
+	%bj_off =l shl %j, $3
+	%bj_ptr =l add %b, %bj_off
+	%bj =l loadl %bj_ptr
+	%a_lo =l and %ai, $0xffffffff
+	%a_hi =l shr %ai, $32
+	%b_lo =l and %bj, $0xffffffff
+	%b_hi =l shr %bj, $32
+	%p0 =l mul %a_lo, %b_lo
+	%p1 =l mul %a_hi, %b_lo
+	%p2 =l mul %a_lo, %b_hi
+	%p3 =l mul %a_hi, %b_hi
+	%M =l add %p1, %p2
+	%C_M =w cultl %M, %p1
+	%M_lo =l and %M, $0xffffffff
+	%M_hi =l shr %M, $32
+	%shifted =l shl %M_lo, $32
+	%low =l add %p0, %shifted
+	%C_low =w cultl %low, %p0
+	%C_M_l =l extuw %C_M
+	%C_M_shifted =l shl %C_M_l, $32
+	%C_low_l =l extuw %C_low
+	%high_part =l add %p3, %M_hi
+	%high_part2 =l add %high_part, %C_M_shifted
+	%high =l add %high_part2, %C_low_l
+	%idx_r0 =l add %i, %j
+	%idx_r1 =l add %idx_r0, $1
+	%off0 =l shl %idx_r0, $3
+	%ptr0 =l add %r, %off0
+	%r0 =l loadl %ptr0
+	%new_r0 =l add %r0, %low
+	%c_r0 =w cultl %new_r0, %r0
+	storel %new_r0, %ptr0
+	%off1 =l shl %idx_r1, $3
+	%ptr1 =l add %r, %off1
+	%r1 =l loadl %ptr1
+	%c_r0_l =l extuw %c_r0
+	%to_add =l add %high, %c_r0_l
+	%new_r1 =l add %r1, %to_add
+	%c_r1 =w cultl %new_r1, %r1
+	storel %new_r1, %ptr1
+	%c_r1_l =l extuw %c_r1
+	%carry_flag =w ceql %c_r1_l, $0
+	jnz %carry_flag, @inner_finish, @propagate_start
+
+@propagate_start
+	%k =l add %idx_r1, $1
+	%carry_val =l copy %c_r1_l
+	jmp @prop_loop
+@prop_loop
+	%k_cond =w csltl %k, %total
+	jnz %k_cond, @prop_body, @prop_break
+@prop_body
+	%off_k =l shl %k, $3
+	%ptr_k =l add %r, %off_k
+	%rk =l loadl %ptr_k
+	%new_rk =l add %rk, %carry_val
+	%c_prop =w cultl %new_rk, %rk
+	storel %new_rk, %ptr_k
+	%carry_val =l extuw %c_prop
+	%carry_zero =w ceql %carry_val, $0
+	jnz %carry_zero, @prop_break, @prop_continue
+@prop_continue
+	%k =l add %k, $1
+	jmp @prop_loop
+@prop_break
+	jmp @inner_finish
+
+@inner_finish
+	%j =l add %j, $1
+	jmp @inner_loop
+
+@inner_loop_done
+	%i =l add %i, $1
+	jmp @outer_loop
+
+@outer_loop_done
+	%k_sig =l sub %total, $1
+@scan_loop
+	%scan_cond =w csgel %k_sig, $0
+	jnz %scan_cond, @scan_body, @scan_done
+@scan_body
+	%off_s =l shl %k_sig, $3
+	%ptr_s =l add %r, %off_s
+	%val_s =l loadl %ptr_s
+	%is_zero_s =w ceql %val_s, $0
+	jnz %is_zero_s, @scan_decrement, @scan_found
+@scan_decrement
+	%k_sig =l sub %k_sig, $1
+	jmp @scan_loop
+@scan_found
+	%len =l add %k_sig, $1
+	ret %len
+@scan_done
+	ret $0
+}
+</previous>
+It failed:
+<failure>
+Compilation failed at stage qbe:
+qbe:-:4: invalid character 0 (48)
+</failure>
+Write a corrected, complete version. Same output format; output only the code.

@@ -1,0 +1,177 @@
+export function l $mp_mul(l %a, l %na, l %nb, l %rptr) {
+@entry:
+	%zero =l add 0, 0
+	%one  =l add 0, 1
+	%two  =l add 0, 2
+	%msk32= l add 0, 4294967295  # 2^32-1
+
+	# Check if either operand has zero limbs
+	%na_le0 =w cslel %na, %zero
+	%nb_le0 =w cslel %nb, %zero
+	%or0    =w or %na_le0, %nb_le0
+	jnz %or0, @return_zero
+
+	# Compute total limbs = na + nb
+	%total  =l add %na, %nb
+
+	# Clear result array r[0 .. total-1] to zero
+	%ri =l add 0, 0
+@clear_loop:
+	%clr_done =w csgel %ri, %total
+	jnz %clr_done, @clear_done
+	%raddr_c  =l add %rptr, %ri
+	%raddr_c  =l shl %raddr_c, 3
+	%raddr_c  =l add %rptr, %raddr_c
+	storel %zero, %raddr_c
+	%ri_next  =l add %ri, %one
+	%ri       =l add %ri_next, 0
+	jmp @clear_loop
+@clear_done:
+
+	# Perform schoolbook multiplication: for i in 0..na-1: for j in 0..nb-1: r[i+j] += a_i*b_j
+	%i =l add 0, 0
+@outer_loop:
+	%i_done =w csgel %i, %na
+	jnz %i_done, @mul_done
+
+	# Load a_i
+	%a_off_i =l add %a, %i
+	%a_off_i =l shl %a_off_i, 3
+	%a_off_i =l add %a, %a_off_i
+	%ai      =l loadl %a_off_i
+
+	# Split a_i into high and low 32-bit
+	%ai_lo   =l and %ai, %msk32
+	%ai_hi   =l shr %ai, 32
+
+	%j =l add 0, 0
+@inner_loop:
+	%j_done =w csgel %j, %nb
+	jnz %j_done, @outer_next
+
+	# Load b_j
+	%b_off_j =l add %b, %j
+	%b_off_j =l shl %b_off_j, 3
+	%b_off_j =l add %b, %b_off_j
+	%bj      =l loadl %b_off_j
+
+	# Split b_j into high and low 32-bit
+	%bj_lo   =l and %bj, %msk32
+	%bj_hi   =l shr %bj, 32
+
+	# Compute 64x64 product via 32-bit halves: (ai_hi*2^32+ai_lo)*(bj_hi*2^32+bj_lo)
+	# terms: p0 = ai_lo*bj_lo (low), p1m = ai_lo*bj_hi + ai_hi*bj_lo (mid), p2 = ai_hi*bj_hi (high)
+	%p0_ll   =l mul %ai_lo, %bj_lo
+	%p1m1_ll =l mul %ai_lo, %bj_hi
+	%p1m2_ll =l mul %ai_hi, %bj_lo
+	%p2_ll   =l mul %ai_hi, %bj_hi
+
+	# Add mid terms
+	%mid_sum =l add %p1m1_ll, %p1m2_ll
+	%mid_c1  =w cultl %mid_sum, %p1m1_ll  # unsigned carry from mid_sum
+
+	# Write into result at positions i+j, i+j+1, i+j+2
+	%rbase   =l add %i, %j
+	%r0_off  =l add %rptr, %rbase
+	%r0_off  =l shl %r0_off, 3
+	%r0_off  =l add %rptr, %r0_off
+	%r1_off  =l add %r0_off, 8
+	%r2_off  =l add %r0_off, 16
+
+	# Add p0 to r0
+	%r0_cur  =l loadl %r0_off
+	%r0_new  =l add %r0_cur, %p0_ll
+	%cy0     =w cultl %r0_new, %r0_cur
+	storel %r0_new, %r0_off
+
+	# Add mid_sum << 32 to r0,r1
+	%mid_lo  =l shl %mid_sum, 32
+	%mid_hi  =l shr %mid_sum, 32
+
+	# Add mid_lo to r0
+	%r0_cur2 =l loadl %r0_off
+	%r0_new2 =l add %r0_cur2, %mid_lo
+	%cy0b    =w cultl %r0_new2, %r0_cur2
+	storel %r0_new2, %r0_off
+
+	# Add carries from mid_lo addition to r1: cy0b
+	%cy0bw   =l extsw %cy0b
+	%r1_cur1 =l loadl %r1_off
+	%r1_new1 =l add %r1_cur1, %cy0bw
+	%cy1a    =w cultl %r1_new1, %r1_cur1
+	storel %r1_new1, %r1_off
+
+	# Add mid_hi to r1
+	%r1_cur2 =l loadl %r1_off
+	%r1_new2 =l add %r1_cur2, %mid_hi
+	%cy1b    =w cultl %r1_new2, %r1_cur2
+	storel %r1_new2, %r1_off
+
+	# Handle carries from mid terms and from r0,r1 additions into r2
+	%cy_mid  =l extsw %mid_c1
+	%cy0bw2  =l extsw %cy0b
+	%cy1bw   =l extsw %cy1b
+	%cy1aw   =l extsw %cy1a
+
+	%carry_r2 =l add %cy_mid, %cy0bw2
+	%carry_r2 =l add %carry_r2, %cy1aw
+	%carry_r2 =l add %carry_r2, %cy1bw
+
+	# Add p2 << 32? no: p2 is ai_hi*bj_hi (value < 2^64), placed at high part: contributes p2 * 2^64
+	# so add p2 to r2
+	%r2_cur1 =l loadl %r2_off
+	%r2_new1 =l add %r2_cur1, %p2_ll
+	%cy2a    =w cultl %r2_new1, %r2_cur1
+	storel %r2_new1, %r2_off
+
+	# Add carry_r2 to r2
+	%r2_cur2 =l loadl %r2_off
+	%r2_new2 =l add %r2_cur2, %carry_r2
+	%cy2b    =w cultl %r2_new2, %r2_cur2
+	storel %r2_new2, %r2_off
+
+	# Carry out to r3 if any (cy2a or cy2b) – rare but possible for full 64-bit range
+	%cy2aw   =l extsw %cy2a
+	%cy2bw   =l extsw %cy2b
+	%cy_r3   =l add %cy2aw, %cy2bw
+	%r3_off  =l add %r0_off, 24
+	%r3_cur  =l loadl %r3_off
+	%r3_new  =l add %r3_cur, %cy_r3
+	storel %r3_new, %r3_off
+
+	# Next j
+	%j_next  =l add %j, %one
+	%j       =l add %j_next, 0
+	jmp @inner_loop
+
+@outer_next:
+	%i_next  =l add %i, %one
+	%i       =l add %i_next, 0
+	jmp @outer_loop
+
+@mul_done:
+	# Find significant limbs: count from total-1 down to 0
+	%k      =l sub %total, %one
+@count_loop:
+	%k_lt0  =w csltl %k, %zero
+	jnz %k_lt0, @return_zero_res
+	%k_off  =l add %rptr, %k
+	%k_off  =l shl %k_off, 3
+	%k_off  =l add %rptr, %k_off
+	%valk   =l loadl %k_off
+	%valnz  =w cnel %valk, %zero
+	jnz %valnz, @return_k1
+	%k_next =l sub %k, %one
+	%k      =l add %k_next, 0
+	jmp @count_loop
+
+@return_k1:
+	%res_k  =l add %k, %one
+	ret %res_k
+
+@return_zero_res:
+	ret %zero
+
+@return_zero:
+	ret %zero
+}

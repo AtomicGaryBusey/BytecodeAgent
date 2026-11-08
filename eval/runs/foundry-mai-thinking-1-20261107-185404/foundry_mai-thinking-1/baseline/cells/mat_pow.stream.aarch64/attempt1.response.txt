@@ -1,0 +1,232 @@
+mat_pow:
+cbz x2, .Lk_zero
+
+// Save callee-saved if any not needed (none used) but just ensure no issue
+// x0=a, x1=n, x2=k, x3=out, x4=tmp
+
+// Compute sizes
+mul x9, x1, x1        // x9 = n*n (elements)
+lsl x9, x9, #3        // x9 = n*n * 8 (bytes)
+
+// Copy a to tmp[0] (M_buf)
+mov x10, x0           // a
+mov x11, x4           // tmp base (M_buf)
+add x12, x4, x9       // P_buf
+mov x13, x9, lsr #3   // count elements
+cbz x13, .Lafter_copy
+
+.Lcopy_a_loop:
+sub x13, x13, #1
+ldr x14, [x10, x13, lsl #3]
+str x14, [x11, x13, lsl #3]
+cbnz x13, .Lcopy_a_loop
+
+.Lafter_copy:
+
+// Set identity matrix in out (R)
+mov x10, x3           // out
+mov x13, x9, lsr #3   // elements
+cbz x13, .Lid_done
+
+.Lzero_out_loop:
+sub x13, x13, #1
+str xzr, [x10, x13, lsl #3]
+cbnz x13, .Lzero_out_loop
+
+.Lid_done:
+mov x10, x1           // n
+mov x11, x3           // out
+mov x12, xzr          // i
+cbz x10, .Lexp_start
+
+.Lid_diag_loop:
+mul x13, x12, x10     // i*n
+add x13, x13, x12     // i*n + i
+str xzr, [x11, x13, lsl #3]
+mov x14, #1
+str x14, [x11, x13, lsl #3]
+add x12, x12, #1
+cmp x12, x10
+b.lt .Lid_diag_loop
+
+.Lexp_start:
+mov x15, x2           // k (exponent)
+mov x5, x4            // M_buf = tmp[0]
+add x6, x4, x9        // P_buf = tmp[n*n*8]
+mov x7, x3            // R = out
+
+.Lexp_loop:
+cbz x15, .Lexp_done
+
+// Check lowest bit of k: if set, R = R * M_buf -> to P_buf then copy to R
+tbz x15, #0, .Lno_mul_r
+
+// Multiply R (x7) * M_buf (x5) -> P_buf (x6), n in x1
+bl .Lmat_mul_inline
+
+// Copy P_buf (x6) to R (x7), count n*n
+mov x10, x7           // dst R
+mov x11, x6           // src P_buf
+mov x13, x9, lsr #3   // elements
+cbz x13, .Lcopied_r
+
+.Lcopy_r_loop:
+sub x13, x13, #1
+ldr x12, [x11, x13, lsl #3]
+str x12, [x10, x13, lsl #3]
+cbnz x13, .Lcopy_r_loop
+
+.Lcopied_r:
+
+.Lno_mul_r:
+
+// Square M_buf: M_buf = M_buf * M_buf -> P_buf then copy to M_buf
+mov x10, x5           // A = M_buf
+mov x11, x5           // B = M_buf
+mov x12, x6           // C = P_buf
+mov x13, x1           // n
+bl .Lmat_mul_inline
+
+// Copy P_buf (x6) to M_buf (x5)
+mov x10, x5           // dst
+mov x11, x6           // src
+mov x13, x9, lsr #3   // elements
+cbz x13, .Lcopied_m
+
+.Lcopy_m_loop:
+sub x13, x13, #1
+ldr x12, [x11, x13, lsl #3]
+str x12, [x10, x13, lsl #3]
+cbnz x13, .Lcopy_m_loop
+
+.Lcopied_m:
+
+// Right shift k
+lsr x15, x15, #1
+b .Lexp_loop
+
+.Lexp_done:
+
+// Zero tmp: M_buf (x4) and P_buf (x4 + x9)
+mov x10, x4           // tmp base
+mov x13, x9, lsr #3   // n*n elements per block
+add x14, x13, x13     // 2*n*n
+cbz x14, .Lzero_tmp_done
+
+.Lzero_tmp_loop:
+sub x14, x14, #1
+str xzr, [x10, x14, lsl #3]
+cbnz x14, .Lzero_tmp_loop
+
+.Lzero_tmp_done:
+
+// Return 0
+mov x0, xzr
+ret
+
+.Lk_zero:
+
+// k == 0: identity to out, zero tmp
+mov x9, x1
+mul x9, x9, x9        // n*n
+lsl x9, x9, #3        // bytes
+// zero out
+mov x10, x3
+mov x13, x9, lsr #3
+cbz x13, .Lid_k0_done
+
+.Lzero_out_k0_loop:
+sub x13, x13, #1
+str xzr, [x10, x13, lsl #3]
+cbnz x13, .Lzero_out_k0_loop
+
+.Lid_k0_done:
+// identity
+mov x10, x1
+mov x11, x3
+mov x12, xzr
+cbz x10, .Lzero_tmp_k0
+
+.Lid_k0_diag_loop:
+mul x13, x12, x10
+add x13, x13, x12
+str xzr, [x11, x13, lsl #3]
+mov x14, #1
+str x14, [x11, x13, lsl #3]
+add x12, x12, #1
+cmp x12, x10
+b.lt .Lid_k0_diag_loop
+
+.Lzero_tmp_k0:
+// zero tmp
+mov x10, x4
+mov x13, x9, lsr #3
+add x14, x13, x13
+cbz x14, .Lret0_k0
+
+.Lzero_tmp_k0_loop:
+sub x14, x14, #1
+str xzr, [x10, x14, lsl #3]
+cbnz x14, .Lzero_tmp_k0_loop
+
+.Lret0_k0:
+mov x0, xzr
+ret
+
+// Matrix multiply inline: C = A * B, n in x13
+// inputs: x10 = A, x11 = B, x12 = C, x13 = n
+.Lmat_mul_inline:
+stp x29, x30, [sp, #-16]!
+mov x29, sp
+
+// Save args
+mov x19, x10          // A
+mov x20, x11          // B
+mov x21, x12          // C
+mov x22, x13          // n
+
+// i = 0
+mov x23, xzr          // i
+cbz x22, .Lmul_done
+
+.Lmul_i_loop:
+mov x24, xzr          // j
+.Lmul_j_loop:
+mov x25, xzr          // sum = 0
+mov x26, xzr          // t
+.Lmul_t_loop:
+// compute A[i*n + t] * B[t*n + j]
+mul x27, x23, x22     // i*n
+add x27, x27, x26     // i*n + t
+lsl x27, x27, #3
+ldr x9, [x19, x27]    // A element
+
+mul x28, x26, x22     // t*n
+add x28, x28, x24     // t*n + j
+lsl x28, x28, #3
+ldr x10, [x20, x28]   // B element
+
+mul x9, x9, x10       // product (wrapping 64-bit)
+add x25, x25, x9      // sum += product
+
+add x26, x26, #1
+cmp x26, x22
+b.lt .Lmul_t_loop
+
+// store sum to C[i*n + j]
+mul x27, x23, x22
+add x27, x27, x24
+lsl x27, x27, #3
+str x25, [x21, x27]
+
+add x24, x24, #1
+cmp x24, x22
+b.lt .Lmul_j_loop
+
+add x23, x23, #1
+cmp x23, x22
+b.lt .Lmul_i_loop
+
+.Lmul_done:
+ldp x29, x30, [sp], #16
+ret

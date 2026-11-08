@@ -1,0 +1,1316 @@
+Implement the function `int64_t mat_pow(const int64_t *a, int64_t n, int64_t k, int64_t *out, int64_t *tmp)`.
+
+Target: AArch64 (ARMv8-A), Linux AAPCS64. Integer/pointer arguments in x0-x7; 64-bit result in x0. Callee-saved: x19-x28, x29 (frame pointer) and d8-d15 (restore them if you use them); x9-x15 are free scratch registers. sp must stay 16-byte aligned and be back to its entry value when you return with ret (return address in x30). More ABI facts: arguments beyond the eighth are passed on the stack (the 9th at [sp] at entry). A call (bl/blr) overwrites x30, so save x30 (e.g. stp x29, x30, [sp, #-16]!) before calling and restore it before ret. A call clobbers the caller-saved registers x0-x18, x30, v0-v7 and v16-v31 (and the upper halves of v8-v15) and the flags, so keep values that must survive a call in callee-saved registers x19-x28 (saved/restored by you) or in your own stack frame. sp must be 16-byte aligned at every call (and whenever it is used as a base register). Anything below sp may be overwritten by a callee.
+
+Output format: a single JSON object {"instructions": [...]} that is valid input for this tool (the instructions are encoded directly into machine code, no assembler):
+Tool name: emit_program
+Tool description: Emit a complete aarch64 function as structured instructions; they are encoded directly to machine code (no assembler). AArch64 (AAPCS64: args x0-x7, return x0, x19-x28 callee-saved, return with ret). Operands follow assembly order: dst is the written register, src the rest. Registers are strings ("x3", "w3", "sp", "xzr"); immediates are {"imm": n}; shifted registers {"reg":"x2","shift":"lsl","amount":3}; memory {"mem":{"base":"x1","disp":8}} or {"mem":{"base":"x1","index":"x2","scale":8}} or with "writeback":"pre"|"post". Stores put the value first: {"op":"str","src":["x0",{"mem":...}]}. Branch targets are label names. The result reports the encoded bytes and disassembly, or per-instruction errors (instruction index, field path, reason).
+Input JSON Schema: {"type":"object","properties":{"instructions":{"type":"array","description":"The function body in order. Labels are {\"label\": name} entries.","items":{"anyOf":[{"type":"object","title":"label","description":"Defines a branch target at the position of the next instruction.","properties":{"label":{"type":"string","pattern":"^[A-Za-z_.][A-Za-z0-9_.]*$"},"comment":{"type":"string"}},"required":["label"],"additionalProperties":false},{"type":"object","title":"mov","description":"mov dst, src \u2014 register copy or any 64-bit immediate (expanded to movz/movn/movk or orr as needed).","properties":{"op":{"type":"string","enum":["mov"]},"dst":{"$ref":"#/$defs/reg"},"src":{"type":"array","items":{"anyOf":[{"$ref":"#/$defs/reg"},{"type":"object","properties":{"imm":{"type":"integer"},"lsl":{"type":"integer","enum":[0,12,16,32,48]}},"required":["imm"],"additionalProperties":false}]},"minItems":1,"maxItems":1},"comment":{"type":"string","description":"optional free-text note; ignored"}},"required":["op","dst","src"],"additionalProperties":false},{"type":"object","title":"movwide","description":"16-bit move-wide: src [{imm: 0..65535, lsl: 0|16|32|48}]. movk keeps the other bits.","properties":{"op":{"type":"string","enum":["movz","movn","movk"]},"dst":{"$ref":"#/$defs/reg"},"src":{"type":"array","items":{"type":"object","properties":{"imm":{"type":"integer"},"lsl":{"type":"integer","enum":[0,12,16,32,48]}},"required":["imm"],"additionalProperties":false},"minItems":1,"maxItems":1},"comment":{"type":"string","description":"optional free-text note; ignored"}},"required":["op","dst","src"],"additionalProperties":false},{"type":"object","title":"arith","description":"dst = src[0] op src[1]. src[1]: register, shifted register, or imm12 (0..4095, optionally lsl 12). Negative immediates flip add<->sub. The *s forms set flags.","properties":{"op":{"type":"string","enum":["add","sub","adds","subs"]},"dst":{"$ref":"#/$defs/reg"},"src":{"type":"array","items":{"anyOf":[{"$ref":"#/$defs/reg"},{"type":"object","properties":{"imm":{"type":"integer"},"lsl":{"type":"integer","enum":[0,12,16,32,48]}},"required":["imm"],"additionalProperties":false},{"type":"object","description":"register with a shift applied, e.g. x2, lsl #3","properties":{"reg":{"$ref":"#/$defs/reg"},"shift":{"type":"string","enum":["lsl","lsr","asr","ror"]},"amount":{"type":"integer","minimum":0,"maximum":63}},"required":["reg","shift","amount"],"additionalProperties":false}]},"minItems":2,"maxItems":2},"comment":{"type":"string","description":"optional free-text note; ignored"}},"required":["op","dst","src"],"additionalProperties":false},{"type":"object","title":"compare","description":"Set flags from src[0] vs src[1] (cmp=subs, cmn=adds, tst=ands; result discarded).","properties":{"op":{"type":"string","enum":["cmp","cmn","tst"]},"src":{"type":"array","items":{"anyOf":[{"$ref":"#/$defs/reg"},{"type":"object","properties":{"imm":{"type":"integer"},"lsl":{"type":"integer","enum":[0,12,16,32,48]}},"required":["imm"],"additionalProperties":false},{"type":"object","description":"register with a shift applied, e.g. x2, lsl #3","properties":{"reg":{"$ref":"#/$defs/reg"},"shift":{"type":"string","enum":["lsl","lsr","asr","ror"]},"amount":{"type":"integer","minimum":0,"maximum":63}},"required":["reg","shift","amount"],"additionalProperties":false}]},"minItems":2,"maxItems":2},"comment":{"type":"string","description":"optional free-text note; ignored"}},"required":["op","src"],"additionalProperties":false},{"type":"object","title":"logic","description":"Bitwise dst = src[0] op src[1]; immediates must be valid bitmask immediates.","properties":{"op":{"type":"string","enum":["and","orr","eor","ands","bic","orn","eon","bics"]},"dst":{"$ref":"#/$defs/reg"},"src":{"type":"array","items":{"anyOf":[{"$ref":"#/$defs/reg"},{"type":"object","properties":{"imm":{"type":"integer"},"lsl":{"type":"integer","enum":[0,12,16,32,48]}},"required":["imm"],"additionalProperties":false},{"type":"object","description":"register with a shift applied, e.g. x2, lsl #3","properties":{"reg":{"$ref":"#/$defs/reg"},"shift":{"type":"string","enum":["lsl","lsr","asr","ror"]},"amount":{"type":"integer","minimum":0,"maximum":63}},"required":["reg","shift","amount"],"additionalProperties":false}]},"minItems":2,"maxItems":2},"comment":{"type":"string","description":"optional free-text note; ignored"}},"required":["op","dst","src"],"additionalProperties":false},{"type":"object","title":"unary","description":"neg: dst = -src; mvn: dst = ~src.","properties":{"op":{"type":"string","enum":["neg","negs","mvn"]},"dst":{"$ref":"#/$defs/reg"},"src":{"type":"array","items":{"anyOf":[{"$ref":"#/$defs/reg"},{"type":"object","description":"register with a shift applied, e.g. x2, lsl #3","properties":{"reg":{"$ref":"#/$defs/reg"},"shift":{"type":"string","enum":["lsl","lsr","asr","ror"]},"amount":{"type":"integer","minimum":0,"maximum":63}},"required":["reg","shift","amount"],"additionalProperties":false}]},"minItems":1,"maxItems":1},"comment":{"type":"string","description":"optional free-text note; ignored"}},"required":["op","dst","src"],"additionalProperties":false},{"type":"object","title":"shift","description":"dst = src[0] shifted by src[1] (register or immediate 0..width-1).","properties":{"op":{"type":"string","enum":["lsl","lsr","asr","ror"]},"dst":{"$ref":"#/$defs/reg"},"src":{"type":"array","items":{"anyOf":[{"$ref":"#/$defs/reg"},{"type":"object","properties":{"imm":{"type":"integer"},"lsl":{"type":"integer","enum":[0,12,16,32,48]}},"required":["imm"],"additionalProperties":false}]},"minItems":2,"maxItems":2},"comment":{"type":"string","description":"optional free-text note; ignored"}},"required":["op","dst","src"],"additionalProperties":false},{"type":"object","title":"mul","description":"dst = src[0] op src[1]. Division by zero yields 0.","properties":{"op":{"type":"string","enum":["mul","mneg","sdiv","udiv","smulh","umulh"]},"dst":{"$ref":"#/$defs/reg"},"src":{"type":"array","items":{"$ref":"#/$defs/reg"},"minItems":2,"maxItems":2},"comment":{"type":"string","description":"optional free-text note; ignored"}},"required":["op","dst","src"],"additionalProperties":false},{"type":"object","title":"muladd","description":"madd: dst = src[2] + src[0]*src[1]; msub: dst = src[2] - src[0]*src[1].","properties":{"op":{"type":"string","enum":["madd","msub"]},"dst":{"$ref":"#/$defs/reg"},"src":{"type":"array","items":{"$ref":"#/$defs/reg"},"minItems":3,"maxItems":3},"comment":{"type":"string","description":"optional free-text note; ignored"}},"required":["op","dst","src"],"additionalProperties":false},{"type":"object","title":"csel","description":"dst = cond ? src[0] : f(src[1]) (f = id / +1 / ~ / -).","properties":{"op":{"type":"string","enum":["csel","csinc","csinv","csneg"]},"dst":{"$ref":"#/$defs/reg"},"src":{"type":"array","items":{"$ref":"#/$defs/reg"},"minItems":2,"maxItems":2},"cond":{"type":"string","enum":["eq","ne","cs","hs","cc","lo","mi","pl","vs","vc","hi","ls","ge","lt","gt","le","al","nv"]},"comment":{"type":"string","description":"optional free-text note; ignored"}},"required":["op","dst","src","cond"],"additionalProperties":false},{"type":"object","title":"cset","description":"cset: dst = cond ? 1 : 0; csetm: dst = cond ? -1 : 0.","properties":{"op":{"type":"string","enum":["cset","csetm"]},"dst":{"$ref":"#/$defs/reg"},"cond":{"type":"string","enum":["eq","ne","cs","hs","cc","lo","mi","pl","vs","vc","hi","ls","ge","lt","gt","le","al","nv"]},"comment":{"type":"string","description":"optional free-text note; ignored"}},"required":["op","dst","cond"],"additionalProperties":false},{"type":"object","title":"cinc","description":"dst = cond ? f(src) : src (f = +1 / ~ / -).","properties":{"op":{"type":"string","enum":["cinc","cinv","cneg"]},"dst":{"$ref":"#/$defs/reg"},"src":{"type":"array","items":{"$ref":"#/$defs/reg"},"minItems":1,"maxItems":1},"cond":{"type":"string","enum":["eq","ne","cs","hs","cc","lo","mi","pl","vs","vc","hi","ls","ge","lt","gt","le","al","nv"]},"comment":{"type":"string","description":"optional free-text note; ignored"}},"required":["op","dst","src","cond"],"additionalProperties":false},{"type":"object","title":"load","description":"Load into dst. ldr x=8 bytes, ldr w=4; ldrb/ldrh zero-extend into w; ldrs* sign-extend.","properties":{"op":{"type":"string","enum":["ldr","ldrb","ldrh","ldrsb","ldrsh","ldrsw"]},"dst":{"$ref":"#/$defs/reg"},"src":{"type":"array","items":{"type":"object","properties":{"mem":{"type":"object","description":"[base, #disp] | [base, index, lsl #log2(scale)] | pre/post-index writeback","properties":{"base":{"$ref":"#/$defs/reg"},"index":{"$ref":"#/$defs/reg"},"scale":{"type":"integer","enum":[1,2,4,8]},"disp":{"type":"integer","description":"byte displacement (default 0)"},"writeback":{"type":"string","enum":["pre","post"],"description":"pre: [base, #disp]!  post: [base], #disp"},"extend":{"type":"string","enum":["uxtw","sxtw","sxtx"],"description":"index extension; required for a w index register"}},"required":["base"],"additionalProperties":false}},"required":["mem"],"additionalProperties":false},"minItems":1,"maxItems":1},"comment":{"type":"string","description":"optional free-text note; ignored"}},"required":["op","dst","src"],"additionalProperties":false},{"type":"object","title":"store","description":"Store src[0] to memory src[1]. strb/strh take a w register.","properties":{"op":{"type":"string","enum":["str","strb","strh"]},"src":{"type":"array","items":{"anyOf":[{"$ref":"#/$defs/reg"},{"type":"object","properties":{"mem":{"type":"object","description":"[base, #disp] | [base, index, lsl #log2(scale)] | pre/post-index writeback","properties":{"base":{"$ref":"#/$defs/reg"},"index":{"$ref":"#/$defs/reg"},"scale":{"type":"integer","enum":[1,2,4,8]},"disp":{"type":"integer","description":"byte displacement (default 0)"},"writeback":{"type":"string","enum":["pre","post"],"description":"pre: [base, #disp]!  post: [base], #disp"},"extend":{"type":"string","enum":["uxtw","sxtw","sxtx"],"description":"index extension; required for a w index register"}},"required":["base"],"additionalProperties":false}},"required":["mem"],"additionalProperties":false}]},"minItems":2,"maxItems":2},"comment":{"type":"string","description":"optional free-text note; ignored"}},"required":["op","src"],"additionalProperties":false},{"type":"object","title":"ldp","description":"Load pair. disp must be a multiple of the register size in [-64, 63] * size.","properties":{"op":{"type":"string","enum":["ldp"]},"dst":{"type":"array","items":{"$ref":"#/$defs/reg"},"minItems":2,"maxItems":2},"src":{"type":"array","items":{"type":"object","properties":{"mem":{"type":"object","description":"[base, #disp] | [base, index, lsl #log2(scale)] | pre/post-index writeback","properties":{"base":{"$ref":"#/$defs/reg"},"index":{"$ref":"#/$defs/reg"},"scale":{"type":"integer","enum":[1,2,4,8]},"disp":{"type":"integer","description":"byte displacement (default 0)"},"writeback":{"type":"string","enum":["pre","post"],"description":"pre: [base, #disp]!  post: [base], #disp"},"extend":{"type":"string","enum":["uxtw","sxtw","sxtx"],"description":"index extension; required for a w index register"}},"required":["base"],"additionalProperties":false}},"required":["mem"],"additionalProperties":false},"minItems":1,"maxItems":1},"comment":{"type":"string","description":"optional free-text note; ignored"}},"required":["op","dst","src"],"additionalProperties":false},{"type":"object","title":"stp","description":"Store pair src[0], src[1].","properties":{"op":{"type":"string","enum":["stp"]},"src":{"type":"array","items":{"anyOf":[{"$ref":"#/$defs/reg"},{"type":"object","properties":{"mem":{"type":"object","description":"[base, #disp] | [base, index, lsl #log2(scale)] | pre/post-index writeback","properties":{"base":{"$ref":"#/$defs/reg"},"index":{"$ref":"#/$defs/reg"},"scale":{"type":"integer","enum":[1,2,4,8]},"disp":{"type":"integer","description":"byte displacement (default 0)"},"writeback":{"type":"string","enum":["pre","post"],"description":"pre: [base, #disp]!  post: [base], #disp"},"extend":{"type":"string","enum":["uxtw","sxtw","sxtx"],"description":"index extension; required for a w index register"}},"required":["base"],"additionalProperties":false}},"required":["mem"],"additionalProperties":false}]},"minItems":3,"maxItems":3},"comment":{"type":"string","description":"optional free-text note; ignored"}},"required":["op","src"],"additionalProperties":false},{"type":"object","title":"branch","description":"Unconditional branch / call a label.","properties":{"op":{"type":"string","enum":["b","bl"]},"target":{"type":"string","pattern":"^[A-Za-z_.][A-Za-z0-9_.]*$"},"comment":{"type":"string","description":"optional free-text note; ignored"}},"required":["op","target"],"additionalProperties":false},{"type":"object","title":"bcond","description":"Conditional branch on flags.","properties":{"op":{"type":"string","enum":["b.eq","b.ne","b.cs","b.hs","b.cc","b.lo","b.mi","b.pl","b.vs","b.vc","b.hi","b.ls","b.ge","b.lt","b.gt","b.le","b.al"]},"target":{"type":"string","pattern":"^[A-Za-z_.][A-Za-z0-9_.]*$"},"comment":{"type":"string","description":"optional free-text note; ignored"}},"required":["op","target"],"additionalProperties":false},{"type":"object","title":"cbz","description":"Branch if src[0] is zero / non-zero.","properties":{"op":{"type":"string","enum":["cbz","cbnz"]},"src":{"type":"array","items":{"$ref":"#/$defs/reg"},"minItems":1,"maxItems":1},"target":{"type":"string","pattern":"^[A-Za-z_.][A-Za-z0-9_.]*$"},"comment":{"type":"string","description":"optional free-text note; ignored"}},"required":["op","src","target"],"additionalProperties":false},{"type":"object","title":"tbz","description":"Branch if bit src[1] of src[0] is zero / non-zero.","properties":{"op":{"type":"string","enum":["tbz","tbnz"]},"src":{"type":"array","items":{"anyOf":[{"$ref":"#/$defs/reg"},{"type":"object","properties":{"imm":{"type":"integer"},"lsl":{"type":"integer","enum":[0,12,16,32,48]}},"required":["imm"],"additionalProperties":false}]},"minItems":2,"maxItems":2},"target":{"type":"string","pattern":"^[A-Za-z_.][A-Za-z0-9_.]*$"},"comment":{"type":"string","description":"optional free-text note; ignored"}},"required":["op","src","target"],"additionalProperties":false},{"type":"object","title":"adr","description":"dst = address of label.","properties":{"op":{"type":"string","enum":["adr"]},"dst":{"$ref":"#/$defs/reg"},"target":{"type":"string","pattern":"^[A-Za-z_.][A-Za-z0-9_.]*$"},"comment":{"type":"string","description":"optional free-text note; ignored"}},"required":["op","dst","target"],"additionalProperties":false},{"type":"object","title":"branch_reg","description":"Branch / call via register.","properties":{"op":{"type":"string","enum":["br","blr"]},"src":{"type":"array","items":{"$ref":"#/$defs/reg"},"minItems":1,"maxItems":1},"comment":{"type":"string","description":"optional free-text note; ignored"}},"required":["op","src"],"additionalProperties":false},{"type":"object","title":"ret","description":"Return (via x30 unless src given).","properties":{"op":{"type":"string","enum":["ret"]},"src":{"type":"array","items":{"$ref":"#/$defs/reg"},"minItems":0,"maxItems":1},"comment":{"type":"string","description":"optional free-text note; ignored"}},"required":["op"],"additionalProperties":false},{"type":"object","title":"nop","description":"No operation.","properties":{"op":{"type":"string","enum":["nop"]},"comment":{"type":"string","description":"optional free-text note; ignored"}},"required":["op"],"additionalProperties":false}]}}},"required":["instructions"],"additionalProperties":false,"$defs":{"reg":{"type":"string","enum":["x0","w0","x1","w1","x2","w2","x3","w3","x4","w4","x5","w5","x6","w6","x7","w7","x8","w8","x9","w9","x10","w10","x11","w11","x12","w12","x13","w13","x14","w14","x15","w15","x16","w16","x17","w17","x18","w18","x19","w19","x20","w20","x21","w21","x22","w22","x23","w23","x24","w24","x25","w25","x26","w26","x27","w27","x28","w28","x29","w29","x30","w30","xzr","wzr","sp","wsp","fp","lr"]}}}
+The first instruction is the entry point; labels are {"label": "name"} entries and branch targets are label names. Output only the JSON object: no Markdown fences, no prose.
+
+Specification: a points to an n x n matrix of signed 64-bit integers in row-major order (element (i, j) at a[i*n + j]), 1 <= n <= 6. Compute the matrix power a^k (0 <= k <= 64; a^0 is the identity matrix) into out (n*n elements, row-major) and return 0. Matrix products use wrapping 64-bit arithmetic: (x*y)(i, j) = sum over t of x(i, t) * y(t, j), modulo 2^64. tmp points to 2*n*n elements of scratch space that you may use freely (e.g. for a copy of the base and a product), but on return every one of those 2*n*n elements must be 0 (the whole of out and tmp is checked; both start out as garbage). Any correct method is fine (k repeated multiplications, or square-and-multiply). a, out and tmp do not overlap. Do not write to a; read only a, out and tmp; write only out and tmp.
+
+Your previous attempt was:
+<previous>
+{
+  "instructions": [
+    {
+      "op": "stp",
+      "src": [
+        "x29",
+        "x30",
+        {
+          "mem": {
+            "base": "sp",
+            "disp": -16,
+            "writeback": "pre"
+          }
+        }
+      ],
+      "comment": "prologue"
+    },
+    {
+      "op": "mov",
+      "dst": "x29",
+      "src": [
+        "sp"
+      ]
+    },
+    {
+      "op": "mov",
+      "dst": "x19",
+      "src": [
+        "x0"
+      ],
+      "comment": "a"
+    },
+    {
+      "op": "mov",
+      "dst": "x20",
+      "src": [
+        "x1"
+      ],
+      "comment": "n"
+    },
+    {
+      "op": "mov",
+      "dst": "x21",
+      "src": [
+        "x2"
+      ],
+      "comment": "k"
+    },
+    {
+      "op": "mov",
+      "dst": "x22",
+      "src": [
+        "x3"
+      ],
+      "comment": "out"
+    },
+    {
+      "op": "mov",
+      "dst": "x23",
+      "src": [
+        "x4"
+      ],
+      "comment": "tmp"
+    },
+    {
+      "label": "matpow_entry"
+    },
+    {
+      "op": "cmp",
+      "src": [
+        "x21",
+        {
+          "imm": 0
+        }
+      ],
+      "comment": "if k == 0 -> identity"
+    },
+    {
+      "op": "b.ne",
+      "target": "matpow_nonzero"
+    },
+    {
+      "label": "matpow_zero_k"
+    },
+    {
+      "op": "mov",
+      "dst": "x9",
+      "src": [
+        "x22"
+      ],
+      "comment": "out ptr"
+    },
+    {
+      "op": "mov",
+      "dst": "x10",
+      "src": [
+        "x20"
+      ]
+    },
+    {
+      "op": "mul",
+      "dst": "x10",
+      "src": [
+        "x10",
+        "x20"
+      ],
+      "comment": "n*n"
+    },
+    {
+      "op": "mov",
+      "dst": "x11",
+      "src": [
+        {
+          "imm": 0
+        }
+      ],
+      "comment": "i = 0"
+    },
+    {
+      "label": "id_loop"
+    },
+    {
+      "op": "cmp",
+      "src": [
+        "x11",
+        "x10"
+      ]
+    },
+    {
+      "op": "b.ge",
+      "target": "id_done"
+    },
+    {
+      "op": "sdiv",
+      "dst": "x12",
+      "src": [
+        "x11",
+        "x20"
+      ],
+      "comment": "r"
+    },
+    {
+      "op": "mul",
+      "dst": "x13",
+      "src": [
+        "x12",
+        "x20"
+      ]
+    },
+    {
+      "op": "sub",
+      "dst": "x13",
+      "src": [
+        "x11",
+        "x13"
+      ],
+      "comment": "c"
+    },
+    {
+      "op": "cmp",
+      "src": [
+        "x12",
+        "x13"
+      ]
+    },
+    {
+      "op": "b.ne",
+      "target": "id_zero"
+    },
+    {
+      "op": "mov",
+      "dst": "x14",
+      "src": [
+        {
+          "imm": 1
+        }
+      ]
+    },
+    {
+      "op": "str",
+      "src": [
+        "x14",
+        {
+          "mem": {
+            "base": "x9",
+            "index": "x11",
+            "scale": 8
+          }
+        }
+      ]
+    },
+    {
+      "op": "b",
+      "target": "id_next"
+    },
+    {
+      "label": "id_zero"
+    },
+    {
+      "op": "str",
+      "src": [
+        "xzr",
+        {
+          "mem": {
+            "base": "x9",
+            "index": "x11",
+            "scale": 8
+          }
+        }
+      ]
+    },
+    {
+      "label": "id_next"
+    },
+    {
+      "op": "add",
+      "dst": "x11",
+      "src": [
+        "x11",
+        {
+          "imm": 1
+        }
+      ]
+    },
+    {
+      "op": "b",
+      "target": "id_loop"
+    },
+    {
+      "label": "id_done"
+    },
+    {
+      "op": "b",
+      "target": "zero_tmp_and_ret"
+    },
+    {
+      "label": "matpow_nonzero"
+    },
+    {
+      "op": "mov",
+      "dst": "x24",
+      "src": [
+        "x20"
+      ]
+    },
+    {
+      "op": "mul",
+      "dst": "x24",
+      "src": [
+        "x24",
+        "x20"
+      ],
+      "comment": "M = n*n"
+    },
+    {
+      "op": "mov",
+      "dst": "x25",
+      "src": [
+        "x23"
+      ],
+      "comment": "tmp0"
+    },
+    {
+      "op": "add",
+      "dst": "x26",
+      "src": [
+        "x23",
+        {
+          "reg": "x24",
+          "shift": "lsl",
+          "amount": 3
+        }
+      ],
+      "comment": "tmp1"
+    },
+    {
+      "op": "mov",
+      "dst": "x9",
+      "src": [
+        "x25"
+      ],
+      "comment": "identity -> tmp0"
+    },
+    {
+      "op": "mov",
+      "dst": "x10",
+      "src": [
+        "x24"
+      ]
+    },
+    {
+      "op": "mov",
+      "dst": "x11",
+      "src": [
+        {
+          "imm": 0
+        }
+      ]
+    },
+    {
+      "label": "id2_loop"
+    },
+    {
+      "op": "cmp",
+      "src": [
+        "x11",
+        "x10"
+      ]
+    },
+    {
+      "op": "b.ge",
+      "target": "id2_done"
+    },
+    {
+      "op": "sdiv",
+      "dst": "x12",
+      "src": [
+        "x11",
+        "x20"
+      ]
+    },
+    {
+      "op": "mul",
+      "dst": "x13",
+      "src": [
+        "x12",
+        "x20"
+      ]
+    },
+    {
+      "op": "sub",
+      "dst": "x13",
+      "src": [
+        "x11",
+        "x13"
+      ]
+    },
+    {
+      "op": "cmp",
+      "src": [
+        "x12",
+        "x13"
+      ]
+    },
+    {
+      "op": "b.ne",
+      "target": "id2_zero"
+    },
+    {
+      "op": "mov",
+      "dst": "x14",
+      "src": [
+        {
+          "imm": 1
+        }
+      ]
+    },
+    {
+      "op": "str",
+      "src": [
+        "x14",
+        {
+          "mem": {
+            "base": "x9",
+            "index": "x11",
+            "scale": 8
+          }
+        }
+      ]
+    },
+    {
+      "op": "b",
+      "target": "id2_next"
+    },
+    {
+      "label": "id2_zero"
+    },
+    {
+      "op": "str",
+      "src": [
+        "xzr",
+        {
+          "mem": {
+            "base": "x9",
+            "index": "x11",
+            "scale": 8
+          }
+        }
+      ]
+    },
+    {
+      "label": "id2_next"
+    },
+    {
+      "op": "add",
+      "dst": "x11",
+      "src": [
+        "x11",
+        {
+          "imm": 1
+        }
+      ]
+    },
+    {
+      "op": "b",
+      "target": "id2_loop"
+    },
+    {
+      "label": "id2_done"
+    },
+    {
+      "op": "mov",
+      "dst": "x9",
+      "src": [
+        "x26"
+      ],
+      "comment": "a -> tmp1"
+    },
+    {
+      "op": "mov",
+      "dst": "x10",
+      "src": [
+        "x19"
+      ]
+    },
+    {
+      "op": "mov",
+      "dst": "x11",
+      "src": [
+        "x24"
+      ]
+    },
+    {
+      "op": "mov",
+      "dst": "x12",
+      "src": [
+        {
+          "imm": 0
+        }
+      ]
+    },
+    {
+      "label": "copy_a_loop"
+    },
+    {
+      "op": "cmp",
+      "src": [
+        "x12",
+        "x11"
+      ]
+    },
+    {
+      "op": "b.ge",
+      "target": "copy_a_done"
+    },
+    {
+      "op": "ldr",
+      "dst": "x13",
+      "src": [
+        {
+          "mem": {
+            "base": "x10",
+            "index": "x12",
+            "scale": 8
+          }
+        }
+      ]
+    },
+    {
+      "op": "str",
+      "src": [
+        "x13",
+        {
+          "mem": {
+            "base": "x9",
+            "index": "x12",
+            "scale": 8
+          }
+        }
+      ]
+    },
+    {
+      "op": "add",
+      "dst": "x12",
+      "src": [
+        "x12",
+        {
+          "imm": 1
+        }
+      ]
+    },
+    {
+      "op": "b",
+      "target": "copy_a_loop"
+    },
+    {
+      "label": "copy_a_done"
+    },
+    {
+      "op": "mov",
+      "dst": "x27",
+      "src": [
+        "x25"
+      ],
+      "comment": "R = identity"
+    },
+    {
+      "op": "mov",
+      "dst": "x28",
+      "src": [
+        "x26"
+      ],
+      "comment": "B = a"
+    },
+    {
+      "op": "mov",
+      "dst": "x15",
+      "src": [
+        "x21"
+      ],
+      "comment": "k"
+    },
+    {
+      "label": "pow_loop"
+    },
+    {
+      "op": "cmp",
+      "src": [
+        "x15",
+        {
+          "imm": 0
+        }
+      ]
+    },
+    {
+      "op": "b.eq",
+      "target": "pow_done"
+    },
+    {
+      "op": "and",
+      "dst": "x9",
+      "src": [
+        "x15",
+        {
+          "imm": 1
+        }
+      ]
+    },
+    {
+      "op": "cmp",
+      "src": [
+        "x9",
+        {
+          "imm": 1
+        }
+      ]
+    },
+    {
+      "op": "b.ne",
+      "target": "no_mul_r"
+    },
+    {
+      "op": "mov",
+      "dst": "x0",
+      "src": [
+        "x27"
+      ],
+      "comment": "A=R"
+    },
+    {
+      "op": "mov",
+      "dst": "x1",
+      "src": [
+        "x28"
+      ],
+      "comment": "B=B"
+    },
+    {
+      "op": "mov",
+      "dst": "x2",
+      "src": [
+        "x20"
+      ],
+      "comment": "n"
+    },
+    {
+      "op": "mov",
+      "dst": "x3",
+      "src": [
+        "x22"
+      ],
+      "comment": "out = R*B"
+    },
+    {
+      "op": "bl",
+      "target": "mat_mul"
+    },
+    {
+      "op": "mov",
+      "dst": "x9",
+      "src": [
+        "x22"
+      ]
+    },
+    {
+      "op": "mov",
+      "dst": "x10",
+      "src": [
+        "x27"
+      ]
+    },
+    {
+      "op": "mov",
+      "dst": "x11",
+      "src": [
+        "x24"
+      ]
+    },
+    {
+      "op": "mov",
+      "dst": "x12",
+      "src": [
+        {
+          "imm": 0
+        }
+      ]
+    },
+    {
+      "label": "copy_r_loop"
+    },
+    {
+      "op": "cmp",
+      "src": [
+        "x12",
+        "x11"
+      ]
+    },
+    {
+      "op": "b.ge",
+      "target": "copy_r_done"
+    },
+    {
+      "op": "ldr",
+      "dst": "x13",
+      "src": [
+        {
+          "mem": {
+            "base": "x9",
+            "index": "x12",
+            "scale": 8
+          }
+        }
+      ]
+    },
+    {
+      "op": "str",
+      "src": [
+        "x13",
+        {
+          "mem": {
+            "base": "x10",
+            "index": "x12",
+            "scale": 8
+          }
+        }
+      ]
+    },
+    {
+      "op": "add",
+      "dst": "x12",
+      "src": [
+        "x12",
+        {
+          "imm": 1
+        }
+      ]
+    },
+    {
+      "op": "b",
+      "target": "copy_r_loop"
+    },
+    {
+      "label": "copy_r_done"
+    },
+    {
+      "label": "no_mul_r"
+    },
+    {
+      "op": "lsr",
+      "dst": "x15",
+      "src": [
+        "x15",
+        {
+          "imm": 1
+        }
+      ]
+    },
+    {
+      "op": "cmp",
+      "src": [
+        "x15",
+        {
+          "imm": 0
+        }
+      ]
+    },
+    {
+      "op": "b.eq",
+      "target": "pow_done"
+    },
+    {
+      "op": "mov",
+      "dst": "x0",
+      "src": [
+        "x28"
+      ],
+      "comment": "A=B"
+    },
+    {
+      "op": "mov",
+      "dst": "x1",
+      "src": [
+        "x28"
+      ],
+      "comment": "B=B"
+    },
+    {
+      "op": "mov",
+      "dst": "x2",
+      "src": [
+        "x20"
+      ]
+    },
+    {
+      "op": "mov",
+      "dst": "x3",
+      "src": [
+        "x22"
+      ],
+      "comment": "B*B -> out"
+    },
+    {
+      "op": "bl",
+      "target": "mat_mul"
+    },
+    {
+      "op": "mov",
+      "dst": "x9",
+      "src": [
+        "x22"
+      ]
+    },
+    {
+      "op": "mov",
+      "dst": "x10",
+      "src": [
+        "x28"
+      ]
+    },
+    {
+      "op": "mov",
+      "dst": "x11",
+      "src": [
+        "x24"
+      ]
+    },
+    {
+      "op": "mov",
+      "dst": "x12",
+      "src": [
+        {
+          "imm": 0
+        }
+      ]
+    },
+    {
+      "label": "copy_b_loop"
+    },
+    {
+      "op": "cmp",
+      "src": [
+        "x12",
+        "x11"
+      ]
+    },
+    {
+      "op": "b.ge",
+      "target": "copy_b_done"
+    },
+    {
+      "op": "ldr",
+      "dst": "x13",
+      "src": [
+        {
+          "mem": {
+            "base": "x9",
+            "index": "x12",
+            "scale": 8
+          }
+        }
+      ]
+    },
+    {
+      "op": "str",
+      "src": [
+        "x13",
+        {
+          "mem": {
+            "base": "x10",
+            "index": "x12",
+            "scale": 8
+          }
+        }
+      ]
+    },
+    {
+      "op": "add",
+      "dst": "x12",
+      "src": [
+        "x12",
+        {
+          "imm": 1
+        }
+      ]
+    },
+    {
+      "op": "b",
+      "target": "copy_b_loop"
+    },
+    {
+      "label": "copy_b_done"
+    },
+    {
+      "op": "b",
+      "target": "pow_loop"
+    },
+    {
+      "label": "pow_done"
+    },
+    {
+      "label": "zero_tmp_and_ret"
+    },
+    {
+      "op": "mov",
+      "dst": "x9",
+      "src": [
+        "x23"
+      ],
+      "comment": "tmp base"
+    },
+    {
+      "op": "mov",
+      "dst": "x10",
+      "src": [
+        "x24"
+      ]
+    },
+    {
+      "op": "lsl",
+      "dst": "x10",
+      "src": [
+        "x10",
+        {
+          "imm": 1
+        }
+      ],
+      "comment": "2*M"
+    },
+    {
+      "op": "mov",
+      "dst": "x11",
+      "src": [
+        {
+          "imm": 0
+        }
+      ]
+    },
+    {
+      "label": "zero_tmp_loop"
+    },
+    {
+      "op": "cmp",
+      "src": [
+        "x11",
+        "x10"
+      ]
+    },
+    {
+      "op": "b.ge",
+      "target": "zero_tmp_done"
+    },
+    {
+      "op": "str",
+      "src": [
+        "xzr",
+        {
+          "mem": {
+            "base": "x9",
+            "index": "x11",
+            "scale": 8
+          }
+        }
+      ]
+    },
+    {
+      "op": "add",
+      "dst": "x11",
+      "src": [
+        "x11",
+        {
+          "imm": 1
+        }
+      ]
+    },
+    {
+      "op": "b",
+      "target": "zero_tmp_loop"
+    },
+    {
+      "label": "zero_tmp_done"
+    },
+    {
+      "op": "mov",
+      "dst": "x0",
+      "src": [
+        {
+          "imm": 0
+        }
+      ]
+    },
+    {
+      "op": "ldp",
+      "dst": [
+        "x29",
+        "x30"
+      ],
+      "src": [
+        {
+          "mem": {
+            "base": "sp",
+            "disp": 16,
+            "writeback": "post"
+          }
+        }
+      ]
+    },
+    {
+      "op": "ret",
+      "src": []
+    },
+    {
+      "label": "mat_mul"
+    },
+    {
+      "op": "stp",
+      "src": [
+        "x19",
+        "x20",
+        {
+          "mem": {
+            "base": "sp",
+            "disp": -32,
+            "writeback": "pre"
+          }
+        }
+      ]
+    },
+    {
+      "op": "stp",
+      "src": [
+        "x21",
+        "x22",
+        {
+          "mem": {
+            "base": "sp",
+            "disp": 16
+          }
+        }
+      ]
+    },
+    {
+      "op": "mov",
+      "dst": "x19",
+      "src": [
+        "x0"
+      ],
+      "comment": "A"
+    },
+    {
+      "op": "mov",
+      "dst": "x20",
+      "src": [
+        "x1"
+      ],
+      "comment": "B"
+    },
+    {
+      "op": "mov",
+      "dst": "x21",
+      "src": [
+        "x2"
+      ],
+      "comment": "n"
+    },
+    {
+      "op": "mov",
+      "dst": "x22",
+      "src": [
+        "x3"
+      ],
+      "comment": "C"
+    },
+    {
+      "op": "mov",
+      "dst": "x9",
+      "src": [
+        {
+          "imm": 0
+        }
+      ],
+      "comment": "i"
+    },
+    {
+      "label": "mul_i"
+    },
+    {
+      "op": "cmp",
+      "src": [
+        "x9",
+        "x21"
+      ]
+    },
+    {
+      "op": "b.ge",
+      "target": "mul_done"
+    },
+    {
+      "op": "mov",
+      "dst": "x10",
+      "src": [
+        {
+          "imm": 0
+        }
+      ],
+      "comment": "j"
+    },
+    {
+      "label": "mul_j"
+    },
+    {
+      "op": "cmp",
+      "src": [
+        "x10",
+        "x21"
+      ]
+    },
+    {
+      "op": "b.ge",
+      "target": "mul_i_next"
+    },
+    {
+      "op": "mov",
+      "dst": "x11",
+      "src": [
+        {
+          "imm": 0
+        }
+      ],
+      "comment": "t"
+    },
+    {
+      "op": "mov",
+      "dst": "x12",
+      "src": [
+        "xzr"
+      ],
+      "comment": "sum"
+    },
+    {
+      "label": "mul_t"
+    },
+    {
+      "op": "cmp",
+      "src": [
+        "x11",
+        "x21"
+      ]
+    },
+    {
+      "op": "b.ge",
+      "target": "mul_store"
+    },
+    {
+      "op": "mul",
+      "dst": "x13",
+      "src": [
+        "x9",
+        "x21"
+      ]
+    },
+    {
+      "op": "add",
+      "dst": "x13",
+      "src": [
+        "x13",
+        "x11"
+      ],
+      "comment": "A[i*t]"
+    },
+    {
+      "op": "mul",
+      "dst": "x14",
+      "src": [
+        "x11",
+        "x21"
+      ]
+    },
+    {
+      "op": "add",
+      "dst": "x14",
+      "src": [
+        "x14",
+        "x10"
+      ],
+      "comment": "B[t*j]"
+    },
+    {
+      "op": "ldr",
+      "dst": "x5",
+      "src": [
+        {
+          "mem": {
+            "base": "x19",
+            "index": "x13",
+            "scale": 8
+          }
+        }
+      ]
+    },
+    {
+      "op": "ldr",
+      "dst": "x6",
+      "src": [
+        {
+          "mem": {
+            "base": "x20",
+            "index": "x14",
+            "scale": 8
+          }
+        }
+      ]
+    },
+    {
+      "op": "mul",
+      "dst": "x7",
+      "src": [
+        "x5",
+        "x6"
+      ]
+    },
+    {
+      "op": "add",
+      "dst": "x12",
+      "src": [
+        "x12",
+        "x7"
+      ]
+    },
+    {
+      "op": "add",
+      "dst": "x11",
+      "src": [
+        "x11",
+        {
+          "imm": 1
+        }
+      ]
+    },
+    {
+      "op": "b",
+      "target": "mul_t"
+    },
+    {
+      "label": "mul_store"
+    },
+    {
+      "op": "mul",
+      "dst": "x13",
+      "src": [
+        "x9",
+        "x21"
+      ]
+    },
+    {
+      "op": "add",
+      "dst": "x13",
+      "src": [
+        "x13",
+        "x10"
+      ]
+    },
+    {
+      "op": "str",
+      "src": [
+        "x12",
+        {
+          "mem": {
+            "base": "x22",
+            "index": "x13",
+            "scale": 8
+          }
+        }
+      ]
+    },
+    {
+      "op": "add",
+      "dst": "x10",
+      "src": [
+        "x10",
+        {
+          "imm": 1
+        }
+      ]
+    },
+    {
+      "op": "b",
+      "target": "mul_j"
+    },
+    {
+      "label": "mul_i_next"
+    },
+    {
+      "op": "add",
+      "dst": "x9",
+      "src": [
+        "x9",
+        {
+          "imm": 1
+        }
+      ]
+    },
+    {
+      "op": "b",
+      "target": "mul_i"
+    },
+    {
+      "label": "mul_done"
+    },
+    {
+      "op": "ldp",
+      "dst": [
+        "x19",
+        "x20"
+      ],
+      "src": [
+        {
+          "mem": {
+            "base": "sp"
+          }
+        }
+      ]
+    },
+    {
+      "op": "ldp",
+      "dst": [
+        "x21",
+        "x22"
+      ],
+      "src": [
+        {
+          "mem": {
+            "base": "sp",
+            "disp": 16
+          }
+        }
+      ]
+    },
+    {
+      "op": "add",
+      "dst": "sp",
+      "src": [
+        "sp",
+        {
+          "imm": 32
+        }
+      ]
+    },
+    {
+      "op": "ret",
+      "src": []
+    }
+  ]
+}
+</previous>
+It failed:
+<failure>
+35 of 35 test cases failed. First failures:
+  mat_pow(a=[-3], n=1, k=0, out, tmp): expected 0, but the run failed: aarch64: callee-saved register x19 clobbered: 0x5b6e6e307d4bedc -> 0x401018
+  mat_pow(a=[-2], n=1, k=1, out, tmp): expected 0, but the run failed: aarch64: callee-saved register x19 clobbered: 0xe6b58de744ab6cce -> 0x401018
+  mat_pow(a=[2], n=1, k=5, out, tmp): expected 0, but the run failed: aarch64: callee-saved register x19 clobbered: 0x3e0a813bdc2ae99 -> 0x401018
+</failure>
+Write a corrected, complete version. Same output format; output only the code.
