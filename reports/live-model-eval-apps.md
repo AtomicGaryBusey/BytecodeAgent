@@ -53,6 +53,7 @@ samples passed on its first attempt.
 | Claude Opus 5.5 | **89/96 (93%)** | 96/96 (100%) | 1.07 | 31/32 | 28/32 | 30/32 | 32/32 |
 | Grok 4.7 | **89/96 (93%)** | 96/96 (100%) | 1.08 | 31/32 | 29/32 | 29/32 | 32/32 |
 | Grok 4.7 build-fast | **89/96 (93%)** | 96/96 (100%) | 1.08 | 30/32 | 29/32 | 30/32 | 32/32 |
+| Claude Haiku 5.5 | **88/96 (92%)** | 96/96 (100%) | 1.09 | 28/32 | 29/32 | 31/32 | 32/32 |
 | Claude Fable 5.1 | **84/96 (88%)** | 96/96 (100%) | 1.15 | 26/32 | 27/32 | 31/32 | 31/32 |
 | Claude Sonnet 5.5 | **84/96 (88%)** | 96/96 (100%) | 1.14 | 29/32 | 28/32 | 27/32 | 32/32 |
 | Kimi K3 | **83/96 (86%)** | 96/96 (100%) | 1.15 | 29/32 | 26/32 | 28/32 | 32/32 |
@@ -74,6 +75,7 @@ change the picture; see the local section of the cross-vendor report).
 | Claude Opus 5.5 | 11/12 | 11/12 | 10/12 | 11/12 | 11/12 | 12/12 | 11/12 | 12/12 |
 | Grok 4.7 | 12/12 | 12/12 | 10/12 | 11/12 | 11/12 | 12/12 | 12/12 | 9/12 |
 | Grok 4.7 build-fast | 11/12 | 12/12 | 12/12 | 12/12 | 12/12 | 10/12 | 11/12 | 9/12 |
+| Claude Haiku 5.5 | 12/12 | 12/12 | 12/12 | 11/12 | 9/12 | 12/12 | 11/12 | 9/12 |
 | Claude Fable 5.1 | 12/12 | 9/12 | 10/12 | 12/12 | 9/12 | 10/12 | 11/12 | 11/12 |
 | Claude Sonnet 5.5 | 12/12 | 11/12 | 11/12 | 12/12 | 9/12 | 11/12 | 12/12 | 6/12 |
 | Kimi K3 | 12/12 | 11/12 | 11/12 | 10/12 | 7/12 | 10/12 | 12/12 | 10/12 |
@@ -89,6 +91,7 @@ change the picture; see the local section of the cross-vendor report).
 | Claude Opus 5.5 | 23/24 | 23/24 | 23/24 | 20/24 |
 | Grok 4.7 | 23/24 | 21/24 | 23/24 | 22/24 |
 | Grok 4.7 build-fast | 24/24 | 22/24 | 23/24 | 20/24 |
+| Claude Haiku 5.5 | 19/24 | 23/24 | 24/24 | 22/24 |
 | Claude Fable 5.1 | 19/24 | 23/24 | 23/24 | 19/24 |
 | Claude Sonnet 5.5 | 23/24 | 20/24 | 22/24 | 19/24 |
 | Kimi K3 | 20/24 | 20/24 | 21/24 | 22/24 |
@@ -104,6 +107,7 @@ change the picture; see the local section of the cross-vendor report).
 | Claude Opus 5.5 | · | · | 1 | · | · | · | · | 6 | · |
 | Grok 4.7 | · | · | · | 6 | · | · | 1 | · | · |
 | Grok 4.7 build-fast | · | · | · | 6 | · | · | · | · | 1 |
+| Claude Haiku 5.5 | · | · | · | · | · | · | · | 4 | 4 |
 | Claude Fable 5.1 | · | · | · | · | · | · | · | 9 | 3 |
 | Claude Sonnet 5.5 | · | · | · | · | · | · | · | 11 | 1 |
 | Kimi K3 | · | · | · | · | · | 1 | · | · | 12 |
@@ -131,6 +135,14 @@ change the picture; see the local section of the cross-vendor report).
   x86 operators (`le`, `lt`, which GNU as itself rejects), and breaking a rule the prompt states (a constant used
   before its definition, data in `.text`). Grok's 6 `format` failures are prose preambles ("I'll implement ...
   and verify it before emitting only the source"), a tool-using habit with no tools to use.
+- **Claude Haiku 5.5, added 2026-11-07, sits with the frontier models.** 88/96 (92%) on the first try (28, 29,
+  31 by sample), one cell behind Opus 5.5 and ahead of Fable 5.1 and Sonnet 5.5, and 96/96 within four. Run
+  through `claude -p` on the user's Claude account (CVP-enrolled; see the caveat in the cross-vendor report),
+  CLI-default effort, 105 calls. Its 8 first-try misses: four rejected before running (three answers opened
+  with a prose sentence and a Markdown fence, which the prompt forbids, e.g. ".intel_syntax noprefix is
+  supplied by the harness, so the file starts directly with the sections."; one constant used before its
+  definition) and four wrong outputs on edge inputs (`rpn` on a lone `7` with no newline, twice; `json_lint` on
+  empty input; `sort_lines` comparing bytes as signed). Haiku 4.5 did not run this battery.
 - **Three samples matter.** Per-sample first-attempt scores move by up to 5 cells for the same model (Fable
   26, 27, 31); single-sample rankings of the frontier models would not be stable.
 - **Microsoft MAI-Code 1.1 Flash is far behind:** 23/96 (24%) on the first attempt, 64/96 (67%) within four, and
@@ -188,7 +200,8 @@ change the picture; see the local section of the cross-vendor report).
   31-line program never sorts and reads with a zero length, but attempts 2-4 got link feedback instead of
   wrong-output feedback, so it was re-run from scratch under the fixed linker (2026-10-23): it failed all four
   attempts again, genuinely, and Kolibri-1's totals are unchanged. Kimi K3 (samples 2 and 3) and Grok 4.7: no false
-  rejects.
+  rejects. Claude Haiku 5.5 (2026-11-07): no false rejects in its 8 failed attempts (the four pre-run rejections
+  break rules the prompt states; the four wrong outputs were checked against the spec's expected output).
 
 ## Raw machine code: the opt-in hex path (Codex GPT-6 Astra)
 

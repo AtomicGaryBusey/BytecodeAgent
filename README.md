@@ -131,6 +131,7 @@ interpreter and a JSON validator, asm and stream paths, both ISAs, 3 samples, up
 | Claude Opus 5.5 | **89/96 (93%)** | 96/96 (100%) | 1.07 |
 | Grok 4.7 | **89/96 (93%)** | 96/96 (100%) | 1.08 |
 | Grok 4.7 build-fast | **89/96 (93%)** | 96/96 (100%) | 1.08 |
+| Claude Haiku 5.5 | **88/96 (92%)** | 96/96 (100%) | 1.09 |
 | Claude Fable 5.1 | **84/96 (88%)** | 96/96 (100%) | 1.15 |
 | Claude Sonnet 5.5 | **84/96 (88%)** | 96/96 (100%) | 1.14 |
 | Kimi K3 | **83/96 (86%)** | 96/96 (100%) | 1.15 |

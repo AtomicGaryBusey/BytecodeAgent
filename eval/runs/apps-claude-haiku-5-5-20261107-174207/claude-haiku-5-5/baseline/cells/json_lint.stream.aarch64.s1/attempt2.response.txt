@@ -1,0 +1,422 @@
+```
+.text
+.globl _start
+
+_start:
+    adrp x19, inbuf
+    add  x19, x19, :lo12:inbuf
+    mov  x20, #0
+.Lread_loop:
+    mov  x0, #0
+    add  x1, x19, x20
+    movz x2, #1, lsl #16
+    sub  x2, x2, x20
+    mov  x8, #63
+    svc  #0
+    tbnz x0, #63, .Lread_done
+    cbz  x0, .Lread_done
+    add  x20, x20, x0
+    b    .Lread_loop
+.Lread_done:
+    adrp x0, lenv
+    str  x20, [x0, :lo12:lenv]
+    bl   skip_ws
+    bl   parse_value
+    bl   skip_ws
+    bl   peek
+    cmn  x0, #1
+    b.ne fail
+    adrp x1, s_ok
+    add  x1, x1, :lo12:s_ok
+    mov  x0, #1
+    mov  x2, #3
+    mov  x8, #64
+    svc  #0
+    mov  x0, #0
+    mov  x8, #93
+    svc  #0
+
+// peek: x0 = byte at pos, or -1 at end
+peek:
+    adrp x1, posv
+    ldr  x0, [x1, :lo12:posv]
+    adrp x2, lenv
+    ldr  x2, [x2, :lo12:lenv]
+    cmp  x0, x2
+    b.hs .Lpeek_eof
+    adrp x3, inbuf
+    add  x3, x3, :lo12:inbuf
+    ldrb w0, [x3, x0]
+    ret
+.Lpeek_eof:
+    mov  x0, #-1
+    ret
+
+// advance: pos += 1
+advance:
+    adrp x1, posv
+    add  x1, x1, :lo12:posv
+    ldr  x0, [x1]
+    add  x0, x0, #1
+    str  x0, [x1]
+    ret
+
+// fail: print "error at POS\n" and exit 1
+fail:
+    adrp x9, posv
+    ldr  x0, [x9, :lo12:posv]
+    adrp x12, outbuf
+    add  x12, x12, :lo12:outbuf
+    add  x11, x12, #32
+    add  x2, x12, #31
+    mov  w3, #10
+    strb w3, [x2]
+    mov  x4, #10
+.Lfail_digit:
+    sub  x2, x2, #1
+    udiv x5, x0, x4
+    msub x6, x5, x4, x0
+    add  w6, w6, #48
+    strb w6, [x2]
+    mov  x0, x5
+    cbnz x0, .Lfail_digit
+    mov  x10, x2
+    mov  x0, #1
+    adrp x1, s_err
+    add  x1, x1, :lo12:s_err
+    mov  x2, #9
+    mov  x8, #64
+    svc  #0
+    mov  x0, #1
+    mov  x1, x10
+    sub  x2, x11, x10
+    mov  x8, #64
+    svc  #0
+    mov  x0, #1
+    mov  x8, #93
+    svc  #0
+
+// skip_ws: skip space, tab, LF, CR
+skip_ws:
+    stp x29, x30, [sp, #-16]!
+    mov x29, sp
+.Lskipws_loop:
+    bl  peek
+    cmp x0, #32
+    b.eq .Lws_adv
+    cmp x0, #9
+    b.eq .Lws_adv
+    cmp x0, #10
+    b.eq .Lws_adv
+    cmp x0, #13
+    b.ne .Lws_done
+.Lws_adv:
+    bl  advance
+    b   .Lskipws_loop
+.Lws_done:
+    ldp x29, x30, [sp], #16
+    ret
+
+// skip_digits: advance over ASCII digits
+skip_digits:
+    stp x29, x30, [sp, #-16]!
+    mov x29, sp
+.Lsd_loop:
+    bl  peek
+    cmp x0, #48
+    b.lt .Lsd_done
+    cmp x0, #57
+    b.gt .Lsd_done
+    bl  advance
+    b   .Lsd_loop
+.Lsd_done:
+    ldp x29, x30, [sp], #16
+    ret
+
+// need_digit: fail unless current byte is a digit
+need_digit:
+    stp x29, x30, [sp, #-16]!
+    mov x29, sp
+    bl  peek
+    cmp x0, #48
+    b.lt fail
+    cmp x0, #57
+    b.gt fail
+    ldp x29, x30, [sp], #16
+    ret
+
+// need_hex: fail unless current byte is hex digit; consume it
+need_hex:
+    stp x29, x30, [sp, #-16]!
+    mov x29, sp
+    bl  peek
+    cmp x0, #48
+    b.lt fail
+    cmp x0, #57
+    b.le .Lnh_ok
+    cmp x0, #65
+    b.lt fail
+    cmp x0, #70
+    b.le .Lnh_ok
+    cmp x0, #97
+    b.lt fail
+    cmp x0, #102
+    b.gt fail
+.Lnh_ok:
+    bl  advance
+    ldp x29, x30, [sp], #16
+    ret
+
+// match_lit: x0 = NUL-terminated literal; must match at pos, consumes it
+match_lit:
+    stp x29, x30, [sp, #-32]!
+    mov x29, sp
+    str x19, [sp, #16]
+    mov x19, x0
+.Lml_loop:
+    ldrb w1, [x19]
+    cbz  w1, .Lml_done
+    bl  peek
+    ldrb w1, [x19]
+    cmp x0, x1
+    b.ne fail
+    bl  advance
+    add x19, x19, #1
+    b   .Lml_loop
+.Lml_done:
+    ldr x19, [sp, #16]
+    ldp x29, x30, [sp], #32
+    ret
+
+// parse_number
+parse_number:
+    stp x29, x30, [sp, #-16]!
+    mov x29, sp
+    bl  peek
+    cmp x0, #45
+    b.ne .Lnum_int
+    bl  advance
+    bl  peek
+.Lnum_int:
+    cmp x0, #48
+    b.ne .Lnum_nonzero
+    bl  advance
+    b   .Lnum_frac
+.Lnum_nonzero:
+    cmp x0, #49
+    b.lt fail
+    cmp x0, #57
+    b.gt fail
+    bl  advance
+    bl  skip_digits
+.Lnum_frac:
+    bl  peek
+    cmp x0, #46
+    b.ne .Lnum_exp
+    bl  advance
+    bl  need_digit
+    bl  skip_digits
+.Lnum_exp:
+    bl  peek
+    cmp x0, #101
+    b.eq .Lnum_e
+    cmp x0, #69
+    b.ne .Lnum_end
+.Lnum_e:
+    bl  advance
+    bl  peek
+    cmp x0, #43
+    b.eq .Lnum_sign
+    cmp x0, #45
+    b.ne .Lnum_digits
+.Lnum_sign:
+    bl  advance
+.Lnum_digits:
+    bl  need_digit
+    bl  skip_digits
+.Lnum_end:
+    ldp x29, x30, [sp], #16
+    ret
+
+// parse_string: current byte is the opening quote
+parse_string:
+    stp x29, x30, [sp, #-16]!
+    mov x29, sp
+    bl  advance
+.Lstr_loop:
+    bl  peek
+    cmn x0, #1
+    b.eq fail
+    cmp x0, #34
+    b.eq .Lstr_end
+    cmp x0, #92
+    b.eq .Lstr_esc
+    cmp x0, #32
+    b.lt fail
+    bl  advance
+    b   .Lstr_loop
+.Lstr_end:
+    bl  advance
+    ldp x29, x30, [sp], #16
+    ret
+.Lstr_esc:
+    bl  advance
+    bl  peek
+    cmn x0, #1
+    b.eq fail
+    cmp x0, #34
+    b.eq .Lesc_ok
+    cmp x0, #92
+    b.eq .Lesc_ok
+    cmp x0, #47
+    b.eq .Lesc_ok
+    cmp x0, #98
+    b.eq .Lesc_ok
+    cmp x0, #102
+    b.eq .Lesc_ok
+    cmp x0, #110
+    b.eq .Lesc_ok
+    cmp x0, #114
+    b.eq .Lesc_ok
+    cmp x0, #116
+    b.eq .Lesc_ok
+    cmp x0, #117
+    b.ne fail
+    bl  advance
+    bl  need_hex
+    bl  need_hex
+    bl  need_hex
+    bl  need_hex
+    b   .Lstr_loop
+.Lesc_ok:
+    bl  advance
+    b   .Lstr_loop
+
+// parse_object: current byte is '{'
+parse_object:
+    stp x29, x30, [sp, #-16]!
+    mov x29, sp
+    bl  advance
+    bl  skip_ws
+    bl  peek
+    cmp x0, #125
+    b.ne .Lobj_member
+    bl  advance
+    ldp x29, x30, [sp], #16
+    ret
+.Lobj_member:
+    bl  peek
+    cmp x0, #34
+    b.ne fail
+    bl  parse_string
+    bl  skip_ws
+    bl  peek
+    cmp x0, #58
+    b.ne fail
+    bl  advance
+    bl  skip_ws
+    bl  parse_value
+    bl  skip_ws
+    bl  peek
+    cmp x0, #44
+    b.ne .Lobj_close
+    bl  advance
+    bl  skip_ws
+    b   .Lobj_member
+.Lobj_close:
+    cmp x0, #125
+    b.ne fail
+    bl  advance
+    ldp x29, x30, [sp], #16
+    ret
+
+// parse_array: current byte is '['
+parse_array:
+    stp x29, x30, [sp, #-16]!
+    mov x29, sp
+    bl  advance
+    bl  skip_ws
+    bl  peek
+    cmp x0, #93
+    b.ne .Larr_elem
+    bl  advance
+    ldp x29, x30, [sp], #16
+    ret
+.Larr_elem:
+    bl  parse_value
+    bl  skip_ws
+    bl  peek
+    cmp x0, #44
+    b.ne .Larr_close
+    bl  advance
+    bl  skip_ws
+    b   .Larr_elem
+.Larr_close:
+    cmp x0, #93
+    b.ne fail
+    bl  advance
+    ldp x29, x30, [sp], #16
+    ret
+
+// parse_value: dispatch on current byte (tail-calls)
+parse_value:
+    stp x29, x30, [sp, #-16]!
+    mov x29, sp
+    bl  peek
+    ldp x29, x30, [sp], #16
+    cmp x0, #123
+    b.eq parse_object
+    cmp x0, #91
+    b.eq parse_array
+    cmp x0, #34
+    b.eq parse_string
+    cmp x0, #45
+    b.eq parse_number
+    cmp x0, #48
+    b.lt .Lpv_other
+    cmp x0, #57
+    b.le parse_number
+.Lpv_other:
+    cmp x0, #116
+    b.eq .Lpv_true
+    cmp x0, #102
+    b.eq .Lpv_false
+    cmp x0, #110
+    b.eq .Lpv_null
+    b   fail
+.Lpv_true:
+    adrp x0, s_true
+    add  x0, x0, :lo12:s_true
+    b    match_lit
+.Lpv_false:
+    adrp x0, s_false
+    add  x0, x0, :lo12:s_false
+    b    match_lit
+.Lpv_null:
+    adrp x0, s_null
+    add  x0, x0, :lo12:s_null
+    b    match_lit
+
+.section .rodata
+s_true:
+    .asciz "true"
+s_false:
+    .asciz "false"
+s_null:
+    .asciz "null"
+s_ok:
+    .ascii "ok\n"
+s_err:
+    .ascii "error at "
+
+.bss
+.balign 8
+posv:
+    .zero 8
+lenv:
+    .zero 8
+outbuf:
+    .zero 32
+inbuf:
+    .zero 65536
+```

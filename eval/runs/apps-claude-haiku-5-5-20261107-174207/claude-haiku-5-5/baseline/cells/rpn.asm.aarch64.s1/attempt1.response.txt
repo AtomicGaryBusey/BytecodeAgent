@@ -1,0 +1,374 @@
+.globl _start
+.section .text
+_start:
+main_loop:
+    bl getbyte
+    mov x19, x0
+    cmn x19, #1
+    b.eq input_end
+    adrp x1, linehas
+    add x1, x1, :lo12:linehas
+    mov x2, #1
+    str x2, [x1]
+    cmp w19, #0x0A
+    b.eq on_newline
+    cmp w19, #0x20
+    b.eq on_sep
+    cmp w19, #0x09
+    b.eq on_sep
+    bl tok_append
+    b main_loop
+on_sep:
+    bl tok_end
+    b main_loop
+on_newline:
+    bl tok_end
+    bl line_end
+    b main_loop
+input_end:
+    adrp x1, linehas
+    add x1, x1, :lo12:linehas
+    ldr x2, [x1]
+    cbz x2, finish
+    bl tok_end
+    bl line_end
+finish:
+    bl flush_out
+    mov x0, #0
+    mov x8, #93
+    svc #0
+
+getbyte:
+    adrp x6, in_pos
+    add x6, x6, :lo12:in_pos
+    adrp x7, in_len
+    add x7, x7, :lo12:in_len
+    ldr x3, [x6]
+    ldr x4, [x7]
+    cmp x3, x4
+    b.lt gb_have
+    adrp x1, inbuf
+    add x1, x1, :lo12:inbuf
+    mov x0, #0
+    mov x2, #4096
+    mov x8, #63
+    svc #0
+    cmp x0, #0
+    b.le gb_eof
+    str x0, [x7]
+    mov x3, #0
+gb_have:
+    adrp x1, inbuf
+    add x1, x1, :lo12:inbuf
+    ldrb w0, [x1, x3]
+    add x3, x3, #1
+    str x3, [x6]
+    ret
+gb_eof:
+    str xzr, [x6]
+    str xzr, [x7]
+    mov x0, #-1
+    ret
+
+tok_append:
+    adrp x1, toklen
+    add x1, x1, :lo12:toklen
+    ldr x2, [x1]
+    cmp x2, #32
+    b.hs ta_skip
+    adrp x3, tokbuf
+    add x3, x3, :lo12:tokbuf
+    strb w19, [x3, x2]
+ta_skip:
+    add x2, x2, #1
+    str x2, [x1]
+    ret
+
+tok_end:
+    stp x29, x30, [sp, #-16]!
+    mov x29, sp
+    adrp x1, toklen
+    add x1, x1, :lo12:toklen
+    ldr x2, [x1]
+    cbz x2, te_ret
+    str xzr, [x1]
+    adrp x3, lineerr
+    add x3, x3, :lo12:lineerr
+    ldr x4, [x3]
+    cbnz x4, te_ret
+    adrp x5, tokbuf
+    add x5, x5, :lo12:tokbuf
+    cmp x2, #1
+    b.ne te_lit
+    ldrb w6, [x5]
+    cmp w6, #0x2B
+    b.eq te_op
+    cmp w6, #0x2D
+    b.eq te_op
+    cmp w6, #0x2A
+    b.eq te_op
+    cmp w6, #0x2F
+    b.eq te_op
+    cmp w6, #0x25
+    b.eq te_op
+te_lit:
+    mov x7, #0
+    mov x8, #0
+    ldrb w6, [x5]
+    cmp w6, #0x2D
+    b.ne te_lit_start
+    mov x7, #1
+    mov x8, #1
+te_lit_start:
+    sub x9, x2, x7
+    cmp x9, #1
+    b.lt te_bad
+    cmp x9, #18
+    b.gt te_bad
+    mov x10, #0
+    mov x11, #10
+    mov x12, x7
+te_digit:
+    cmp x12, x2
+    b.ge te_digits_done
+    ldrb w13, [x5, x12]
+    sub w13, w13, #0x30
+    cmp w13, #9
+    b.hi te_bad
+    madd x10, x10, x11, x13
+    add x12, x12, #1
+    b te_digit
+te_digits_done:
+    cbz x8, te_push
+    neg x10, x10
+te_push:
+    adrp x14, depth
+    add x14, x14, :lo12:depth
+    ldr x15, [x14]
+    cmp x15, #1024
+    b.ge te_bad
+    adrp x16, stk
+    add x16, x16, :lo12:stk
+    str x10, [x16, x15, lsl #3]
+    add x15, x15, #1
+    str x15, [x14]
+    b te_ret
+te_op:
+    mov w0, w6
+    bl apply_op
+    b te_ret
+te_bad:
+    adrp x3, lineerr
+    add x3, x3, :lo12:lineerr
+    mov x4, #1
+    str x4, [x3]
+te_ret:
+    ldp x29, x30, [sp], #16
+    ret
+
+apply_op:
+    adrp x1, depth
+    add x1, x1, :lo12:depth
+    ldr x2, [x1]
+    cmp x2, #2
+    b.lt ao_err
+    adrp x3, stk
+    add x3, x3, :lo12:stk
+    sub x4, x2, #1
+    ldr x5, [x3, x4, lsl #3]
+    sub x6, x2, #2
+    ldr x7, [x3, x6, lsl #3]
+    cmp w0, #0x2B
+    b.eq ao_add
+    cmp w0, #0x2D
+    b.eq ao_sub
+    cmp w0, #0x2A
+    b.eq ao_mul
+    cmp w0, #0x2F
+    b.eq ao_div
+    b ao_mod
+ao_add:
+    add x9, x7, x5
+    b ao_store
+ao_sub:
+    sub x9, x7, x5
+    b ao_store
+ao_mul:
+    mul x9, x7, x5
+    b ao_store
+ao_div:
+    cbz x5, ao_err
+    cmn x5, #1
+    b.ne ao_div_go
+    movz x11, #0x8000, lsl #48
+    cmp x7, x11
+    b.eq ao_err
+ao_div_go:
+    sdiv x9, x7, x5
+    b ao_store
+ao_mod:
+    cbz x5, ao_err
+    cmn x5, #1
+    b.ne ao_mod_go
+    movz x11, #0x8000, lsl #48
+    cmp x7, x11
+    b.eq ao_err
+ao_mod_go:
+    sdiv x10, x7, x5
+    msub x9, x10, x5, x7
+ao_store:
+    str x9, [x3, x6, lsl #3]
+    str x4, [x1]
+    ret
+ao_err:
+    adrp x12, lineerr
+    add x12, x12, :lo12:lineerr
+    mov x13, #1
+    str x13, [x12]
+    ret
+
+line_end:
+    stp x29, x30, [sp, #-16]!
+    mov x29, sp
+    adrp x1, linehas
+    add x1, x1, :lo12:linehas
+    str xzr, [x1]
+    bl maybe_flush
+    adrp x2, lineerr
+    add x2, x2, :lo12:lineerr
+    ldr x3, [x2]
+    str xzr, [x2]
+    adrp x4, depth
+    add x4, x4, :lo12:depth
+    ldr x5, [x4]
+    str xzr, [x4]
+    cbnz x3, le_err
+    cmp x5, #1
+    b.ne le_err
+    adrp x6, stk
+    add x6, x6, :lo12:stk
+    ldr x0, [x6]
+    bl print_num
+    adrp x1, nlmsg
+    add x1, x1, :lo12:nlmsg
+    mov x2, #1
+    bl putbytes
+    b le_ret
+le_err:
+    adrp x1, errmsg
+    add x1, x1, :lo12:errmsg
+    mov x2, #6
+    bl putbytes
+le_ret:
+    ldp x29, x30, [sp], #16
+    ret
+
+print_num:
+    stp x29, x30, [sp, #-16]!
+    mov x29, sp
+    adrp x2, scratch
+    add x2, x2, :lo12:scratch
+    add x9, x2, #32
+    mov x3, x9
+    mov x4, x0
+    mov x5, #0
+    cmp x4, #0
+    b.ge pn_digits
+    neg x4, x4
+    mov x5, #1
+pn_digits:
+    mov x6, #10
+pn_loop:
+    udiv x7, x4, x6
+    msub x8, x7, x6, x4
+    add x8, x8, #0x30
+    sub x3, x3, #1
+    strb w8, [x3]
+    mov x4, x7
+    cbnz x4, pn_loop
+    cbz x5, pn_out
+    sub x3, x3, #1
+    mov w8, #0x2D
+    strb w8, [x3]
+pn_out:
+    mov x1, x3
+    sub x2, x9, x3
+    bl putbytes
+    ldp x29, x30, [sp], #16
+    ret
+
+putbytes:
+    adrp x3, out_len
+    add x3, x3, :lo12:out_len
+    ldr x4, [x3]
+    adrp x5, outbuf
+    add x5, x5, :lo12:outbuf
+    mov x6, #0
+pb_loop:
+    cmp x6, x2
+    b.ge pb_done
+    ldrb w7, [x1, x6]
+    strb w7, [x5, x4]
+    add x4, x4, #1
+    add x6, x6, #1
+    b pb_loop
+pb_done:
+    str x4, [x3]
+    ret
+
+maybe_flush:
+    adrp x3, out_len
+    add x3, x3, :lo12:out_len
+    ldr x2, [x3]
+    cmp x2, #4064
+    b.lt mf_no
+    b flush_out
+mf_no:
+    ret
+
+flush_out:
+    adrp x3, out_len
+    add x3, x3, :lo12:out_len
+    ldr x2, [x3]
+    adrp x1, outbuf
+    add x1, x1, :lo12:outbuf
+    mov x0, #1
+    mov x8, #64
+    svc #0
+    adrp x3, out_len
+    add x3, x3, :lo12:out_len
+    str xzr, [x3]
+    ret
+
+.section .rodata
+errmsg:
+    .ascii "error\n"
+nlmsg:
+    .ascii "\n"
+
+.section .bss
+.balign 16
+inbuf:
+    .zero 4096
+outbuf:
+    .zero 4096
+scratch:
+    .zero 32
+tokbuf:
+    .zero 32
+stk:
+    .zero 8192
+in_pos:
+    .zero 8
+in_len:
+    .zero 8
+out_len:
+    .zero 8
+depth:
+    .zero 8
+toklen:
+    .zero 8
+linehas:
+    .zero 8
+lineerr:
+    .zero 8

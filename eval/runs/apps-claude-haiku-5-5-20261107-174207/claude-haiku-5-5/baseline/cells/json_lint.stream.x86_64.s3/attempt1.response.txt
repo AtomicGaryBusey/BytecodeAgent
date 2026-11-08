@@ -1,0 +1,375 @@
+.text
+.globl _start
+
+.equ INBUF_SIZE, 131072
+
+_start:
+    call read_all
+    call skipws
+    call parse_value
+    call skipws
+    call cur
+    cmp eax, 256
+    jne fail
+    lea rsi, [rip + msg_ok]
+    mov edx, 3
+    call write_all
+    xor edi, edi
+    mov eax, 60
+    syscall
+
+# eax = byte at pos, or 256 at end of input
+cur:
+    mov rax, qword ptr [rip + pos]
+    cmp rax, qword ptr [rip + len]
+    jae cur_eof
+    lea rcx, [rip + inbuf]
+    movzx eax, byte ptr [rcx + rax]
+    ret
+cur_eof:
+    mov eax, 256
+    ret
+
+# consume byte in edi or fail
+expect:
+    call cur
+    cmp eax, edi
+    jne fail
+    inc qword ptr [rip + pos]
+    ret
+
+# skip ws: space 32, tab 9, lf 10, cr 13
+skipws:
+    call cur
+    cmp eax, 32
+    je sw_adv
+    cmp eax, 9
+    je sw_adv
+    cmp eax, 10
+    je sw_adv
+    cmp eax, 13
+    je sw_adv
+    ret
+sw_adv:
+    inc qword ptr [rip + pos]
+    jmp skipws
+
+# value at current pos (no leading ws skip)
+parse_value:
+    call cur
+    cmp eax, 123
+    je parse_object
+    cmp eax, 91
+    je parse_array
+    cmp eax, 34
+    je parse_string
+    cmp eax, 45
+    je parse_number
+    cmp eax, 48
+    jb pv_notnum
+    cmp eax, 57
+    jbe parse_number
+pv_notnum:
+    cmp eax, 116
+    je pv_true
+    cmp eax, 102
+    je pv_false
+    cmp eax, 110
+    je pv_null
+    jmp fail
+pv_true:
+    mov edi, 116
+    call expect
+    mov edi, 114
+    call expect
+    mov edi, 117
+    call expect
+    mov edi, 101
+    call expect
+    ret
+pv_false:
+    mov edi, 102
+    call expect
+    mov edi, 97
+    call expect
+    mov edi, 108
+    call expect
+    mov edi, 115
+    call expect
+    mov edi, 101
+    call expect
+    ret
+pv_null:
+    mov edi, 110
+    call expect
+    mov edi, 117
+    call expect
+    mov edi, 108
+    call expect
+    mov edi, 108
+    call expect
+    ret
+
+parse_object:
+    inc qword ptr [rip + pos]
+    call skipws
+    call cur
+    cmp eax, 125
+    jne po_member
+    inc qword ptr [rip + pos]
+    ret
+po_member:
+    call cur
+    cmp eax, 34
+    jne fail
+    call parse_string
+    call skipws
+    mov edi, 58
+    call expect
+    call skipws
+    call parse_value
+    call skipws
+    call cur
+    cmp eax, 44
+    je po_comma
+    cmp eax, 125
+    jne fail
+    inc qword ptr [rip + pos]
+    ret
+po_comma:
+    inc qword ptr [rip + pos]
+    call skipws
+    jmp po_member
+
+parse_array:
+    inc qword ptr [rip + pos]
+    call skipws
+    call cur
+    cmp eax, 93
+    jne pa_elem
+    inc qword ptr [rip + pos]
+    ret
+pa_elem:
+    call parse_value
+    call skipws
+    call cur
+    cmp eax, 44
+    jne pa_notcomma
+    inc qword ptr [rip + pos]
+    call skipws
+    jmp pa_elem
+pa_notcomma:
+    cmp eax, 93
+    jne fail
+    inc qword ptr [rip + pos]
+    ret
+
+# string starting at '"'
+parse_string:
+    inc qword ptr [rip + pos]
+ps_loop:
+    call cur
+    cmp eax, 256
+    je fail
+    cmp eax, 34
+    je ps_end
+    cmp eax, 92
+    je ps_esc
+    cmp eax, 32
+    jb fail
+    inc qword ptr [rip + pos]
+    jmp ps_loop
+ps_end:
+    inc qword ptr [rip + pos]
+    ret
+ps_esc:
+    inc qword ptr [rip + pos]
+    call cur
+    cmp eax, 117
+    je ps_u
+    cmp eax, 34
+    je ps_simple
+    cmp eax, 92
+    je ps_simple
+    cmp eax, 47
+    je ps_simple
+    cmp eax, 98
+    je ps_simple
+    cmp eax, 102
+    je ps_simple
+    cmp eax, 110
+    je ps_simple
+    cmp eax, 114
+    je ps_simple
+    cmp eax, 116
+    je ps_simple
+    jmp fail
+ps_simple:
+    inc qword ptr [rip + pos]
+    jmp ps_loop
+ps_u:
+    inc qword ptr [rip + pos]
+    call hexdig
+    call hexdig
+    call hexdig
+    call hexdig
+    jmp ps_loop
+
+# one hex digit at pos, consume it or fail
+hexdig:
+    call cur
+    lea rcx, [rax - 48]
+    cmp ecx, 9
+    jbe hd_ok
+    or eax, 32
+    lea rcx, [rax - 97]
+    cmp ecx, 5
+    ja fail
+hd_ok:
+    inc qword ptr [rip + pos]
+    ret
+
+# one decimal digit at pos, consume it or fail
+need_digit:
+    call cur
+    lea rcx, [rax - 48]
+    cmp ecx, 9
+    ja fail
+    inc qword ptr [rip + pos]
+    ret
+
+# zero or more decimal digits
+digits:
+    call cur
+    lea rcx, [rax - 48]
+    cmp ecx, 9
+    ja dg_done
+    inc qword ptr [rip + pos]
+    jmp digits
+dg_done:
+    ret
+
+parse_number:
+    call cur
+    cmp eax, 45
+    jne pn_start
+    inc qword ptr [rip + pos]
+pn_start:
+    call cur
+    cmp eax, 48
+    je pn_zero
+    call need_digit
+    call digits
+    jmp pn_frac
+pn_zero:
+    inc qword ptr [rip + pos]
+pn_frac:
+    call cur
+    cmp eax, 46
+    jne pn_exp
+    inc qword ptr [rip + pos]
+    call need_digit
+    call digits
+pn_exp:
+    call cur
+    cmp eax, 101
+    je pn_e
+    cmp eax, 69
+    jne pn_done
+pn_e:
+    inc qword ptr [rip + pos]
+    call cur
+    cmp eax, 43
+    je pn_sgn
+    cmp eax, 45
+    jne pn_digits_e
+pn_sgn:
+    inc qword ptr [rip + pos]
+pn_digits_e:
+    call need_digit
+    call digits
+pn_done:
+    ret
+
+# read all of stdin into inbuf, sets len
+read_all:
+ra:
+    mov rax, qword ptr [rip + len]
+    mov edx, INBUF_SIZE
+    sub rdx, rax
+    jz ra_done
+    lea rsi, [rip + inbuf]
+    add rsi, rax
+    xor edi, edi
+    xor eax, eax
+    syscall
+    test rax, rax
+    jle ra_done
+    add qword ptr [rip + len], rax
+    jmp ra
+ra_done:
+    ret
+
+# write rdx bytes at rsi to stdout
+write_all:
+wa:
+    test rdx, rdx
+    jz wa_done
+    mov edi, 1
+    mov eax, 1
+    syscall
+    cmp rax, 0
+    jle wa_done
+    add rsi, rax
+    sub rdx, rax
+    jmp wa
+wa_done:
+    ret
+
+# print "error at N\n" to stdout and exit 1, N = pos
+fail:
+    mov rax, qword ptr [rip + pos]
+    lea rdi, [rip + numbuf + 39]
+    mov byte ptr [rdi], 10
+fl:
+    xor edx, edx
+    mov rcx, 10
+    div rcx
+    dec rdi
+    add dl, 48
+    mov byte ptr [rdi], dl
+    test rax, rax
+    jnz fl
+    sub rdi, 9
+    lea rsi, [rip + msg_err]
+    xor ecx, ecx
+fc:
+    movzx eax, byte ptr [rsi + rcx]
+    mov byte ptr [rdi + rcx], al
+    inc rcx
+    cmp rcx, 9
+    jne fc
+    lea rdx, [rip + numbuf + 40]
+    sub rdx, rdi
+    mov rsi, rdi
+    call write_all
+    mov edi, 1
+    mov eax, 60
+    syscall
+
+.section .rodata
+msg_ok:
+    .ascii "ok\n"
+msg_err:
+    .ascii "error at "
+
+.bss
+.align 8
+pos:
+    .zero 8
+len:
+    .zero 8
+numbuf:
+    .zero 48
+inbuf:
+    .zero 131072

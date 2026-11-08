@@ -40,6 +40,7 @@ results on the other paths (16 cells each):
 | Grok 4.7 build-fast | **14/16** | 16/16 | 16/16 | 16/16 | 15/16 |
 | Claude Opus 4.8 | **14/16** | 16/16 | 13/16 | 15/16 | 7/16 |
 | Claude Sonnet 5.5 | **14/16** | 16/16 | 16/16 | 15/16 | 16/16 |
+| Claude Haiku 5.5 | **13/16** | 16/16 | 16/16 | 12/16 | 14/16 |
 | Kimi K3 | **13/16** | 16/16 | 16/16 | 14/16 | 15/16 |
 | Claude Sonnet 5 | **13/16** | 16/16 | 16/16 | 10/16 | 14/16 |
 | GPT-6 Luna via Copilot | **12/16** | 16/16 | 16/16 | 15/16 | 11/16 |
@@ -66,6 +67,7 @@ Per ISA, hex first attempt:
 | Grok 4.7 build-fast | 6/8 | 8/8 |
 | Claude Opus 4.8 | 6/8 | 8/8 |
 | Claude Sonnet 5.5 | 6/8 | 8/8 |
+| Claude Haiku 5.5 | 5/8 | 8/8 |
 | Kimi K3 | 5/8 | 8/8 |
 | Claude Sonnet 5 | 7/8 | 6/8 |
 | GPT-6 Luna via Copilot | 6/8 | 6/8 |
@@ -89,9 +91,10 @@ results (— where that model did not run the app battery):
 | Claude Opus 4.8 | **15/16** | 16/16 | — | — |
 | Claude Sonnet 5.5 | **13/16** | 15/16 | 14/16 | 15/16 |
 | Claude Fable 5.1 | **12/16** | 16/16 | 13/16 | 13/16 |
-| Grok 4.6 | **11/16** | 16/16 | — | — |
+| Claude Haiku 5.5 | **11/16** | 16/16 | 14/16 | 14/16 |
+| Grok 4.6 | **11/16** | 16/16 | 16/16 | 15/16 |
+| Grok 4.7 | **10/16** | 16/16 | 16/16 | 15/16 |
 | Grok 4.7 build-fast | **10/16** | 16/16 | 16/16 | 14/16 |
-| Grok 4.7 | **10/16** | 16/16 | — | — |
 | Claude Opus 5.5 | **7/16** | 12/16 | 16/16 | 15/16 |
 | Claude Sonnet 5 | **7/16** | 9/16 | — | — |
 | Codex GPT-6 Sol | **6/16** | 14/16 | — | — |
@@ -115,9 +118,10 @@ apart (first attempts only, except the last column):
 | Claude Opus 4.8 | 16 | 15 | 0 | 1 | 15/16 (94%) | 0 of 17 |
 | Claude Sonnet 5.5 | 16 | 13 | 1 | 2 | 13/15 (87%) | 3 of 23 |
 | Claude Fable 5.1 | 16 | 12 | 0 | 4 | 12/16 (75%) | 0 of 20 |
+| Claude Haiku 5.5 | 16 | 11 | 0 | 5 | 11/16 (69%) | 0 of 25 |
 | Grok 4.6 | 16 | 11 | 0 | 5 | 11/16 (69%) | 0 of 23 |
-| Grok 4.7 build-fast | 16 | 10 | 0 | 6 | 10/16 (62%) | 0 of 23 |
 | Grok 4.7 | 16 | 10 | 0 | 6 | 10/16 (62%) | 0 of 22 |
+| Grok 4.7 build-fast | 16 | 10 | 0 | 6 | 10/16 (62%) | 0 of 23 |
 | Claude Sonnet 5 | 16 | 7 | 0 | 9 | 7/16 (44%) | 0 of 40 |
 | Codex GPT-6 Sol | 16 | 6 | 0 | 10 | 6/16 (38%) | 0 of 33 |
 | Codex GPT-5.5 | 16 | 3 | 0 | 13 | 3/16 (19%) | 0 of 37 |
@@ -139,7 +143,8 @@ let through, not as ability: every first attempt Opus 5.5 was allowed to answer 
   (16/16 first attempt), and Astra, Daybreak Blue and Fable 5.1 missed one cell each. Fifteen of the eighteen
   model rows pass every function cell within four attempts. Hex costs the strongest models little against
   their assembly results; it costs mid-tier models much more (Sonnet 4.5 10/16, Luna 10/16 through Codex,
-  MAI-Code 6/16, Haiku 4.5 5/16).
+  MAI-Code 6/16, Haiku 4.5 5/16). Haiku 5.5 is the exception among small models: 13/16 on functions (Haiku
+  4.5: 5/16) and 11/16 on whole programs first attempt, 16/16 on both within four, with no refusals.
 - **AArch64 is harder to hand-encode than x86-64 for most models** (fixed 32-bit words with packed
   bit fields: shift and bitmask immediates, register fields, 19- and 26-bit branch offsets), e.g. Sonnet 4.5
   2/8 vs 8/8, Haiku 4.5 0/8 vs 5/8. Grok 4.6's AArch64 misses (5/8 vs 7/8) are all time-outs: it was still
@@ -257,6 +262,17 @@ programs 7/16 first try, 9/16 within four. Of its 31 failed whole-program attemp
 timeouts (every attempt on `rpn` and `json_lint`, both ISAs); its 4 failed function attempts are 3 wrong results
 and 1 timeout. The others are runtime faults, wrong output, and three malformed words: a 9-digit AArch64 word (`17fffffed`, twice) and `8be00164`, which GNU
 objdump also decodes as undefined (an ADD with the reserved shift type).
+
+**Claude Haiku 5.5 (2026-11-07): no false rejects.** Run through `claude -p` on the user's own Claude
+account (Max 20x, CVP-enrolled; not through Copilot or Antigravity), CLI-default effort, in
+`eval/runs/hex-haiku55-20261107-174207` and `eval/runs/apps-hex-haiku55-20261107-174207`. Hex functions
+13/16 first try, 16/16 within four; whole programs 11/16 first try, 16/16 within four. All 8 first-attempt
+failures are on the model's side: two malformed AArch64 words rejected before running (`d3e0fd4b`, which GNU
+objdump also decodes as undefined, and the 9-digit `94000004d`), two function crashes (a stray `prfm` literal
+word as the first instruction of `bmax`; `reverse` loading outside the array when `n = 0`), a program that ran off the end
+of its code on empty input (`rev_lines` x86-64), and three wrong outputs on the smallest inputs (`wc`, `rpn` and
+`base64` on AArch64, e.g. `base64` of `"M"` printed `"T\nQ\nA\n=\n"` for `"TQ==\n"`: a newline after each character and the wrong padding). No attempt was
+refused (0 of 25), unlike Opus 5.5 and Sonnet 5.5 on the same account.
 
 ## Pending and not run
 
