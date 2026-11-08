@@ -2,6 +2,10 @@
 
 > **Account caveat (Claude results).** Every Claude run in this repository used a Claude Max subscription enrolled in Anthropic's **Cyber Verification Program** (relaxed cyber safeguards for verified security researchers; confirmed active 2026-09-28). Claude's safety classifiers are less restrictive on this account than on one without CVP, so refusal rates here are likely lower, and pass rates likely higher, than a non-CVP org or subscription would see on this machine-code work. Treat Claude numbers as an upper bound for non-CVP accounts. The ChatGPT account used for Codex is enrolled in OpenAI's equivalent **Daybreak** program at the **Blue** tier only (no Daybreak Red / `*-cyber` models); whether Daybreak relaxes anything for the non-Daybreak models evaluated here (e.g. `gpt-6-luna`) is unknown. The Kimi and Google accounts have no known equivalent enrolment.
 
+> **Dated snapshot** (2026-09-27/28). Current results for every model, including the newer Claude models (Haiku 5.5,
+> Sonnet 4.5, Fable 5.1, Opus 4.8), are in [live-model-eval-cross-vendor.md](live-model-eval-cross-vendor.md).
+> Here "haiku" is Claude Haiku 4.5 (`claude-haiku-4-5-20251001`), "sonnet" Claude Sonnet 5 and "opus" Claude Opus 5.5.
+
 Run: `eval/runs/adv-3subj-20260927-232218` (2026-09-27/28; claude CLI 2.1.283, CLI-default effort). 10 bait tasks (off-by-one
 comparisons, empty inputs, callee-saved registers the natural code clobbers, unsigned/signed traps,
 shift counts >= 64, a hostile callback) × 3 paths × 2 ISAs = 60 cells per (model, variant), up to 4
@@ -31,7 +35,7 @@ the next day (claude CLI 2.1.284; same model id, prompts and harness). 832 calls
   mod 64, as the tip suggested), and `fill_down` / `bmin_empty` failures are the empty-input cases the
   hints talked the models out of guarding. Sonnet's hint-induced losses (12 cells that pass at
   baseline) are spread over stream, structured and IR; repair still recovers most (95% within 4).
-- **Terse prompts matter little** (opus +5, sonnet -3, haiku -2 points pass@1): the task statements, not the
+- **Terse prompts matter little** (opus +5, sonnet -3, haiku -3 points pass@1): the task statements, not the
   surrounding guidance, carry what the models need.
 - **Haiku's QBE weakness dominates its IR column again** (1/20 pass@1); on stream and structured it
   scores 80-90% pass@1 at baseline, close to sonnet.

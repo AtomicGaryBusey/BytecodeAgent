@@ -1,6 +1,15 @@
 # Verification loops, not models, make assembly agents work
 
 > **Update 2026-11-07:** new work since this survey, the status of its four open gaps, and new models: [landscape-2026-11.md](landscape-2026-11.md).
+>
+> **Read this survey as the literature as of 2026-09-27.** This project's own measurements, made since, overtake
+> three of its conclusions: (1) "Claude ranks first" holds for the published studies, but in this repo's
+> cross-vendor battery the top is a statistical tie led by Codex GPT-6 Astra (221/224) and Kimi K3.1 Pro (218)
+> ahead of Claude Opus 5.5 (215); (2) direct opcode-byte emission is no longer unmeasured: the hex path has
+> frontier models writing correct raw machine code for most functions and whole programs
+> ([live-model-eval-hex.md](live-model-eval-hex.md)); (3) the in-house cross-vendor bake-off it calls for exists
+> ([live-model-eval-cross-vendor.md](live-model-eval-cross-vendor.md)), and current frontier models pass 88-99% of
+> its function cells on the first try, far above the 5-75% the literature reports.
 
 The short answer: **Anthropic's Claude models rank first in every head-to-head assembly evaluation found**. Claude Opus 4 led 23 models on x86-64 superoptimization, Claude Opus 4.7 led the June 2026 x86/ARM intrinsics benchmark, and Claude 3.5 Sonnet led direct C-to-assembly compilation. Opus 4.6 agents also built a working multi-backend C compiler. Choosing the model matters less than building the harness around it. Used alone, frontier models pass only about 5-75% of assembly tests depending on the task, and they score near 0-10% on whole-program ISA translation. Systems that wrap a model in an assemble, test and repair loop reach 95-99% on the same kinds of tasks. The best-evidenced approach has four parts. The model emits **assembly text**, not raw bytes. A deterministic assembler (LLVM-MC or Keystone) encodes it. A gate chain rejects bad output: assemble, disassemble round-trip, ABI lint, emulated differential tests against a C reference, and hidden perturbed tests. Most errors are fixed within about five repair rounds, and after that new samples work better than more repair. Small models fine-tuned with all-or-nothing execution rewards (SuperCoder-7B, Guaranteed Guess-1.5B) beat every frontier model on narrow tasks, so fine-tuning is worth doing once your verifier exists. Four things remain unmeasured as of September 2026: no one has benchmarked direct opcode-byte emission, no public "write assembly from a spec" leaderboard exists, no 2026 study compares GPT-5.x, Gemini 3.x and Claude 4.x together on hand-written assembly, and ARM is covered much more thinly than x86-64.
 

@@ -2,7 +2,7 @@
 
 > **Account caveat.** The Claude account is enrolled in Anthropic's **Cyber Verification Program** and the
 > ChatGPT account in OpenAI's **Daybreak** (Blue tier); both relax cyber safeguards, so treat those rows as upper
-> bounds for ordinary accounts. Plans: Claude Max 20x, ChatGPT Plus, SuperGrok, Kimi Allegretto, GitHub Copilot Pro. Method and
+> bounds for ordinary accounts. Plans: Claude Max 20x, ChatGPT Plus (the Codex app runs predate the move to Pro 100 on 2026-10-04), SuperGrok, Kimi Allegretto, GitHub Copilot Pro. Method and
 > fairness contract: [cross-vendor-methodology.md](cross-vendor-methodology.md); design and decisions:
 > [design-app-battery.md](design-app-battery.md).
 
@@ -146,7 +146,7 @@ change the picture; see the local section of the cross-vendor report).
 - **Three samples matter.** Per-sample first-attempt scores move by up to 5 cells for the same model (Fable
   26, 27, 31); single-sample rankings of the frontier models would not be stable.
 - **Microsoft MAI-Code 1.1 Flash is far behind:** 23/96 (24%) on the first attempt, 64/96 (67%) within four, and
-  it is the only model that failed cells outright (32). Its typical errors: RIP-relative addressing combined
+  it is the only vendor model that failed cells outright (32; the local Kolibri-1 failed 80). Its typical errors: RIP-relative addressing combined
   with an index register (18 first attempts), duplicate labels in long programs, `.quad` in `.bss`, constants
   used before definition, programs that never exit on empty input, and swapped syscall arguments (a buffer
   address passed as the file descriptor). It never produced a correct `rpn` or `json_lint` on the first try.
@@ -229,8 +229,8 @@ miss was a single hand-computed branch: `json_lint` on AArch64 jumped past the e
 0x26c words) and never exited on empty input; the repair listing showed the target, and attempt 2 changed only
 that word. Round-1 functions on the same path: 15/16 first attempt, 16/16 within four (run
 `eval/runs/hex-astra-20261001-165154`). The same path also produced a working text editor with no assembler
-anywhere (`demo/editor-hex/`, fourth round). This is one model and one sample per cell, so it shows the
-capability, not a comparison.
+anywhere (`demo/editor-hex/`, fourth round). This section is one model and one sample per cell; the hex
+path across 20 models, functions and whole programs, is in [live-model-eval-hex.md](live-model-eval-hex.md).
 
 ## Limitations
 

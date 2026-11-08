@@ -6,8 +6,8 @@ the baseline run; see [the hex report](live-model-eval-hex.md#findings)). The pr
 utilities (`wc`, `base64`, a JSON checker), so these blocks are false positives. Does stating plainly and
 truthfully what the request is, and what happens to the result, reduce them?
 
-Same account caveats as the main report: the Claude account is a Claude Max 20x subscription enrolled in
-Anthropic's Cyber Verification Program, driven through `claude -p` (Claude Code 2.1.285 for the baseline,
+Same account caveats as the [cross-vendor report](live-model-eval-cross-vendor.md): the Claude account is a Claude Max 20x subscription enrolled in
+Anthropic's Cyber Verification Program (the Astra control rows ran on the ChatGPT account, Daybreak Blue), driven through `claude -p` (Claude Code 2.1.285 for the baseline,
 2.1.287 for the variants), with the harness's zero-tool setup and its own system prompt.
 
 ## The variants
@@ -124,6 +124,6 @@ scored refusal, and Opus 5.5's whole-program hex rows measure what its front end
 
 ## Cost
 
-Opus 5.5: 61 calls (27 + 34) on the Claude Max plan. Astra: 17 calls on ChatGPT Plus (codex CLI 0.160.0;
+Opus 5.5: 61 calls (27 + 34) on the Claude Max plan. Astra: 17 calls on ChatGPT Plus (2026-10-02, before the move to Pro 100; codex CLI 0.160.0;
 its baseline ran on 0.157.1, re-audited before use: see the methodology report). No call was retried for an
 infrastructure error.

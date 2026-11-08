@@ -1,6 +1,6 @@
 # TODO — analytics backlog
 
-Further reporting on the recorded live-eval data (`eval/runs/`, ~13,300 attempts across ~30 models and
+Further reporting on the recorded live-eval data (`eval/runs/`, ~15,000 attempts across ~35 models and
 variants). Everything here is analysis of committed data — no model calls, no plan usage — except item 10, which
 re-executes passing programs in the emulator. Each item lands as a script in `eval/` plus a section in a report.
 
@@ -32,7 +32,7 @@ re-executes passing programs in the emulator. Each item lands as a script in `ev
 11. **Harness and infrastructure audit.** One summary of false rejects found and fixed, infra error rates per
     vendor, and quota behaviour (now spread across per-run notes).
 
-## Approved pick-up runs (2026-10-22, in progress)
+## Approved pick-up runs (2026-10-22, all done)
 
 Approved by the user on 2026-10-22. After each: by-hand false-reject review, then regenerate the tables,
 `eval/analytics.py` and `eval/dashboard.py`, and update the reports.
@@ -58,11 +58,31 @@ Approved by the user on 2026-10-22. After each: by-hand false-reject review, the
   reply is logged for follow-up in the gitignored `followups/` folder. Not yet decided: apps (96 cells), hex
   (32 cells), and the K3.1 Pro Highspeed variant.
 
+## Done (2026-11-07/08)
+
+- [x] **Claude Haiku 5.5** (via `claude -p` only): functions 203/224, apps 88/96, hex functions 13/16 and whole
+  programs 11/16 (all 16/16 or 96/96 within four, except functions 222/224). Reviewed: no false rejects.
+- [x] **Azure AI Foundry route** (`foundry:`, pay-as-you-go, $25 per-model spend cap): MAI-Thinking-1 72/224
+  ($24.52; cap raised to $28 to finish) and DeepSeek-V4-Pro at reasoning high 139/224 ($11.88), function
+  batteries only. Reviewed: no false rejects. mai-code-1.1-flash skipped (GlobalStandard needs a quota grant);
+  Muse-Glimmer-30B skipped (managed compute only).
+- [x] **Fireworks.ai adapter** (`fireworks:`), written and unit-tested; no account or runs yet.
+- [x] Re-audits: Codex 0.167.0, Antigravity 1.5.3, Copilot 1.0.107 / SDK 1.0.29; `python -m bca.liveeval models`.
+- [x] Landscape update (`reports/landscape-2026-11.md`); licence (MIT; CC BY 4.0 for reports/ and eval/runs/);
+  documentation review (2026-11-08).
+
 ## Waiting
 
+- [ ] **Gemini 4 Argon High (Antigravity, Google AI Pro), function batteries**: stopped on quota at 122/224 cells
+  (181 calls). An 8-hourly retry loop resumes it (`eval/runs/agy-argon-20261107-142027.loop.sh`, status in
+  `.loop`). Run as-is with the uniform 180 s limit (user decision 2026-11-07). When complete: by-hand review,
+  then README and the cross-vendor report (state the plan: Google AI Pro).
+- [ ] **Apple Foundation Models** (approved 2026-11-08, run through the "Apple FM MCP Harness" session on the
+  MacBook): on-device AFM 3 Core Advanced (8,192-token context) round 1; Private Cloud Compute every battery
+  that fits. Protocol: context limits, isolation audit, probe, then runs. Needs the Spark's SSH key on the Mac
+  and, for PCC, `fm serve` started from Terminal.app and a `fm quota-usage` check.
 - [ ] **Antigravity (Gemini 3.8 Flash High)**: 1 cell left (`stats_f.ir.aarch64`, adversarial). The hourly loop
-  was stopped on 2026-10-24 at the user's request; the user triggers it manually (next reset estimated
-  ~2026-10-30 15:00): `.venv/bin/python -m bca.liveeval run --run-dir eval/runs/vendors-all-20260928-202226 --tasks
+  was stopped on 2026-10-24 at the user's request; the user triggers it manually after a quota reset: `.venv/bin/python -m bca.liveeval run --run-dir eval/runs/vendors-all-20260928-202226 --tasks
   round1,round2,long,adversarial --subjects agy:gemini-3.8-flash-high --max-calls 3000 --jobs 2`. After it:
   review new first-attempt failures, regenerate with `eval/xv_tables.py`, update the row and † note in
   README.md and `reports/live-model-eval-cross-vendor.md`, commit and push.
@@ -74,9 +94,12 @@ Approved by the user on 2026-10-22. After each: by-hand false-reject review, the
 - [ ] **Qwen3.8-27B**, the model behind Ring0-Agent ("close the loop"). To be served from the user's other DGX
   cluster. The time-limit blocker for a dense 27B is gone (token-budget mode, built for Kolibri). Needs from the
   user: endpoint URL and serving stack, model id, quantisation, and Ring0-Agent's sampling settings.
-- [ ] **Apple Foundation Models** (`apple:` adapter via the user's MacBook: on-device ~3B model with a 4K
-  context, Private Cloud Compute with 32K). Needs macOS 27, SSH from the Spark, and the user's Apple Developer
-  account status.
+- [ ] **App battery and hex path for MAI-Thinking-1 and DeepSeek-V4-Pro** (Azure Foundry): backlogged
+  2026-11-08 on cost (projected $25-40 and $15-25).
+- [ ] **Fireworks.ai runs** (MiniMax M3.1 Flash, GLM-5.3, Muse Spark Open candidates): waiting for the user's
+  account and choice of models; cost estimate before anything beyond a smoke test.
+- [ ] **Further Foundry models** (recommended in the landscape update, not approved): Kimi-K3.1-Pro (a second
+  route to a benchmarked model), mistral-medium-3-5.
 - [ ] **Apriel-1.6-15B-Thinker** (ServiceNow, MIT): optional local baseline, practical now that token-budget mode
   exists. Its answer follows `[BEGIN FINAL RESPONSE]`, which the adapter must strip.
 
@@ -85,17 +108,13 @@ Approved by the user on 2026-10-22. After each: by-hand false-reject review, the
 - [ ] Echo the offending source line with QBE compile errors (`reports/live-model-eval-haiku-sonnet.md`).
 - [ ] Rename the structured schema's `$defs/reg` (e.g. `register_name`) so bare register strings are more
   obvious (same report).
-- [ ] Add `movsx` / `adc` to the structured x86 schema; models keep reaching for them
-  (`reports/live-model-eval-adversarial.md`).
+- [ ] Add extend and add-with-carry ops (`sxtb`/`sxtw`, `adc`) to the structured AArch64 schema; models keep
+  reaching for them (`reports/live-model-eval-adversarial.md`; x86 already has `movsx` / `adc`).
 - [ ] When a checked output buffer differs, show the first differing index, not only the first 12 elements
   (`reports/live-model-eval-long.md`).
 
 **Housekeeping**
 
-- [ ] Antigravity's run directory holds hundreds of untracked quota-retry artifacts (`attempt*.infra*.raw.jsonl`
-  and `.response.txt`) and modified logs; decide keep or prune at its next reported update.
-- [ ] Leftovers of the Kimi round-2 run never committed: `eval/runs/vendors-r2-20260929-080743.out`,
-  `calls.log`, `plan.json`.
 - [ ] Docker images (~72 GB): `bca-vllm-kolibri` (22 GB, needed only to re-run Kolibri), the GB10-native test
   image `bca-vllm-kolibri-native` (25 GB, offered for deletion), `eugr/spark-vllm:nightly-20261002` (25 GB).
   The user's call.
@@ -135,7 +154,7 @@ then regenerate the tables and `eval/analytics.py`.
   cap); MAI-Code may not fit the month's remaining Copilot credits (reset on the 1st). Smaller option: Grok 4.7 +
   MAI-Code (~380 calls, no Kimi). Excluded: any Codex (the ChatGPT plan is reserved), Astra and Sol (60/60 at
   baseline, nothing to gain), other Groks (same vendor as 4.7), Kolibri (its adversarial token budget already cut
-  52 of 176 calls; days of GPU), the Qwens (2/60), Gemini (no quota), GPT-6 Luna via Copilot (an OpenAI model;
+  52 of 176 calls; days of GPU), the Qwens (2/60), Gemini (quota-paced even on AI Pro), GPT-6 Luna via Copilot (an OpenAI model;
   left out given the Codex instruction). Needs the user's choice of set before anything runs.
 
 **Optional (statistical power)**
@@ -152,9 +171,9 @@ then regenerate the tables and `eval/analytics.py`.
 
 **Hex-path holes**
 
-- [ ] **No hex results for Gemini 3.8 Flash High or Kolibri-1** (Sonnet 5 approved above): hex functions (16 cells) each;
-  whole-program hex follows only at ≥ 12/16 within four (so Haiku and MAI-Code missing from hex apps is by
-  design). Gemini after its function run completes; Kolibri ~5 GPU hours.
+- [ ] **No hex results for Gemini 3.8 Flash High, Kimi K3.1 Pro or Kolibri-1**: hex functions (16 cells) each;
+  whole-program hex follows only at ≥ 12/16 within four (so Haiku 4.5 and MAI-Code missing from hex apps is by
+  design; Haiku 5.5 qualified and ran). Kolibri ~5 GPU hours.
 
 **Not fillable or not worth it (note in reports, do not run)**
 

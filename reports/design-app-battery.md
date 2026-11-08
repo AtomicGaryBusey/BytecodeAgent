@@ -1,7 +1,9 @@
 # Design: the app battery ("can a model write a whole program in machine code?")
 
 Status: **done (round 1)**, approved 2026-09-29 (decisions below); results in
-[live-model-eval-apps.md](live-model-eval-apps.md). Every battery so far asks for **one function** of at most ~250 instructions,
+[live-model-eval-apps.md](live-model-eval-apps.md). This is the original design record. Built since: the opt-in
+`hex` path for whole programs (`--paths hex`, `bca/liveeval/hexpath.py`; results in
+[live-model-eval-hex.md](live-model-eval-hex.md)), and the battery now covers 11 models, not the six below. Every battery so far asks for **one function** of at most ~250 instructions,
 called by the harness under Unicorn. An application is a different kind of task: several functions calling
 each other, data and read-only data, a zero-initialised buffer area, an entry point that the OS jumps to, and
 input/output through system calls, all of which must stay consistent across hundreds to a few thousand
@@ -25,7 +27,7 @@ writes `_start`, every function, every table and string, and makes the system ca
 | Path | What the model emits | How it becomes a program |
 |---|---|---|
 | `asm` | one assembly file (GNU as syntax, Intel on x86-64) with `.text`, `.data`, `.rodata`, `.bss` and data directives | assembled whole-file by GNU as, linked by the harness's own linker into an image |
-| `stream` | the same, fed through `StreamAssembler` line by line (early abort on the first bad line) | requires extending the stream assembler with sections and data directives (`.byte/.word/.quad/.ascii/.asciz/.zero/.align`) |
+| `stream` | the same, fed through `StreamAssembler` line by line (early abort on the first bad line) | built: `StreamAssembler(program=True)` added sections and data directives (`.byte/.word/.quad/.ascii/.asciz/.zero/.align`) |
 | `ir` | QBE IL: `export function $_start`, other functions, `data` definitions | QBE has no inline assembly, so it cannot make a system call; see decision 1 |
 | `structured` | one JSON object per instruction | dropped for apps: a 1,000-instruction program is ~80-150 KB of JSON, past some CLIs' output limits, and data sections would need a new schema |
 
@@ -34,7 +36,7 @@ assembler"); `stream` is added once its directive support has been built and cro
 
 ## How a program is run and checked
 
-A new **process runner** in `bca/emu.py` (next to `run_function`):
+A new **process runner**, built as `bca/process.py` (`run_program`):
 1. Map the linked image at fixed addresses (text r-x, rodata r--, data rw-, bss rw- zeroed), a 1 MiB stack,
    nothing else; set the entry state above.
 2. Hook `syscall` (x86-64: `UC_HOOK_INSN`) and `svc #0` (AArch64: `UC_HOOK_INTR`): `read(0, buf, n)` serves
@@ -76,7 +78,7 @@ Expected program sizes: ~80 (wc) to ~1,500 instructions (json_lint).
 
 ## Build plan (DUB-style: contract, parallel builders, adversarial review, then live runs)
 
-1. Process runner + syscall layer + image linker (extend `bca/ir/elf.py` from one function to a whole program
+1. Process runner + syscall layer + image linker (built as `bca/process.py` and `bca/image.py::link_program`; a whole program
    with `_start`, sections and a fixed layout), with unit tests on hand-written programs for both ISAs.
 2. The 8 tasks with Python references, test generators and canned correct / broken solutions for both ISAs.
 3. `asm` pipeline (GNU as + linker); `stream` pipeline after the directive extension; prompts.

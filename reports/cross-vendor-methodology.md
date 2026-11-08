@@ -3,26 +3,32 @@
 > **Account caveat (Claude results).** Every Claude run in this repository used a Claude Max subscription enrolled in Anthropic's **Cyber Verification Program** (relaxed cyber safeguards for verified security researchers; confirmed active 2026-09-28). Claude's safety classifiers are less restrictive on this account than on one without CVP, so refusal rates here are likely lower, and pass rates likely higher, than a non-CVP org or subscription would see on this machine-code work. Treat Claude numbers as an upper bound for non-CVP accounts. The ChatGPT account used for Codex is enrolled in OpenAI's equivalent **Daybreak** program at the **Blue** tier only (no Daybreak Red / `*-cyber` models); whether Daybreak relaxes anything for the non-Daybreak models evaluated here (e.g. `gpt-6-luna`) is unknown. The Kimi, Google and xAI accounts have no known equivalent enrolment.
 
 Adapters: `bca/liveeval/vendor_base.py` (shared), `vendor_codex.py`, `vendor_kimi.py`, `vendor_agy.py`,
-`vendor_grok.py`, `vendor_copilot.py` (+ `copilot_driver.mjs`), registry `vendors.py`. A subject is
+`vendor_grok.py`, `vendor_copilot.py` (+ `copilot_driver.mjs`), the direct-API adapters `vendor_foundry.py` and
+`vendor_fireworks.py`, the local ones `vendor_local.py` and `vendor_vllm.py`, registry `vendors.py`. A subject is
 `<vendor>:<model>` (`codex:gpt-6-luna`, `kimi:kimi-code/k3`, `agy:gemini-3.8-flash-high`, `grok:grok-4.7`,
 `copilot:mai-code-1.1-flash`) or a Claude model (`opus`, `claude-sonnet-5-5`, `claude-fable-5-1`, ...). Built and
 verified 2026-09-28 against claude 2.1.284, codex 0.157.1, kimi 2.1.1, agy 1.2.12 and grok 1.0.41 (Grok Build;
 pinned binary, see below); GitHub Copilot added 2026-09-30 (CLI 1.0.89 driven through the Copilot SDK 1.0.15); kimi 2.3.1 re-audited 2026-10-23 for Kimi K3.1 Pro (one new bookkeeping record in its request log, now checked; otherwise identical).
 Codex was updated to 0.160.0 on 2026-10-01 and re-audited before use (same request recorder, gpt-6-luna and
 gpt-6-astra: still zero tools, SYSTEM_PROMPT and the prompt only, 48 input tokens for a one-line prompt); the
-committed Codex runs used 0.157.1, and each result records its CLI version.
+committed Codex runs used 0.157.1, and each result records its CLI version. Later audits, each before first use:
+Codex 0.167.0, Antigravity 1.5.3 and Copilot CLI 1.0.107 with SDK 1.0.29 (all 2026-11-07; the older Copilot pair
+is still accepted). The audited versions live in each adapter's `audited_versions`.
 
 ## Accounts and plans
 
-Every subject ran on one consumer subscription per vendor, logged in through that vendor's own CLI. No API
-keys, and no second account for any vendor.
+Every CLI subject ran on one consumer subscription per vendor, logged in through that vendor's own CLI, with no
+API keys and no second account for any vendor. The exceptions are the direct-API routes: Azure AI Foundry
+(`foundry:`) runs on the user's pay-as-you-go Azure subscription, signed in with `az`, and Fireworks.ai
+(`fireworks:`, no runs yet) would use an API key; see [Direct API routes](#direct-api-routes-foundry-fireworks).
 
 | Vendor / CLI | Plan | Safety program | Limits seen in these runs |
 |---|---|---|---|
 | Anthropic / Claude Code | **Claude Max 20x** | Cyber Verification Program (relaxed cyber safeguards) | none hit |
-| OpenAI / Codex CLI | **ChatGPT Plus** (Pro 100 from 2026-10-04; every committed Codex run used Plus) | Daybreak, Blue tier (no Red / `*-cyber` models) | the 5-hour window, once (Astra's app battery); weekly not reached |
+| OpenAI / Codex CLI | **ChatGPT Pro 100** since 2026-10-04 (**Plus** before; every committed Codex run used Plus) | Daybreak, Blue tier (no Red / `*-cyber` models) | the 5-hour window, once (Astra's app battery); weekly not reached |
 | Moonshot / Kimi Code | **Kimi Allegretto** | none known | a 5-hour window (~125-160 calls), a 7-day window on Code usage (reached 100% on 2026-09-29, 10-04 and 10-11) and monthly credits; the 7-day window is the binding one (see below) |
-| Google / Antigravity | **Google AI Plus (2 TB)** | none known | ~75 calls per week, per account (not per model) |
+| Google / Antigravity | **Google AI Pro** since 2026-11-06 (**AI Plus 2 TB** before; every reported Antigravity run used Plus) | none known | on Plus, ~75 calls per week, per account (not per model); on Pro, a Gemini 4 Argon High run stopped on quota at 181 calls |
+| Microsoft / Azure AI Foundry API | **pay-as-you-go** (Global Standard, serverless) | Azure's default content filter (`Microsoft.MAIDefault`, `Microsoft.DefaultV2`) | a per-model spend cap in the harness ($25; raised to $28 for MAI-Thinking-1); token-rate 429s at 2 parallel jobs for DeepSeek |
 | xAI / Grok Build | **SuperGrok** | none known | weekly included usage ~70% at most (app calls cost ~0.4% each); not exceeded, no paid credits used |
 | GitHub / Copilot CLI | **GitHub Copilot Pro** (1,500 AI credits a month, billed per token) | none known | the September credits, spent 2026-09-30 (overage off; resumed after the monthly reset) |
 
@@ -40,7 +46,7 @@ these accounts, not every account on each service.
 | Same scoring | identical pipelines, repair rounds, attempt limits and per-battery timeouts | replay of all 1852 recorded answers streamed vs whole: 0 verdict differences |
 | Refusals | a safety block by any vendor is a scored `refusal` attempt; no vendor-internal retry or fallback is credited | per-vendor refusal signals (below) |
 | Model identity | the model that served the call when the CLI reports it; otherwise shown as "(requested; not reported)" | summaries label it |
-| Version pin | an adapter runs only on the CLI version it was audited against | an upgraded CLI aborts the run until re-audited |
+| Version pin | a CLI adapter runs only on the CLI version it was audited against (Claude Code excepted, below); an API adapter checks the deployment's model, version and SKU | an upgraded CLI aborts the run until re-audited |
 
 ## Per vendor
 
@@ -50,7 +56,7 @@ these accounts, not every account on each service.
 | request evidence | CLI debug log: `tools: []`; system/message contents not visible | request captured at a local recorder: `tools: []`, only SYSTEM_PROMPT + prompt, 48-58 input tokens for a one-line prompt (was ~4000); every call also guarded by an input-token bound | kimi's session record (`wire.jsonl`): tools hash of `[]`, system prompt hash = SYSTEM_PROMPT, message count checked | agy's conversation record (protobuf `gen_metadata`) | request captured at a local recorder (no `tools` key; server echoes `tools: []`), then grok's per-call session record: empty tool definitions, system prompt = SYSTEM_PROMPT, one model call, input tokens bounded | the runtime's own debug log of the wire request, per call: system prompt = SYSTEM_PROMPT, the prompt verbatim, no `tools` key, empty tool fingerprint, `tool_count` 0; plus the stream's request capture (0 tools, one system segment `agent_replacement`); one model call; input tokens bounded |
 | extra context the model sees | ~350 tokens added by Claude Code (content not visible to us) | none found | a date reminder (227 chars) and an "auto permission mode" note (508 chars) | `<System Prompt>` / `<USER_REQUEST>` wrappers, a local-time line, a "model setting changed" note | an empty first user message; ~1152 tokens of server-side context xAI adds itself (not visible); the prompt's final newline is trimmed | none in the request (the runtime's `<current_datetime>` prompt prefix is removed by a hook); the Anthropic path trims the prompt's final newline; Grok models add ~1500 tokens of server-side context (not visible) |
 | served model reported | yes (per message; fallbacks flagged) | no, except a cyber reroute (scored as refusal) | no (the id sent is recorded) | no (the request echoes the id) | yes, from the response (`grok-4.7` is served as `grok-4.7-build`); any other model is a fatal reroute | yes, per call (model.call_start / usage / message); a model switch (rate-limit auto switch, "refusal fallback") is a fatal reroute |
-| default effort (runs use CLI defaults, as the Claude runs did) | CLI default | pinned per model since 2026-10-04: astra and daybreak-blue low; luna, sol and gpt-5.5 medium (the defaults recorded for their committed runs; see below) | high | encoded in the model id (`-high`, `-low`) | high (served effort recorded; a mismatch is fatal) | per model (medium seen for GPT, MAI and Claude; high for Kimi K3 and Grok 4.7); served effort recorded, a requested effort must be served (fatal otherwise) |
+| default effort (runs use CLI defaults, as the Claude runs did) | CLI default | pinned per model since 2026-10-04: astra and daybreak-blue low; luna, sol and gpt-5.5 medium (the defaults recorded for their committed runs; see below) | per model, from the CLI's catalog (`high` for K3 and K2.8; `max` for K3.1 Pro when it ran, since changed to `high`) | encoded in the model id (`-high`, `-low`) | high (served effort recorded; a mismatch is fatal) | per model (medium seen for GPT, MAI and Claude; high for Kimi K3 and Grok 4.7); served effort recorded, a requested effort must be served (fatal otherwise) |
 | refusal signal | `stop_reason: refusal`; fallback turned off (`switchModelsOnFlag: false`) | cyber/bio policy errors, content_filter, cyber reroute | `provider.filtered` ("Provider safety policy blocked the response.") | content-filter / safety finish reasons | HTTP 403 content-safety blocks (account 403s stay errors), `stopReason: refusal` | `finishReason: content_filter` (Anthropic `refusal` is normalised to it), `contentFilterTriggered`, an OpenAI-style `refusal` field |
 | text delivery | streamed, killed on an early abort | one message | one message | streamed, but not killed on an early abort (its request record is written at the end of the turn) | streamed, not killed early (session record written at the end of the turn) | one message, handed over after the call is verified |
 
@@ -74,6 +80,29 @@ That is consistent with low, but medium costs Astra only 15-40% more reasoning h
 proof. From 2026-10-04 every Codex call passes its effort explicitly. Known models default to the pins above
 (`CODEX_PINNED_EFFORT`), any other model must be given `--effort`, and each call records the effort it ran at
 ("low (pinned)" or "... (requested)").
+
+## Direct API routes (`foundry:`, `fireworks:`)
+
+`foundry:<deployment>` (`vendor_foundry.py`) calls an Azure AI Foundry deployment's chat-completions API over
+HTTPS, streaming; `fireworks:<model id>` (`vendor_fireworks.py`) is the same adapter pointed at Fireworks.ai's
+serverless API. There is no CLI and no local home, so the contract is met differently:
+
+- **Same prompts, no tools:** the request body is built by the harness itself: `messages` = the harness system
+  prompt and the task prompt, byte for byte; `stream: true` with usage; no `tools` key, no sampling fields and
+  no `max_tokens`. `--effort` adds `reasoning_effort`; without it nothing is sent (recorded "model-default").
+  DeepSeek-V4-Pro ran at `high`, because the API default returned no reasoning (a 12-cell smoke test: 4/12 at the
+  default, 10/12 at high).
+- **Model identity:** every streamed chunk that names a model must name the deployed model; anything else is a
+  fatal reroute. A tool call in the stream, or `finish_reason: length`, fails closed (`isolation:`).
+- **Refusals:** a content-filter block (an HTTP 400 `content_filter`, a `SafetyBlockedError` event or
+  `finish_reason: content_filter`) is a scored refusal.
+- **Deployment checks (Foundry):** the deployment's model, version, SKU (Global Standard only) and content-filter
+  policy are read with `az` and recorded with each result; there is no Azure resource name in the run data.
+- **Cost:** each call is priced from the public Azure (or Fireworks) price list and charged to a per-model ledger
+  (`~/.local/state/bca/foundry-spend.json`). A call is refused before it is sent if its worst case would cross
+  the cap ($25 a model by default, `BCA_FOUNDRY_CAP_USD`), and that stop is fatal. Rejected requests (HTTP 429)
+  cost nothing.
+- **State:** one independent HTTPS request per call; nothing is carried between calls.
 
 ## Local models (`local:<model>`)
 
@@ -177,7 +206,8 @@ outputs. **Stack per battery:** every Kolibri battery runs on the official vLLM 
   relaxed cyber safeguards); ChatGPT is in OpenAI's Daybreak program, Blue tier only (no Red / `*-cyber` models;
   the catalog lists `gpt-daybreak-blue-latest`, and whether enrolment affects `gpt-6-luna` is unknown); Kimi and
   Google have no known equivalent. Refusal rates are therefore not directly comparable.
-- Plan limits differ per vendor: ChatGPT Plus makes `gpt-6-luna` the practical Codex model for full batteries.
+- Plan limits differ per vendor: on ChatGPT Plus `gpt-6-luna` was the practical Codex model for full batteries
+  (the account has been on Pro 100 since 2026-10-04).
 - Grok Build sends the prompt to xAI a second time in a session-title side request (there is no switch to
   turn it off in 1.0.41); the adapter points that request at a non-existent model so it is rejected before any
   inference, and checks per call that it was. Hosted server-side tools are disabled and cannot be declared
@@ -217,8 +247,10 @@ Each subject has its own infrastructure-error guard: a vendor whose plan quota i
 only, and the others keep running; the same command resumes it later. Seen so far:
 
 - **Antigravity (Google AI Plus):** the quota is per account, not per model, about 75 calls a week
-  ("Individual quota reached ... Resets in 166h"). Antigravity is therefore run slowly, resuming after each
-  weekly reset, and reported as partial until complete. The user's second Google account is not used, so
+  ("Individual quota reached ... Resets in 166h"). Antigravity was therefore run slowly, resuming after each
+  weekly reset, and is reported as partial until complete (Gemini 3.8 Flash High stopped at 223/224; its loop
+  was stopped on 2026-10-24). On AI Pro (from 2026-11-06) the limit is higher but still binding: the Gemini 4
+  Argon High run stopped on quota after 181 calls and resumes on an 8-hourly retry. The user's second Google account is not used, so
   the subject stays one account.
 - **Antigravity** also reports a failed model request as a bare `error_message` step; it is a retried
   infrastructure error, not an isolation failure.
@@ -228,8 +260,8 @@ only, and the others keep running; the same command resumes it later. Seen so fa
   documents the correction in `ADJUSTMENTS.md`.
 - **Antigravity's quota came back early:** its error said "Resets in 166h", but a probe the next afternoon
   answered, matching Google's usage page (weekly usage 0%). Probing beats the error's reset estimate.
-- **Claude Code is not version-pinned** like the other CLIs; it auto-updated from 2.1.284 to 2.1.285 during
-  the runs. Each result records its CLI version, and the no-fallback setting was re-verified on 2.1.285.
+- **Claude Code is not version-pinned** like the other CLIs; it auto-updates, and the committed Claude runs span
+  2.1.283 to 2.1.319. Each result records its CLI version; the no-fallback setting was re-verified on 2.1.285.
 - **Grok:** xAI prompt caching covers shared prompt text in 256-token blocks beyond its 1152-token server
   prefix, so the adapter bounds total input tokens rather than the cached part.
 - **ChatGPT Plus 5-hour window:** the app battery's whole-program calls exhausted it after 12 Astra cells; the
@@ -238,7 +270,7 @@ only, and the others keep running; the same command resumes it later. Seen so fa
   203/224 cells of Sonnet 5.5 via Copilot (HTTP 402 on every call; never billed); the run finished after the
   monthly reset. Anthropic models cost about twice what GPT-6 Luna did per call through Copilot.
 - **Kimi Allegretto 7-day window:** reached 100% on 2026-09-29 (all of it this eval); the last Kimi K2.8 cell
-  and Kimi K3's app battery wait for it to reopen (2026-10-03 15:02 PDT). It reached 100% again on 2026-10-04
+  and Kimi K3's app battery waited for it to reopen (2026-10-03 15:02 PDT; both have since completed). It reached 100% again on 2026-10-04
   and 2026-10-11; each time the 5-hour window had blocked calls many times first.
 - **Kimi Allegretto's monthly credits cannot all be used.** The plan has three meters on Code usage: a 5-hour
   window, a 7-day window and the monthly credits. On 2026-10-11 (Kimi's subscription page, 13:56 PDT), after
@@ -250,8 +282,8 @@ only, and the others keep running; the same command resumes it later. Seen so fa
   is the plan's capacity, and a Kimi battery takes calendar weeks. The account has Kimi's "Extra Usage"
   enabled (limit $50 a cycle) with a $0 balance, so nothing beyond the plan was or could be billed.
 - **Antigravity and the call cap:** quota refusals count as calls, and the run directory's `--max-calls` cap is
-  shared by every subject in it; days of refused retries used it up. The resume loop now retries hourly under a
-  higher cap. A refused call costs nothing.
+  shared by every subject in it; days of refused retries used it up. The resume loops ran under a higher cap (hourly for
+  Gemini 3.8 until stopped on 2026-10-24; 8-hourly for Gemini 4 Argon). A refused call costs nothing.
 
 ## Changes to the harness that touch the committed Claude runs
 

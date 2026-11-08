@@ -59,20 +59,23 @@ The subagent was given every model already benchmarked or already seen in a cata
 - **Qwen-3.6-35B-A3B and Qwen-3.8-27B** are listed on Foundry with **no serverless SKU**: like Muse-Glimmer-30B they
   are managed compute only (hourly GPU), which the user has ruled out.
 - **The Foundry catalog also serves most current Claude, GPT-6.x, Grok and DeepSeek models.** Claude is benchmarked
-  only through the user's Claude account, by decision. The others already have a route.
+  through the user's Claude account, by decision (plus Sonnet 5.5 through Copilot, for a harness comparison).
+  DeepSeek-V4-Pro has since been benchmarked on Foundry (139/224); the others already have a route.
 - **Reported, not checked:** Foundry retiring Claude Haiku 4.5 on 2026-11-15. Not relevant here, since Haiku runs
   through `claude -p`.
 - **Restricted-access models not pursued:** Mythos 5.1, GPT-6 Rosalind Research, Gemini 4 Carbon.
 - **Announced, no weights found:** Qwen4. **Rumoured:** Grok 4.8, Grok 5.
 
-**Recommendation (not yet approved):** first Kimi-K3.1-Pro on Foundry, for the same-model, two-route
+Foundry has since been used for MAI-Thinking-1 (72/224) and DeepSeek-V4-Pro (139/224), function batteries
+only. **Recommendation for further models (not yet approved):** first Kimi-K3.1-Pro on Foundry, for the same-model, two-route
 comparison; then mistral-medium-3-5; then Mellum2.1 locally, if its model card checks out. Each would get a
 price check and a smoke test first, as DeepSeek-V4-Pro did.
 
 ## 3. Fireworks.ai availability
 
-Fireworks.ai is a separate vendor with its own account and billing, not a route this project has. It is checked
-here because several candidates are served nowhere else we can reach. A second subagent read the public model
+Fireworks.ai is a separate vendor with its own account and billing. It was checked here because several
+candidates are served nowhere else we can reach; a `fireworks:` adapter has since been written (no account or
+runs yet). A second subagent read the public model
 pages; the MiniMax and GLM-5.3 pages were **checked** by hand. Only the first page of Fireworks' 332-model
 catalog loaded, so "not found" means "no page at the slugs tried, not on page one", not absent.
 
@@ -87,6 +90,6 @@ catalog loaded, so "not found" means "no page at the slugs tried, not on page on
 | Mistral Large 4, Reflection Beam, Mellum2.1, Step 5 Preview, Ling-3.1-flash, Flint, Kimi-K2.7-Code, mistral-medium-3-5, Qwen4 | not found | | | Mistral Large 4: secondary sources give 2026-10-06, 1.05T total / 49B active (the first survey said 10-29) |
 
 The model pages say the API works with the OpenAI client (OpenAI-compatible chat completions). Streaming is
-standard there but not confirmed on these pages. A `fireworks:` adapter would be a near copy of `vendor_foundry`
-(API key instead of an Entra token, Fireworks prices, the same spend cap). It needs a Fireworks account and a
-decision that Fireworks is a route.
+standard there but not confirmed on these pages. The `fireworks:` adapter (`bca/liveeval/vendor_fireworks.py`) is a near copy of
+`vendor_foundry` (API key instead of an Entra token, Fireworks prices, the same spend cap). It needs the
+user's Fireworks account and a choice of models.

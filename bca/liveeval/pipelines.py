@@ -18,6 +18,9 @@ differential verdict. Failure categories:
   crash         emulation fault (bad memory access, invalid instruction, misaligned SSE, ...)
   refusal       the model (or its safety classifier) refused to answer: a scored attempt
   subject_timeout / subject_error   the model process timed out / failed
+  context_limit the prompt (or prompt + answer) did not fit the model's context window: a scored
+                attempt, like a timeout (seen with Apple's 8K on-device model); the adapter reports it
+                as an error starting "context_limit:"
 
 The app battery (whole programs, paths `asm` and `stream`) has its own pipelines and categories
 in bca.liveeval.apps (link, wrong_output, wrong_status and the process runner's fault kinds);
@@ -102,6 +105,16 @@ class Attempt:
 
 # -- output clean-up -----------------------------------------------------------------------
 
+
+
+def call_failure_category(resp) -> str:
+    """The category of a failed model call: a timeout or a context-window overflow is a scored attempt
+    (the model's own limit); anything else is an infrastructure subject_error (retried, not scored)."""
+    if resp.timed_out:
+        return "subject_timeout"
+    if (resp.error or "").startswith("context_limit:"):
+        return "context_limit"
+    return "subject_error"
 
 def strip_fences(text: str) -> str:
     t = text.strip()
@@ -569,7 +582,7 @@ def stream_collect(subject: Subject, sa: StreamAssembler, path: str, isa: str, n
         )
         return a
     if not resp.ok:
-        a.category = "subject_timeout" if resp.timed_out else "subject_error"
+        a.category = call_failure_category(resp)
         a.code_text = ""  # partial text exists only for streaming subjects: never shown, for parity
         a.failure = f"the model call failed: {resp.error}"
         return a
@@ -594,7 +607,7 @@ def _structured_attempt(subject: Subject, isa: str, task: Task, prompt: str, raw
         a.category, a.failure = "refusal", f"the model refused to answer ({resp.refusal})"
         return a
     if not resp.ok:
-        a.category = "subject_timeout" if resp.timed_out else "subject_error"
+        a.category = call_failure_category(resp)
         a.code_text = ""  # partial text exists only for streaming subjects: never shown, for parity
         a.failure = f"the model call failed: {resp.error}"
         return a
@@ -628,7 +641,7 @@ def _ir_attempt(subject: Subject, isa: str, task: Task, prompt: str, raw_path: s
         a.category, a.failure = "refusal", f"the model refused to answer ({resp.refusal})"
         return a
     if not resp.ok:
-        a.category = "subject_timeout" if resp.timed_out else "subject_error"
+        a.category = call_failure_category(resp)
         a.code_text = ""  # partial text exists only for streaming subjects: never shown, for parity
         a.failure = f"the model call failed: {resp.error}"
         return a
@@ -663,7 +676,7 @@ def _hex_attempt(subject: Subject, isa: str, task: Task, prompt: str, raw_path: 
         a.category, a.failure = "refusal", f"the model refused to answer ({resp.refusal})"
         return a
     if not resp.ok:
-        a.category = "subject_timeout" if resp.timed_out else "subject_error"
+        a.category = call_failure_category(resp)
         a.code_text = ""  # partial text exists only for streaming subjects: never shown, for parity
         a.failure = f"the model call failed: {resp.error}"
         return a

@@ -1,17 +1,22 @@
-# Live-model eval: models from five vendors
+# Live-model eval: cross-vendor results
 
 > **Account caveat.** The Claude account is enrolled in Anthropic's **Cyber Verification Program** and the
 > ChatGPT account in OpenAI's **Daybreak** (Blue tier; no Red / `*-cyber` models); both relax cyber safeguards,
 > so treat those rows as upper bounds for ordinary accounts. The Kimi, Google and xAI accounts have no known
-> equivalent. Plans: Claude Max 20x, ChatGPT Plus, Kimi Allegretto, Google AI Plus (2 TB), SuperGrok. The Azure Foundry rows
+> equivalent. Plans: Claude Max 20x, ChatGPT Pro 100 (Plus until 2026-10-04; Codex runs committed
+> before then used Plus), Kimi Allegretto, Google AI Pro (AI Plus 2 TB until 2026-11-06; every reported Antigravity
+> run used Plus), SuperGrok, GitHub Copilot Pro. The Azure Foundry rows
 > are pay-as-you-go API calls on the user's Azure subscription, with Azure's default content filter on.
 > Method, fairness contract and known limits: [cross-vendor-methodology.md](cross-vendor-methodology.md).
 
 Every model got the same 224 cells: rounds 1 + 2, the long-program battery and the adversarial battery
 (baseline prompts), across the stream, structured-JSON and QBE-IR paths on x86-64 and AArch64, with up to
-four attempts and repair feedback. Each ran through its vendor's own coding CLI with zero tools, the same
-system and task prompts, and its CLI's default effort (as the Claude runs did). Runs date from
-2026-09-27/29; CLI versions: claude 2.1.283-2.1.285, codex 0.157.1, kimi 2.1.1 (Kimi K3.1 Pro: kimi 2.3.1, re-audited 2026-10-23), agy 1.2.12, grok 1.0.41.
+four attempts and repair feedback. Each ran with zero tools, the same system and task prompts, and its route's default effort
+unless a row says otherwise: most through their vendor's own coding CLI (Claude Code, Codex, Kimi Code,
+Antigravity, Grok Build), the `copilot:` rows through GitHub Copilot's SDK runtime, the `foundry:` rows through
+the Azure AI Foundry API directly, and the local rows through Ollama or vLLM on this machine. Runs date from
+2026-09-27 to 2026-11-08. Every result records the CLI or API version it ran on (`cli_version` in each
+`results.jsonl`); the audited versions are in the methodology report.
 
 ## Results (first-attempt passes per battery)
 
@@ -63,7 +68,7 @@ prints the answer only when the call ends, so a timeout carries no text; these a
 every CLI vendor, not stalls. Failures reviewed by hand: no harness false rejects (QBE compares without a
 result class, `xor eax, 0` used to zero a register, malformed JSON, unencodable AArch64 immediates).
 
-† Partial, quota-paced (Google AI Plus): rounds 1 + 2 and long complete, adversarial 59/60 (one cell, `stats_f.ir.aarch64`, left); the hourly resume loop adds cells as the weekly quota allows. Like for like on the complete batteries, rounds 1 + 2 + long: **154/164 (94%)**, level with Grok 4.6 (154), just behind Grok 4.7 (155), Grok 4.7 build-fast (156), Claude Opus 5.5 and Fable 5.1 (158 each) and Codex GPT-6 Astra (161), and ahead of Codex GPT-6 Sol (153). Its first-attempt failures were reviewed by hand: no harness false rejects (hex literals in QBE, `%x =l %y` without `copy`, malformed JSON, an invented `subl` opcode, a 400 s timeout spent thinking: 62,910 of 65,532 output tokens, and two 180 s timeouts on adversarial `stats_f`).
+† Partial, quota-paced (Google AI Plus): rounds 1 + 2 and long complete, adversarial 59/60 (one cell, `stats_f.ir.aarch64`, left; its resume loop was stopped on 2026-10-24 and the cell is run by hand). Like for like on the complete batteries, rounds 1 + 2 + long: **154/164 (94%)**, level with Grok 4.6 (154), just behind Grok 4.7 (155), Grok 4.7 build-fast (156), Claude Opus 5.5 and Fable 5.1 (158 each), Kimi K3.1 Pro (159) and Codex GPT-6 Astra (161), and ahead of Codex GPT-6 Sol (153). Its first-attempt failures were reviewed by hand: no harness false rejects (hex literals in QBE, `%x =l %y` without `copy`, malformed JSON, an invented `subl` opcode, a 400 s timeout spent thinking: 62,910 of 65,532 output tokens, and two 180 s timeouts on adversarial `stats_f`).
 
 ## By emission path (first-attempt passes, complete runs)
 
@@ -98,7 +103,8 @@ result class, `xor eax, 0` used to zero a register, malformed JSON, unencodable 
 ## Findings
 
 - **Codex GPT-6 Astra leads at 99%** (221/224; 100% on stream and structured, 224/224 within four attempts),
-  ahead of Opus 5.5 (96%), Grok 4.7 build-fast and Fable 5.1 (95%), Grok 4.7 (94%) and Kimi K3 (91%).
+  ahead of Kimi K3.1 Pro (97%), Opus 5.5 (96%), Grok 4.7 build-fast and Fable 5.1 (95%), Grok 4.7 (94%) and Kimi K3
+  (91%).
 - **Within a vendor, model choice matters as much as vendor**: Codex spans 58% (Luna) to 99% (Astra) on
   the same CLI, account and prompts.
 - **The IR path separates models most.** Raw assembly (stream) is easy for nearly everyone (Grok 76/76);
@@ -140,15 +146,15 @@ result class, `xor eax, 0` used to zero a register, malformed JSON, unencodable 
   (not visible to us) and in effort (Copilot sends `medium`; `claude -p` uses its unexposed default); either
   can explain the stricter code-only answers through `claude -p`.
 - **Microsoft MAI-Code 1.1 Flash** (Microsoft's own model, reached through GitHub Copilot Pro, the only
-  Copilot-exclusive model) scores 48% first attempt (107/224) and 67% within four attempts, between Haiku 4.5 and
-  Luna via Codex. Raw assembly is its strength (stream 78%); QBE is almost entirely beyond it (4/74: 261 compile
+  Copilot-exclusive model) scores 48% first attempt (107/224) and 67% within four attempts, just below Haiku 4.5 (52%)
+  and above only MAI-Thinking-1 (32%) among the cloud models. Raw assembly is its strength (stream 78%); QBE is almost entirely beyond it (4/74: 261 compile
   failures, mostly `%x = copy 0` without a result class, and invented opcodes such as `addl`), and its structured
   answers are often malformed JSON. On the app battery (whole programs) it managed 23/96 first attempt and 64/96
   within four (two cells re-run after a stream fix; the totals did not change): the only model tested so far that does not
   eventually write every program.
 - **Two Azure Foundry models, run 2026-11-07/08: Microsoft MAI-Thinking-1 at 32% (72/224; 144/224 within four)
-  and DeepSeek-V4-Pro at 62% (139/224; 217/224 within four).** They are the first rows not reached through a coding
-  CLI: `foundry:<deployment>` calls the Foundry chat-completions API directly on the user's pay-as-you-go Azure
+  and DeepSeek-V4-Pro at 62% (139/224; 217/224 within four).** They are the first cloud rows not reached through a coding
+  CLI or Copilot: `foundry:<deployment>` calls the Foundry chat-completions API directly on the user's pay-as-you-go Azure
   subscription (Global Standard, serverless), with the same system and task prompts, no tools, the same time
   limits, and the served model checked on every chunk. Azure's content filter stays on (MAI-Thinking-1:
   `Microsoft.MAIDefault`; DeepSeek: `Microsoft.DefaultV2`); neither model had a refusal or a filter block.
@@ -203,7 +209,7 @@ and once with thinking on (`local:<model>@nothink` / `@think`, Ollama's `think` 
 is the only local model that runs the app battery (3/96 first attempt, 16/96 within four:
 [app report](live-model-eval-apps.md)).
 
-- **Aleph Alpha Kolibri-1 is the best local model by far, still half the weakest frontier model.** 58/224 first
+- **Aleph Alpha Kolibri-1 is the best local model by far, still half Claude Haiku 4.5's rate.** 58/224 first
   try (26%) and 97/224 (43%) within four: round 1 20/48, round 2 21/62, long 1/54, adversarial 16/60. It passes
   47% of stream cells and 30% of structured cells on the first try, and no QBE cell (0/74; 282 of its 669 function-battery calls
   ended in a QBE compile failure). Token budgets bind on the adversarial battery (24,576 tokens: 52 of 176 calls
@@ -233,10 +239,10 @@ is the only local model that runs the app battery (3/96 first attempt, 16/96 wit
 - **Conclusion.** No open-weight model that runs on this desktop machine writes tool-less machine code usefully.
   The Qwen models manage 3-8% first try and about 14% within four attempts, almost all of it on easy stream
   cells. Kolibri-1, given as many output tokens as any vendor model used, reaches 26% first try and 43% within
-  four, but only half the weakest frontier model's first-try rate and 3% on the app battery. No local model
+  four, but only half Claude Haiku 4.5's first-try rate (52%), below MAI-Thinking-1's 32%, and 3% on the app battery. No local model
   passes a single QBE cell on the first try. Published agentic-coding scores
-  (Qwen3-Coder-Next, Qwen3.6) do not transfer to this task; the gap to the weakest frontier model here (Claude
-  Haiku 4.5, 52%) is an order of magnitude for them.
+  (Qwen3-Coder-Next, Qwen3.6) do not transfer to this task; the gap to Claude Haiku 4.5 (52%) is an order of
+  magnitude for them, and to the weakest cloud model, MAI-Thinking-1 (32%), still four- to tenfold.
 
 ## Adversarial prompt variants
 

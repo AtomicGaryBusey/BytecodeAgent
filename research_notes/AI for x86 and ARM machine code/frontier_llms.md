@@ -1,5 +1,7 @@
 # Frontier General-Purpose LLMs Writing x86-64 and ARM Assembly / Machine Code
 
+> Source note for [the 2026-09-27 survey](../../reports/AI%20for%20x86%20and%20ARM%20machine%20code.md), current as of 2026-09-26; for later work see [the 2026-11 landscape update](../../reports/landscape-2026-11.md), and for this project's own measurements (which fill several gaps named here) the [README](../../README.md).
+
 Scope note: current as of 2026-09-26. Many published numbers use models that are 1-2 generations old (GPT-4/4o, Claude 3.5/3.7, Gemini 2.0/2.5 Flash). Each finding is tagged with the model generation and paper date. There is still no widely adopted, continuously updated leaderboard for "write assembly from scratch".
 
 ## Q1. Which general-purpose models do best at assembly/machine code as of 2026, and by how much?

@@ -362,6 +362,8 @@ class FoundrySubject(Subject):
                         for k in ("reasoning_content", "reasoning"):
                             if isinstance(d.get(k), str) and d[k]:
                                 reasoning.append(d[k])
+                        if isinstance(d.get("refusal"), str) and d["refusal"]:  # OpenAI-style refusal field
+                            refusal = f"refusal: {d['refusal'][:200]}"
                         if d.get("content") and not emit(d["content"]):
                             killed = True
                             break

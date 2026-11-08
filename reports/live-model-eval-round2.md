@@ -1,9 +1,12 @@
-# Live-model evaluation, round 2: setup and smoke test
+# Live-model evaluation, round 2
 
 > **Account caveat (Claude results).** Every Claude run in this repository used a Claude Max subscription enrolled in Anthropic's **Cyber Verification Program** (relaxed cyber safeguards for verified security researchers; confirmed active 2026-09-28). Claude's safety classifiers are less restrictive on this account than on one without CVP, so refusal rates here are likely lower, and pass rates likely higher, than a non-CVP org or subscription would see on this machine-code work. Treat Claude numbers as an upper bound for non-CVP accounts. The ChatGPT account used for Codex is enrolled in OpenAI's equivalent **Daybreak** program at the **Blue** tier only (no Daybreak Red / `*-cyber` models); whether Daybreak relaxes anything for the non-Daybreak models evaluated here (e.g. `gpt-6-luna`) is unknown. The Kimi and Google accounts have no known equivalent enrolment.
 
-**Status:** the harness and tasks are ready and validated with the fake subject. The live run so far is
-limited to an 8-call smoke test. The full round-2 matrix has **not** been run yet.
+> **Dated snapshot** (2026-09-27). Current results for every model, including the newer Claude models (Haiku 5.5,
+> Sonnet 4.5, Fable 5.1, Opus 4.8), are in [live-model-eval-cross-vendor.md](live-model-eval-cross-vendor.md).
+
+**Status:** complete. The full round-2 run (62 cells, 2026-09-27) is at the end of this report; the setup,
+smoke-test and budget sections before it are kept as the record of how it was prepared.
 
 **Why round 2 exists.** Round 1 (`reports/live-model-eval.md`) scored 45/48 pass@1 on 8 easy leaf kernels.
 The streaming early abort, the GNU as cross-check, the ABI checks and the OOB guard never caught a real model
@@ -119,7 +122,8 @@ Round-2 prompts keep the round-1 structure. Round-1 prompts are byte-for-byte un
   - stream: `line N: \`...\``;
   - structured: `instruction N: {json}`;
   - IR: the disassembled instruction.
-- **Task selection:** `--tasks round1|round2|all|<names>`. The default is still round1.
+- **Task selection:** `--tasks round1|round2|all|<names>`. The default is still round1. (At the time; `all`
+  now means every function battery: round1, round2, long and adversarial.)
 - **`--dry-run`** prints the cells and the worst-case call count.
 - **N/A cells** are skipped by `run_matrix` and shown as `N/A` by `summarize`, which handles both rounds.
 

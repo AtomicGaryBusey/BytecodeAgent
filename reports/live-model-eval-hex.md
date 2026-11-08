@@ -12,7 +12,7 @@ only for the feedback listing and for the instruction-set check (ARMv8.0-A with 
 the other paths allow). Method: [design-app-battery.md](design-app-battery.md),
 `bca/liveeval/hexpath.py`; Astra's first runs are in [live-model-eval-apps.md](live-model-eval-apps.md).
 
-Two stages, 2026-10-01 (Grok: 2026-10-01 22:19 to 10-02 04:20), CLI-default effort, up to four attempts
+Two stages, first run 2026-10-01 (Grok: 2026-10-01 22:19 to 10-02 04:20; Kimi 10-03, Sonnet 5 10-22, Haiku 5.5 11-07), CLI-default effort, up to four attempts
 with repair feedback, the same subjects and fairness contract as every other run:
 
 1. **Functions:** round 1 (8 tasks x 2 ISAs = 16 cells) for every model with plan room.
@@ -20,8 +20,10 @@ with repair feedback, the same subjects and fairness contract as every other run
    reached at least 12/16 within four attempts in stage 1.
 
 Tables: `.venv/bin/python eval/hex_tables.py`. Runs: `eval/runs/hex-{astra-20261001-165154,claude-20261001,
-codex-20261001,copilot-20261001,grok-20261001-221930}` and `eval/runs/apps-hex-{astra-20261001-174623,
-claude-20261001,codex-20261001,copilot-20261001,grok-20261001-221930}`.
+codex-20261001,copilot-20261001,grok-20261001-221930,kimi-20261003-175502,sonnet5-20261022-143141,
+haiku55-20261107-174207}` and `eval/runs/apps-hex-{astra-20261001-174623,claude-20261001,codex-20261001,
+copilot-20261001,grok-20261001-221930,kimi-20261003-175502,sonnet5-20261022-143141,haiku55-20261107-174207}`
+(the `apps-hex-declared-*` runs belong to [live-model-eval-declared.md](live-model-eval-declared.md)).
 
 ## Functions (round 1)
 
@@ -140,7 +142,7 @@ let through, not as ability: every first attempt Opus 5.5 was allowed to answer 
 ## Findings
 
 - **Writing raw machine code is within reach of the frontier models.** On functions, Opus 5.5 was perfect
-  (16/16 first attempt), and Astra, Daybreak Blue and Fable 5.1 missed one cell each. Fifteen of the eighteen
+  (16/16 first attempt), and Astra, Daybreak Blue and Fable 5.1 missed one cell each. Eighteen of the twenty-two
   model rows pass every function cell within four attempts. Hex costs the strongest models little against
   their assembly results; it costs mid-tier models much more (Sonnet 4.5 10/16, Luna 10/16 through Codex,
   MAI-Code 6/16, Haiku 4.5 5/16). Haiku 5.5 is the exception among small models: 13/16 on functions (Haiku
@@ -150,12 +152,12 @@ let through, not as ability: every first attempt Opus 5.5 was allowed to answer 
   2/8 vs 8/8, Haiku 4.5 0/8 vs 5/8. Grok 4.6's AArch64 misses (5/8 vs 7/8) are all time-outs: it was still
   reasoning at 180 s.
 - **Whole programs separate the models sharply.** Astra and Opus 4.8 wrote 15 of 16 programs correctly on
-  the first attempt; Sonnet 5.5 13 and Fable 5.1 12. The Codex models other than Astra fall to 2-6/16 first
+  the first attempt; Sonnet 5.5 13 and Fable 5.1 12. The Codex models other than Astra fall to 0-6/16 first
   attempt (most still recover within four: Sol 14/16), Sonnet 4.5 to 0/16 (4/16 within four).
 - **Grok sits in the upper middle, and recovers well.** On functions Grok 4.7 and 4.7 build-fast reached
   14/16 first attempt, 4.6 12/16 and 4.5 10/16, all four 16/16 within four. On whole programs Grok 4.6 wrote
   11/16 correctly first time, 4.7 and build-fast 10/16, and all three fixed every remaining program within
-  four (16/16, as only Astra, Opus 4.8 and Fable 5.1 otherwise do). Grok 4.6's four first-attempt function
+  four (16/16, as only Astra, Opus 4.8, Fable 5.1 and Haiku 5.5 otherwise do). Grok 4.6's four first-attempt function
   misses were all time-outs (180 s, still reasoning), not wrong code. No Grok attempt was refused (0 of 188
   attempts).
 - **Grok 4.5: 1/16 first attempt, 15/16 within four.** Its first programs were nearly right but untested
@@ -278,6 +280,8 @@ refused (0 of 25), unlike Opus 5.5 and Sonnet 5.5 on the same account.
 
 | Models | Status |
 |---|---|
-| Gemini 3.8 Flash High (Antigravity) | waiting: its hex runs follow its quota-paced function battery (163/224 on 2026-10-22) |
+| Gemini 3.8 Flash High (Antigravity) | not run: its function battery stopped at 223/224 (2026-10-24) and no hex run has been scheduled |
+| Kimi K3.1 Pro, Gemini 4 Argon High | not run: K3.1 Pro's apps and hex are undecided; Argon's function battery is still in progress |
+| MAI-Thinking-1, DeepSeek-V4-Pro (Azure Foundry) | not run: backlogged on cost (pay-per-token) |
 | Local Qwen models, Kolibri-1 | not run, and not planned: they score 3-26% on the assembly paths, so the hex path would add nothing |
 | Haiku 4.5, MAI-Code (apps) | not run by design: below the 12/16 bar in stage 1 (8/16 and 11/16 within four) |

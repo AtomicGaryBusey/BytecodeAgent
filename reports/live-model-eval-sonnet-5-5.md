@@ -2,6 +2,9 @@
 
 > **Account caveat (Claude results).** Every Claude run in this repository used a Claude Max subscription enrolled in Anthropic's **Cyber Verification Program** (relaxed cyber safeguards for verified security researchers; confirmed active 2026-09-28). Claude's safety classifiers are less restrictive on this account than on one without CVP, so refusal rates here are likely lower, and pass rates likely higher, than a non-CVP org or subscription would see on this machine-code work. Treat Claude numbers as an upper bound for non-CVP accounts. The ChatGPT account used for Codex is enrolled in OpenAI's equivalent **Daybreak** program at the **Blue** tier only (no Daybreak Red / `*-cyber` models); whether Daybreak relaxes anything for the non-Daybreak models evaluated here (e.g. `gpt-6-luna`) is unknown. The Kimi and Google accounts have no known equivalent enrolment.
 
+> **Dated snapshot** (2026-09-28). Current results for every model, including the newer Claude models (Haiku 5.5,
+> Sonnet 4.5, Fable 5.1, Opus 4.8), are in [live-model-eval-cross-vendor.md](live-model-eval-cross-vendor.md).
+
 Run: `eval/runs/sonnet55-all-20260928-182447` (2026-09-28; claude CLI 2.1.284, CLI-default effort, model pinned by its explicit id, and
 every cell reported claude-sonnet-5-5). Rounds 1 + 2, the long battery and the adversarial battery
 (baseline prompts): 224 cells, up to 4 attempts with repair feedback. 250 calls, no infrastructure errors.
@@ -21,7 +24,7 @@ one-character-literal fix, which affected none of the cells above.)
 ## Findings
 
 - **Sonnet 5.5 closes most of the gap to opus**: 90% pass@1 vs 78% for Sonnet 5 and 96% for opus, with
-  1.12 mean attempts. It is best-in-class on round 1 (47/48).
+  1.12 mean attempts. It was the best on round 1 at the time (47/48; Sonnet 4.5 and Grok 4.7 later scored 48/48).
 - **Its big gain is structured x86-64**: 34/37 pass@1 vs 17/37 for Sonnet 5 — the `{"reg": "rdi"}`
   habit nearly disappeared (one occurrence left).
 - **QBE is still its weakest path** (60/74 = 81% pass@1, the same as Sonnet 5): phi syntax

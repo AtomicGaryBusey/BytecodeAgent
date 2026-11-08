@@ -1,5 +1,7 @@
 # Specialized AI Models for x86/ARM Assembly, Machine Code, Compiler IR and Binaries (as of 2026-09-26)
 
+> Source note for [the 2026-09-27 survey](../../reports/AI%20for%20x86%20and%20ARM%20machine%20code.md), current as of 2026-09-26; for later work see [the 2026-11 landscape update](../../reports/landscape-2026-11.md), and for this project's own measurements (which fill several gaps named here) the [README](../../README.md).
+
 ## Catalog of major specialized models (who, size, data, ISAs, tasks, results, license)
 
 ### Takeaway

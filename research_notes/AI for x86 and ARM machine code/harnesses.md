@@ -1,5 +1,7 @@
 # Agent Harnesses, Frameworks, and Tooling for LLM-Generated x86/ARM Assembly and Machine Code
 
+> Source note for [the 2026-09-27 survey](../../reports/AI%20for%20x86%20and%20ARM%20machine%20code.md), current as of 2026-09-26; for later work see [the 2026-11 landscape update](../../reports/landscape-2026-11.md), and for this project's own measurements (which fill several gaps named here) the [README](../../README.md).
+
 (Researched 2026-09-26. Primary sources are arXiv papers and GitHub/MCP registries. Several PDF summaries from a fetch tool were vague or partly generic; numbers below were checked against the paper text or abstract, and places where they could not be checked are marked.)
 
 ## Feedback-loop designs: assembler, disassembler, emulator, debugger, differential testing, formal equivalence

@@ -2,6 +2,10 @@
 
 > **Account caveat (Claude results).** Every Claude run in this repository used a Claude Max subscription enrolled in Anthropic's **Cyber Verification Program** (relaxed cyber safeguards for verified security researchers; confirmed active 2026-09-28). Claude's safety classifiers are less restrictive on this account than on one without CVP, so refusal rates here are likely lower, and pass rates likely higher, than a non-CVP org or subscription would see on this machine-code work. Treat Claude numbers as an upper bound for non-CVP accounts. The ChatGPT account used for Codex is enrolled in OpenAI's equivalent **Daybreak** program at the **Blue** tier only (no Daybreak Red / `*-cyber` models); whether Daybreak relaxes anything for the non-Daybreak models evaluated here (e.g. `gpt-6-luna`) is unknown. The Kimi and Google accounts have no known equivalent enrolment.
 
+> **Dated snapshot** (2026-09-27). Current results for every model, including the newer Claude models (Haiku 5.5,
+> Sonnet 4.5, Fable 5.1, Opus 4.8), are in [live-model-eval-cross-vendor.md](live-model-eval-cross-vendor.md).
+> Here "haiku" is Claude Haiku 4.5 and "sonnet" Claude Sonnet 5.
+
 Run: `eval/runs/long-3subj-20260927-210627` (2026-09-27; claude CLI 2.1.283, CLI-default effort). 9 programs of roughly 60-250
 instructions (bytecode VM, pair quicksort, Base64, XXH64, PackBits encode/decode, 4x4 matrix power,
 LCS, multi-precision multiply) × stream / structured / IR × x86-64 / AArch64 = 54 cells per model, up to

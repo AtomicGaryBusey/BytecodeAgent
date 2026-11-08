@@ -36,6 +36,7 @@ from dataclasses import dataclass
 from bca.apps import APP_TASKS, AppTask, AppTest
 from bca.isa import ISAS
 from bca.liveeval.pipelines import (
+    call_failure_category,
     _PROSE_RE,
     Attempt,
     Verdict,
@@ -263,7 +264,7 @@ def _asm_attempt(subject: Subject, isa: str, task: AppEvalTask, prompt: str, raw
         a.category, a.failure = "refusal", f"the model refused to answer ({resp.refusal})"
         return a
     if not resp.ok:
-        a.category = "subject_timeout" if resp.timed_out else "subject_error"
+        a.category = call_failure_category(resp)
         a.code_text = ""  # partial text exists only for streaming subjects: never shown, for parity
         a.failure = f"the model call failed: {resp.error}"
         return a
@@ -337,7 +338,7 @@ def _app_hex_attempt(subject: Subject, isa: str, task: AppEvalTask, prompt: str,
         a.category, a.failure = "refusal", f"the model refused to answer ({resp.refusal})"
         return a
     if not resp.ok:
-        a.category = "subject_timeout" if resp.timed_out else "subject_error"
+        a.category = call_failure_category(resp)
         a.code_text = ""
         a.failure = f"the model call failed: {resp.error}"
         return a

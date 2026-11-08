@@ -1,5 +1,7 @@
 # Benchmarks and Datasets for AI Assembly / Machine-Code Generation (x86 and ARM)
 
+> Source note for [the 2026-09-27 survey](../../reports/AI%20for%20x86%20and%20ARM%20machine%20code.md), current as of 2026-09-26; for later work see [the 2026-11 landscape update](../../reports/landscape-2026-11.md), and for this project's own measurements (which fill several gaps named here) the [README](../../README.md).
+
 Scope note: about 17 tool calls (searches and fetches), current as of 2026-09-26. Most numbers come from primary arXiv, OpenReview or ICLR papers. Leaderboard aggregators are flagged where used. "Asm" means assembly.
 
 ## Which benchmarks exist (task, ISA, size, metric)?

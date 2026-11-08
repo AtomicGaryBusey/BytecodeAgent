@@ -4,8 +4,8 @@
 failure rate on rounds 1 + 2 is missing knowledge and unclear feedback rather than inability. The assisted
 variant (`--variant assisted`, `bca/liveeval/assist.py`) changes only what the model is told. Acceptance rules,
 tests, limits, attempts (4), timeouts, the zero-tool CLIs and scoring are identical to baseline, so a score
-change is attributable to information, not leniency. Same account caveats as the main report (the Claude
-account is CVP-enrolled; ChatGPT is Daybreak Blue).
+change is attributable to information, not leniency. Same account caveats as the [cross-vendor report](live-model-eval-cross-vendor.md) (the Claude
+account is CVP-enrolled and ChatGPT is Daybreak Blue, so treat those rows as upper bounds for ordinary accounts).
 
 ## What the variant adds
 

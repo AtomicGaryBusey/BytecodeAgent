@@ -4,7 +4,8 @@ Can a language model write **machine code** directly, without a human-facing too
 This project builds non-standard ways for a model to emit x86-64 and AArch64 code (including raw machine
 code with no tool at all), a
 differential harness that proves the result correct, and a live evaluation that puts models from
-six vendors through the same tasks under the same rules.
+many vendors (through six vendors' coding CLIs, GitHub Copilot, the Azure AI Foundry API and open-weight
+models served locally) through the same tasks under the same rules.
 
 ## The emission paths
 
@@ -15,7 +16,7 @@ six vendors through the same tasks under the same rules.
 | **IR** (`bca.ir`) | A small portable language: QBE IL, freestanding C, or WebAssembly text | An existing compiler (QBE, clang/tcc, Cranelift via wasmtime) lowers it; the function's bytes are pulled out of the ELF object |
 | **Hex** (`bca.liveeval.hexpath`, opt-in `--paths hex`) | The machine code itself, as hex: AArch64 32-bit words or x86-64 instruction bytes, plus data bytes for whole programs | Nothing: the bytes run exactly as written (decoded only to check the instruction set and to explain failures). Astra: 15/16 round-1 functions and 15/16 app-battery programs on the first try, 16/16 within four |
 
-Raw machine code across 18 models (functions and whole programs, mistakes models make encoding by hand, and the
+Raw machine code across 22 models (functions and whole programs, mistakes models make encoding by hand, and the
 safety filters that block it): [`reports/live-model-eval-hex.md`](reports/live-model-eval-hex.md).
 Whether a plain, truthful statement of purpose in the prompt reduces those blocks (not reliably; they fire
 on the model's own output): [`reports/live-model-eval-declared.md`](reports/live-model-eval-declared.md).
@@ -48,7 +49,7 @@ ISAs, with up to four attempts and repair feedback.
   (Kimi Code), `agy:<model>` (Google Antigravity), `grok:<model>` (xAI Grok Build) and `copilot:<model>`
   (GitHub Copilot CLI through the Copilot SDK: Microsoft's MAI-Code, plus other vendors' models served by
   GitHub for harness comparisons), `foundry:<deployment>` (Azure Foundry pay-per-token, called through its
-  API directly, with a per-model spend cap), `fireworks:<model>` (Fireworks.ai serverless, the same way), and `local:<model>` (open-weight models served by Ollama on this
+  API directly, with a per-model spend cap), `fireworks:<model>` (Fireworks.ai serverless, the same way; written, no runs yet), and `local:<model>` (open-weight models served by Ollama on this
   machine, called through its API directly).
 - **Fair comparison:** every subject runs with zero tools, the same system and task prompts, a private
   home per call, and a pinned CLI version; each call is verified against the CLI's own record of the
@@ -98,7 +99,7 @@ its plan quota is spent.
 | Gemini 3.8 Flash High (Antigravity) † | 46 | 60 | 48 | 57/59 | **211/223 (95%)** | 223/223 (100%) | 1.06 |
 
 
-† Partial, quota-paced (Google AI Plus): rounds 1 + 2 and long complete, adversarial 59/60 (one cell, `stats_f.ir.aarch64`, left); the hourly resume loop adds cells as the weekly quota allows. Like for like on the complete batteries, rounds 1 + 2 + long: **154/164 (94%)**, level with Grok 4.6 (154), just behind Grok 4.7 (155), Grok 4.7 build-fast (156), Claude Opus 5.5 and Fable 5.1 (158 each) and Codex GPT-6 Astra (161), and ahead of Codex GPT-6 Sol (153). Its first-attempt failures were reviewed by hand: no harness false rejects (hex literals in QBE, `%x =l %y` without `copy`, malformed JSON, an invented `subl` opcode, a 400 s timeout spent thinking: 62,910 of 65,532 output tokens, and two 180 s timeouts on adversarial `stats_f`).
+† Partial, quota-paced (Google AI Plus): rounds 1 + 2 and long complete, adversarial 59/60 (one cell, `stats_f.ir.aarch64`, left; its resume loop was stopped on 2026-10-24 and the cell is run by hand). Like for like on the complete batteries, rounds 1 + 2 + long: **154/164 (94%)**, level with Grok 4.6 (154), just behind Grok 4.7 (155), Grok 4.7 build-fast (156), Claude Opus 5.5 and Fable 5.1 (158 each), Kimi K3.1 Pro (159) and Codex GPT-6 Astra (161), and ahead of Codex GPT-6 Sol (153). Its first-attempt failures were reviewed by hand: no harness false rejects (hex literals in QBE, `%x =l %y` without `copy`, malformed JSON, an invented `subl` opcode, a 400 s timeout spent thinking: 62,910 of 65,532 output tokens, and two 180 s timeouts on adversarial `stats_f`).
 
 Local open-weight models on this DGX Spark are reported separately: the Qwen models (Qwen3-Coder-Next,
 Qwen3-30B-A3B, Qwen2.5-14B, Qwen3.6) score 3-8% first try; Aleph Alpha Kolibri-1 (FP8, vLLM, given an
@@ -112,8 +113,10 @@ Baseline stays the headline: [`reports/live-model-eval-assisted.md`](reports/liv
 Raw assembly is easy for nearly
 every model; the QBE IR path separates them most. The Claude account is enrolled in Anthropic's Cyber
 Verification Program and the ChatGPT account in OpenAI's Daybreak (Blue), so treat those rows as upper
-bounds for ordinary accounts. Accounts used: Claude Max 20x, ChatGPT Plus, Kimi Allegretto, Google AI Plus (2 TB),
-SuperGrok, GitHub Copilot Pro (details in the methodology report). Full comparison, per-path results and the false-reject review:
+bounds for ordinary accounts. Accounts used: Claude Max 20x, ChatGPT Pro 100 (Plus until 2026-10-04, so the Codex runs committed before
+then ran on Plus), Kimi Allegretto, Google AI Pro (AI Plus 2 TB until 2026-11-06, which every reported
+Antigravity run used), SuperGrok, GitHub Copilot Pro, and Azure AI Foundry pay-as-you-go for the `foundry:` rows
+(details in the methodology report). Full comparison, per-path results and the false-reject review:
 [`reports/live-model-eval-cross-vendor.md`](reports/live-model-eval-cross-vendor.md); per-run write-ups in
 [`reports/`](reports/). The top of the table is a statistical tie: on paired tests, seven models are level with
 Codex GPT-6 Astra (Kimi K3.1 Pro, Opus 5.5, GPT-6 Sol, Grok 4.7 build-fast, Fable 5.1, Grok 4.7, Grok 4.6). Confidence
@@ -180,7 +183,8 @@ subject needs Node.js, `@github/copilot` 1.0.107 and `@github/copilot-sdk` 1.0.2
 `~/.local/opt/copilot/`, or set `BCA_COPILOT_CLI` / `BCA_COPILOT_SDK`) and a logged-in `gh` (its headless
 runtime authenticates through the GitHub CLI).
 
-`python -m bca.liveeval models [--latest]` checks all six vendors at once without calling a model: each
+`python -m bca.liveeval models [--latest]` checks the six CLI vendors (Claude, Codex, Kimi, Antigravity, Grok,
+Copilot) at once without calling a model: each
 CLI's version against the audited ones (and, with `--latest`, the newest Codex/Copilot on npm), the
 sign-in state, the account's current model list, and which of those models no run has benchmarked yet.
 
@@ -193,7 +197,10 @@ bca/structured/                   JSON instruction encoders, schemas, tool defin
 bca/ir/                           QBE / C / WAT lowering and a minimal ELF extractor
 bca/liveeval/                     live-model eval: tasks, prompts, pipelines, runner, vendor adapters
 eval/runs/                        recorded runs (prompts, responses, raw streams, verdicts)
-reports/                          research report and eval write-ups
+eval/*.py                         table generators (xv_, app_, hex_, declared_, assist_tables), analytics, dashboard
+tests/                            the test suite (pytest)
+reports/                          eval write-ups, methodology, literature survey and its 2026-11 landscape update
+research_notes/                   the source notes behind the 2026-09 survey
 examples/stream_demo.py           the stream path end to end
 demo/editor/                      a model-written text editor (AArch64 assembly -> GNU as -> static ELF), sandbox tests
 demo/editor-hex/                  the same editor written directly as machine code (hex -> ELF container, no assembler)

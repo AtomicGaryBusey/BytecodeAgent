@@ -9,6 +9,8 @@
     vllm:<model>   a local vLLM-served model   (vendor_vllm.VllmSubject, OpenAI-compatible API, no CLI)
     foundry:<dep>  a Microsoft Foundry deployment (vendor_foundry.FoundrySubject, Azure pay-per-token API, no CLI)
     fireworks:<id> a Fireworks.ai serverless model (vendor_fireworks.FireworksSubject, pay-per-token API, no CLI)
+    apple:<model>  Apple Foundation Models on the user's Mac (vendor_apple.AppleSubject: `system` on-device or
+                   `pcc`, via an SSH forward to `fm serve`; no CLI, no key, no cost)
     <other>        `claude -p --model <other>` (subject.ClaudeSubject)
 
 The isolation contract every vendor adapter meets is described in vendor_base; the method and its
@@ -22,6 +24,7 @@ from bca.liveeval.vendor_base import CliSubject, CredHome, IsolationError, Parse
 from bca.liveeval.vendor_agy import AgySubject
 from bca.liveeval.vendor_codex import CodexSubject
 from bca.liveeval.vendor_copilot import CopilotSubject
+from bca.liveeval.vendor_apple import AppleSubject
 from bca.liveeval.vendor_fireworks import FireworksSubject
 from bca.liveeval.vendor_foundry import FoundrySubject
 from bca.liveeval.vendor_grok import GrokSubject
@@ -37,6 +40,7 @@ VENDORS["local"] = LocalSubject  # not a CLI: same constructor and describe()/co
 VENDORS["vllm"] = VllmSubject  # likewise, for models Ollama cannot run
 VENDORS["foundry"] = FoundrySubject  # likewise: Azure-hosted, pay-per-token, spend-capped
 VENDORS["fireworks"] = FireworksSubject  # likewise: Fireworks.ai serverless, spend-capped
+VENDORS["apple"] = AppleSubject  # Apple Foundation Models on the user's Mac, over an SSH forward
 
 
 def split_spec(spec: str) -> tuple[str | None, str]:
