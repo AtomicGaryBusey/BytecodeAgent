@@ -175,7 +175,7 @@ def test_reroute_tool_call_and_length_fail_closed(env):
 
 def test_unpriced_model_and_wrong_sku_are_fatal(env):
     fake, tmp, sku, model, _ = env
-    model[0] = "DeepSeek-V4-Pro"
+    model[0] = "Mistral-Large-3"
     r = subj(tmp).complete("p")
     assert "no route and price" in r.error and infra_kind(r.error) == "fatal" and fake.requests == []
     model[0], sku[0] = "MAI-Thinking-1", "DataZoneStandard"
@@ -193,3 +193,12 @@ def test_early_abort_is_killed_not_failed(env):
     fake, tmp, *_ = env
     r = subj(tmp).complete("p", on_text=lambda t: False)
     assert r.ok and r.killed and r.text == "mov rax, 1\n"
+
+
+def test_a_rejected_request_is_not_charged(env):
+    fake, tmp, *_ = env
+    fake.status = 429  # rate limited: Azure generated and billed nothing
+    s = subj(tmp)
+    r = s.complete("p")
+    assert not r.ok and "HTTP 429" in r.error and infra_kind(r.error) == "transient"
+    assert r.cost_usd == 0 and s.ledger.spent(DEP) == 0

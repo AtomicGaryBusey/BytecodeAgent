@@ -30,7 +30,8 @@ by construction and is checked per call, as in vendor_vllm:
   25 per deployment). A call without a usage report is charged its worst case. A refused start
   says "foundry spend cap reached", which the runner treats as fatal.
 - Routes: both MAI models (format "Microsoft") use /mai/v1/chat/completions on the resource's Foundry host
-  (properties.endpoints, "Azure MAI Model Inference API v1.0").
+  (properties.endpoints, "Azure MAI Model Inference API v1.0"); the others /openai/v1/chat/completions on
+  the same host ("AI Foundry API").
 - Configuration: BCA_FOUNDRY_ACCOUNT (the Foundry resource name) and BCA_FOUNDRY_RG (its resource
   group). The endpoint comes from the resource itself.
 """
@@ -61,6 +62,9 @@ CAP_USD = float(os.environ.get("BCA_FOUNDRY_CAP_USD", "25"))
 MODELS = {
     "mai-thinking-1": {"route": "/mai/v1/chat/completions", "price": (2.00, 0.20, 8.00), "max_out": 64_000},
     "mai-code-1.1-flash": {"route": "/mai/v1/chat/completions", "price": (0.20, 0.02, 1.20), "max_out": 64_000},
+    # product "Azure Deepseek Models", meters "V4 Pro Inp/cached/Outp glbl Tokens" (per 1K; westus3 and 39
+    # other regions), read 2026-11-07. Output cap not stated in the catalog: 128K assumed for the reserve.
+    "deepseek-v4-pro": {"route": "/openai/v1/chat/completions", "price": (1.74, 0.145, 3.48), "max_out": 128_000},
 }
 WORST_PROMPT_TOKENS = 40_000  # generous: the longest repair prompt is far below this
 
@@ -219,6 +223,14 @@ class FoundrySubject(Subject):
                 "foundry": {k: s[k] for k in ("model", "model_version", "model_format", "sku", "content_filter",
                                               "route", "price_per_1m")} | {"cap_usd": self.ledger.cap}}
 
+    # pricing (a subclass with its own price table overrides these) ---------------------------------
+
+    def _price(self, model: str, usage: dict) -> float:
+        return price_of(model, usage)
+
+    def _worst(self, model: str) -> float:
+        return worst_case(model)
+
     # -- one call ----------------------------------------------------------------------------------
 
     def request_body(self, prompt: str) -> dict:
@@ -237,11 +249,11 @@ class FoundrySubject(Subject):
             bearer = self._bearer()
         except FoundryError as e:
             return Response("", ok=False, error=str(e), model=self.deployment, model_source="requested")
-        worst = worst_case(s["model"])
+        worst = self._worst(s["model"])
         token = self.ledger.reserve(self.deployment, worst)
         if token is None:
             spent = self.ledger.spent(self.deployment)
-            return Response("", ok=False, error=f"foundry spend cap reached: ${spent:.2f} spent of "
+            return Response("", ok=False, error=f"{self.vendor} spend cap reached: ${spent:.2f} spent of "
                             f"${self.ledger.cap:.2f} for {self.deployment} (next call reserves ${worst:.2f})")
         self.calls += 1
         r = None
@@ -250,11 +262,11 @@ class FoundrySubject(Subject):
             return r
         finally:
             usage = (r.usage if r else {}) or {}
-            cost = price_of(s["model"], usage) if usage.get("completion_tokens") is not None else worst
+            cost = self._price(s["model"], usage) if usage.get("completion_tokens") is not None else worst
             total = self.ledger.settle(self.deployment, token, cost)
             if r is not None:
                 r.cost_usd = round(cost, 6)
-                r.notes.append(f"foundry spend: ${cost:.4f} this call, ${total:.2f} of ${self.ledger.cap:.2f} "
+                r.notes.append(f"{self.vendor} spend: ${cost:.4f} this call, ${total:.2f} of ${self.ledger.cap:.2f} "
                                f"for {self.deployment}" + ("" if usage.get("completion_tokens") is not None
                                                            else " (no usage reported: charged worst case)"))
 
@@ -296,11 +308,15 @@ class FoundrySubject(Subject):
                 data = resp.read()[:2000].decode(errors="replace")
                 if raw:
                     raw.write(data)
+                # nothing was generated: a rejected request (429 rate limit, 5xx, ...) is not billed, and a
+                # prompt blocked by the input filter is billed for the prompt only (estimated: 3 bytes a token)
+                usage = {"prompt_tokens": 0, "completion_tokens": 0, "http_status": resp.status}
                 if resp.status == 400 and ("content_filter" in data or "SafetyBlocked" in data
                                            or "ResponsibleAIPolicyViolation" in data):
                     refusal = f"content_filter: prompt blocked before generation: {data[:200]}"
+                    usage["prompt_tokens"] = len(body) // 3
                 else:
-                    error = f"foundry HTTP {resp.status}: {data[:500]}"
+                    error = f"{self.vendor} HTTP {resp.status}: {data[:500]}"
             else:
                 for line in resp:
                     if raw:
@@ -328,7 +344,7 @@ class FoundrySubject(Subject):
                         if "SafetyBlocked" in kind or "content_filter" in kind:
                             refusal = f"content_filter: {kind}: {str(err)[:200]}"
                         else:
-                            error = f"foundry stream error: {str(err)[:400]}"
+                            error = f"{self.vendor} stream error: {str(err)[:400]}"
                         continue  # [DONE] follows
                     if ev.get("model"):
                         model = str(ev["model"])
@@ -355,7 +371,7 @@ class FoundrySubject(Subject):
                         break
         except OSError as e:
             if not fired.is_set():
-                error = f"foundry unreachable at {s['host']}: {e}"
+                error = f"{self.vendor} unreachable at {s['host']}: {e}"
         finally:
             timer.cancel()
             conn.close()  # on an early abort this ends the generation
@@ -370,7 +386,7 @@ class FoundrySubject(Subject):
         elif refusal:
             error = ""
         elif not error and not killed and not done:
-            error = "foundry closed the stream before [DONE]"
+            error = f"{self.vendor} closed the stream before [DONE]"
         elif not error and not killed and finish == "length":
             error = f"isolation: the answer reached the model's output cap (finish_reason length; usage {usage})"
         usage = dict(usage or {})
