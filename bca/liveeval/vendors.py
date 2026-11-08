@@ -7,6 +7,7 @@
     copilot:<model> GitHub Copilot CLI         (vendor_copilot.CopilotSubject, driven through the Copilot SDK)
     local:<model>  a local Ollama model        (vendor_local.LocalSubject, direct API, no CLI)
     vllm:<model>   a local vLLM-served model   (vendor_vllm.VllmSubject, OpenAI-compatible API, no CLI)
+    foundry:<dep>  a Microsoft Foundry deployment (vendor_foundry.FoundrySubject, Azure pay-per-token API, no CLI)
     <other>        `claude -p --model <other>` (subject.ClaudeSubject)
 
 The isolation contract every vendor adapter meets is described in vendor_base; the method and its
@@ -20,6 +21,7 @@ from bca.liveeval.vendor_base import CliSubject, CredHome, IsolationError, Parse
 from bca.liveeval.vendor_agy import AgySubject
 from bca.liveeval.vendor_codex import CodexSubject
 from bca.liveeval.vendor_copilot import CopilotSubject
+from bca.liveeval.vendor_foundry import FoundrySubject
 from bca.liveeval.vendor_grok import GrokSubject
 from bca.liveeval.vendor_kimi import KimiSubject
 from bca.liveeval.vendor_local import LocalSubject
@@ -31,6 +33,7 @@ VENDORS: dict[str, type[CliSubject]] = {"codex": CodexSubject, "kimi": KimiSubje
 
 VENDORS["local"] = LocalSubject  # not a CLI: same constructor and describe()/complete() contract
 VENDORS["vllm"] = VllmSubject  # likewise, for models Ollama cannot run
+VENDORS["foundry"] = FoundrySubject  # likewise: Azure-hosted, pay-per-token, spend-capped
 
 
 def split_spec(spec: str) -> tuple[str | None, str]:
@@ -54,5 +57,5 @@ def make_subject(spec: str | None, *, timeout: float, effort: str | None = None)
     return VENDORS[vendor](model, timeout=timeout, effort=effort)
 
 
-__all__ = ["AgySubject", "CliSubject", "CodexSubject", "CopilotSubject", "GrokSubject", "CredHome", "IsolationError", "KimiSubject", "Parsed", "VENDORS", "VllmSubject",
+__all__ = ["AgySubject", "CliSubject", "CodexSubject", "CopilotSubject", "FoundrySubject", "GrokSubject", "CredHome", "IsolationError", "KimiSubject", "Parsed", "VENDORS", "VllmSubject",
            "all_efforts", "make_subject", "split_spec"]

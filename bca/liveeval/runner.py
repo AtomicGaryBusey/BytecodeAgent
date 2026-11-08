@@ -133,6 +133,7 @@ _FATAL_RE = re.compile(
     r"supported)|unknown model|no such model|credits? balance|"
     r"local server unreachable|not an audited version|"  # vendor_local: the Ollama server is down or changed
     r"vllm server unreachable|vllm model [^\n]{0,80} not served|"  # vendor_vllm: likewise for the vLLM server
+    r"^foundry: |foundry spend cap reached|"  # vendor_foundry: Azure setup/auth errors; the per-deployment spend cap
     # a subscription's usage window is spent: retrying in minutes cannot help; resume the run later
     r"usage limit|hit your (?:weekly |daily )?limit|exceeded your current (?:token )?quota|exceeded_current_quota|"
     r"quota (?:exhausted|exceeded)|insufficient balance|login_required|token_unauthorized|"
