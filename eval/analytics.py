@@ -37,11 +37,16 @@ CELL_ADJ = {
 }
 BATS = ["round1", "round2", "long", "adversarial"]
 FULL_FN, FULL_APPS = 224, 96
+# Gemini 4 Argon High (agy:gemini-4-argon-high) is in progress, paused on quota, and deliberately unreported until it
+# completes. Its run directory is skipped everywhere the script walks eval/runs.
+EXCLUDED_RUN = "eval/runs/agy-argon-20261107-142027"
+# Likewise Apple's on-device model (apple_system), started 2026-11-08 and still running: not part of this regeneration.
+EXCLUDED_RUNS = (EXCLUDED_RUN, "eval/runs/apple-system-20261108")
 
 
 def label_of(r: dict) -> str:
     subj = r.get("subject") or "opus"
-    if subj.startswith(("codex_", "kimi_", "agy_", "grok_", "copilot_")):
+    if subj.startswith(("codex_", "kimi_", "agy_", "grok_", "copilot_", "foundry_", "fireworks_")):
         return subj.replace("_", ":", 1).replace("kimi-code_", "kimi-code/")
     if subj.startswith("local_"):
         think = (r.get("local") or {}).get("think")
@@ -57,7 +62,7 @@ def load():
     fn, apps = {}, {}
     files = sorted(glob.glob("eval/runs/*/**/results.jsonl", recursive=True) + glob.glob("eval/runs/*/results.jsonl"))
     for f in files:
-        if "smoke" in f or "untuned-trial" in f:
+        if "smoke" in f or f.startswith(EXCLUDED_RUNS) or "untuned-trial" in f:
             continue
         rd = f.split("/")[2]
         for line in open(f):
@@ -383,6 +388,8 @@ def difficulty(by_fn, by_apps):
     for c in ranked[::-1][:10]:
         print(f"| {c[0]} | `{c[1]}` | {100 * rate[c]:.0f}% | {disc[c]:.2f} |")
     print()
+    print(f"All {len(neg)} are near-ceiling: first-attempt pass rates "
+          f"{100 * min(rate[c] for c in neg):.0f}-{100 * max(rate[c] for c in neg):.0f}%.\n")
 
     # informative cells: how many cells carry the ranking among the top models
     top = sorted(models, key=lambda m: -sum(X[c][models.index(m)] for c in cells))[:10]
@@ -667,7 +674,7 @@ def variants(by_fn):
     vrecs = {}
     hexbase = {}
     for f in sorted(glob.glob("eval/runs/*/**/results.jsonl", recursive=True)):
-        if "smoke" in f:
+        if "smoke" in f or f.startswith(EXCLUDED_RUNS):
             continue
         rd = f.split("/")[2]
         for line in open(f):
@@ -714,7 +721,7 @@ def load_all():
     """Every recorded cell, all variants, batteries and paths (hex included): (label, variant, battery, cell) -> r."""
     out = {}
     for f in sorted(glob.glob("eval/runs/*/**/results.jsonl", recursive=True) + glob.glob("eval/runs/*/results.jsonl")):
-        if "smoke" in f or "untuned-trial" in f:
+        if "smoke" in f or f.startswith(EXCLUDED_RUNS) or "untuned-trial" in f:
             continue
         rd = f.split("/")[2]
         for line in open(f):
@@ -781,6 +788,7 @@ def refusals_section(allr):
 GENERATIONS = [
     ("Anthropic Opus", ["claude-opus-4-8", "claude-opus-5-5"]),
     ("Anthropic Sonnet", ["claude-sonnet-4-5-20250929", "claude-sonnet-5", "claude-sonnet-5-5"]),
+    ("Anthropic Haiku", ["claude-haiku-4-5-20251001", "claude-haiku-5-5"]),
     ("xAI Grok", ["grok:grok-4.5", "grok:grok-4.6", "grok:grok-4.7"]),
     ("OpenAI (Codex CLI)", ["codex:gpt-5.5", "codex:gpt-6-luna", "codex:gpt-6-sol", "codex:gpt-6-astra"]),
     ("Moonshot Kimi", ["kimi:kimi-code/kimi-for-coding", "kimi:kimi-code/k3", "kimi:kimi-code/k3.1-pro"]),
@@ -1054,7 +1062,7 @@ def audit():
     cnt = collections.defaultdict(collections.Counter)
     first_last = {}
     for f in glob.glob("eval/runs/*/**/infra.jsonl", recursive=True) + glob.glob("eval/runs/*/infra.jsonl"):
-        if "smoke" in f:
+        if "smoke" in f or f.startswith(EXCLUDED_RUNS):
             continue
         for line in open(f):
             try:
@@ -1070,7 +1078,7 @@ def audit():
                 first_last[m] = (min(lo, t), max(hi, t))
     attempts = collections.Counter()
     for f in glob.glob("eval/runs/*/**/attempts.jsonl", recursive=True):
-        if "smoke" in f:
+        if "smoke" in f or f.startswith(EXCLUDED_RUNS):
             continue
         for line in open(f):
             attempts[label_of(json.loads(line))] += 1
