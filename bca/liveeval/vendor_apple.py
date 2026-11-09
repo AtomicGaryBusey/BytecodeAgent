@@ -27,14 +27,19 @@ The endpoint is BCA_APPLE_ENDPOINT (default http://127.0.0.1:18976). The contrac
   an unreachable tunnel are transient infrastructure errors: backed off and retried, never scored. The one
   exception is the governor's memory pause ("fm is paused to protect this Mac ... Do not retry automatically"):
   that stops the run at once (fatal), as the Mac asks; resume later with the same command.
+- PCC's quota error (`insufficient_quota`, "Your quota has been reached") also stops the run (fatal): /health's
+  quota flags were seen to stay false after the quota ran out, so they are not a reliable stop signal.
 - Cost: none (on-device; PCC is quota-limited on the Mac's account, not billed). Run with `--jobs 1`: the
-  Mac has one model slot and a 30 calls/minute governor.
+  Mac has one model slot and a 30 calls/minute governor. PCC is served by Apple's raw `fm serve` with no
+  governor (no rate limit, queue or timeout), so the subject paces itself to one call start every
+  BCA_APPLE_MIN_INTERVAL_S (default 2 s), and the harness's own time limits apply.
 """
 
 from __future__ import annotations
 
 import http.client
 import os
+import time
 from urllib.parse import urlparse
 
 from bca.liveeval.subject import OnText, Response
@@ -42,6 +47,8 @@ from bca.liveeval.vendor_foundry import FoundryError, FoundrySubject
 
 ENDPOINT = os.environ.get("BCA_APPLE_ENDPOINT", "http://127.0.0.1:18976")
 ROUTE = "/v1/chat/completions"
+# Minimum gap between call starts (30 calls/minute), whatever the endpoint enforces itself.
+MIN_INTERVAL_S = float(os.environ.get("BCA_APPLE_MIN_INTERVAL_S", "2.0"))
 # Apple model id -> what the Mac reported for it (2026-11-08: macOS 27.2, FoundationModels 2.1.14)
 MODELS = {
     "system": {"name": "AFM 3 Core Advanced (on-device)", "context": 8192},
@@ -67,6 +74,7 @@ class AppleSubject(FoundrySubject):
         self.name = f"apple:{model}"
         self.endpoint = endpoint or ENDPOINT
         self.connection = http.client.HTTPConnection  # plain HTTP to the local end of the SSH forward
+        self._last_call = float("-inf")
 
     def setup(self) -> dict:
         if self._setup is None:
@@ -101,11 +109,20 @@ class AppleSubject(FoundrySubject):
             s = self.setup()
         except FoundryError as e:
             return Response("", ok=False, error=str(e), model=self.model_id, model_source="requested")
+        # Pace calls ourselves: the PCC endpoint is Apple's raw `fm serve` with no governor in front of it.
+        wait = self._last_call + MIN_INTERVAL_S - time.monotonic()
+        if wait > 0:
+            time.sleep(wait)
+        self._last_call = time.monotonic()
         self.calls += 1
         r = self._complete(prompt, on_text, raw_path, self.timeout if timeout is None else timeout, s, "none")
         r.cost_usd = 0.0
         err = r.error or ""
-        if "did not answer within" in err:  # the Mac's governor time limit (120 s): a timeout, like ours
+        if "insufficient_quota" in err or "quota has been reached" in err.lower():
+            # PCC's quota on the Mac's account (2026-11-08: reached after about 140 calls while /health still said
+            # limit_reached false). Retrying only polls Apple; stop the run and resume later with the same command.
+            r.error = f"apple: PCC quota reached; stop and resume later: {err[:200]}"
+        elif "did not answer within" in err:  # the Mac's governor time limit (120 s): a timeout, like ours
             r.timed_out, r.ok = True, False
             r.notes.append(f"apple governor timeout: {err[:200]}")
             r.error = "timeout"

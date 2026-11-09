@@ -118,3 +118,22 @@ def test_memory_pause_stops_the_run(fake):
                  b'(limit 3,072 MB). Do not retry automatically.","type":"service_unavailable"}}')
     r = AppleSubject("system", endpoint=fake.endpoint).complete("p")
     assert call_failure_category(r) == "subject_error" and infra_kind(r.error) == "fatal"
+
+
+def test_calls_are_paced(fake, monkeypatch):
+    import time
+
+    import bca.liveeval.vendor_apple as va
+    monkeypatch.setattr(va, "MIN_INTERVAL_S", 0.4)
+    s = AppleSubject("pcc", endpoint=fake.endpoint)
+    fake.model = "pcc"
+    t0 = time.monotonic()
+    assert s.complete("a").ok and s.complete("b").ok
+    assert time.monotonic() - t0 >= 0.4
+
+
+def test_pcc_quota_stops_the_run(fake):
+    fake.model, fake.status = "pcc", 429
+    fake.body = b'{"error":{"type":"insufficient_quota","code":"429","message":"Your quota has been reached. Please try again later."}}'
+    r = AppleSubject("pcc", endpoint=fake.endpoint).complete("p")
+    assert r.error.startswith("apple: PCC quota reached") and infra_kind(r.error) == "fatal"

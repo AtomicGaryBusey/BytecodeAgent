@@ -9,7 +9,7 @@ for f in sorted(glob.glob("eval/runs/*/**/results.jsonl", recursive=True) + glob
         r = json.loads(l)
         if r.get("variant", "baseline") != "baseline": continue
         subj = r.get("subject") or "opus"
-        if subj.startswith(("codex_", "kimi_", "agy_", "grok_", "copilot_", "foundry_", "fireworks_")):
+        if subj.startswith(("codex_", "kimi_", "agy_", "grok_", "copilot_", "foundry_", "fireworks_", "apple_")):
             label = subj.replace("_", ":", 1).replace("kimi-code_", "kimi-code/")
         elif subj.startswith("local_"):  # @think / @nothink runs are separate rows
             think = (r.get("local") or {}).get("think")
@@ -28,6 +28,10 @@ names = {"claude-opus-5-5": "Claude Opus 5.5", "claude-fable-5-1": "Claude Fable
  "codex:gpt-6-sol": "Codex GPT-6 Sol", "codex:gpt-5.5": "Codex GPT-5.5", "grok:grok-4.6": "Grok 4.6", "grok:grok-4.5": "Grok 4.5",
  "claude-sonnet-5": "Claude Sonnet 5", "codex:gpt-6-luna": "Codex GPT-6 Luna", "claude-haiku-4-5-20251001": "Claude Haiku 4.5", "claude-haiku-5-5": "Claude Haiku 5.5",
  "foundry:mai-thinking-1": "Microsoft MAI-Thinking-1 (Azure Foundry)", "foundry:deepseek-v4-pro": "DeepSeek-V4-Pro high (Azure Foundry)",
+ "fireworks:deepseek-v4p1-flash": "DeepSeek V4.1 Flash (Fireworks)", "fireworks:minimax-m3": "MiniMax M3 (Fireworks)",
+ "fireworks:nemotron-3-ultra-nvfp4": "NVIDIA Nemotron 3 Ultra NVFP4 (Fireworks)", "fireworks:glm-5p3": "Z.ai GLM-5.3 (Fireworks)",
+ "fireworks:qwen3p8-max": "Qwen 3.8 Max (Fireworks)",
+ "apple:system": "Apple AFM 3 Core Advanced, on-device", "apple:pcc": "Apple Private Cloud Compute",
  "claude-opus-4-8": "Claude Opus 4.8", "claude-sonnet-4-5-20250929": "Claude Sonnet 4.5",
  "agy:gemini-3.8-flash-high": "Gemini 3.8 Flash High (Antigravity)",
  "copilot:gpt-6-luna": "GPT-6 Luna via Copilot", "copilot:mai-code-1.1-flash": "Microsoft MAI-Code 1.1 Flash (Copilot)",

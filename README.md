@@ -4,8 +4,8 @@ Can a language model write **machine code** directly, without a human-facing too
 This project builds non-standard ways for a model to emit x86-64 and AArch64 code (including raw machine
 code with no tool at all), a
 differential harness that proves the result correct, and a live evaluation that puts models from
-many vendors (through six vendors' coding CLIs, GitHub Copilot, the Azure AI Foundry API and open-weight
-models served locally) through the same tasks under the same rules.
+many vendors (through six vendors' coding CLIs, GitHub Copilot, the Azure AI Foundry and Fireworks.ai APIs, Apple's Foundation Models on a Mac, and
+open-weight models served locally) through the same tasks under the same rules.
 
 ## The emission paths
 
@@ -86,6 +86,7 @@ its plan quota is spent.
 | Codex Daybreak Blue | 45 | 55 | 42 | 59 | **201/224 (90%)** | 224/224 (100%) | 1.12 |
 | Claude Sonnet 5.5 | 47 | 56 | 45 | 53 | **201/224 (90%)** | 223/224 (100%) | 1.12 |
 | Grok 4.5 | 47 | 55 | 41 | 54 | **197/224 (88%)** | 222/224 (99%) | 1.16 |
+| DeepSeek V4.1 Flash (Fireworks) | 41 | 53 | 46 | 50 | **190/224 (85%)** | 224/224 (100%) | 1.19 |
 | GPT-6 Luna via Copilot | 42 | 53 | 31 | 50 | **176/224 (79%)** | 224/224 (100%) | 1.29 |
 | Claude Sonnet 5 | 40 | 49 | 41 | 45 | **175/224 (78%)** | 222/224 (99%) | 1.30 |
 | Claude Opus 4.8 | 35 | 48 | 49 | 43 | **175/224 (78%)** | 222/224 (99%) | 1.27 |
@@ -93,13 +94,21 @@ its plan quota is spent.
 | Kimi K2.8 (for-coding) | 37 | 46 | 28 | 46 | **157/224 (70%)** | 213/224 (95%) | 1.52 |
 | DeepSeek-V4-Pro high (Azure Foundry) | 33 | 45 | 20 | 41 | **139/224 (62%)** | 217/224 (97%) | 1.60 |
 | Codex GPT-6 Luna | 33 | 41 | 10 | 46 | **130/224 (58%)** | 209/224 (93%) | 1.71 |
+| MiniMax M3 (Fireworks) | 31 | 36 | 13 | 37 | **117/224 (52%)** | 184/224 (82%) | 2.00 |
 | Claude Haiku 4.5 | 30 | 34 | 17 | 35 | **116/224 (52%)** | 158/224 (71%) | 2.19 |
 | Microsoft MAI-Code 1.1 Flash (Copilot) | 26 | 34 | 12 | 35 | **107/224 (48%)** | 151/224 (67%) | 2.29 |
+| NVIDIA Nemotron 3 Ultra NVFP4 (Fireworks) | 20 | 28 | 13 | 25 | **86/224 (38%)** | 151/224 (67%) | 2.41 |
 | Microsoft MAI-Thinking-1 (Azure Foundry) | 22 | 22 | 2 | 26 | **72/224 (32%)** | 144/224 (64%) | 2.58 |
 | Gemini 3.8 Flash High (Antigravity) † | 46 | 60 | 48 | 57/59 | **211/223 (95%)** | 223/223 (100%) | 1.06 |
+| Z.ai GLM-5.3 (Fireworks) † | 39 | 53 | 7/13 | — | **99/123 (80%)** | 120/123 (98%) | 1.33 |
+| Qwen 3.8 Max (Fireworks) † | 40 | 50 | 12/17 | — | **102/127 (80%)** | 127/127 (100%) | 1.26 |
+| Apple Private Cloud Compute † | 2/37 | — | — | — | **2/37 (5%)** | 4/37 (11%) | 3.73 |
+| Apple AFM 3 Core Advanced, on-device † | 0/32 | — | — | — | **0/32 (0%)** | 0/32 (0%) | 4.00 |
 
 
 † Partial, quota-paced (Google AI Plus): rounds 1 + 2 and long complete, adversarial 59/60 (one cell, `stats_f.ir.aarch64`, left; its resume loop was stopped on 2026-10-24 and the cell is run by hand). Like for like on the complete batteries, rounds 1 + 2 + long: **154/164 (94%)**, level with Grok 4.6 (154), just behind Grok 4.7 (155), Grok 4.7 build-fast (156), Claude Opus 5.5 and Fable 5.1 (158 each), Kimi K3.1 Pro (159) and Codex GPT-6 Astra (161), and ahead of Codex GPT-6 Sol (153). Its first-attempt failures were reviewed by hand: no harness false rejects (hex literals in QBE, `%x =l %y` without `copy`, malformed JSON, an invented `subl` opcode, a 400 s timeout spent thinking: 62,910 of 65,532 output tokens, and two 180 s timeouts on adversarial `stats_f`).
+
+† The Fireworks GLM-5.3 and Qwen 3.8 Max rows are partial by budget (2026-11-08/09): the user's $51 of Fireworks credit ran out with rounds 1 + 2 complete and the long battery partial (GLM 13/54, Qwen 17/54 cells), and no adversarial cells. Like for like on rounds 1 + 2 (110 cells): **GLM-5.3 92/110 and Qwen 3.8 Max 90/110**, just behind DeepSeek V4.1 Flash (94) and GPT-6 Luna via Copilot (95), ahead of Claude Sonnet 5 (89). The Apple rows cover round 1 only: on-device, the stream and IR paths (32 cells; the structured cells were deferred to PCC because their ~5.5K-token schema prompts push the on-device inference service over the Mac's 3 GB memory cap); PCC, 37 of 48 round-1 cells before Apple's daily PCC quota ran out.
 
 Local open-weight models on this DGX Spark are reported separately: the Qwen models (Qwen3-Coder-Next,
 Qwen3-30B-A3B, Qwen2.5-14B, Qwen3.6) score 3-8% first try; Aleph Alpha Kolibri-1 (FP8, vLLM, given an
@@ -115,8 +124,9 @@ every model; the QBE IR path separates them most. The Claude account is enrolled
 Verification Program and the ChatGPT account in OpenAI's Daybreak (Blue), so treat those rows as upper
 bounds for ordinary accounts. Accounts used: Claude Max 20x, ChatGPT Pro 100 (Plus until 2026-10-04, so the Codex runs committed before
 then ran on Plus), Kimi Allegretto, Google AI Pro (AI Plus 2 TB until 2026-11-06, which every reported
-Antigravity run used), SuperGrok, GitHub Copilot Pro, and Azure AI Foundry pay-as-you-go for the `foundry:` rows
-(details in the methodology report). Full comparison, per-path results and the false-reject review:
+Antigravity run used), SuperGrok, GitHub Copilot Pro, Azure AI Foundry pay-as-you-go for the `foundry:` rows,
+Fireworks.ai prepaid credit for the `fireworks:` rows, and the user's Mac (on-device model; Private Cloud Compute on
+the iCloud+ daily quota) for the `apple:` rows (details in the methodology report). Full comparison, per-path results and the false-reject review:
 [`reports/live-model-eval-cross-vendor.md`](reports/live-model-eval-cross-vendor.md); per-run write-ups in
 [`reports/`](reports/). The top of the table is a statistical tie: on paired tests, seven models are level with
 Codex GPT-6 Astra (Kimi K3.1 Pro, Opus 5.5, GPT-6 Sol, Grok 4.7 build-fast, Fable 5.1, Grok 4.7, Grok 4.6). Confidence

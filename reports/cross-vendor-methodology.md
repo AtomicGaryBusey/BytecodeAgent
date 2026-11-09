@@ -19,8 +19,9 @@ is still accepted). The audited versions live in each adapter's `audited_version
 
 Every CLI subject ran on one consumer subscription per vendor, logged in through that vendor's own CLI, with no
 API keys and no second account for any vendor. The exceptions are the direct-API routes: Azure AI Foundry
-(`foundry:`) runs on the user's pay-as-you-go Azure subscription, signed in with `az`, and Fireworks.ai
-(`fireworks:`, no runs yet) would use an API key; see [Direct API routes](#direct-api-routes-foundry-fireworks).
+(`foundry:`) runs on the user's pay-as-you-go Azure subscription, signed in with `az`, Fireworks.ai
+(`fireworks:`) uses an API key on the user's prepaid account ($51 of credit), and Apple Foundation Models (`apple:`) run on
+the user's Mac; see [Direct API routes](#direct-api-routes-foundry-fireworks) and [Apple Foundation Models](#apple-foundation-models-apple).
 
 | Vendor / CLI | Plan | Safety program | Limits seen in these runs |
 |---|---|---|---|
@@ -93,7 +94,13 @@ serverless API. There is no CLI and no local home, so the contract is met differ
   DeepSeek-V4-Pro ran at `high`, because the API default returned no reasoning (a 12-cell smoke test: 4/12 at the
   default, 10/12 at high).
 - **Model identity:** every streamed chunk that names a model must name the deployed model; anything else is a
-  fatal reroute. A tool call in the stream, or `finish_reason: length`, fails closed (`isolation:`).
+  fatal reroute. One exception, listed per model: Qwen 3.8 Max on Fireworks streams its display name, and exactly
+  the display name Fireworks' model API gives it ("Qwen 3.8 Max") is accepted. A tool call in the stream fails
+  closed (`isolation:`).
+- **Output cap:** we never send `max_tokens`. On Foundry, `finish_reason: length` fails closed. On Fireworks it means
+  the model spent the service's own default output cap (undocumented: 65,536 tokens for MiniMax M3 and
+  DeepSeek V4.1 Flash, 32,768 for Nemotron 3 Ultra) without finishing, almost always all of it on reasoning, and it
+  is scored as a timeout, as a vLLM model's token budget is. The cap is never raised for one model.
 - **Refusals:** a content-filter block (an HTTP 400 `content_filter`, a `SafetyBlockedError` event or
   `finish_reason: content_filter`) is a scored refusal.
 - **Deployment checks (Foundry):** the deployment's model, version, SKU (Global Standard only) and content-filter
@@ -101,8 +108,31 @@ serverless API. There is no CLI and no local home, so the contract is met differ
 - **Cost:** each call is priced from the public Azure (or Fireworks) price list and charged to a per-model ledger
   (`~/.local/state/bca/foundry-spend.json`). A call is refused before it is sent if its worst case would cross
   the cap ($25 a model by default, `BCA_FOUNDRY_CAP_USD`), and that stop is fatal. Rejected requests (HTTP 429)
-  cost nothing.
+  cost nothing. A call that ends without a usage report (a timeout) is booked at the worst case on Foundry; on
+  Fireworks it is booked from what it streamed (about one token per delta, measured: 624 deltas for 621 tokens),
+  times 1.25 plus 2,048 tokens. The Fireworks runs also had a whole-account stop at $50 on the ledger.
 - **State:** one independent HTTPS request per call; nothing is carried between calls.
+
+## Apple Foundation Models (`apple:`)
+
+`apple:system` (the on-device model, AFM 3 Core Advanced, 8,192-token context; macOS 27.2, FoundationModels
+2.1.14) and `apple:pcc` (Private Cloud Compute) are called through Apple's `fm serve`, an OpenAI-style
+chat-completions server on a Unix socket on the user's Mac, reached from this machine through an SSH local forward.
+The adapter (`vendor_apple.py`) reuses the `foundry:` request and stream handling:
+
+- **The request is ours:** `[system: SYSTEM_PROMPT, user: prompt]`, streaming, no tools, no sampling fields, no
+  `max_tokens` and no `reasoning_effort` (so PCC runs without reasoning: 0 reasoning tokens on every round-1
+  attempt). The Mac session checked that `fm serve` builds a session with exactly these two entries; Apple's chat
+  template adds about 56 tokens. Sampling is the framework's random default.
+- **On-device governor** (the Mac session's `fm_serve`, not ours to change): 30 calls a minute, one call at a
+  time, a 120 s limit per call (scored as a timeout; stricter than the 180 s round-1 limit) and a 3,072 MB cap on
+  the inference service's memory. Its memory pause ("Do not retry automatically") stops the run (fatal).
+- **PCC** is Apple's raw `fm serve`, with no governor: the adapter paces itself to one call start every 2 s, and the
+  harness's own time limits apply. PCC has a daily per-person quota (no published size or reset time); its
+  `insufficient_quota` error stops the run (fatal), because `/health`'s quota flags stayed false after it ran out.
+- **Context and refusals:** an HTTP 500 "exceeded the model's context size" is a scored `context_limit` attempt;
+  an HTTP 500 naming a guardrail is a scored refusal. None occurred in these runs.
+- **Cost:** none; the endpoint must be a loopback address.
 
 ## Local models (`local:<model>`)
 

@@ -262,13 +262,20 @@ class FoundrySubject(Subject):
             return r
         finally:
             usage = (r.usage if r else {}) or {}
-            cost = self._price(s["model"], usage) if usage.get("completion_tokens") is not None else worst
+            cost = (self._price(s["model"], usage) if usage.get("completion_tokens") is not None
+                    else min(worst, self._unreported(s["model"], prompt, usage, worst)))
             total = self.ledger.settle(self.deployment, token, cost)
             if r is not None:
                 r.cost_usd = round(cost, 6)
                 r.notes.append(f"{self.vendor} spend: ${cost:.4f} this call, ${total:.2f} of ${self.ledger.cap:.2f} "
                                f"for {self.deployment}" + ("" if usage.get("completion_tokens") is not None
-                                                           else " (no usage reported: charged worst case)"))
+                                                           else f" (no usage reported: {self._unreported_note})"))
+
+    _unreported_note = "charged worst case"
+
+    def _unreported(self, model: str, prompt: str, usage: dict, worst: float) -> float:
+        """What to book for a call that ended without a usage report (a timeout or a dropped stream)."""
+        return worst
 
     def _complete(self, prompt: str, on_text: OnText | None, raw_path: str, limit: float, s: dict,
                   bearer: str) -> Response:
@@ -287,6 +294,7 @@ class FoundrySubject(Subject):
         timer = threading.Timer(limit, on_timeout)
         timer.start()
         text, reasoning, notes = [], [], []
+        reasoning_deltas = 0
         first, deltas, killed, done, error, refusal, model, finish, usage = None, 0, False, False, "", "", "", None, {}
         raw = open(raw_path, "w") if raw_path else None
 
@@ -348,7 +356,7 @@ class FoundrySubject(Subject):
                         continue  # [DONE] follows
                     if ev.get("model"):
                         model = str(ev["model"])
-                        if not model.lower().startswith(s["model"]):
+                        if not model.lower().startswith(s["model"]) and model not in s.get("served_as", ()):
                             error = (f"isolation: model rerouted: deployment {self.deployment} serves {s['model']}, "
                                      f"stream reported {model}")
                             break
@@ -362,6 +370,7 @@ class FoundrySubject(Subject):
                         for k in ("reasoning_content", "reasoning"):
                             if isinstance(d.get(k), str) and d[k]:
                                 reasoning.append(d[k])
+                                reasoning_deltas += 1
                         if isinstance(d.get("refusal"), str) and d["refusal"]:  # OpenAI-style refusal field
                             refusal = f"refusal: {d['refusal'][:200]}"
                         if d.get("content") and not emit(d["content"]):
@@ -393,6 +402,7 @@ class FoundrySubject(Subject):
             error = f"isolation: the answer reached the model's output cap (finish_reason length; usage {usage})"
         usage = dict(usage or {})
         usage["finish_reason"] = finish
+        usage["streamed_deltas"] = deltas + reasoning_deltas  # what arrived, for a call that reports no usage
         if reasoning:
             notes.append(f"reasoning not scored ({len(''.join(reasoning))} chars): {''.join(reasoning)[:200]}")
         if self.effort is not None:

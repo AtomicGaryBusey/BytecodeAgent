@@ -7,6 +7,9 @@
 > before then used Plus), Kimi Allegretto, Google AI Pro (AI Plus 2 TB until 2026-11-06; every reported Antigravity
 > run used Plus), SuperGrok, GitHub Copilot Pro. The Azure Foundry rows
 > are pay-as-you-go API calls on the user's Azure subscription, with Azure's default content filter on.
+> The Fireworks rows are pay-per-token calls to Fireworks.ai's serverless API on the user's prepaid account ($51
+> of credit). The Apple rows run on the user's Mac: the on-device model through `fm serve` behind the Mac session's
+> memory and rate governor, and Private Cloud Compute on the user's iCloud+ account's daily quota.
 > Method, fairness contract and known limits: [cross-vendor-methodology.md](cross-vendor-methodology.md).
 
 Every model got the same 224 cells: rounds 1 + 2, the long-program battery and the adversarial battery
@@ -14,8 +17,8 @@ Every model got the same 224 cells: rounds 1 + 2, the long-program battery and t
 four attempts and repair feedback. Each ran with zero tools, the same system and task prompts, and its route's default effort
 unless a row says otherwise: most through their vendor's own coding CLI (Claude Code, Codex, Kimi Code,
 Antigravity, Grok Build), the `copilot:` rows through GitHub Copilot's SDK runtime, the `foundry:` rows through
-the Azure AI Foundry API directly, and the local rows through Ollama or vLLM on this machine. Runs date from
-2026-09-27 to 2026-11-08. Every result records the CLI or API version it ran on (`cli_version` in each
+the Azure AI Foundry API directly, the `fireworks:` rows through Fireworks.ai's API directly, the `apple:` rows through Apple's `fm serve` on the user's Mac, and the local rows through Ollama or vLLM on this machine. Runs date from
+2026-09-27 to 2026-11-09. Every result records the CLI or API version it ran on (`cli_version` in each
 `results.jsonl`); the audited versions are in the methodology report.
 
 ## Results (first-attempt passes per battery)
@@ -37,6 +40,7 @@ the Azure AI Foundry API directly, and the local rows through Ollama or vLLM on 
 | Codex Daybreak Blue | 45 | 55 | 42 | 59 | **201/224 (90%)** | 224/224 (100%) | 1.12 |
 | Claude Sonnet 5.5 | 47 | 56 | 45 | 53 | **201/224 (90%)** | 223/224 (100%) | 1.12 |
 | Grok 4.5 | 47 | 55 | 41 | 54 | **197/224 (88%)** | 222/224 (99%) | 1.16 |
+| DeepSeek V4.1 Flash (Fireworks) | 41 | 53 | 46 | 50 | **190/224 (85%)** | 224/224 (100%) | 1.19 |
 | GPT-6 Luna via Copilot | 42 | 53 | 31 | 50 | **176/224 (79%)** | 224/224 (100%) | 1.29 |
 | Claude Sonnet 5 | 40 | 49 | 41 | 45 | **175/224 (78%)** | 222/224 (99%) | 1.30 |
 | Claude Opus 4.8 | 35 | 48 | 49 | 43 | **175/224 (78%)** | 222/224 (99%) | 1.27 |
@@ -44,10 +48,16 @@ the Azure AI Foundry API directly, and the local rows through Ollama or vLLM on 
 | Kimi K2.8 (for-coding) | 37 | 46 | 28 | 46 | **157/224 (70%)** | 213/224 (95%) | 1.52 |
 | DeepSeek-V4-Pro high (Azure Foundry) | 33 | 45 | 20 | 41 | **139/224 (62%)** | 217/224 (97%) | 1.60 |
 | Codex GPT-6 Luna | 33 | 41 | 10 | 46 | **130/224 (58%)** | 209/224 (93%) | 1.71 |
+| MiniMax M3 (Fireworks) | 31 | 36 | 13 | 37 | **117/224 (52%)** | 184/224 (82%) | 2.00 |
 | Claude Haiku 4.5 | 30 | 34 | 17 | 35 | **116/224 (52%)** | 158/224 (71%) | 2.19 |
 | Microsoft MAI-Code 1.1 Flash (Copilot) | 26 | 34 | 12 | 35 | **107/224 (48%)** | 151/224 (67%) | 2.29 |
+| NVIDIA Nemotron 3 Ultra NVFP4 (Fireworks) | 20 | 28 | 13 | 25 | **86/224 (38%)** | 151/224 (67%) | 2.41 |
 | Microsoft MAI-Thinking-1 (Azure Foundry) | 22 | 22 | 2 | 26 | **72/224 (32%)** | 144/224 (64%) | 2.58 |
 | Gemini 3.8 Flash High (Antigravity) † | 46 | 60 | 48 | 57/59 | **211/223 (95%)** | 223/223 (100%) | 1.06 |
+| Z.ai GLM-5.3 (Fireworks) † | 39 | 53 | 7/13 | — | **99/123 (80%)** | 120/123 (98%) | 1.33 |
+| Qwen 3.8 Max (Fireworks) † | 40 | 50 | 12/17 | — | **102/127 (80%)** | 127/127 (100%) | 1.26 |
+| Apple Private Cloud Compute † | 2/37 | — | — | — | **2/37 (5%)** | 4/37 (11%) | 3.73 |
+| Apple AFM 3 Core Advanced, on-device † | 0/32 | — | — | — | **0/32 (0%)** | 0/32 (0%) | 4.00 |
 
 Codex Daybreak Blue includes one reviewed harness false reject counted as a pass, Grok 4.7 build-fast
 three and GPT-6 Luna via Copilot one; Claude Sonnet 5.5 via Copilot is one lower than recorded (a pre-fix
@@ -70,6 +80,8 @@ result class, `xor eax, 0` used to zero a register, malformed JSON, unencodable 
 
 † Partial, quota-paced (Google AI Plus): rounds 1 + 2 and long complete, adversarial 59/60 (one cell, `stats_f.ir.aarch64`, left; its resume loop was stopped on 2026-10-24 and the cell is run by hand). Like for like on the complete batteries, rounds 1 + 2 + long: **154/164 (94%)**, level with Grok 4.6 (154), just behind Grok 4.7 (155), Grok 4.7 build-fast (156), Claude Opus 5.5 and Fable 5.1 (158 each), Kimi K3.1 Pro (159) and Codex GPT-6 Astra (161), and ahead of Codex GPT-6 Sol (153). Its first-attempt failures were reviewed by hand: no harness false rejects (hex literals in QBE, `%x =l %y` without `copy`, malformed JSON, an invented `subl` opcode, a 400 s timeout spent thinking: 62,910 of 65,532 output tokens, and two 180 s timeouts on adversarial `stats_f`).
 
+† The Fireworks GLM-5.3 and Qwen 3.8 Max rows are partial by budget (2026-11-08/09): the user's $51 of Fireworks credit ran out with rounds 1 + 2 complete and the long battery partial (GLM 13/54, Qwen 17/54 cells), and no adversarial cells. Like for like on rounds 1 + 2 (110 cells): **GLM-5.3 92/110 and Qwen 3.8 Max 90/110**, just behind DeepSeek V4.1 Flash (94) and GPT-6 Luna via Copilot (95), ahead of Claude Sonnet 5 (89). The Apple rows cover round 1 only: on-device, the stream and IR paths (32 cells; the structured cells were deferred to PCC because their ~5.5K-token schema prompts push the on-device inference service over the Mac's 3 GB memory cap); PCC, 37 of 48 round-1 cells before Apple's daily PCC quota ran out.
+
 ## By emission path (first-attempt passes, complete runs)
 
 | Model | Stream | Structured | IR (QBE) |
@@ -89,6 +101,7 @@ result class, `xor eax, 0` used to zero a register, malformed JSON, unencodable 
 | Codex Daybreak Blue | 71/76 (93%) | 69/74 (93%) | 61/74 (82%) |
 | Claude Sonnet 5.5 | 73/76 (96%) | 68/74 (92%) | 60/74 (81%) |
 | Grok 4.5 | 73/76 (96%) | 71/74 (96%) | 53/74 (72%) |
+| DeepSeek V4.1 Flash (Fireworks) | 73/76 (96%) | 55/74 (74%) | 62/74 (84%) |
 | GPT-6 Luna via Copilot | 67/76 (88%) | 61/74 (82%) | 48/74 (65%) |
 | Claude Sonnet 5 | 63/76 (83%) | 53/74 (72%) | 59/74 (80%) |
 | Claude Opus 4.8 | 63/76 (83%) | 66/74 (89%) | 46/74 (62%) |
@@ -96,8 +109,10 @@ result class, `xor eax, 0` used to zero a register, malformed JSON, unencodable 
 | Kimi K2.8 (for-coding) | 67/76 (88%) | 52/74 (70%) | 38/74 (51%) |
 | DeepSeek-V4-Pro high (Azure Foundry) | 67/76 (88%) | 42/74 (57%) | 30/74 (41%) |
 | Codex GPT-6 Luna | 60/76 (79%) | 45/74 (61%) | 25/74 (34%) |
+| MiniMax M3 (Fireworks) | 63/76 (83%) | 43/74 (58%) | 11/74 (15%) |
 | Claude Haiku 4.5 | 61/76 (80%) | 54/74 (73%) | 1/74 (1%) |
 | Microsoft MAI-Code 1.1 Flash (Copilot) | 59/76 (78%) | 44/74 (59%) | 4/74 (5%) |
+| NVIDIA Nemotron 3 Ultra NVFP4 (Fireworks) | 57/76 (75%) | 27/74 (36%) | 2/74 (3%) |
 | Microsoft MAI-Thinking-1 (Azure Foundry) | 40/76 (53%) | 24/74 (32%) | 8/74 (11%) |
 
 ## Findings
@@ -168,6 +183,42 @@ result class, `xor eax, 0` used to zero a register, malformed JSON, unencodable 
   registers in `src`). DeepSeek's 7 never-passed cells are block-argument SSA and hex literals in QBE, and
   XXH64 wrong on every case. Both runs were reviewed by hand: no harness false rejects. Three MAI-Thinking-1
   attempts hit the 180 s limit, scored as failures like any other model's.
+- **Five models on Fireworks.ai, run 2026-11-08/09: DeepSeek V4.1 Flash 85% (190/224; 224/224 within four),
+  MiniMax M3 52% (117/224; 184/224), NVIDIA Nemotron 3 Ultra NVFP4 38% (86/224; 151/224), and two rows cut short
+  by the budget, Z.ai GLM-5.3 (99/123) and Qwen 3.8 Max (102/127).** `fireworks:<model id>` calls Fireworks'
+  serverless chat-completions API directly, on the same contract as `foundry:` (same prompts, no tools, no sampling
+  fields and no `max_tokens`, the same time limits, the served model checked on every chunk). Every model ran at its
+  default effort, and all five reasoned by default (median reasoning tokens per answer: DeepSeek 3,752, MiniMax
+  11,076, Nemotron 1,635, GLM 3,015, Qwen 6,852). **DeepSeek V4.1 Flash** is the strongest direct-API row: it
+  eventually writes every cell, and its first-try rate is above DeepSeek-V4-Pro high on Foundry (62%), led by QBE
+  (62/74, 84%). **MiniMax M3** and **Nemotron** fall down on QBE (11/74 and 2/74): most of their IR answers leave out
+  the result class (`%s = add %a, %b` for `%s =l add`), 60 and 116 compile failures of that one kind. Fireworks
+  applies an undocumented default output cap per model (65,536 tokens for MiniMax and DeepSeek, 32,768 for
+  Nemotron); an answer that spends all of it reasoning and never answers is scored as a timeout (MiniMax 20
+  attempts, DeepSeek 1, Nemotron 1), the same rule for every model, never a raised cap. Qwen 3.8 Max's stream names
+  the model by its display name ("Qwen 3.8 Max"); only that exact name, as Fireworks' own model API reports it,
+  is accepted for it. Cost: $41.74 booked across the five runs (DeepSeek $2.79 for 267 attempts, MiniMax $10.08
+  for 448, Nemotron $6.75 for 540, GLM $8.10 for 164, Qwen $14.02 for 160), an upper bound: a call that ended
+  without a usage report was booked from what it had streamed, and before 2026-11-08 13:00 at the worst case. A
+  DNS outage on this machine (about 16:00-16:40 on 11-08) stopped three runs; those calls were retried, never
+  scored. Never-passed cells were reviewed by hand: no harness false rejects (QBE without result classes, x86
+  scale 16 and register subtraction in addresses, `movzx` into an 8-bit register, mixed-width AArch64 operands,
+  structured registers written as `{"reg": "rbx"}`, malformed JSON).
+- **Apple Foundation Models, round 1 only (2026-11-08): the on-device model 0/32, Private Cloud Compute 2/37 first
+  attempt and 4/37 within four.** The `apple:` rows reach Apple's `fm serve` (OpenAI chat completions) on the
+  user's Mac through an SSH forward; the request is ours byte for byte, and no cost applies. *On-device* (AFM 3 Core
+  Advanced, 8,192-token context) runs behind the Mac session's governor: 30 calls a minute, one at a time, a 120 s
+  limit per call (stricter than the harness's 180 s; two attempts timed out) and a 3,072 MB cap on the inference
+  service's memory. It ran the stream and IR paths (32 cells, 135 calls) after a reboot cleared a stale ~2 GB idle
+  footprint (peak during the run 1,366 MB); the structured cells were deferred because their ~5.5K-token schema
+  prompts push the service over the cap. It passed no cell: its QBE is invented syntax, and its assembly fails to
+  assemble (`ldr x3, [x2, x1, lsl #2]` for a 64-bit load) or loops. *PCC* ran all three paths, structured
+  included, with no timeouts, but without reasoning: the route's default sends no `reasoning_effort`, and all 136
+  attempts with a usage report show 0 reasoning tokens (a reasoning configuration is backlogged). Its 4 passes
+  are 3 stream cells and 1 structured cell; no IR cell passes. The PCC quota (per person, daily, on the user's
+  iCloud+ account) ran out at 12:05 on 11-08 after about 140 calls, with 11 cells left; `fm serve`'s `/health`
+  kept reporting the quota as not reached, so only the `insufficient_quota` error stops a run. Apple publishes no
+  quota size or reset time. Both models sample randomly by default, so a rerun would give different answers.
 - **Fable 5.1's** one final failure is a refusal: Anthropic's cyber classifier blocked
   `fill_down.ir.x86_64` on all four attempts, even on the CVP account.
 
