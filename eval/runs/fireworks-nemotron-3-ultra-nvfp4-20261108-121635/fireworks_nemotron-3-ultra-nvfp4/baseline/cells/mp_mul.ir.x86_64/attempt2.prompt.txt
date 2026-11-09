@@ -1,0 +1,210 @@
+Implement the function `int64_t mp_mul(const uint64_t *a, int64_t na, const uint64_t *b, int64_t nb, uint64_t *r)`.
+
+Target: x86-64, Linux System V ABI. Integer/pointer arguments in rdi, rsi, rdx, rcx, r8, r9; 64-bit result in rax. Callee-saved: rbx, rbp, r12, r13, r14, r15 (restore them if you use them); all other registers may be clobbered. rsp is 16-byte aligned before the call, so it is 8 mod 16 at entry; it must be back to its entry value when you return with ret. Never write to the caller's frame (at or above the return address). More ABI facts: arguments beyond the sixth are passed on the stack; at entry the return address is at [rsp], the 7th argument at [rsp+8], the 8th at [rsp+16]. A call clobbers the caller-saved registers rax, rcx, rdx, rsi, rdi, r8-r11, all xmm registers and the flags, so keep values that must survive a call in callee-saved registers (saved/restored by you) or in your own stack frame. rsp must be 16-byte aligned at every call instruction (at entry rsp is 8 mod 16, so an odd number of 8-byte pushes, or `sub rsp, 8` plus any multiple of 16, re-aligns it). Anything below rsp may be overwritten by a callee. The direction flag must be clear at calls and on return.
+
+Output format: QBE intermediate language (the IL of the QBE compiler backend, c9x.me/compile). Write exactly one function, `export function l $mp_mul(...)`, taking every argument as `l` (64-bit; pointers are `l` too) and returning `l`. QBE will compile it for the target above, so you do not handle registers or the ABI yourself. Remember: every block starts with an `@label`; temporaries are `%name`; comparisons such as `csltl`/`ceql` produce a `w` value; `jnz` tests a `w`; loads/stores are `loadl`/`storel`. No data definitions, no calls, no other functions. Output only the QBE code: no Markdown fences, no prose. QBE has no high-multiply instruction: build the 128-bit product of two limbs from 32-bit halves (`and`, `shr` (logical), `mul`, `add`) with explicit carries; an unsigned carry out of `%s =l add %x, %y` is `%c =w cultl %s, %x`.
+
+Specification: Multi-precision multiplication. a holds na and b holds nb 64-bit limbs (0 <= na, nb <= 8), each an unsigned number in little-endian limb order: A = a[0] + a[1]*2^64 + ... . Write the full product A*B to r[0..na+nb-1] (little-endian limbs, every one of the na+nb limbs written, including high zero limbs; r starts out as garbage and does not overlap a or b) and return the number of significant limbs: the smallest k such that r[k..na+nb-1] are all 0 (so 0 when the product is 0, e.g. when na or nb is 0). Limbs are full unsigned 64-bit values (up to 2^64 - 1): the schoolbook method needs the full 128-bit product of two limbs and carries that propagate. Example: a = {2^64-1}, b = {2^64-1} gives r = {1, 2^64-2} and returns 2. Read only a[0..na-1], b[0..nb-1] and r[0..na+nb-1]; write only r[0..na+nb-1] (all checked).
+
+Your previous attempt was:
+<previous>
+export function l $mp_mul(l %a, l %na, l %b, l %nb, l %r) {
+@start
+	%stack =l alloc 256
+	%a_copy =l add %stack, 0
+	%b_copy =l add %stack, 64
+	%res =l add %stack, 128
+
+	%zero =l copy 0
+	%i =l copy 0
+	jmp @init_res_loop
+
+@init_res_loop
+	%cond =w cultl %i, 16
+	jnz %cond, @init_res_body, @init_res_done
+
+@init_res_body
+	%offset =l shl %i, 3
+	%addr =l add %res, %offset
+	storel %addr, %zero
+	%i =l add %i, 1
+	jmp @init_res_loop
+
+@init_res_done
+	%i =l copy 0
+	jmp @load_a_loop
+
+@load_a_loop
+	%cond =w cultl %i, %na
+	jnz %cond, @load_a_body, @load_a_done
+
+@load_a_body
+	%offset =l shl %i, 3
+	%src =l add %a, %offset
+	%val =l loadl %src
+	%dst =l add %a_copy, %offset
+	storel %dst, %val
+	%i =l add %i, 1
+	jmp @load_a_loop
+
+@load_a_done
+	%i =l copy 0
+	jmp @load_b_loop
+
+@load_b_loop
+	%cond =w cultl %i, %nb
+	jnz %cond, @load_b_body, @load_b_done
+
+@load_b_body
+	%offset =l shl %i, 3
+	%src =l add %b, %offset
+	%val =l loadl %src
+	%dst =l add %b_copy, %offset
+	storel %dst, %val
+	%i =l add %i, 1
+	jmp @load_b_loop
+
+@load_b_done
+	%i =l copy 0
+	jmp @outer_loop
+
+@outer_loop
+	%cond =w cultl %i, %na
+	jnz %cond, @outer_body, @outer_done
+
+@outer_body
+	%offset_i =l shl %i, 3
+	%a_i_addr =l add %a_copy, %offset_i
+	%a_i =l loadl %a_i_addr
+	%carry =l copy 0
+	%j =l copy 0
+	jmp @inner_loop
+
+@inner_loop
+	%cond =w cultl %j, %nb
+	jnz %cond, @inner_body, @inner_done
+
+@inner_body
+	%offset_j =l shl %j, 3
+	%b_j_addr =l add %b_copy, %offset_j
+	%b_j =l loadl %b_j_addr
+	%ij =l add %i, %j
+	%offset_ij =l shl %ij, 3
+	%res_ij_addr =l add %res, %offset_ij
+	%res_ij =l loadl %res_ij_addr
+
+	%a_lo =l and %a_i, 4294967295
+	%a_hi =l shr %a_i, 32
+	%b_lo =l and %b_j, 4294967295
+	%b_hi =l shr %b_j, 32
+
+	%p0 =l mul %a_lo, %b_lo
+	%p1 =l mul %a_lo, %b_hi
+	%p2 =l mul %a_hi, %b_lo
+	%p3 =l mul %a_hi, %b_hi
+
+	%p1_lo =l and %p1, 4294967295
+	%p2_lo =l and %p2, 4294967295
+	%sum_lo =l add %p1_lo, %p2_lo
+	%carry_lo =w cultl %sum_lo, %p1_lo
+
+	%p1_hi =l shr %p1, 32
+	%p2_hi =l shr %p2, 32
+	%mid_hi =l add %p1_hi, %p2_hi
+	%carry_lo_l =l zext %carry_lo
+	%mid_hi =l add %mid_hi, %carry_lo_l
+
+	%sum_lo_shifted =l shl %sum_lo, 32
+	%low =l add %p0, %sum_lo_shifted
+	%carry_low =w cultl %low, %p0
+	%carry_low_l =l zext %carry_low
+
+	%high =l add %p3, %mid_hi
+	%high =l add %high, %carry_low_l
+
+	%t1 =l add %res_ij, %low
+	%c1 =w cultl %t1, %res_ij
+	%t2 =l add %t1, %carry
+	%c2 =w cultl %t2, %t1
+	%new_res =l copy %t2
+	%c1_l =l zext %c1
+	%c2_l =l zext %c2
+	%new_carry =l add %high, %c1_l
+	%new_carry =l add %new_carry, %c2_l
+
+	storel %res_ij_addr, %new_res
+	%carry =l copy %new_carry
+	%j =l add %j, 1
+	jmp @inner_loop
+
+@inner_done
+	%i_nb =l add %i, %nb
+	%offset_i_nb =l shl %i_nb, 3
+	%res_i_nb_addr =l add %res, %offset_i_nb
+	storel %res_i_nb_addr, %carry
+	%i =l add %i, 1
+	jmp @outer_loop
+
+@outer_done
+	%total =l add %na, %nb
+	%k =l copy 0
+	jmp @store_loop
+
+@store_loop
+	%cond =w cultl %k, %total
+	jnz %cond, @store_body, @store_done
+
+@store_body
+	%offset_k =l shl %k, 3
+	%res_k_addr =l add %res, %offset_k
+	%val =l loadl %res_k_addr
+	%r_k_addr =l add %r, %offset_k
+	storel %r_k_addr, %val
+	%k =l add %k, 1
+	jmp @store_loop
+
+@store_done
+	%cond =w ceql %total, 0
+	jnz %cond, @ret_zero, @ret_loop_start
+
+@ret_zero
+	%ret =l copy 0
+	jmp @exit
+
+@ret_loop_start
+	%k =l sub %total, 1
+	jmp @ret_loop
+
+@ret_loop
+	%offset_k =l shl %k, 3
+	%res_k_addr =l add %res, %offset_k
+	%val =l loadl %res_k_addr
+	%cond =w cnel %val, 0
+	jnz %cond, @ret_found, @ret_continue
+
+@ret_found
+	%ret =l add %k, 1
+	jmp @exit
+
+@ret_continue
+	%cond =w ceql %k, 0
+	jnz %cond, @ret_all_zero, @ret_next
+
+@ret_next
+	%k =l sub %k, 1
+	jmp @ret_loop
+
+@ret_all_zero
+	%ret =l copy 0
+	jmp @exit
+
+@exit
+	ret %ret
+}
+</previous>
+It failed:
+<failure>
+Compilation failed at stage qbe:
+qbe:-:3: unknown keyword alloc
+</failure>
+Write a corrected, complete version. Same output format; output only the code.

@@ -1,0 +1,156 @@
+Implement the function `int64_t mp_mul(const uint64_t *a, int64_t na, const uint64_t *b, int64_t nb, uint64_t *r)`.
+
+Target: AArch64 (ARMv8-A), Linux AAPCS64. Integer/pointer arguments in x0-x7; 64-bit result in x0. Callee-saved: x19-x28, x29 (frame pointer) and d8-d15 (restore them if you use them); x9-x15 are free scratch registers. sp must stay 16-byte aligned and be back to its entry value when you return with ret (return address in x30). More ABI facts: arguments beyond the eighth are passed on the stack (the 9th at [sp] at entry). A call (bl/blr) overwrites x30, so save x30 (e.g. stp x29, x30, [sp, #-16]!) before calling and restore it before ret. A call clobbers the caller-saved registers x0-x18, x30, v0-v7 and v16-v31 (and the upper halves of v8-v15) and the flags, so keep values that must survive a call in callee-saved registers x19-x28 (saved/restored by you) or in your own stack frame. sp must be 16-byte aligned at every call (and whenever it is used as a base register). Anything below sp may be overwritten by a callee.
+
+Output format: QBE intermediate language (the IL of the QBE compiler backend, c9x.me/compile). Write exactly one function, `export function l $mp_mul(...)`, taking every argument as `l` (64-bit; pointers are `l` too) and returning `l`. QBE will compile it for the target above, so you do not handle registers or the ABI yourself. Remember: every block starts with an `@label`; temporaries are `%name`; comparisons such as `csltl`/`ceql` produce a `w` value; `jnz` tests a `w`; loads/stores are `loadl`/`storel`. No data definitions, no calls, no other functions. Output only the QBE code: no Markdown fences, no prose. QBE has no high-multiply instruction: build the 128-bit product of two limbs from 32-bit halves (`and`, `shr` (logical), `mul`, `add`) with explicit carries; an unsigned carry out of `%s =l add %x, %y` is `%c =w cultl %s, %x`.
+
+Specification: Multi-precision multiplication. a holds na and b holds nb 64-bit limbs (0 <= na, nb <= 8), each an unsigned number in little-endian limb order: A = a[0] + a[1]*2^64 + ... . Write the full product A*B to r[0..na+nb-1] (little-endian limbs, every one of the na+nb limbs written, including high zero limbs; r starts out as garbage and does not overlap a or b) and return the number of significant limbs: the smallest k such that r[k..na+nb-1] are all 0 (so 0 when the product is 0, e.g. when na or nb is 0). Limbs are full unsigned 64-bit values (up to 2^64 - 1): the schoolbook method needs the full 128-bit product of two limbs and carries that propagate. Example: a = {2^64-1}, b = {2^64-1} gives r = {1, 2^64-2} and returns 2. Read only a[0..na-1], b[0..nb-1] and r[0..na+nb-1]; write only r[0..na+nb-1] (all checked).
+
+Your previous attempt was:
+<previous>
+export function l $mp_mul(l %a, l %na, l %b, l %nb, l %r) {
+@start
+    %na_zero =w ceql %na, 0
+    %nb_zero =w ceql %nb, 0
+    %any_zero =w or %na_zero, %nb_zero
+    jnz %any_zero, @zero_ret
+
+    %prod =l alloc 128
+    %total =l add %na, %nb
+
+    %zero =l copy 0
+    %zero_idx =l copy 0
+@zero_loop
+    %idx_ge =w csgel %zero_idx, %total
+    jnz %idx_ge, @zero_done
+    %offset =l shl %zero_idx, 3
+    %ptr =l add %prod, %offset
+    storel %zero, %ptr
+    %zero_idx =l add %zero_idx, 1
+    jmp @zero_loop
+@zero_done
+
+    %i =l copy 0
+@outer_loop
+    %i_ge_na =w csgel %i, %na
+    jnz %i_ge_na, @outer_done
+
+    %a_offset =l shl %i, 3
+    %a_ptr =l add %a, %a_offset
+    %a_i =l loadl %a_ptr
+
+    %j =l copy 0
+    %carry =l copy 0
+@inner_loop
+    %j_ge_nb =w csgel %j, %nb
+    jnz %j_ge_nb, @inner_done
+
+    %b_offset =l shl %j, 3
+    %b_ptr =l add %b, %b_offset
+    %b_j =l loadl %b_ptr
+
+    %a_lo =l and %a_i, 4294967295
+    %a_hi =l shr %a_i, 32
+    %b_lo =l and %b_j, 4294967295
+    %b_hi =l shr %b_j, 32
+
+    %p0 =l mul %a_lo, %b_lo
+    %p1 =l mul %a_lo, %b_hi
+    %p2 =l mul %a_hi, %b_lo
+    %p3 =l mul %a_hi, %b_hi
+
+    %mid =l add %p1, %p2
+    %c_mid =w cultl %mid, %p1
+
+    %mid_lo =l and %mid, 4294967295
+    %mid_hi =l shr %mid, 32
+
+    %mid_lo_shift =l shl %mid_lo, 32
+
+    %prod_lo =l add %p0, %mid_lo_shift
+    %c_lo =w cultl %prod_lo, %p0
+
+    %c_mid_l =l zextw %c_mid
+    %c_mid_shift =l shl %c_mid_l, 32
+    %c_lo_l =l zextw %c_lo
+
+    %prod_hi =l add %p3, %mid_hi
+    %prod_hi =l add %prod_hi, %c_mid_shift
+    %prod_hi =l add %prod_hi, %c_lo_l
+
+    %ij =l add %i, %j
+    %ij_offset =l shl %ij, 3
+    %prod_ptr =l add %prod, %ij_offset
+    %r_ij =l loadl %prod_ptr
+
+    %sum1 =l add %prod_lo, %r_ij
+    %c1 =w cultl %sum1, %prod_lo
+    %sum2 =l add %sum1, %carry
+    %c2 =w cultl %sum2, %sum1
+
+    %c1_l =l zextw %c1
+    %c2_l =l zextw %c2
+    %carry1 =l add %c1_l, %c2_l
+
+    %new_lo =l copy %sum2
+    %new_carry =l add %prod_hi, %carry1
+
+    storel %new_lo, %prod_ptr
+    %carry =l copy %new_carry
+
+    %j =l add %j, 1
+    jmp @inner_loop
+@inner_done
+
+    %i_nb =l add %i, %nb
+    %i_nb_offset =l shl %i_nb, 3
+    %prod_ptr =l add %prod, %i_nb_offset
+    storel %carry, %prod_ptr
+
+    %i =l add %i, 1
+    jmp @outer_loop
+@outer_done
+
+    %idx =l copy 0
+@write_loop
+    %idx_ge =w csgel %idx, %total
+    jnz %idx_ge, @write_done
+    %offset =l shl %idx, 3
+    %prod_ptr =l add %prod, %offset
+    %val =l loadl %prod_ptr
+    %r_ptr =l add %r, %offset
+    storel %val, %r_ptr
+    %idx =l add %idx, 1
+    jmp @write_loop
+@write_done
+
+    %sig =l copy 0
+    %idx =l sub %total, 1
+@scan_loop
+    %cond =w sgel %idx, 0
+    jnz %cond, @scan_body
+    jmp @scan_done
+@scan_body
+    %offset =l shl %idx, 3
+    %prod_ptr =l add %prod, %offset
+    %val =l loadl %prod_ptr
+    %val_nz =w cne %val, 0
+    jnz %val_nz, @found_nonzero
+    %idx =l sub %idx, 1
+    jmp @scan_loop
+@found_nonzero
+    %sig =l add %idx, 1
+    jmp @scan_done
+@scan_done
+    ret %sig
+
+@zero_ret
+    ret 0
+}
+</previous>
+It failed:
+<failure>
+Compilation failed at stage qbe:
+qbe:-:7: , expected, got newline instead
+</failure>
+Write a corrected, complete version. Same output format; output only the code.

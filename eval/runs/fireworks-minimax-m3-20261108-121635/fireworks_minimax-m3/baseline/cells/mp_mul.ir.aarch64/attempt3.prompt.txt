@@ -1,0 +1,135 @@
+Implement the function `int64_t mp_mul(const uint64_t *a, int64_t na, const uint64_t *b, int64_t nb, uint64_t *r)`.
+
+Target: AArch64 (ARMv8-A), Linux AAPCS64. Integer/pointer arguments in x0-x7; 64-bit result in x0. Callee-saved: x19-x28, x29 (frame pointer) and d8-d15 (restore them if you use them); x9-x15 are free scratch registers. sp must stay 16-byte aligned and be back to its entry value when you return with ret (return address in x30). More ABI facts: arguments beyond the eighth are passed on the stack (the 9th at [sp] at entry). A call (bl/blr) overwrites x30, so save x30 (e.g. stp x29, x30, [sp, #-16]!) before calling and restore it before ret. A call clobbers the caller-saved registers x0-x18, x30, v0-v7 and v16-v31 (and the upper halves of v8-v15) and the flags, so keep values that must survive a call in callee-saved registers x19-x28 (saved/restored by you) or in your own stack frame. sp must be 16-byte aligned at every call (and whenever it is used as a base register). Anything below sp may be overwritten by a callee.
+
+Output format: QBE intermediate language (the IL of the QBE compiler backend, c9x.me/compile). Write exactly one function, `export function l $mp_mul(...)`, taking every argument as `l` (64-bit; pointers are `l` too) and returning `l`. QBE will compile it for the target above, so you do not handle registers or the ABI yourself. Remember: every block starts with an `@label`; temporaries are `%name`; comparisons such as `csltl`/`ceql` produce a `w` value; `jnz` tests a `w`; loads/stores are `loadl`/`storel`. No data definitions, no calls, no other functions. Output only the QBE code: no Markdown fences, no prose. QBE has no high-multiply instruction: build the 128-bit product of two limbs from 32-bit halves (`and`, `shr` (logical), `mul`, `add`) with explicit carries; an unsigned carry out of `%s =l add %x, %y` is `%c =w cultl %s, %x`.
+
+Specification: Multi-precision multiplication. a holds na and b holds nb 64-bit limbs (0 <= na, nb <= 8), each an unsigned number in little-endian limb order: A = a[0] + a[1]*2^64 + ... . Write the full product A*B to r[0..na+nb-1] (little-endian limbs, every one of the na+nb limbs written, including high zero limbs; r starts out as garbage and does not overlap a or b) and return the number of significant limbs: the smallest k such that r[k..na+nb-1] are all 0 (so 0 when the product is 0, e.g. when na or nb is 0). Limbs are full unsigned 64-bit values (up to 2^64 - 1): the schoolbook method needs the full 128-bit product of two limbs and carries that propagate. Example: a = {2^64-1}, b = {2^64-1} gives r = {1, 2^64-2} and returns 2. Read only a[0..na-1], b[0..nb-1] and r[0..na+nb-1]; write only r[0..na+nb-1] (all checked).
+
+Your previous attempt was:
+<previous>
+export function l $mp_mul(l %a, l %na, l %b, l %nb, l %r) {
+    %n =l add %na, %nb
+    %i =l copy 0
+@zero_loop
+    %cond =w cltl %i, %n
+    jnz %cond, @zero_body, @zero_end
+@zero_body
+    %off =l shl %i, 3
+    %addr =l add %r, %off
+    storel 0, %addr
+    %i =l add %i, 1
+    jmp @zero_loop
+@zero_end
+    %i =l copy 0
+@outer_loop
+    %cond_i =w cltl %i, %na
+    jnz %cond_i, @outer_body, @outer_end
+@outer_body
+    %off_i =l shl %i, 3
+    %a_i_addr =l add %a, %off_i
+    %a_i =l loadl %a_i_addr
+    %j =l copy 0
+@inner_loop
+        %cond_j =w cltl %j, %nb
+        jnz %cond_j, @inner_body, @inner_end
+@inner_body
+        %off_j =l shl %j, 3
+        %b_j_addr =l add %b, %off_j
+        %b_j =l loadl %b_j_addr
+
+        %a_lo =l and %a_i, 0xFFFFFFFF
+        %a_hi =l shr %a_i, 32
+        %b_lo =l and %b_j, 0xFFFFFFFF
+        %b_hi =l shr %b_j, 32
+
+        %p0 =l mul %a_lo, %b_lo
+        %p1 =l mul %a_lo, %b_hi
+        %p2 =l mul %a_hi, %b_lo
+        %p3 =l mul %a_hi, %b_hi
+
+        %t1 =l and %p1, 0xFFFFFFFF
+        %t2 =l and %p2, 0xFFFFFFFF
+        %t3 =l shr %p0, 32
+        %c =l add %t1, %t2
+        %c =l add %c, %t3
+
+        %p0_low =l and %p0, 0xFFFFFFFF
+        %c_low =l and %c, 0xFFFFFFFF
+        %c_low_shl =l shl %c_low, 32
+        %lo =l or %p0_low, %c_low_shl
+
+        %p1_hi =l shr %p1, 32
+        %p2_hi =l shr %p2, 32
+        %c_hi =l shr %c, 32
+        %hi =l add %p1_hi, %p2_hi
+        %hi =l add %hi, %c_hi
+        %hi =l add %hi, %p3
+
+        %k =l add %i, %j
+        %off_k =l shl %k, 3
+        %r_k_addr =l add %r, %off_k
+        %old_k =l loadl %r_k_addr
+        %sum_k =l add %old_k, %lo
+        %carry1 =l cultl %sum_k, %old_k
+        storel %sum_k, %r_k_addr
+
+        %k1 =l add %k, 1
+        %off_k1 =l shl %k1, 3
+        %r_k1_addr =l add %r, %off_k1
+        %old_k1 =l loadl %r_k1_addr
+        %sum_k1 =l add %old_k1, %hi
+        %carry2 =l cultl %sum_k1, %old_k1
+        %sum_k2 =l add %sum_k1, %carry1
+        %carry3 =l cultl %sum_k2, %sum_k1
+        storel %sum_k2, %r_k1_addr
+
+        %carry =l add %carry2, %carry3
+
+        %m =l add %k, 2
+@prop_loop
+            %cond_m =w cltl %m, %n
+            jnz %cond_m, @prop_body, @prop_end
+@prop_body
+            %off_m =l shl %m, 3
+            %m_addr =l add %r, %off_m
+            %old_m =l loadl %m_addr
+            %new_m =l add %old_m, %carry
+            %carry =l cultl %new_m, %old_m
+            storel %new_m, %m_addr
+            %m =l add %m, 1
+            jmp @prop_loop
+@prop_end
+        %j =l add %j, 1
+        jmp @inner_loop
+@inner_end
+    %i =l add %i, 1
+    jmp @outer_loop
+@outer_end
+    %zero_count =l copy 0
+    %idx =l sub %n, 1
+@scan_loop
+    %cond_idx =w cltl %idx, 0
+    jnz %cond_idx, @scan_end
+    %off_idx =l shl %idx, 3
+    %addr_idx =l add %r, %off_idx
+    %val =l loadl %addr_idx
+    %is_zero =w ceql %val, 0
+    jnz %is_zero, @scan_continue, @scan_found
+@scan_continue
+    %zero_count =l add %zero_count, 1
+    %idx =l sub %idx, 1
+    jmp @scan_loop
+@scan_found
+    %res =l sub %n, %zero_count
+    ret %res
+@scan_end
+    ret 0
+}
+</previous>
+It failed:
+<failure>
+Compilation failed at stage qbe:
+qbe:-:2: label or } expected
+</failure>
+Write a corrected, complete version. Same output format; output only the code.

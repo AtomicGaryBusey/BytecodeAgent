@@ -1,0 +1,142 @@
+Implement the function `int64_t packbits_encode(const uint8_t *src, int64_t n, uint8_t *out, int64_t cap)`.
+
+Target: x86-64, Linux System V ABI. Integer/pointer arguments in rdi, rsi, rdx, rcx, r8, r9; 64-bit result in rax. Callee-saved: rbx, rbp, r12, r13, r14, r15 (restore them if you use them); all other registers may be clobbered. rsp is 16-byte aligned before the call, so it is 8 mod 16 at entry; it must be back to its entry value when you return with ret. Never write to the caller's frame (at or above the return address). More ABI facts: arguments beyond the sixth are passed on the stack; at entry the return address is at [rsp], the 7th argument at [rsp+8], the 8th at [rsp+16]. A call clobbers the caller-saved registers rax, rcx, rdx, rsi, rdi, r8-r11, all xmm registers and the flags, so keep values that must survive a call in callee-saved registers (saved/restored by you) or in your own stack frame. rsp must be 16-byte aligned at every call instruction (at entry rsp is 8 mod 16, so an odd number of 8-byte pushes, or `sub rsp, 8` plus any multiple of 16, re-aligns it). Anything below rsp may be overwritten by a callee. The direction flag must be clear at calls and on return.
+
+Output format: QBE intermediate language (the IL of the QBE compiler backend, c9x.me/compile). Write exactly one function, `export function l $packbits_encode(...)`, taking every argument as `l` (64-bit; pointers are `l` too) and returning `l`. QBE will compile it for the target above, so you do not handle registers or the ABI yourself. Remember: every block starts with an `@label`; temporaries are `%name`; comparisons such as `csltl`/`ceql` produce a `w` value; `jnz` tests a `w`; loads/stores are `loadl`/`storel`. No data definitions, no calls, no other functions. Output only the QBE code: no Markdown fences, no prose. Load a byte zero-extended with `%b =w loadub %p`; store one with `storeb %c, %p`.
+
+Specification: Compress the n bytes at src (0 <= n <= 600) with PackBits run-length encoding into out, which has room for cap bytes (0 <= cap <= 1200), and return the number of bytes written. The output is a sequence of packets: a repeat packet is the header byte 257 - r (i.e. -(r-1) as a signed byte) followed by one byte b, meaning r copies of b (3 <= r <= 128); a literal packet is the header byte L - 1 followed by L bytes copied verbatim (1 <= L <= 128). Encode greedily, left to right, exactly as follows. Let run(j) be the number of consecutive bytes equal to src[j] starting at j, capped at 128. At position i: if run(i) >= 3, emit a repeat packet with r = run(i) and b = src[i], and advance i by r. Otherwise emit a literal packet of the bytes src[i..j-1], where j starts at i and advances while j < n, j - i < 128 and run(j) < 3; then set i = j. (So a pair of equal bytes stays inside a literal; a literal stops just before a run of 3 or more.) Example: "abcccd" -> 01 'a' 'b' FE 'c' 00 'd' (7 bytes). If a whole packet does not fit in the remaining room, write none of it and return -1 immediately (earlier packets stay written). Read only src[0..n-1] (never look past src[n-1] when measuring a run) and write only out[0..cap-1] (both are checked).
+
+Your previous attempt was:
+<previous>
+export function l $packbits_encode(l %src, l %n, l %out, l %cap) {
+@entry
+    %zero =l copy 0
+    jmp @main_loop
+
+@main_loop
+    %i =l phi @entry %zero, @repeat_packet %i_repeat, @literal_packet %i_literal
+    %out_pos =l phi @entry %zero, @repeat_packet %out_pos_repeat, @literal_packet %out_pos_literal
+    %cont =w csltl %i, %n
+    jnz %cont, @compute_run, @exit
+
+@compute_run
+    %one =l copy 1
+    %run =l phi @main_loop %one, @run_loop_body %run_inc
+    %cond1 =w csltl %run, 128
+    %i_plus_run =l addl %i, %run
+    %cond2 =w csltl %i_plus_run, %n
+    %cond =w andw %cond1, %cond2
+    jnz %cond, @run_check_byte, @run_done
+
+@run_check_byte
+    %src_i =l addl %src, %i
+    %curr_byte =w loadub %src_i
+    %src_i_plus_run =l addl %src, %i_plus_run
+    %next_byte =w loadub %src_i_plus_run
+    %eq =w ceqw %curr_byte, %next_byte
+    jnz %eq, @run_loop_body, @run_done
+
+@run_loop_body
+    %run_inc =l addl %run, 1
+    jmp @compute_run
+
+@run_done
+    %cond_repeat =w csgew %run, 3
+    jnz %cond_repeat, @repeat_packet, @literal_packet
+
+@repeat_packet
+    %need =l addl %out_pos, 2
+    %cap_ok =w cslel %need, %cap
+    jnz %cap_ok, @repeat_write, @fail
+
+@repeat_write
+    %r_w =w copy %run
+    %header =w subw 257, %r_w
+    %out_ptr =l addl %out, %out_pos
+    storeb %header, %out_ptr
+    %out_ptr1 =l addl %out_ptr, 1
+    %src_i =l addl %src, %i
+    %byte =w loadub %src_i
+    storeb %byte, %out_ptr1
+    %out_pos_repeat =l addl %out_pos, 2
+    %i_repeat =l addl %i, %run
+    jmp @main_loop
+
+@literal_packet
+    %j =l phi @run_done %i, @literal_scan_continue %j_inc
+    %cond_j1 =w csltl %j, %n
+    %j_minus_i =l subl %j, %i
+    %cond_j2 =w csltl %j_minus_i, 128
+    %cond_j =w andw %cond_j1, %cond_j2
+    jnz %cond_j, @check_run_j, @literal_scan_done
+
+@check_run_j
+    %j_plus2 =l addl %j, 2
+    %cond_j3 =w csltl %j_plus2, %n
+    jnz %cond_j3, @check_three_equal, @literal_scan_continue
+
+@check_three_equal
+    %src_j =l addl %src, %j
+    %b0 =w loadub %src_j
+    %src_j1 =l addl %src_j, 1
+    %b1 =w loadub %src_j1
+    %src_j2 =l addl %src_j1, 1
+    %b2 =w loadub %src_j2
+    %eq01 =w ceqw %b0, %b1
+    %eq12 =w ceqw %b1, %b2
+    %all_eq =w andw %eq01, %eq12
+    jnz %all_eq, @literal_scan_done, @literal_scan_continue
+
+@literal_scan_continue
+    %j_inc =l addl %j, 1
+    jmp @literal_packet
+
+@literal_scan_done
+    %L =l subl %j, %i
+    %need =l addl %out_pos, 1
+    %need =l addl %need, %L
+    %cap_ok =w cslel %need, %cap
+    jnz %cap_ok, @literal_write_header, @fail
+
+@literal_write_header
+    %header =w subw %L, 1
+    %out_ptr =l addl %out, %out_pos
+    storeb %header, %out_ptr
+    jmp @literal_copy_head
+
+@literal_copy_head
+    %copy_idx =l phi @literal_write_header %zero, @literal_copy_body %copy_idx_inc
+    %cond_copy =w csltl %copy_idx, %L
+    jnz %cond_copy, @literal_copy_body, @literal_copy_done
+
+@literal_copy_body
+    %src_ptr =l addl %src, %i
+    %src_ptr =l addl %src_ptr, %copy_idx
+    %byte =w loadub %src_ptr
+    %out_ptr =l addl %out, %out_pos
+    %out_ptr =l addl %out_ptr, 1
+    %out_ptr =l addl %out_ptr, %copy_idx
+    storeb %byte, %out_ptr
+    %copy_idx_inc =l addl %copy_idx, 1
+    jmp @literal_copy_head
+
+@literal_copy_done
+    %out_pos_literal =l addl %out_pos, 1
+    %out_pos_literal =l addl %out_pos_literal, %L
+    %i_literal =l copy %j
+    jmp @main_loop
+
+@fail
+    %neg1 =l copy -1
+    ret %neg1
+
+@exit
+    ret %out_pos
+}
+</previous>
+It failed:
+<failure>
+Compilation failed at stage qbe:
+qbe:-:15: unexpected phi instruction
+</failure>
+Write a corrected, complete version. Same output format; output only the code.

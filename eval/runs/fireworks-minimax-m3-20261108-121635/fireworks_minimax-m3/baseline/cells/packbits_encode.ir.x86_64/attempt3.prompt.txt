@@ -1,0 +1,156 @@
+Implement the function `int64_t packbits_encode(const uint8_t *src, int64_t n, uint8_t *out, int64_t cap)`.
+
+Target: x86-64, Linux System V ABI. Integer/pointer arguments in rdi, rsi, rdx, rcx, r8, r9; 64-bit result in rax. Callee-saved: rbx, rbp, r12, r13, r14, r15 (restore them if you use them); all other registers may be clobbered. rsp is 16-byte aligned before the call, so it is 8 mod 16 at entry; it must be back to its entry value when you return with ret. Never write to the caller's frame (at or above the return address). More ABI facts: arguments beyond the sixth are passed on the stack; at entry the return address is at [rsp], the 7th argument at [rsp+8], the 8th at [rsp+16]. A call clobbers the caller-saved registers rax, rcx, rdx, rsi, rdi, r8-r11, all xmm registers and the flags, so keep values that must survive a call in callee-saved registers (saved/restored by you) or in your own stack frame. rsp must be 16-byte aligned at every call instruction (at entry rsp is 8 mod 16, so an odd number of 8-byte pushes, or `sub rsp, 8` plus any multiple of 16, re-aligns it). Anything below rsp may be overwritten by a callee. The direction flag must be clear at calls and on return.
+
+Output format: QBE intermediate language (the IL of the QBE compiler backend, c9x.me/compile). Write exactly one function, `export function l $packbits_encode(...)`, taking every argument as `l` (64-bit; pointers are `l` too) and returning `l`. QBE will compile it for the target above, so you do not handle registers or the ABI yourself. Remember: every block starts with an `@label`; temporaries are `%name`; comparisons such as `csltl`/`ceql` produce a `w` value; `jnz` tests a `w`; loads/stores are `loadl`/`storel`. No data definitions, no calls, no other functions. Output only the QBE code: no Markdown fences, no prose. Load a byte zero-extended with `%b =w loadub %p`; store one with `storeb %c, %p`.
+
+Specification: Compress the n bytes at src (0 <= n <= 600) with PackBits run-length encoding into out, which has room for cap bytes (0 <= cap <= 1200), and return the number of bytes written. The output is a sequence of packets: a repeat packet is the header byte 257 - r (i.e. -(r-1) as a signed byte) followed by one byte b, meaning r copies of b (3 <= r <= 128); a literal packet is the header byte L - 1 followed by L bytes copied verbatim (1 <= L <= 128). Encode greedily, left to right, exactly as follows. Let run(j) be the number of consecutive bytes equal to src[j] starting at j, capped at 128. At position i: if run(i) >= 3, emit a repeat packet with r = run(i) and b = src[i], and advance i by r. Otherwise emit a literal packet of the bytes src[i..j-1], where j starts at i and advances while j < n, j - i < 128 and run(j) < 3; then set i = j. (So a pair of equal bytes stays inside a literal; a literal stops just before a run of 3 or more.) Example: "abcccd" -> 01 'a' 'b' FE 'c' 00 'd' (7 bytes). If a whole packet does not fit in the remaining room, write none of it and return -1 immediately (earlier packets stay written). Read only src[0..n-1] (never look past src[n-1] when measuring a run) and write only out[0..cap-1] (both are checked).
+
+Your previous attempt was:
+<previous>
+export function l $packbits_encode(l %src, l %n, l %out, l %cap) {
+@start
+%written =l copy 0
+%i =l copy 0
+jmp @check_outer
+
+@check_outer
+%cond_outer =w csltl %i, %n
+jnz %cond_outer, @calc_run, @return
+
+@calc_run
+%run_base =l add %src, %i
+%run_b =w loadub %run_base
+%run =l copy 1
+%rem =l sub %n, %i
+%cap_run =l copy 128
+%rem_lt_128 =w csltl %rem, 128
+jnz %rem_lt_128, @set_cap_rem, @run_loop_check
+@set_cap_rem
+%cap_run =l copy %rem
+jmp @run_loop_check
+
+@run_loop_check
+%run_lt_cap =w csltl %run, %cap_run
+jnz %run_lt_cap, @run_step, @run_after
+
+@run_step
+%next_i =l add %i, %run
+%next_p =l add %src, %next_i
+%next_b =w loadub %next_p
+%eq =w ceqw %run_b, %next_b
+jnz %eq, @run_inc, @run_after
+
+@run_inc
+%run =l add %run, 1
+jmp @run_loop_check
+
+@run_after
+%run_ge_3 =w cslel 3, %run
+jnz %run_ge_3, @emit_repeat, @emit_literal
+
+@emit_repeat
+%hdr_rep =l sub 257, %run
+%avail_rep =l sub %cap, %written
+%avail_lt_2 =w csltl %avail_rep, 2
+jnz %avail_lt_2, @fail, @write_repeat
+
+@write_repeat
+%hdr_w =w trunc %hdr_rep
+%hdr_p =l add %out, %written
+storeb %hdr_w, %hdr_p
+%byte_p =l add %hdr_p, 1
+storeb %run_b, %byte_p
+%written =l add %written, 2
+%i =l add %i, %run
+jmp @check_outer
+
+@emit_literal
+%avail_l0 =l sub %cap, %written
+%av0_lt_2 =w csltl %avail_l0, 2
+jnz %av0_lt_2, @fail, @lit_scan
+
+@lit_scan
+%j =l copy %i
+jmp @lit_scan_check
+
+@lit_scan_check
+%j_lt_n =w csltl %j, %n
+jnz %j_lt_n, @lit_check_len, @lit_finish
+
+@lit_check_len
+%len =l sub %j, %i
+%len_lt_128 =w csltl %len, 128
+jnz %len_lt_128, @lit_check_run, @lit_finish
+
+@lit_check_run
+%jp2 =l add %j, 2
+%jp2_lt_n =w csltl %jp2, %n
+jnz %jp2_lt_n, @lit_check_eq, @lit_advance
+
+@lit_check_eq
+%bp0 =l add %src, %j
+%b0 =w loadub %bp0
+%jp1 =l add %j, 1
+%bp1 =l add %src, %jp1
+%b1 =w loadub %bp1
+%bp2 =l add %src, %jp2
+%b2 =w loadub %bp2
+%beq01 =w ceqw %b0, %b1
+%beq02 =w ceqw %b0, %b2
+%all =w and %beq01, %beq02
+jnz %all, @lit_finish, @lit_advance
+
+@lit_advance
+%j =l add %j, 1
+jmp @lit_scan_check
+
+@lit_finish
+%L =l sub %j, %i
+%need_l =l add %L, 1
+%avail_l =l sub %cap, %written
+%avail_lt_need =w csltl %avail_l, %need_l
+jnz %avail_lt_need, @fail, @write_literal
+
+@write_literal
+%hdr_lit =l sub %L, 1
+%hdr_l_w =w trunc %hdr_lit
+%hdr_p_l =l add %out, %written
+storeb %hdr_l_w, %hdr_p_l
+%k =l copy 0
+jmp @copy_check
+
+@copy_check
+%k_lt_L =w csltl %k, %L
+jnz %k_lt_L, @copy_body, @copy_done
+
+@copy_body
+%src_idx =l add %i, %k
+%src_p =l add %src, %src_idx
+%bc =w loadub %src_p
+%dst_base =l add %written, 1
+%dst_p =l add %dst_base, %k
+%final_p =l add %out, %dst_p
+storeb %bc, %final_p
+%k =l add %k, 1
+jmp @copy_check
+
+@copy_done
+%written =l add %written, %need_l
+%i =l copy %j
+jmp @check_outer
+
+@fail
+%written =l copy -1
+jmp @return
+
+@return
+ret %written
+}
+</previous>
+It failed:
+<failure>
+Compilation failed at stage qbe:
+qbe:-:49: unknown keyword trunc
+</failure>
+Write a corrected, complete version. Same output format; output only the code.

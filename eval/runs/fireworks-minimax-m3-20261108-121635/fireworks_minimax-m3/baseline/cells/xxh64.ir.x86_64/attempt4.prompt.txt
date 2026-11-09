@@ -1,0 +1,206 @@
+Implement the function `uint64_t xxh64(const uint8_t *p, int64_t n, uint64_t seed)`.
+
+Target: x86-64, Linux System V ABI. Integer/pointer arguments in rdi, rsi, rdx, rcx, r8, r9; 64-bit result in rax. Callee-saved: rbx, rbp, r12, r13, r14, r15 (restore them if you use them); all other registers may be clobbered. rsp is 16-byte aligned before the call, so it is 8 mod 16 at entry; it must be back to its entry value when you return with ret. Never write to the caller's frame (at or above the return address). More ABI facts: arguments beyond the sixth are passed on the stack; at entry the return address is at [rsp], the 7th argument at [rsp+8], the 8th at [rsp+16]. A call clobbers the caller-saved registers rax, rcx, rdx, rsi, rdi, r8-r11, all xmm registers and the flags, so keep values that must survive a call in callee-saved registers (saved/restored by you) or in your own stack frame. rsp must be 16-byte aligned at every call instruction (at entry rsp is 8 mod 16, so an odd number of 8-byte pushes, or `sub rsp, 8` plus any multiple of 16, re-aligns it). Anything below rsp may be overwritten by a callee. The direction flag must be clear at calls and on return.
+
+Output format: QBE intermediate language (the IL of the QBE compiler backend, c9x.me/compile). Write exactly one function, `export function l $xxh64(...)`, taking every argument as `l` (64-bit; pointers are `l` too) and returning `l`. QBE will compile it for the target above, so you do not handle registers or the ABI yourself. Remember: every block starts with an `@label`; temporaries are `%name`; comparisons such as `csltl`/`ceql` produce a `w` value; `jnz` tests a `w`; loads/stores are `loadl`/`storel`. No data definitions, no calls, no other functions. Output only the QBE code: no Markdown fences, no prose. QBE has no rotate instruction: rotl(x, r) = (x shl r) or (x shr (64 - r)) (`shr` is logical); `loadl`/`loadw` work on unaligned addresses; zero-extend a 32-bit load with `%v =l loaduw %q`; a 64-bit constant is written as a decimal integer (e.g. -7046029288634856825 for 0x9E3779B185EBCA87).
+
+Specification: Return the 64-bit xxHash (XXH64) of the n bytes at p (0 <= n <= 300) with the given seed. All arithmetic is on unsigned 64-bit values modulo 2^64; rotl(x, r) rotates left by r bits; read64(q) / read32(q) are little-endian unsigned loads of 8 / 4 bytes (p is only byte-aligned). Constants: P1 = 0x9E3779B185EBCA87, P2 = 0xC2B2AE3D27D4EB4F, P3 = 0x165667B19E3779F9, P4 = 0x85EBCA77C2B2AE63, P5 = 0x27D4EB2F165667C5. round(acc, x) = rotl(acc + x * P2, 31) * P1; merge(h, v) = (h ^ round(0, v)) * P1 + P4. (1) If n >= 32: v1 = seed + P1 + P2, v2 = seed + P2, v3 = seed, v4 = seed - P1; for each whole 32-byte stripe at q: v1 = round(v1, read64(q)), v2 = round(v2, read64(q+8)), v3 = round(v3, read64(q+16)), v4 = round(v4, read64(q+24)); then h = rotl(v1, 1) + rotl(v2, 7) + rotl(v3, 12) + rotl(v4, 18); h = merge(h, v1); h = merge(h, v2); h = merge(h, v3); h = merge(h, v4). Otherwise h = seed + P5. (2) h += n. (3) For the remaining bytes after the stripes (fewer than 32), in order: while at least 8 remain: h ^= round(0, read64(q)); h = rotl(h, 27) * P1 + P4; q += 8. If at least 4 remain: h ^= read32(q) * P1; h = rotl(h, 23) * P2 + P3; q += 4. For each remaining byte c: h ^= c * P5; h = rotl(h, 11) * P1. (4) h ^= h >> 33; h *= P2; h ^= h >> 29; h *= P3; h ^= h >> 32 (logical shifts); return h. Check values: xxh64("", 0, 0) = 0xEF46DB3751D8E999, xxh64("abc", 3, 0) = 0x44BC2CF5AD770999. Do not read outside p[0..n-1] (reads are checked) and do not write to memory.
+
+Your previous attempt was:
+<previous>
+```
+export function l $xxh64(l %p, l %n, l %seed) {
+@start
+	%P1 =l copy -7046029288634856825
+	%P2 =l copy -4417276062567293489
+	%P3 =l copy 1609587929392839161
+	%P4 =l copy -8793714831421723037
+	%P5 =l copy 2870177450012600261
+	%c1 =w csltl %n, 32
+	jnz %c1, @small_init, @large_init
+@small_init
+	%hs =l add %seed, %P5
+	%qs =l copy %p
+	jmp @rem_entry
+@large_init
+	%v1a =l add %seed, %P1
+	%v1i =l add %v1a, %P2
+	%v2i =l add %seed, %P2
+	%v3i =l copy %seed
+	%v4i =l sub %seed, %P1
+	jmp @stripe_cond
+@stripe_cond
+	%v1c =l phi @large_init %v1i, @stripe_body %v1n
+	%v2c =l phi @large_init %v2i, @stripe_body %v2n
+	%v3c =l phi @large_init %v3i, @stripe_body %v3n
+	%v4c =l phi @large_init %v4i, @stripe_body %v4n
+	%qc =l phi @large_init %p, @stripe_body %qn
+	%lim =l add %qc, 32
+	%end =l add %p, %n
+	%c2 =w csgtl %lim, %end
+	jnz %c2, @done_stripes, @stripe_body
+@stripe_body
+	%x1 =l loadl %qc
+	%k1a =l mul %x1, %P2
+	%k1b =l add %k1a, %v1c
+	%k1c =l shl %k1b, 31
+	%k1d =l shr %k1b, 33
+	%k1e =l or %k1c, %k1d
+	%v1n =l mul %k1e, %P1
+	%pa =l add %qc, 8
+	%x2 =l loadl %pa
+	%k2a =l mul %x2, %P2
+	%k2b =l add %k2a, %v2c
+	%k2c =l shl %k2b, 31
+	%k2d =l shr %k2b, 33
+	%k2e =l or %k2c, %k2d
+	%v2n =l mul %k2e, %P1
+	%pb =l add %qc, 16
+	%x3 =l loadl %pb
+	%k3a =l mul %x3, %P2
+	%k3b =l add %k3a, %v3c
+	%k3c =l shl %k3b, 31
+	%k3d =l shr %k3b, 33
+	%k3e =l or %k3c, %k3d
+	%v3n =l mul %k3e, %P1
+	%pc =l add %qc, 24
+	%x_v4 =l loadl %pc
+	%k4a =l mul %x_v4, %P2
+	%k4b =l add %k4a, %v4c
+	%k4c =l shl %k4b, 31
+	%k4d =l shr %k4b, 33
+	%k4e =l or %k4c, %k4d
+	%v4n =l mul %k4e, %P1
+	%qn =l add %qc, 32
+	jmp @stripe_cond
+@done_stripes
+	%la =l shl %v1c, 1
+	%lb =l shr %v1c, 63
+	%l1 =l or %la, %lb
+	%lc =l shl %v2c, 7
+	%ld =l shr %v2c, 57
+	%l2 =l or %lc, %ld
+	%le =l shl %v3c, 12
+	%lf =l shr %v3c, 52
+	%l3 =l or %le, %lf
+	%lg =l shl %v4c, 18
+	%lh =l shr %v4c, 46
+	%l4 =l or %lg, %lh
+	%s1 =l add %l1, %l2
+	%s2 =l add %s1, %l3
+	%s3 =l add %s2, %l4
+	%m1a =l mul %v1c, %P2
+	%m1b =l shl %m1a, 31
+	%m1c =l shr %m1a, 33
+	%m1d =l or %m1b, %m1c
+	%m1e =l mul %m1d, %P1
+	%m1f =l xor %s3, %m1e
+	%m1g =l mul %m1f, %P1
+	%mg1 =l add %m1g, %P4
+	%m2a =l mul %v2c, %P2
+	%m2b =l shl %m2a, 31
+	%m2c =l shr %m2a, 33
+	%m2d =l or %m2b, %m2c
+	%m2e =l mul %m2d, %P1
+	%m2f =l xor %mg1, %m2e
+	%m2g =l mul %m2f, %P1
+	%mg2 =l add %m2g, %P4
+	%m3a =l mul %v3c, %P2
+	%m3b =l shl %m3a, 31
+	%m3c =l shr %m3a, 33
+	%m3d =l or %m3b, %m3c
+	%m3e =l mul %m3d, %P1
+	%m3f =l xor %mg2, %m3e
+	%m3g =l mul %m3f, %P1
+	%mg3 =l add %m3g, %P4
+	%m4a =l mul %v4c, %P2
+	%m4b =l shl %m4a, 31
+	%m4c =l shr %m4a, 33
+	%m4d =l or %m4b, %m4c
+	%m4e =l mul %m4d, %P1
+	%m4f =l xor %mg3, %m4e
+	%m4g =l mul %m4f, %P1
+	%mg4 =l add %m4g, %P4
+	jmp @rem_entry
+@rem_entry
+	%h_phi =l phi @small_init %hs, @done_stripes %mg4
+	%q_phi =l phi @small_init %qs, @done_stripes %qc
+	%r0 =l and %n, 31
+	%h0 =l add %h_phi, %n
+	%q0 =l copy %q_phi
+	jmp @rem8_cond
+@rem8_cond
+	%hc =l phi @rem_entry %h0, @rem8_body %h8_out
+	%q8c =l phi @rem_entry %q0, @rem8_body %q8
+	%rc =l phi @rem_entry %r0, @rem8_body %r8
+	%c8 =w csltl %rc, 8
+	jnz %c8, @rem4_check, @rem8_body
+@rem8_body
+	%x8 =l loadl %q8c
+	%w1 =l mul %x8, %P2
+	%w2 =l shl %w1, 31
+	%w3 =l shr %w1, 33
+	%w4 =l or %w2, %w3
+	%w5 =l mul %w4, %P1
+	%h8a =l xor %hc, %w5
+	%h8b =l shl %h8a, 27
+	%h8c =l shr %h8a, 37
+	%h8d =l or %h8b, %h8c
+	%h8e =l mul %h8d, %P1
+	%h8_out =l add %h8e, %P4
+	%q8 =l add %q8c, 8
+	%r8 =l sub %rc, 8
+	jmp @rem8_cond
+@rem4_check
+	%c4 =w csltl %rc, 4
+	jnz %c4, @rem_byte_entry, @rem4_body
+@rem4_body
+	%x4 =l loaduw %q8c
+	%y1 =l mul %x4, %P1
+	%h4a =l xor %hc, %y1
+	%h4b =l shl %h4a, 23
+	%h4c =l shr %h4a, 41
+	%h4d =l or %h4b, %h4c
+	%h4e =l mul %h4d, %P2
+	%h4 =l add %h4e, %P3
+	%q4 =l add %q8c, 4
+	%r4 =l sub %rc, 4
+	jmp @rem_byte_entry
+@rem_byte_entry
+	%h_b =l phi @rem4_check %hc, @rem4_body %h4, @rem_byte_body %hb_out
+	%q_b =l phi @rem4_check %q8c, @rem4_body %q4, @rem_byte_body %qb
+	%r_b =l phi @rem4_check %rc, @rem4_body %r4, @rem_byte_body %rb
+	%cb =w csltl %r_b, 1
+	jnz %cb, @avalanche, @rem_byte_body
+@rem_byte_body
+	%cv =l loadub %q_b
+	%z1 =l mul %cv, %P5
+	%hba =l xor %h_b, %z1
+	%hbb =l shl %hba, 11
+	%hbc =l shr %hba, 53
+	%hbd =l or %hbb, %hbc
+	%hb_out =l mul %hbd, %P1
+	%qb =l add %q_b, 1
+	%rb =l sub %r_b, 1
+	jmp @rem_byte_entry
+@avalanche
+	%av1 =l shr %h_b, 33
+	%av2 =l xor %h_b, %av1
+	%av3 =l mul %av2, %P2
+	%av4 =l shr %av3, 29
+	%av5 =l xor %av3, %av4
+	%av6 =l mul %av5, %P3
+	%av7 =l shr %av6, 32
+	%final =l xor %av6, %av7
+	ret %final
+}
+```
+</previous>
+It failed:
+<failure>
+65 of 65 test cases failed. First failures:
+  xxh64(p=bytes.fromhex(''), n=0, seed=0x0) [p % 8 = 0]: expected -1205034819632174695, got -8319227173476379962
+  xxh64(p=bytes.fromhex(''), n=0, seed=0x1) [p % 8 = 1]: expected -3049013831022690741, got -8860759111700606270
+  xxh64(p=bytes.fromhex('61'), n=1, seed=0x0) [p % 8 = 2]: expected -3292477735350538661, got -4624716851771603437
+</failure>
+Write a corrected, complete version. Same output format; output only the code.
