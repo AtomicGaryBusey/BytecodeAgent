@@ -1,0 +1,138 @@
+Implement the function `int64_t mp_mul(const uint64_t *a, int64_t na, const uint64_t *b, int64_t nb, uint64_t *r)`.
+
+Target: AArch64 (ARMv8-A), Linux AAPCS64. Integer/pointer arguments in x0-x7; 64-bit result in x0. Callee-saved: x19-x28, x29 (frame pointer) and d8-d15 (restore them if you use them); x9-x15 are free scratch registers. sp must stay 16-byte aligned and be back to its entry value when you return with ret (return address in x30). More ABI facts: arguments beyond the eighth are passed on the stack (the 9th at [sp] at entry). A call (bl/blr) overwrites x30, so save x30 (e.g. stp x29, x30, [sp, #-16]!) before calling and restore it before ret. A call clobbers the caller-saved registers x0-x18, x30, v0-v7 and v16-v31 (and the upper halves of v8-v15) and the flags, so keep values that must survive a call in callee-saved registers x19-x28 (saved/restored by you) or in your own stack frame. sp must be 16-byte aligned at every call (and whenever it is used as a base register). Anything below sp may be overwritten by a callee.
+
+Output format: QBE intermediate language (the IL of the QBE compiler backend, c9x.me/compile). Write exactly one function, `export function l $mp_mul(...)`, taking every argument as `l` (64-bit; pointers are `l` too) and returning `l`. QBE will compile it for the target above, so you do not handle registers or the ABI yourself. Remember: every block starts with an `@label`; temporaries are `%name`; comparisons such as `csltl`/`ceql` produce a `w` value; `jnz` tests a `w`; loads/stores are `loadl`/`storel`. No data definitions, no calls, no other functions. Output only the QBE code: no Markdown fences, no prose. QBE has no high-multiply instruction: build the 128-bit product of two limbs from 32-bit halves (`and`, `shr` (logical), `mul`, `add`) with explicit carries; an unsigned carry out of `%s =l add %x, %y` is `%c =w cultl %s, %x`.
+
+Specification: Multi-precision multiplication. a holds na and b holds nb 64-bit limbs (0 <= na, nb <= 8), each an unsigned number in little-endian limb order: A = a[0] + a[1]*2^64 + ... . Write the full product A*B to r[0..na+nb-1] (little-endian limbs, every one of the na+nb limbs written, including high zero limbs; r starts out as garbage and does not overlap a or b) and return the number of significant limbs: the smallest k such that r[k..na+nb-1] are all 0 (so 0 when the product is 0, e.g. when na or nb is 0). Limbs are full unsigned 64-bit values (up to 2^64 - 1): the schoolbook method needs the full 128-bit product of two limbs and carries that propagate. Example: a = {2^64-1}, b = {2^64-1} gives r = {1, 2^64-2} and returns 2. Read only a[0..na-1], b[0..nb-1] and r[0..na+nb-1]; write only r[0..na+nb-1] (all checked).
+
+Your previous attempt was:
+<previous>
+
+
+export function l $mp_mul(l %a, l %na, l %b, l %nb, l %r) {
+@start
+    %total =l add %na, %nb
+    %zero =l sub %total, %total
+    %rendoff =l mul %total, 8
+    %rend =l add %r, %rendoff
+    jmp @zero_loop
+@zero_loop
+    %zp =l phi @start, %r, @zero_body, %zp1
+    %zi =l phi @start, %zero, @zero_body, %zi1
+    %zc =w cultl %zi, %total
+    jnz %zc, @zero_body, @zero_done
+@zero_body
+    storel %zero, %zp
+    %zp1 =l add %zp, 8
+    %zi1 =l add %zi, 1
+    jmp @zero_loop
+@zero_done
+    %na0 =w ceql %na, %zero
+    jnz %na0, @scan_entry, @check_nb
+@check_nb
+    %nb0 =w ceql %nb, %zero
+    jnz %nb0, @scan_entry, @outer_loop
+@outer_loop
+    %i =l phi @check_nb, %zero, @outer_next, %i1
+    %oc =w cultl %i, %na
+    jnz %oc, @outer_body, @scan_entry
+@outer_body
+    %ioff =l mul %i, 8
+    %aptr =l add %a, %ioff
+    %ai =l loadl %aptr
+    %rptr0 =l add %r, %ioff
+    jmp @inner_loop
+@inner_loop
+    %j =l phi @outer_body, %zero, @inner_body, %j1
+    %carry =l phi @outer_body, %zero, @inner_body, %carry1
+    %rp =l phi @outer_body, %rptr0, @inner_body, %rp1
+    %bp =l phi @outer_body, %b, @inner_body, %bp1
+    %ic =w cultl %j, %nb
+    jnz %ic, @inner_body, @prop_check
+@inner_body
+    %bv =l loadl %bp
+    %x0 =l and %ai, 4294967295
+    %x1 =l shr %ai, 32
+    %y0 =l and %bv, 4294967295
+    %y1 =l shr %bv, 32
+    %p00 =l mul %x0, %y0
+    %p01 =l mul %x0, %y1
+    %p10 =l mul %x1, %y0
+    %p11 =l mul %x1, %y1
+    %p00lo =l and %p00, 4294967295
+    %p00hi =l shr %p00, 32
+    %p01lo =l and %p01, 4294967295
+    %p01hi =l shr %p01, 32
+    %p10lo =l and %p10, 4294967295
+    %p10hi =l shr %p10, 32
+    %mid0 =l add %p00hi, %p01lo
+    %mid =l add %mid0, %p10lo
+    %midlo =l and %mid, 4294967295
+    %midhi =l shr %mid, 32
+    %loshift =l mul %midlo, 4294967296
+    %lo =l add %p00lo, %loshift
+    %hi0 =l add %p11, %p01hi
+    %hi1 =l add %hi0, %p10hi
+    %hi =l add %hi1, %midhi
+    %old =l loadl %rp
+    %s1 =l add %old, %lo
+    %c1 =w cultl %s1, %old
+    %s2 =l add %s1, %carry
+    %c2 =w cultl %s2, %s1
+    storel %s2, %rp
+    %c1l =l extuw %c1
+    %c2l =l extuw %c2
+    %car0 =l add %hi, %c1l
+    %carry1 =l add %car0, %c2l
+    %j1 =l add %j, 1
+    %rp1 =l add %rp, 8
+    %bp1 =l add %bp, 8
+    jmp @inner_loop
+@prop_check
+    %cp =l phi @inner_loop, %rp, @prop_body, %cp1
+    %cy =l phi @inner_loop, %carry, @prop_body, %pcy
+    %cyz =w ceql %cy, %zero
+    jnz %cyz, @outer_next, @prop_limit
+@prop_limit
+    %cpin =w cultl %cp, %rend
+    jnz %cpin, @prop_body, @outer_next
+@prop_body
+    %pold =l loadl %cp
+    %psum =l add %pold, %cy
+    storel %psum, %cp
+    %pc =w cultl %psum, %pold
+    %pcy =l extuw %pc
+    %cp1 =l add %cp, 8
+    jmp @prop_check
+@outer_next
+    %i1 =l add %i, 1
+    jmp @outer_loop
+@scan_entry
+    jmp @scan_loop
+@scan_loop
+    %k =l phi @scan_entry, %total, @scan_next, %k1
+    %kz =w ceql %k, %zero
+    jnz %kz, @ret_zero, @scan_body
+@scan_body
+    %km1 =l sub %k, 1
+    %koff =l mul %km1, 8
+    %kaddr =l add %r, %koff
+    %kv =l loadl %kaddr
+    %kvz =w ceql %kv, %zero
+    jnz %kvz, @scan_next, @found
+@scan_next
+    %k1 =l sub %k, 1
+    jmp @scan_loop
+@found
+    ret %k
+@ret_zero
+    ret %zero
+}
+</previous>
+It failed:
+<failure>
+Compilation failed at stage qbe:
+qbe:-:9: invalid instruction argument
+</failure>
+Write a corrected, complete version. Same output format; output only the code.
