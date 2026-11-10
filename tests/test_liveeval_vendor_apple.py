@@ -18,6 +18,7 @@ from bca.liveeval.vendors import VENDORS, make_subject, split_spec
 class Fake:
     def __init__(self):
         self.model, self.status, self.body, self.refusal, self.requests = "system", 200, b"", None, []
+        self.trickle = 0  # seconds of slow deltas before the answer ends
 
 
 @pytest.fixture
@@ -43,6 +44,15 @@ def fake():
             def send(o):
                 self.wfile.write(b"data: " + json.dumps(o).encode() + b"\n\n")
 
+            import time
+            end = time.monotonic() + f.trickle
+            while time.monotonic() < end:  # a long answer: the server keeps streaming
+                try:
+                    send({"model": f.model, "choices": [{"delta": {"content": "nop\n"}, "finish_reason": None}]})
+                    self.wfile.flush()
+                except OSError:
+                    return
+                time.sleep(0.05)
             delta = {"refusal": f.refusal} if f.refusal else {"content": "mov rax, 1\nret\n"}
             send({"model": f.model, "choices": [{"delta": delta, "finish_reason": None}]})
             send({"model": f.model, "choices": [{"delta": {}, "finish_reason": "stop"}],
@@ -60,6 +70,19 @@ def test_registry_and_no_effort():
     assert split_spec("apple:system") == ("apple", "system") and VENDORS["apple"] is AppleSubject
     with pytest.raises(ValueError, match="no effort"):
         make_subject("apple:system", timeout=10, effort="high")
+    with pytest.raises(ValueError, match="unknown effort"):
+        make_subject("apple:pcc", timeout=10, effort="xhigh")
+
+
+def test_pcc_effort_is_sent_only_when_asked(fake):
+    fake.model = "pcc"
+    s = make_subject("apple:pcc", timeout=10, effort="medium")
+    s.endpoint = fake.endpoint
+    assert s.complete("p").ok and s.describe()["effort"] == "medium"
+    assert fake.requests[-1]["body"]["reasoning_effort"] == "medium"
+    s = AppleSubject("pcc", endpoint=fake.endpoint)
+    assert s.complete("p").ok and s.describe()["effort"] == "model-default"
+    assert "reasoning_effort" not in fake.requests[-1]["body"]
 
 
 def test_request_is_ours_and_free(fake):
@@ -86,6 +109,23 @@ def test_guardrail_500_and_refusal_field_are_refusals(fake):
     fake.status, fake.refusal = 200, "I can't help with that."
     r = AppleSubject("system", endpoint=fake.endpoint).complete("p")
     assert not r.ok and r.refusal.startswith("refusal:")
+
+
+def test_guardrail_error_event_mid_stream_is_a_refusal(fake, monkeypatch):
+    import bca.liveeval.vendor_apple as va
+    monkeypatch.setattr(va, "MIN_INTERVAL_S", 0.0)
+    s = AppleSubject("pcc", endpoint=fake.endpoint)
+    fake.model = "pcc"
+    orig = va.FoundrySubject._complete
+
+    def mid_stream(self, *a, **kw):
+        r = orig(self, *a, **kw)
+        r.ok, r.error = False, ('apple stream error: {"message": "The model\'s safety guardrails were triggered.", '
+                                '"type": "server_error", "code": "500"}')
+        return r
+    monkeypatch.setattr(va.FoundrySubject, "_complete", mid_stream)
+    r = s.complete("p")
+    assert not r.ok and r.refusal.startswith("guardrail:") and not r.error
 
 
 def test_governor_503_and_other_500_are_transient(fake):
@@ -137,3 +177,14 @@ def test_pcc_quota_stops_the_run(fake):
     fake.body = b'{"error":{"type":"insufficient_quota","code":"429","message":"Your quota has been reached. Please try again later."}}'
     r = AppleSubject("pcc", endpoint=fake.endpoint).complete("p")
     assert r.error.startswith("apple: PCC quota reached") and infra_kind(r.error) == "fatal"
+
+
+def test_time_limit_cuts_a_stream_whose_server_closes_the_connection(fake):
+    # fm serve answers with Connection: close (HTTP/1.0 here), so http.client hands the socket to the response;
+    # the harness's limit must still end the call (seen 2026-11-09: a PCC answer streamed for 11 minutes).
+    import time
+    fake.model, fake.trickle = "pcc", 30
+    t0 = time.monotonic()
+    r = AppleSubject("pcc", endpoint=fake.endpoint, timeout=1.0).complete("p")
+    assert time.monotonic() - t0 < 10
+    assert r.timed_out and not r.ok and call_failure_category(r) == "subject_timeout"

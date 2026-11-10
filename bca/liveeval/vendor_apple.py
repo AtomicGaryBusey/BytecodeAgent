@@ -29,6 +29,10 @@ The endpoint is BCA_APPLE_ENDPOINT (default http://127.0.0.1:18976). The contrac
   that stops the run at once (fatal), as the Mac asks; resume later with the same command.
 - PCC's quota error (`insufficient_quota`, "Your quota has been reached") also stops the run (fatal): /health's
   quota flags were seen to stay false after the quota ran out, so they are not a reliable stop signal.
+- Reasoning (PCC only, opt-in with `--effort low|medium|high`): sends `reasoning_effort`, the only accepted
+  values (anything else is a 400). Without it nothing is sent, as in PCC round 1. PCC reports
+  `reasoning_tokens` 0 even when it reasons; the hidden reasoning is counted in `completion_tokens`, so a
+  setting is verified by completion tokens far above the answer length against a default control.
 - Cost: none (on-device; PCC is quota-limited on the Mac's account, not billed). Run with `--jobs 1`: the
   Mac has one model slot and a 30 calls/minute governor. PCC is served by Apple's raw `fm serve` with no
   governor (no rate limit, queue or timeout), so the subject paces itself to one call start every
@@ -60,15 +64,17 @@ _GUARDRAIL = ("guardrail", "unsafe", "sensitive", "safety")
 
 class AppleSubject(FoundrySubject):
     vendor = "apple"
-    efforts: tuple[str, ...] = ()
+    efforts: tuple[str, ...] = ("low", "medium", "high")  # PCC only; the on-device model has no reasoning
 
     def __init__(self, model: str, *, timeout: float = 180.0, effort: str | None = None, budget=None,
                  endpoint: str | None = None):
         if not model:
             raise ValueError("apple: name the model, e.g. apple:system (on-device) or apple:pcc")
-        if effort is not None:
-            raise ValueError("apple: the Foundation Models API has no effort setting")
-        super().__init__(model, timeout=timeout, account="-", resource_group="-", budget=budget)
+        if effort is not None and model != "pcc":
+            raise ValueError("apple: only PCC takes a reasoning effort; the on-device model has no effort setting")
+        if effort is not None and effort not in self.efforts:
+            raise ValueError(f"apple: unknown effort {effort!r}; PCC accepts {', '.join(self.efforts)}")
+        super().__init__(model, timeout=timeout, effort=effort, account="-", resource_group="-", budget=budget)
         self.model_id = model
         self.deployment = model
         self.name = f"apple:{model}"
@@ -97,7 +103,7 @@ class AppleSubject(FoundrySubject):
 
     def describe(self) -> dict:
         s = self.setup()
-        return {"effort": "model-default", "cli_version": self.cli_version, "vendor": "apple",
+        return {"effort": self.effort or "model-default", "cli_version": self.cli_version, "vendor": "apple",
                 "apple": {"model": s["model"], "name": s["name"], "context_tokens": s["context"],
                           "route": ROUTE, "transport": "SSH local forward to fm serve's Unix socket"}}
 
@@ -126,10 +132,13 @@ class AppleSubject(FoundrySubject):
             r.timed_out, r.ok = True, False
             r.notes.append(f"apple governor timeout: {err[:200]}")
             r.error = "timeout"
-        elif err.startswith("apple HTTP 500"):
+        elif err.startswith(("apple HTTP 500", "apple stream error")):
+            # The same 500 arrives either as the HTTP status or, once streaming has begun, as a final SSE error
+            # event (seen 2026-11-09 on PCC: "The model's safety guardrails were triggered." after a long
+            # repetitive answer). Either way it is the model's outcome, not an infrastructure fault.
             low = err.lower()
             if _CONTEXT in low:
                 r.error = f"context_limit: the prompt and answer exceed the model's context window: {err[:300]}"
             elif any(w in low for w in _GUARDRAIL):
-                r.refusal, r.error, r.ok = f"guardrail: {err[15:300]}", "", False
+                r.refusal, r.error, r.ok = f"guardrail: {err.split(':', 1)[-1].strip()[:300]}", "", False
         return r

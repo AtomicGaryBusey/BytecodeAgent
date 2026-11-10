@@ -282,13 +282,16 @@ class FoundrySubject(Subject):
         body = json.dumps(self.request_body(prompt)).encode()
         conn = self.connection(s["host"], timeout=limit + 30)
         fired = threading.Event()
+        sock = []  # the request's socket: http.client drops conn.sock when the server says Connection: close
+                   # (fm serve does), and the response keeps reading from it, so shut that socket down
 
         def on_timeout() -> None:
             fired.set()
-            try:
-                conn.sock and conn.sock.shutdown(2)
-            except OSError:
-                pass
+            for so in (*sock, conn.sock):
+                try:
+                    so and so.shutdown(2)
+                except OSError:
+                    pass
 
         t0 = time.perf_counter()
         timer = threading.Timer(limit, on_timeout)
@@ -311,6 +314,9 @@ class FoundrySubject(Subject):
         try:
             conn.request("POST", s["route"], body=body, headers={
                 "Content-Type": "application/json", "Authorization": f"Bearer {bearer}"})
+            sock.append(conn.sock)
+            if fired.is_set():  # the limit passed while the request was being sent
+                on_timeout()
             resp = conn.getresponse()
             if resp.status != 200:
                 data = resp.read()[:2000].decode(errors="replace")

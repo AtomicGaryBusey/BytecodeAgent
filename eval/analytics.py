@@ -40,13 +40,13 @@ FULL_FN, FULL_APPS = 224, 96
 # Gemini 4 Argon High (agy:gemini-4-argon-high) is in progress, paused on quota, and deliberately unreported until it
 # completes. Its run directory is skipped everywhere the script walks eval/runs.
 EXCLUDED_RUN = "eval/runs/agy-argon-20261107-142027"
-# Likewise Apple's on-device model (apple_system), started 2026-11-08 and still running: not part of this regeneration.
-EXCLUDED_RUNS = (EXCLUDED_RUN, "eval/runs/apple-system-20261108")
+# PCC with reasoning_effort=medium was paused after one cell (2026-11-10: empty, zero-usage answers) and is unreported.
+EXCLUDED_RUNS = (EXCLUDED_RUN, "eval/runs/apple-pcc-medium-20261110")
 
 
 def label_of(r: dict) -> str:
     subj = r.get("subject") or "opus"
-    if subj.startswith(("codex_", "kimi_", "agy_", "grok_", "copilot_", "foundry_", "fireworks_")):
+    if subj.startswith(("codex_", "kimi_", "agy_", "grok_", "copilot_", "foundry_", "fireworks_", "apple_")):
         return subj.replace("_", ":", 1).replace("kimi-code_", "kimi-code/")
     if subj.startswith("local_"):
         think = (r.get("local") or {}).get("think")
@@ -1024,6 +1024,13 @@ HARNESS_FIXES = [
      "`.align 16` is 64 KiB); it now accepts up to 16 MiB, on both app paths.",
      "Grok 4.6 `hexdump.asm.aarch64.s2` (apps) superseded and re-run: passed on attempt 1. Kolibri-1 "
      "`sort_lines.asm.aarch64.s3` re-run too (for the repair feedback): failed all four attempts again, totals unchanged."),
+    ("apple-guardrail", "2026-11-09", "Apple adapter: a guardrail 500 that arrives as a final SSE error event, once "
+     "streaming has begun, was retried as an infrastructure error instead of scored as a refusal.",
+     "Apple PCC `count_nonzero_prefix.structured.x86_64`: the run was stopped after three void retries and resumed "
+     "with the fix; attempts 1 and 3 scored as refusals. No earlier verdict changed."),
+    ("apple-timeout", "2026-11-09", "Apple adapter: `fm serve` answers with `Connection: close`, so `http.client` "
+     "dropped its socket reference and the time limit could not stop a stream (one PCC answer ran 11 minutes).",
+     "The affected PCC attempt was voided and re-run (timed out at 180 s). No other verdict changed."),
 ]
 
 

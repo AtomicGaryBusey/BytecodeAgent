@@ -66,9 +66,11 @@ Approved by the user on 2026-10-22. After each: by-hand false-reject review, the
   ($24.52; cap raised to $28 to finish) and DeepSeek-V4-Pro at reasoning high 139/224 ($11.88), function
   batteries only. Reviewed: no false rejects. mai-code-1.1-flash skipped (GlobalStandard needs a quota grant);
   Muse-Glimmer-30B skipped (managed compute only).
-- [x] **Fireworks.ai** (`fireworks:`), function batteries 2026-11-08/09 on $51 of prepaid credit: DeepSeek V4.1
-  Flash 190/224, MiniMax M3 117/224, Nemotron 3 Ultra 86/224; GLM-5.3 (99/123) and Qwen 3.8 Max (102/127) partial
-  when the credit ran out (user's choice: finish MiniMax and GLM, stop Qwen). Reviewed: no false rejects.
+- [x] **Fireworks.ai** (`fireworks:`), function batteries 2026-11-08/09 on $101 of prepaid credit: DeepSeek V4.1
+  Flash 190/224, Qwen 3.8 Max 182/224, GLM-5.3 172/224, MiniMax M3 117/224, Nemotron 3 Ultra 86/224 ($72.20
+  booked). Reviewed: no false rejects.
+- [x] **Apple Foundation Models, round 1**: on-device 0/32 (stream + IR; structured deferred to PCC), PCC 2/48
+  (5/48 within four), completed 2026-11-09.
 - [x] Re-audits: Codex 0.167.0, Antigravity 1.5.3, Copilot 1.0.107 / SDK 1.0.29; `python -m bca.liveeval models`.
 - [x] Landscape update (`reports/landscape-2026-11.md`); licence (MIT; CC BY 4.0 for reports/ and eval/runs/);
   documentation review (2026-11-08).
@@ -79,11 +81,10 @@ Approved by the user on 2026-10-22. After each: by-hand false-reject review, the
   (181 calls). An 8-hourly retry loop resumes it (`eval/runs/agy-argon-20261107-142027.loop.sh`, status in
   `.loop`). Run as-is with the uniform 180 s limit (user decision 2026-11-07). When complete: by-hand review,
   then README and the cross-vendor report (state the plan: Google AI Pro).
-- [ ] **Apple Foundation Models PCC, round 1: 11 cells left** after the daily PCC quota ran out (2026-11-08,
-  ~140 calls; 4/37 within four so far). Waits for the user's go-ahead: one probe call, then the same command
-  (`--run-dir eval/runs/apple-pcc-20261108 --tasks round1 --model apple:pcc --jobs 1`), which stops at the first
-  `insufficient_quota`. On-device round 1 is done (stream + IR 0/32; structured deferred to PCC). After round 1:
-  every further battery that fits PCC's quota, with the user's go-ahead each time.
+- [ ] **PCC with a reasoning setting** (separate subject, `--effort`; approved 2026-11-10): paused. At `medium`
+  and `low`, PCC spends its whole output budget reasoning on `sum_to` and returns nothing after 345-390 s
+  (`outputTokenLimitReached` in the Mac's log; `fm serve` reports `stop` with zero usage), and the harness's time
+  limit does not cancel the request at PCC. Waits for the user; the uniform 180 s limit stays.
 - [ ] **Antigravity (Gemini 3.8 Flash High)**: 1 cell left (`stats_f.ir.aarch64`, adversarial). The hourly loop
   was stopped on 2026-10-24 at the user's request; the user triggers it manually after a quota reset: `.venv/bin/python -m bca.liveeval run --run-dir eval/runs/vendors-all-20260928-202226 --tasks
   round1,round2,long,adversarial --subjects agy:gemini-3.8-flash-high --max-calls 3000 --jobs 2`. After it:
@@ -99,10 +100,8 @@ Approved by the user on 2026-10-22. After each: by-hand false-reject review, the
   user: endpoint URL and serving stack, model id, quantisation, and Ring0-Agent's sampling settings.
 - [ ] **App battery and hex path for MAI-Thinking-1 and DeepSeek-V4-Pro** (Azure Foundry): backlogged
   2026-11-08 on cost (projected $25-40 and $15-25).
-- [ ] **Fireworks: finish GLM-5.3 and Qwen 3.8 Max** (about $8-12 and $21 more; Qwen needs its $25 cap raised).
-  Needs more credit from the user.
-- [ ] **PCC with a reasoning setting** (`reasoning_effort`, a separate labelled subject; round 1 ran with none):
-  backlogged by the user 2026-11-09.
+- [ ] **App battery and hex path for the Fireworks models**: estimated 2026-11-10 at about $120-190 for apps
+  and hex functions across all five (GLM and Qwen are most of it), plus up to ~$80 for gated hex programs.
 - [ ] **Further Foundry models** (recommended in the landscape update, not approved): Kimi-K3.1-Pro (a second
   route to a benchmarked model), mistral-medium-3-5.
 - [ ] **Apriel-1.6-15B-Thinker** (ServiceNow, MIT): optional local baseline, practical now that token-budget mode

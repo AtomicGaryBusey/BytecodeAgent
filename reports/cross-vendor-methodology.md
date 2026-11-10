@@ -121,17 +121,22 @@ chat-completions server on a Unix socket on the user's Mac, reached from this ma
 The adapter (`vendor_apple.py`) reuses the `foundry:` request and stream handling:
 
 - **The request is ours:** `[system: SYSTEM_PROMPT, user: prompt]`, streaming, no tools, no sampling fields, no
-  `max_tokens` and no `reasoning_effort` (so PCC runs without reasoning: 0 reasoning tokens on every round-1
-  attempt). The Mac session checked that `fm serve` builds a session with exactly these two entries; Apple's chat
+  `max_tokens`, and no `reasoning_effort` unless `--effort low|medium|high` is given (PCC only; round 1 ran
+  without it, with 0 reasoning tokens on every attempt). PCC reports 0 reasoning tokens even when it reasons; the
+  hidden reasoning is counted in `completion_tokens`. The Mac session checked that `fm serve` builds a session with exactly these two entries; Apple's chat
   template adds about 56 tokens. Sampling is the framework's random default.
 - **On-device governor** (the Mac session's `fm_serve`, not ours to change): 30 calls a minute, one call at a
   time, a 120 s limit per call (scored as a timeout; stricter than the 180 s round-1 limit) and a 3,072 MB cap on
   the inference service's memory. Its memory pause ("Do not retry automatically") stops the run (fatal).
 - **PCC** is Apple's raw `fm serve`, with no governor: the adapter paces itself to one call start every 2 s, and the
-  harness's own time limits apply. PCC has a daily per-person quota (no published size or reset time); its
+  harness's own time limits apply. `fm serve` answers with `Connection: close`, so `http.client` hands the
+  socket to the response; the time limit shuts down that socket directly (fixed 2026-11-09, after one PCC answer
+  streamed for 11 minutes past the 180 s limit). Closing the socket does not cancel the request at PCC. PCC has a daily per-person quota (no published size or reset time); its
   `insufficient_quota` error stops the run (fatal), because `/health`'s quota flags stayed false after it ran out.
 - **Context and refusals:** an HTTP 500 "exceeded the model's context size" is a scored `context_limit` attempt;
-  an HTTP 500 naming a guardrail is a scored refusal. None occurred in these runs.
+  an HTTP 500 naming a guardrail is a scored refusal, whether it arrives as the HTTP status or, once streaming
+  has begun, as a final SSE error event (PCC round 1: two refusals of the second kind, on one cell; before
+  2026-11-09 they were retried as infrastructure errors).
 - **Cost:** none; the endpoint must be a loopback address.
 
 ## Local models (`local:<model>`)
