@@ -224,10 +224,11 @@ result class, `xor eax, 0` used to zero a register, malformed JSON, unencodable 
   triggered", arriving as an error event after a long repetitive answer) and one 180 s timeout. The PCC quota (per
   person, daily, on the user's iCloud+ account) ran out at 12:05 on 11-08 after about 140 calls, with 11 cells
   left, finished on 11-09; `fm serve`'s `/health` kept reporting the quota as not reached, so only the
-  `insufficient_quota` error stops a run. A PCC subject with reasoning was tried on 2026-11-10 and paused: at
-  `reasoning_effort` medium and low, PCC spent its whole output budget on hidden reasoning for 345-390 s and
-  returned no answer (the Mac's log: `outputTokenLimitReached`; `fm serve` reports it as finish_reason `stop` with
-  zero usage). It is not reported. Apple publishes no
+  `insufficient_quota` error stops a run. A PCC subject with reasoning was tried on 2026-11-10 and closed
+  out: at `reasoning_effort` low and medium, PCC ran out of output on `sum_to.stream.x86_64`, reasoning for about
+  6 minutes per request and returning no answer (the Mac's log: `outputTokenLimitReached`; `fm serve`: finish_reason
+  `stop`, empty content, usage 0/0), where PCC without reasoning answers the same prompt in about 2 s. The other
+  cells were not tried (7 PCC calls); there is no reasoning row. Apple publishes no
   quota size or reset time. Both models sample randomly by default, so a rerun would give different answers.
 - **Fable 5.1's** one final failure is a refusal: Anthropic's cyber classifier blocked
   `fill_down.ir.x86_64` on all four attempts, even on the CVP account.

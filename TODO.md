@@ -71,6 +71,9 @@ Approved by the user on 2026-10-22. After each: by-hand false-reject review, the
   booked). Reviewed: no false rejects.
 - [x] **Apple Foundation Models, round 1**: on-device 0/32 (stream + IR; structured deferred to PCC), PCC 2/48
   (5/48 within four), completed 2026-11-09.
+- [x] **PCC with a reasoning setting** (`--effort`, 2026-11-10): closed out by the user. At `low` and `medium`
+  PCC ran out of output on `sum_to.stream.x86_64` (about 6 minutes of reasoning per request, no answer;
+  `outputTokenLimitReached`), where no reasoning answers in about 2 s. Other cells not tried; 7 PCC calls.
 - [x] Re-audits: Codex 0.167.0, Antigravity 1.5.3, Copilot 1.0.107 / SDK 1.0.29; `python -m bca.liveeval models`.
 - [x] Landscape update (`reports/landscape-2026-11.md`); licence (MIT; CC BY 4.0 for reports/ and eval/runs/);
   documentation review (2026-11-08).
@@ -81,10 +84,6 @@ Approved by the user on 2026-10-22. After each: by-hand false-reject review, the
   (181 calls). An 8-hourly retry loop resumes it (`eval/runs/agy-argon-20261107-142027.loop.sh`, status in
   `.loop`). Run as-is with the uniform 180 s limit (user decision 2026-11-07). When complete: by-hand review,
   then README and the cross-vendor report (state the plan: Google AI Pro).
-- [ ] **PCC with a reasoning setting** (separate subject, `--effort`; approved 2026-11-10): paused. At `medium`
-  and `low`, PCC spends its whole output budget reasoning on `sum_to` and returns nothing after 345-390 s
-  (`outputTokenLimitReached` in the Mac's log; `fm serve` reports `stop` with zero usage), and the harness's time
-  limit does not cancel the request at PCC. Waits for the user; the uniform 180 s limit stays.
 - [ ] **Antigravity (Gemini 3.8 Flash High)**: 1 cell left (`stats_f.ir.aarch64`, adversarial). The hourly loop
   was stopped on 2026-10-24 at the user's request; the user triggers it manually after a quota reset: `.venv/bin/python -m bca.liveeval run --run-dir eval/runs/vendors-all-20260928-202226 --tasks
   round1,round2,long,adversarial --subjects agy:gemini-3.8-flash-high --max-calls 3000 --jobs 2`. After it:
