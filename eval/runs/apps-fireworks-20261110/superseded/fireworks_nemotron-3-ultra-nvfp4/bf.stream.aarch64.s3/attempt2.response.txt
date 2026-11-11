@@ -1,0 +1,120 @@
+.section .bss
+.align 4
+tape:       .space 30000
+prog_buf:   .space 65536
+input_buf:  .space 65536
+bracket_map:.space 262144  // 65536 * 4 bytes
+
+.section .text
+.globl _start
+
+// System call numbers
+.equ SYS_READ, 63
+.equ SYS_WRITE, 64
+.equ SYS_EXIT, 93
+
+// Read all stdin into prog_buf, return length in x0
+read_all:
+    mov x19, xzr        // total bytes read
+    mov x20, #65536     // max bytes
+    adr x21, prog_buf
+1:  // read loop
+    mov x8, #SYS_READ
+    mov x0, #0          // stdin
+    add x1, x21, x19    // buf + offset
+    sub x2, x20, x19    // remaining
+    svc #0
+    cbz x0, 2f          // EOF
+    add x19, x19, x0
+    cmp x19, x20
+    b.lt 1b             // continue if not full
+2:
+    mov x0, x19         // return length
+    ret
+
+// Split program at first '!' (0x21)
+// x0 = total length, x1 = prog_buf
+// Returns: x0 = program length, x1 = input length, x2 = input start offset
+split_program:
+    mov x2, xzr         // input start offset
+    mov x3, xzr         // index
+    adr x4, prog_buf
+1:
+    cmp x3, x0
+    b.ge 2f             // reached end, no '!'
+    ldrb w5, [x4, x3]
+    cmp w5, #0x21       // '!'
+    b.eq 3f
+    add x3, x3, #1
+    b 1b
+2:
+    // No '!' found: entire input is program, no input
+    mov x1, x0          // program length = total
+    mov x0, xzr         // input length = 0
+    mov x2, x0          // input offset = 0
+    ret
+3:
+    // Found '!' at index x3
+    mov x0, x3          // program length
+    sub x1, x22, x3     // input length = total - prog_len - 1
+    sub x1, x1, #1
+    add x2, x3, #1      // input starts after '!'
+    ret
+
+// Validate brackets and build bracket_map
+// x0 = program length, x1 = prog_buf
+// Returns 0 in x0 if ok, 1 if error
+validate_brackets:
+    mov x9, xzr         // stack pointer (depth)
+    mov x10, #1000      // max depth
+    adr x11, bracket_map
+    mov x12, xzr        // pc
+1:
+    cmp x12, x0
+    b.ge 2f             // done
+    ldrb w3, [x1, x12]
+    cmp w3, #'['
+    b.eq 3f
+    cmp w3, #']'
+    b.eq 4f
+    add x12, x12, #1
+    b 1b
+3:
+    // '['
+    cmp x9, x10
+    b.ge error          // nesting too deep
+    str w12, [x11, x9, lsl #2]  // push pc
+    add x9, x9, #1
+    add x12, x12, #1
+    b 1b
+4:
+    // ']'
+    cbz x9, error       // unmatched ]
+    sub x9, x9, #1
+    ldr w4, [x11, x9, lsl #2]   // pop matching [
+    // bracket_map[matching[] = this ]
+    str w12, [x11, x4, lsl #2]
+    // bracket_map[this ] = matching [
+    str w4, [x11, x12, lsl #2]
+    add x12, x12, #1
+    b 1b
+2:
+    cbnz x9, error      // unmatched [
+    mov x0, xzr         // success
+    ret
+error:
+    mov x0, #1
+    ret
+
+// Main interpreter loop
+// x19 = tape base, x20 = data pointer, x21 = prog_buf, x22 = prog_len
+// x23 = input_buf, x24 = input_len, x25 = input_ptr, x27 = bracket_map
+interpret:
+    mov x19, xzr        // tape base (adr later)
+    adr x19, tape
+    mov x20, xzr        // data pointer = 0
+    mov x23, xzr        // input_ptr = 0
+    mov x26, xzr        // pc = 0
+    mov x27, xzr        // bracket_map base
+    adr x27, bracket_map
+    mov x28, #5000000   // instruction limit

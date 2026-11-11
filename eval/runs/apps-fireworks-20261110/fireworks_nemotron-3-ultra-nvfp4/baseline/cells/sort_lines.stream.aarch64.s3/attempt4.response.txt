@@ -1,0 +1,215 @@
+.section .text
+.global _start
+
+.equ SYS_READ, 63
+.equ SYS_WRITE, 64
+.equ SYS_EXIT, 93
+.equ STDIN, 0
+.equ STDOUT, 1
+.equ MAX_INPUT, 32768
+.equ MAX_LINES, 1000
+
+// ------------------------------------------------------------
+// Compare two lines.
+// Input:  x0 = ptr1, x1 = len1, x2 = ptr2, x3 = len2
+// Output: x0 = -1 (line1 < line2), 0 (equal), 1 (line1 > line2)
+// Clobbers: x4-x7
+// ------------------------------------------------------------
+compare_lines:
+    mov     x4, 0                  // index
+    mov     x5, x1
+    cmp     x5, x3
+    csel    x5, x5, x3, hi         // x5 = min(len1, len2)
+    cbz     x5, .Lcompare_lengths  // if min_len == 0, skip byte loop
+
+.Lcompare_byte_loop:
+    ldrb    w6, [x0, x4]
+    ldrb    w7, [x2, x4]
+    cmp     w6, w7
+    b.ne    .Lcompare_byte_diff
+    add     x4, x4, 1
+    cmp     x4, x5
+    b.lt    .Lcompare_byte_loop
+
+.Lcompare_lengths:
+    cmp     x1, x3
+    b.lt    .Lcompare_less
+    b.gt    .Lcompare_greater
+    mov     x0, 0
+    ret
+
+.Lcompare_byte_diff:
+    // unsigned comparison of the differing bytes
+    cmp     w6, w7
+    b.lo    .Lcompare_less
+    b       .Lcompare_greater
+
+.Lcompare_less:
+    mov     x0, -1
+    ret
+
+.Lcompare_greater:
+    mov     x0, 1
+    ret
+
+
+// ------------------------------------------------------------
+// Entry point
+// ------------------------------------------------------------
+_start:
+    // ---- Read all input into input_buf ----
+    adrp    x20, input_buf
+    add     x20, x20, :lo12:input_buf
+    mov     x19, 0                  // total_read = 0
+    mov     x21, MAX_INPUT          // remaining
+
+.Lread_loop:
+    mov     x0, STDIN
+    add     x1, x20, x19
+    mov     x2, x21
+    mov     x8, SYS_READ
+    svc     0
+    cbz     x0, .Lread_done
+    add     x19, x19, x0            // total_read += ret
+    sub     x21, x21, x0            // remaining -= ret
+    cbnz    x21, .Lread_loop
+
+.Lread_done:
+    // ---- Parse lines ----
+    adrp    x21, line_ptrs
+    add     x21, x21, :lo12:line_ptrs
+    adrp    x22, line_lens
+    add     x22, x22, :lo12:line_lens
+    mov     x23, 0                  // line_count = 0
+    mov     x24, 0                  // current offset in buffer
+    cmp     x19, 0
+    beq     .Lparse_done
+
+.Lparse_outer:
+    cmp     x24, x19
+    b.ge    .Lparse_done
+    mov     x25, x24                // line start offset
+
+.Lparse_inner:
+    cmp     x24, x19
+    b.ge    .Lparse_inner_end
+    ldrb    w27, [x20, x24]
+    add     x24, x24, 1
+    cmp     w27, 0x0A
+    b.ne    .Lparse_inner
+    // found newline
+    sub     x26, x24, x25
+    sub     x26, x26, 1             // length without newline
+    b       .Lparse_store_line
+
+.Lparse_inner_end:
+    sub     x26, x24, x25           // length up to end
+
+.Lparse_store_line:
+    add     x28, x20, x25           // line start address
+    str     x28, [x21, x23, lsl #3]
+    str     x26, [x22, x23, lsl #3]
+    add     x23, x23, 1
+    b       .Lparse_outer
+
+.Lparse_done:
+    mov     x19, x23                // n = line_count
+    cbz     x19, .Loutput_done      // no lines, exit
+
+    // ---- Insertion sort ----
+    // x21 = line_ptrs, x22 = line_lens
+    // outer loop i from 1 to n-1
+    mov     x26, 1                  // i
+
+.Louter_loop:
+    cmp     x26, x19
+    b.ge    .Lsort_done
+
+    // load key
+    ldr     x25, [x21, x26, lsl #3]   // key_ptr
+    ldr     x28, [x22, x26, lsl #3]   // key_len
+
+    // j = i - 1
+    sub     x24, x26, 1
+
+.Linner_loop:
+    // load line j
+    ldr     x27, [x21, x24, lsl #3]   // ptr_j
+    ldr     x29, [x22, x24, lsl #3]   // len_j
+
+    // compare line j with key
+    mov     x0, x27
+    mov     x1, x29
+    mov     x2, x25
+    mov     x3, x28
+    bl      compare_lines             // returns -1,0,1 in x0
+
+    // if line_j <= key, break
+    cmp     x0, 0
+    b.le    .Linner_done
+
+    // shift line j to j+1
+    add     x9, x24, 1                // j+1
+    str     x27, [x21, x9, lsl #3]
+    str     x29, [x22, x9, lsl #3]
+
+    // decrement j
+    sub     x24, x24, 1
+    // check if j >= 0 (signed)
+    cmp     x24, 0
+    b.ge    .Linner_loop
+
+    // j became -1, we will insert at 0
+    // fall through to .Linner_done with x24 = -1
+
+.Linner_done:
+    // insert key at j+1
+    add     x24, x24, 1
+    str     x25, [x21, x24, lsl #3]
+    str     x28, [x22, x24, lsl #3]
+
+    add     x26, x26, 1
+    b       .Louter_loop
+
+.Lsort_done:
+    // ---- Write output ----
+    mov     x26, 0                  // index
+
+.Loutput_loop:
+    cmp     x26, x19
+    b.ge    .Loutput_done
+    ldr     x1, [x21, x26, lsl #3]  // ptr
+    ldr     x2, [x22, x26, lsl #3]  // len
+    mov     x0, STDOUT
+    mov     x8, SYS_WRITE
+    svc     0
+    // Write newline
+    adr     x1, newline_char
+    mov     x2, 1
+    mov     x0, STDOUT
+    mov     x8, SYS_WRITE
+    svc     0
+    add     x26, x26, 1
+    b       .Loutput_loop
+
+.Loutput_done:
+    mov     x0, 0
+    mov     x8, SYS_EXIT
+    svc     0
+
+
+// ------------------------------------------------------------
+// Data sections
+// ------------------------------------------------------------
+.section .rodata
+newline_char:
+    .byte   0x0A
+
+.section .bss
+.align 12
+input_buf:
+    .space  MAX_INPUT
+line_ptrs:
+    .space  MAX_LINES * 8
+line_lens:
+    .space  MAX_LINES * 8

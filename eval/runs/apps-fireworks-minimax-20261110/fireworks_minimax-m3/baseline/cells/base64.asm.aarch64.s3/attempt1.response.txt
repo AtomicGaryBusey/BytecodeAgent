@@ -1,0 +1,205 @@
+.section .rodata
+.align 3
+base64_alphabet:
+    .ascii "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/"
+
+.section .bss
+.align 3
+input_buffer:
+    .space 49152
+output_buffer:
+    .space 66500
+out_ptr:
+    .space 8
+line_counter:
+    .space 4
+
+.section .text
+.globl _start
+
+_start:
+    // Read all input into input_buffer
+    mov x19, #0                  // total_read = 0
+    adrp x20, input_buffer
+    add x20, x20, :lo12:input_buffer
+    mov x21, #0xC000             // 49152
+
+read_loop:
+    cmp x19, x21
+    b.ge read_done
+    sub x2, x21, x19            // count = 49152 - total_read
+    mov x0, #0                  // fd = stdin
+    add x1, x20, x19            // buf = input_buffer + total_read
+    mov x8, #63                 // read syscall
+    svc #0
+    cmp x0, #0
+    b.eq read_done               // EOF
+    b.lt read_error              // error
+    add x19, x19, x0            // total_read += ret
+    b read_loop
+
+read_error:
+    mov x0, #1
+    mov x8, #93
+    svc #0
+
+read_done:
+    cbz x19, do_exit             // if no input, exit
+
+    // Initialize output pointer and line counter
+    adrp x22, out_ptr
+    add x22, x22, :lo12:out_ptr
+    adrp x23, output_buffer
+    add x23, x23, :lo12:output_buffer
+    str x23, [x22]               // out_ptr = output_buffer
+
+    adrp x24, line_counter
+    add x24, x24, :lo12:line_counter
+    mov w25, #0
+    str w25, [x24]               // line_counter = 0
+
+    // Setup for encoding
+    adrp x27, base64_alphabet
+    add x27, x27, :lo12:base64_alphabet
+    mov x26, #0                  // i = 0
+
+enc_loop:
+    add x29, x26, #3             // i + 3
+    cmp x29, x19
+    b.gt enc_remainder           // if i+3 > N
+
+    // Load b0, b1, b2
+    add x28, x20, x26
+    ldrb w0, [x28]               // b0
+    ldrb w1, [x28, #1]           // b1
+    ldrb w2, [x28, #2]           // b2
+
+    // c0 = b0 >> 2
+    lsr w3, w0, #2
+    // c1 = ((b0 & 3) << 4) | (b1 >> 4)
+    and w4, w0, #3
+    lsl w4, w4, #4
+    lsr w7, w1, #4
+    orr w4, w4, w7
+    // c2 = ((b1 & 15) << 2) | (b2 >> 6)
+    and w5, w1, #15
+    lsl w5, w5, #2
+    lsr w7, w2, #6
+    orr w5, w5, w7
+    // c3 = b2 & 63
+    and w6, w2, #63
+
+    // Emit four characters
+    ldrb w8, [x27, w3, uxtw #0]
+    bl emit_char
+    ldrb w8, [x27, w4, uxtw #0]
+    bl emit_char
+    ldrb w8, [x27, w5, uxtw #0]
+    bl emit_char
+    ldrb w8, [x27, w6, uxtw #0]
+    bl emit_char
+
+    add x26, x26, #3
+    b enc_loop
+
+enc_remainder:
+    sub x19, x19, x26            // r = N - i
+    cbz x19, after_enc
+    cmp x19, #1
+    b.eq handle_1
+    cmp x19, #2
+    b.eq handle_2
+    b after_enc
+
+handle_1:
+    add x28, x20, x26
+    ldrb w0, [x28]               // b0
+    lsr w3, w0, #2               // c0
+    and w4, w0, #3
+    lsl w4, w4, #4               // c1
+    ldrb w8, [x27, w3, uxtw #0]
+    bl emit_char
+    ldrb w8, [x27, w4, uxtw #0]
+    bl emit_char
+    mov w8, #'='
+    bl emit_char
+    mov w8, #'='
+    bl emit_char
+    b after_enc
+
+handle_2:
+    add x28, x20, x26
+    ldrb w0, [x28]               // b0
+    ldrb w1, [x28, #1]           // b1
+    lsr w3, w0, #2               // c0
+    and w4, w0, #3
+    lsl w4, w4, #4
+    lsr w7, w1, #4
+    orr w4, w4, w7               // c1
+    and w5, w1, #15
+    lsl w5, w5, #2               // c2
+    ldrb w8, [x27, w3, uxtw #0]
+    bl emit_char
+    ldrb w8, [x27, w4, uxtw #0]
+    bl emit_char
+    ldrb w8, [x27, w5, uxtw #0]
+    bl emit_char
+    mov w8, #'='
+    bl emit_char
+    b after_enc
+
+after_enc:
+    // If line_counter != 0, append newline
+    adrp x24, line_counter
+    add x24, x24, :lo12:line_counter
+    ldr w25, [x24]
+    cbz w25, write_output
+    adrp x22, out_ptr
+    add x22, x22, :lo12:out_ptr
+    ldr x23, [x22]
+    mov w8, #0x0A
+    strb w8, [x23]
+    add x23, x23, #1
+    str x23, [x22]
+
+write_output:
+    adrp x22, output_buffer
+    add x22, x22, :lo12:output_buffer
+    adrp x23, out_ptr
+    add x23, x23, :lo12:out_ptr
+    ldr x23, [x23]
+    sub x2, x23, x22             // length
+    cbz x2, do_exit
+    mov x0, #1                   // stdout
+    mov x1, x22
+    mov x8, #64                  // write
+    svc #0
+
+do_exit:
+    mov x0, #0
+    mov x8, #93
+    svc #0
+
+// Subroutine emit_char: writes char in w8 to output buffer, updates line_counter and out_ptr
+emit_char:
+    adrp x0, out_ptr
+    add x0, x0, :lo12:out_ptr
+    ldr x1, [x0]
+    strb w8, [x1]
+    add x1, x1, #1
+    str x1, [x0]
+    adrp x2, line_counter
+    add x2, x2, :lo12:line_counter
+    ldr w3, [x2]
+    add w3, w3, #1
+    str w3, [x2]
+    cmp w3, #76
+    b.ne 1f
+    mov w4, #0x0A
+    strb w4, [x1]
+    add x1, x1, #1
+    str x1, [x0]
+    mov w3, #0
+    str w3, [x2]
+1:
+    ret

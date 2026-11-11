@@ -1,0 +1,940 @@
+.data
+.align 3
+error_offset: .quad -1
+
+.bss
+.align 4
+input_buf: .space 65536
+.align 3
+offset: .space 8
+length: .space 8
+
+.text
+.globl _start
+
+_start:
+    adrp x10, input_buf
+    add x10, x10, :lo12:input_buf
+    mov x9, xzr
+    mov x11, #65536
+1:
+    sub x12, x11, x9
+    cbz x12, 2f
+    mov x0, xzr
+    add x1, x10, x9
+    mov x2, x12
+    mov x8, #63
+    svc #0
+    cmp x0, xzr
+    b.le 2f
+    add x9, x9, x0
+    b 1b
+2:
+    adrp x0, length
+    add x0, x0, :lo12:length
+    str x9, [x0]
+    bl parse_document
+    adrp x0, error_offset
+    add x0, x0, :lo12:error_offset
+    ldr x1, [x0]
+    mov x2, #-1
+    cmp x1, x2
+    b.eq .L_ok
+    mov x0, #1
+    adrp x3, errmsg_prefix
+    add x3, x3, :lo12:errmsg_prefix
+    mov x1, x3
+    mov x2, #9
+    mov x8, #64
+    svc #0
+    adrp x0, error_offset
+    add x0, x0, :lo12:error_offset
+    ldr x0, [x0]
+    bl print_uint
+    mov x0, #1
+    sub sp, sp, #16
+    mov w4, #0x0A
+    strb w4, [sp]
+    mov x1, sp
+    mov x2, #1
+    mov x8, #64
+    svc #0
+    add sp, sp, #16
+    mov x0, #1
+    mov x8, #93
+    svc #0
+.L_ok:
+    mov x0, #1
+    adrp x3, okmsg
+    add x3, x3, :lo12:okmsg
+    mov x1, x3
+    mov x2, #3
+    mov x8, #64
+    svc #0
+    mov x0, xzr
+    mov x8, #93
+    svc #0
+
+set_error_no_return:
+    stp x29, x30, [sp, #-16]!
+    mov x1, x0
+    adrp x2, error_offset
+    add x2, x2, :lo12:error_offset
+    ldr x3, [x2]
+    mov x4, #-1
+    cmp x3, x4
+    b.eq .set_err_lbl
+    ldp x29, x30, [sp], #16
+    ret
+.set_err_lbl:
+    str x1, [x2]
+    ldp x29, x30, [sp], #16
+    ret
+
+skip_ws:
+    stp x29, x30, [sp, #-16]!
+    adrp x9, input_buf
+    add x9, x9, :lo12:input_buf
+    adrp x10, offset
+    add x10, x10, :lo12:offset
+    adrp x11, length
+    add x11, x11, :lo12:length
+.L_skip_loop:
+    ldr x12, [x10]
+    ldr x13, [x11]
+    cmp x12, x13
+    b.ge .L_skip_done
+    add x14, x9, x12
+    ldrb w15, [x14]
+    cmp w15, #0x20
+    b.eq .L_skip_inc
+    cmp w15, #0x09
+    b.eq .L_skip_inc
+    cmp w15, #0x0A
+    b.eq .L_skip_inc
+    cmp w15, #0x0D
+    b.eq .L_skip_inc
+    b .L_skip_done
+.L_skip_inc:
+    add x12, x12, #1
+    str x12, [x10]
+    b .L_skip_loop
+.L_skip_done:
+    ldp x29, x30, [sp], #16
+    ret
+
+parse_value:
+    stp x29, x30, [sp, #-16]!
+    adrp x9, input_buf
+    add x9, x9, :lo12:input_buf
+    adrp x10, offset
+    add x10, x10, :lo12:offset
+    adrp x11, length
+    add x11, x11, :lo12:length
+    ldr x12, [x10]
+    ldr x13, [x11]
+    cmp x12, x13
+    b.ge .pv_err_val
+    add x14, x9, x12
+    ldrb w15, [x14]
+    cmp w15, #'{
+    b.eq .pv_obj
+    cmp w15, #'[
+    b.eq .pv_arr
+    cmp w15, #0x22
+    b.eq .pv_str
+    cmp w15, #'-
+    b.eq .pv_num
+    cmp w15, #'0
+    b.lt .pv_check_lit
+    cmp w15, #'9
+    b.le .pv_num
+.pv_check_lit:
+    cmp w15, #'t
+    b.eq .pv_true
+    cmp w15, #'f
+    b.eq .pv_false
+    cmp w15, #'n
+    b.eq .pv_null
+.pv_err_val:
+    mov x0, x12
+    bl set_error_no_return
+    ldp x29, x30, [sp], #16
+    ret
+.pv_obj:
+    bl parse_object
+    b .pv_done
+.pv_arr:
+    bl parse_array
+    b .pv_done
+.pv_str:
+    bl parse_string
+    b .pv_done
+.pv_num:
+    bl parse_number
+    b .pv_done
+.pv_true:
+    bl parse_true
+    b .pv_done
+.pv_false:
+    bl parse_false
+    b .pv_done
+.pv_null:
+    bl parse_null
+    b .pv_done
+.pv_done:
+    ldp x29, x30, [sp], #16
+    ret
+
+parse_string:
+    stp x29, x30, [sp, #-16]!
+    adrp x9, input_buf
+    add x9, x9, :lo12:input_buf
+    adrp x10, offset
+    add x10, x10, :lo12:offset
+    adrp x11, length
+    add x11, x11, :lo12:length
+    ldr x12, [x10]
+    ldr x13, [x11]
+    cmp x12, x13
+    b.ge .ps_err_open
+    add x14, x9, x12
+    ldrb w15, [x14]
+    cmp w15, #0x22
+    b.ne .ps_err_open
+    add x12, x12, #1
+    str x12, [x10]
+.ps_loop:
+    ldr x12, [x10]
+    ldr x13, [x11]
+    cmp x12, x13
+    b.ge .ps_err_unterm
+    add x14, x9, x12
+    ldrb w15, [x14]
+    cmp w15, #0x22
+    b.eq .ps_close
+    cmp w15, #0x5C
+    b.eq .ps_escape
+    cmp w15, #0x20
+    b.lt .ps_err_ctrl
+    add x12, x12, #1
+    str x12, [x10]
+    b .ps_loop
+.ps_close:
+    add x12, x12, #1
+    str x12, [x10]
+    ldp x29, x30, [sp], #16
+    ret
+.ps_escape:
+    add x12, x12, #1
+    str x12, [x10]
+    ldr x12, [x10]
+    ldr x13, [x11]
+    cmp x12, x13
+    b.ge .ps_err_esc_char
+    add x14, x9, x12
+    ldrb w15, [x14]
+    cmp w15, #0x22
+    b.eq .ps_escape_ok
+    cmp w15, #0x5C
+    b.eq .ps_escape_ok
+    cmp w15, #0x2F
+    b.eq .ps_escape_ok
+    cmp w15, #0x62
+    b.eq .ps_escape_ok
+    cmp w15, #0x66
+    b.eq .ps_escape_ok
+    cmp w15, #0x6E
+    b.eq .ps_escape_ok
+    cmp w15, #0x72
+    b.eq .ps_escape_ok
+    cmp w15, #0x74
+    b.eq .ps_escape_ok
+    cmp w15, #0x75
+    b.eq .ps_escape_u
+.ps_err_esc_char:
+    mov x0, x12
+    bl set_error_no_return
+    ldp x29, x30, [sp], #16
+    ret
+.ps_escape_ok:
+    add x12, x12, #1
+    str x12, [x10]
+    b .ps_loop
+.ps_escape_u:
+    add x12, x12, #1
+    str x12, [x10]
+    mov x16, #4
+.ps_u_loop:
+    ldr x12, [x10]
+    ldr x13, [x11]
+    cmp x12, x13
+    b.ge .ps_err_hex
+    add x14, x9, x12
+    ldrb w15, [x14]
+    cmp w15, #'0
+    b.lt .ps_err_hex
+    cmp w15, #'9
+    b.le .ps_u_ok
+    cmp w15, #'A
+    b.lt .ps_err_hex
+    cmp w15, #'F
+    b.le .ps_u_ok
+    cmp w15, #'a
+    b.lt .ps_err_hex
+    cmp w15, #'f
+    b.le .ps_u_ok
+    b .ps_err_hex
+.ps_err_hex:
+    mov x0, x12
+    bl set_error_no_return
+    ldp x29, x30, [sp], #16
+    ret
+.ps_u_ok:
+    add x12, x12, #1
+    str x12, [x10]
+    sub x16, x16, #1
+    cbnz x16, .ps_u_loop
+    b .ps_loop
+.ps_err_open:
+    mov x0, x12
+    bl set_error_no_return
+    ldp x29, x30, [sp], #16
+    ret
+.ps_err_unterm:
+    mov x0, x12
+    bl set_error_no_return
+    ldp x29, x30, [sp], #16
+    ret
+.ps_err_ctrl:
+    mov x0, x12
+    bl set_error_no_return
+    ldp x29, x30, [sp], #16
+    ret
+
+parse_number:
+    stp x29, x30, [sp, #-16]!
+    adrp x9, input_buf
+    add x9, x9, :lo12:input_buf
+    adrp x10, offset
+    add x10, x10, :lo12:offset
+    adrp x11, length
+    add x11, x11, :lo12:length
+    ldr x12, [x10]
+    ldr x13, [x11]
+    cmp x12, x13
+    b.ge .pn_err_int
+    add x14, x9, x12
+    ldrb w15, [x14]
+    cmp w15, #'-
+    b.ne .pn_check_int
+    add x12, x12, #1
+    str x12, [x10]
+.pn_check_int:
+    ldr x12, [x10]
+    ldr x13, [x11]
+    cmp x12, x13
+    b.ge .pn_err_int
+    add x14, x9, x12
+    ldrb w15, [x14]
+    cmp w15, #'0
+    b.eq .pn_zero
+    cmp w15, #'1
+    b.lt .pn_err_int
+    cmp w15, #'9
+    b.gt .pn_err_int
+    add x12, x12, #1
+    str x12, [x10]
+.pn_int_loop:
+    ldr x12, [x10]
+    ldr x13, [x11]
+    cmp x12, x13
+    b.ge .pn_frac
+    add x14, x9, x12
+    ldrb w15, [x14]
+    cmp w15, #'0
+    b.lt .pn_frac
+    cmp w15, #'9
+    b.gt .pn_frac
+    add x12, x12, #1
+    str x12, [x10]
+    b .pn_int_loop
+.pn_zero:
+    add x12, x12, #1
+    str x12, [x10]
+.pn_frac:
+    ldr x12, [x10]
+    ldr x13, [x11]
+    cmp x12, x13
+    b.ge .pn_exp
+    add x14, x9, x12
+    ldrb w15, [x14]
+    cmp w15, #'.
+    b.ne .pn_exp
+    add x12, x12, #1
+    str x12, [x10]
+    ldr x12, [x10]
+    ldr x13, [x11]
+    cmp x12, x13
+    b.ge .pn_err_frac
+    add x14, x9, x12
+    ldrb w15, [x14]
+    cmp w15, #'0
+    b.lt .pn_err_frac
+    cmp w15, #'9
+    b.gt .pn_err_frac
+    add x12, x12, #1
+    str x12, [x10]
+.pn_frac_loop:
+    ldr x12, [x10]
+    ldr x13, [x11]
+    cmp x12, x13
+    b.ge .pn_exp
+    add x14, x9, x12
+    ldrb w15, [x14]
+    cmp w15, #'0
+    b.lt .pn_exp
+    cmp w15, #'9
+    b.gt .pn_exp
+    add x12, x12, #1
+    str x12, [x10]
+    b .pn_frac_loop
+.pn_exp:
+    ldr x12, [x10]
+    ldr x13, [x11]
+    cmp x12, x13
+    b.ge .pn_success
+    add x14, x9, x12
+    ldrb w15, [x14]
+    cmp w15, #'e
+    b.eq .pn_e
+    cmp w15, #'E
+    b.eq .pn_e
+    b .pn_success
+.pn_e:
+    add x12, x12, #1
+    str x12, [x10]
+    ldr x12, [x10]
+    ldr x13, [x11]
+    cmp x12, x13
+    b.ge .pn_err_exp
+    add x14, x9, x12
+    ldrb w15, [x14]
+    cmp w15, #'+
+    b.eq .pn_e_sign
+    cmp w15, #'-
+    b.eq .pn_e_sign
+    b .pn_e_no_sign
+.pn_e_sign:
+    add x12, x12, #1
+    str x12, [x10]
+.pn_e_no_sign:
+    ldr x12, [x10]
+    ldr x13, [x11]
+    cmp x12, x13
+    b.ge .pn_err_exp
+    add x14, x9, x12
+    ldrb w15, [x14]
+    cmp w15, #'0
+    b.lt .pn_err_exp
+    cmp w15, #'9
+    b.gt .pn_err_exp
+    add x12, x12, #1
+    str x12, [x10]
+.pn_e_loop:
+    ldr x12, [x10]
+    ldr x13, [x11]
+    cmp x12, x13
+    b.ge .pn_success
+    add x14, x9, x12
+    ldrb w15, [x14]
+    cmp w15, #'0
+    b.lt .pn_success
+    cmp w15, #'9
+    b.gt .pn_success
+    add x12, x12, #1
+    str x12, [x10]
+    b .pn_e_loop
+.pn_success:
+    ldp x29, x30, [sp], #16
+    ret
+.pn_err_int:
+    mov x0, x12
+    bl set_error_no_return
+    ldp x29, x30, [sp], #16
+    ret
+.pn_err_frac:
+    mov x0, x12
+    bl set_error_no_return
+    ldp x29, x30, [sp], #16
+    ret
+.pn_err_exp:
+    mov x0, x12
+    bl set_error_no_return
+    ldp x29, x30, [sp], #16
+    ret
+
+parse_object:
+    stp x29, x30, [sp, #-16]!
+    adrp x9, input_buf
+    add x9, x9, :lo12:input_buf
+    adrp x10, offset
+    add x10, x10, :lo12:offset
+    adrp x11, length
+    add x11, x11, :lo12:length
+    ldr x12, [x10]
+    ldr x13, [x11]
+    cmp x12, x13
+    b.ge .po_err_brace
+    add x14, x9, x12
+    ldrb w15, [x14]
+    cmp w15, #'{
+    b.ne .po_err_brace
+    add x12, x12, #1
+    str x12, [x10]
+    bl skip_ws
+    ldr x12, [x10]
+    ldr x13, [x11]
+    cmp x12, x13
+    b.ge .po_err_close
+    add x14, x9, x12
+    ldrb w15, [x14]
+    cmp w15, #'}
+    b.eq .po_close
+    bl parse_member
+.po_loop:
+    bl skip_ws
+    ldr x12, [x10]
+    ldr x13, [x11]
+    cmp x12, x13
+    b.ge .po_err_close
+    add x14, x9, x12
+    ldrb w15, [x14]
+    cmp w15, #',
+    b.ne .po_after_loop
+    add x12, x12, #1
+    str x12, [x10]
+    bl skip_ws
+    bl parse_member
+    b .po_loop
+.po_after_loop:
+    ldr x12, [x10]
+    ldr x13, [x11]
+    cmp x12, x13
+    b.ge .po_err_close
+    add x14, x9, x12
+    ldrb w15, [x14]
+    cmp w15, #'}
+    b.ne .po_err_close
+    add x12, x12, #1
+    str x12, [x10]
+    ldp x29, x30, [sp], #16
+    ret
+.po_close:
+    add x12, x12, #1
+    str x12, [x10]
+    ldp x29, x30, [sp], #16
+    ret
+.po_err_brace:
+    mov x0, x12
+    bl set_error_no_return
+    ldp x29, x30, [sp], #16
+    ret
+.po_err_close:
+    mov x0, x12
+    bl set_error_no_return
+    ldp x29, x30, [sp], #16
+    ret
+
+parse_member:
+    stp x29, x30, [sp, #-16]!
+    bl parse_string
+    bl skip_ws
+    adrp x0, offset
+    add x0, x0, :lo12:offset
+    ldr x12, [x0]
+    adrp x1, length
+    add x1, x1, :lo12:length
+    ldr x13, [x1]
+    cmp x12, x13
+    b.ge .pm_err_colon
+    adrp x2, input_buf
+    add x2, x2, :lo12:input_buf
+    add x14, x2, x12
+    ldrb w15, [x14]
+    cmp w15, #':
+    b.ne .pm_err_colon
+    add x12, x12, #1
+    str x12, [x0]
+    bl skip_ws
+    bl parse_value
+    ldp x29, x30, [sp], #16
+    ret
+.pm_err_colon:
+    mov x0, x12
+    bl set_error_no_return
+    ldp x29, x30, [sp], #16
+    ret
+
+parse_array:
+    stp x29, x30, [sp, #-16]!
+    adrp x9, input_buf
+    add x9, x9, :lo12:input_buf
+    adrp x10, offset
+    add x10, x10, :lo12:offset
+    adrp x11, length
+    add x11, x11, :lo12:length
+    ldr x12, [x10]
+    ldr x13, [x11]
+    cmp x12, x13
+    b.ge .pa_err_bracket
+    add x14, x9, x12
+    ldrb w15, [x14]
+    cmp w15, #'[
+    b.ne .pa_err_bracket
+    add x12, x12, #1
+    str x12, [x10]
+    bl skip_ws
+    ldr x12, [x10]
+    ldr x13, [x11]
+    cmp x12, x13
+    b.ge .pa_err_close
+    add x14, x9, x12
+    ldrb w15, [x14]
+    cmp w15, #']
+    b.eq .pa_close
+    bl parse_value
+.pa_loop:
+    bl skip_ws
+    ldr x12, [x10]
+    ldr x13, [x11]
+    cmp x12, x13
+    b.ge .pa_err_close
+    add x14, x9, x12
+    ldrb w15, [x14]
+    cmp w15, #',
+    b.ne .pa_after_loop
+    add x12, x12, #1
+    str x12, [x10]
+    bl skip_ws
+    bl parse_value
+    b .pa_loop
+.pa_after_loop:
+    ldr x12, [x10]
+    ldr x13, [x11]
+    cmp x12, x13
+    b.ge .pa_err_close
+    add x14, x9, x12
+    ldrb w15, [x14]
+    cmp w15, #']
+    b.ne .pa_err_close
+    add x12, x12, #1
+    str x12, [x10]
+    ldp x29, x30, [sp], #16
+    ret
+.pa_close:
+    add x12, x12, #1
+    str x12, [x10]
+    ldp x29, x30, [sp], #16
+    ret
+.pa_err_bracket:
+    mov x0, x12
+    bl set_error_no_return
+    ldp x29, x30, [sp], #16
+    ret
+.pa_err_close:
+    mov x0, x12
+    bl set_error_no_return
+    ldp x29, x30, [sp], #16
+    ret
+
+parse_true:
+    stp x29, x30, [sp, #-16]!
+    adrp x9, input_buf
+    add x9, x9, :lo12:input_buf
+    adrp x10, offset
+    add x10, x10, :lo12:offset
+    adrp x11, length
+    add x11, x11, :lo12:length
+    ldr x12, [x10]
+    ldr x13, [x11]
+    cmp x12, x13
+    b.ge .ptrue_err1
+    add x14, x9, x12
+    ldrb w15, [x14]
+    cmp w15, #'t
+    b.ne .ptrue_err1
+    add x12, x12, #1
+    str x12, [x10]
+    ldr x12, [x10]
+    ldr x13, [x11]
+    cmp x12, x13
+    b.ge .ptrue_err2
+    add x14, x9, x12
+    ldrb w15, [x14]
+    cmp w15, #'r
+    b.ne .ptrue_err2
+    add x12, x12, #1
+    str x12, [x10]
+    ldr x12, [x10]
+    ldr x13, [x11]
+    cmp x12, x13
+    b.ge .ptrue_err3
+    add x14, x9, x12
+    ldrb w15, [x14]
+    cmp w15, #'u
+    b.ne .ptrue_err3
+    add x12, x12, #1
+    str x12, [x10]
+    ldr x12, [x10]
+    ldr x13, [x11]
+    cmp x12, x13
+    b.ge .ptrue_err4
+    add x14, x9, x12
+    ldrb w15, [x14]
+    cmp w15, #'e
+    b.ne .ptrue_err4
+    add x12, x12, #1
+    str x12, [x10]
+    ldp x29, x30, [sp], #16
+    ret
+.ptrue_err1:
+    mov x0, x12
+    bl set_error_no_return
+    ldp x29, x30, [sp], #16
+    ret
+.ptrue_err2:
+    mov x0, x12
+    bl set_error_no_return
+    ldp x29, x30, [sp], #16
+    ret
+.ptrue_err3:
+    mov x0, x12
+    bl set_error_no_return
+    ldp x29, x30, [sp], #16
+    ret
+.ptrue_err4:
+    mov x0, x12
+    bl set_error_no_return
+    ldp x29, x30, [sp], #16
+    ret
+
+parse_false:
+    stp x29, x30, [sp, #-16]!
+    adrp x9, input_buf
+    add x9, x9, :lo12:input_buf
+    adrp x10, offset
+    add x10, x10, :lo12:offset
+    adrp x11, length
+    add x11, x11, :lo12:length
+    ldr x12, [x10]
+    ldr x13, [x11]
+    cmp x12, x13
+    b.ge .pfalse_err1
+    add x14, x9, x12
+    ldrb w15, [x14]
+    cmp w15, #'f
+    b.ne .pfalse_err1
+    add x12, x12, #1
+    str x12, [x10]
+    ldr x12, [x10]
+    ldr x13, [x11]
+    cmp x12, x13
+    b.ge .pfalse_err2
+    add x14, x9, x12
+    ldrb w15, [x14]
+    cmp w15, #'a
+    b.ne .pfalse_err2
+    add x12, x12, #1
+    str x12, [x10]
+    ldr x12, [x10]
+    ldr x13, [x11]
+    cmp x12, x13
+    b.ge .pfalse_err3
+    add x14, x9, x12
+    ldrb w15, [x14]
+    cmp w15, #'l
+    b.ne .pfalse_err3
+    add x12, x12, #1
+    str x12, [x10]
+    ldr x12, [x10]
+    ldr x13, [x11]
+    cmp x12, x13
+    b.ge .pfalse_err4
+    add x14, x9, x12
+    ldrb w15, [x14]
+    cmp w15, #'s
+    b.ne .pfalse_err4
+    add x12, x12, #1
+    str x12, [x10]
+    ldr x12, [x10]
+    ldr x13, [x11]
+    cmp x12, x13
+    b.ge .pfalse_err5
+    add x14, x9, x12
+    ldrb w15, [x14]
+    cmp w15, #'e
+    b.ne .pfalse_err5
+    add x12, x12, #1
+    str x12, [x10]
+    ldp x29, x30, [sp], #16
+    ret
+.pfalse_err1:
+    mov x0, x12
+    bl set_error_no_return
+    ldp x29, x30, [sp], #16
+    ret
+.pfalse_err2:
+    mov x0, x12
+    bl set_error_no_return
+    ldp x29, x30, [sp], #16
+    ret
+.pfalse_err3:
+    mov x0, x12
+    bl set_error_no_return
+    ldp x29, x30, [sp], #16
+    ret
+.pfalse_err4:
+    mov x0, x12
+    bl set_error_no_return
+    ldp x29, x30, [sp], #16
+    ret
+.pfalse_err5:
+    mov x0, x12
+    bl set_error_no_return
+    ldp x29, x30, [sp], #16
+    ret
+
+parse_null:
+    stp x29, x30, [sp, #-16]!
+    adrp x9, input_buf
+    add x9, x9, :lo12:input_buf
+    adrp x10, offset
+    add x10, x10, :lo12:offset
+    adrp x11, length
+    add x11, x11, :lo12:length
+    ldr x12, [x10]
+    ldr x13, [x11]
+    cmp x12, x13
+    b.ge .pnull_err1
+    add x14, x9, x12
+    ldrb w15, [x14]
+    cmp w15, #'n
+    b.ne .pnull_err1
+    add x12, x12, #1
+    str x12, [x10]
+    ldr x12, [x10]
+    ldr x13, [x11]
+    cmp x12, x13
+    b.ge .pnull_err2
+    add x14, x9, x12
+    ldrb w15, [x14]
+    cmp w15, #'u
+    b.ne .pnull_err2
+    add x12, x12, #1
+    str x12, [x10]
+    ldr x12, [x10]
+    ldr x13, [x11]
+    cmp x12, x13
+    b.ge .pnull_err3
+    add x14, x9, x12
+    ldrb w15, [x14]
+    cmp w15, #'l
+    b.ne .pnull_err3
+    add x12, x12, #1
+    str x12, [x10]
+    ldr x12, [x10]
+    ldr x13, [x11]
+    cmp x12, x13
+    b.ge .pnull_err4
+    add x14, x9, x12
+    ldrb w15, [x14]
+    cmp w15, #'l
+    b.ne .pnull_err4
+    add x12, x12, #1
+    str x12, [x10]
+    ldp x29, x30, [sp], #16
+    ret
+.pnull_err1:
+    mov x0, x12
+    bl set_error_no_return
+    ldp x29, x30, [sp], #16
+    ret
+.pnull_err2:
+    mov x0, x12
+    bl set_error_no_return
+    ldp x29, x30, [sp], #16
+    ret
+.pnull_err3:
+    mov x0, x12
+    bl set_error_no_return
+    ldp x29, x30, [sp], #16
+    ret
+.pnull_err4:
+    mov x0, x12
+    bl set_error_no_return
+    ldp x29, x30, [sp], #16
+    ret
+
+parse_document:
+    stp x29, x30, [sp, #-16]!
+    bl skip_ws
+    bl parse_value
+    bl skip_ws
+    adrp x0, offset
+    add x0, x0, :lo12:offset
+    ldr x1, [x0]
+    adrp x2, length
+    add x2, x2, :lo12:length
+    ldr x3, [x2]
+    cmp x1, x3
+    b.lt .pd_err_extra
+    ldp x29, x30, [sp], #16
+    ret
+.pd_err_extra:
+    mov x0, x1
+    bl set_error_no_return
+    ldp x29, x30, [sp], #16
+    ret
+
+print_uint:
+    stp x29, x30, [sp, #-16]!
+    cbnz x0, .pu_not_zero
+    mov x0, #1
+    sub sp, sp, #16
+    mov w4, #'0
+    strb w4, [sp]
+    mov x1, sp
+    mov x2, #1
+    mov x8, #64
+    svc #0
+    add sp, sp, #16
+    ldp x29, x30, [sp], #16
+    ret
+.pu_not_zero:
+    sub sp, sp, #48
+    add x11, sp, #20
+    mov x12, x0
+    mov x13, xzr
+    mov x16, #10
+.pu_loop:
+    udiv x14, x12, x16
+    msub x15, x14, x16, x12
+    add x15, x15, #'0
+    sub x11, x11, #1
+    strb w15, [x11]
+    add x13, x13, #1
+    mov x12, x14
+    cbnz x12, .pu_loop
+    mov x0, #1
+    mov x1, x11
+    mov x2, x13
+    mov x8, #64
+    svc #0
+    add sp, sp, #48
+    ldp x29, x30, [sp], #16
+    ret
+
+.section .rodata
+errmsg_prefix: .ascii "error at "
+okmsg: .ascii "ok\n"

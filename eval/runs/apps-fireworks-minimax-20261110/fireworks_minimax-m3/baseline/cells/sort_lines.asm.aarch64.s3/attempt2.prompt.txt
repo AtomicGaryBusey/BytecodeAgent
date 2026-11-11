@@ -1,0 +1,271 @@
+Write the complete program `sort_lines`: a static Linux executable for AArch64 (ARMv8-A, little-endian), written in assembly. There is no C library, no C runtime and no helper code: you write the entry point `_start`, every function, every table and string, and make the system calls yourself.
+
+Entry state (as the Linux kernel sets it up): execution starts at the label `_start`. sp is 16-byte aligned and points at argc = 0, followed by the NULL terminators of an empty argv, an empty envp and an empty auxiliary vector: the program gets no arguments. Every other general-purpose register (x0-x30) is zero; x30 is not a return address, so `_start` must never return with `ret`; the program ends only through the exit system call.
+
+System calls: the `svc #0` instruction, with the system call number in x8 and the arguments in x0, x1, x2; the result comes back in x0. Every other register is preserved. Exactly these four are available:
+- read = 63: read(fd = 0, buf, count) reads up to count bytes of standard input into buf; returns the number of bytes read, 0 at end of input.
+- write = 64: write(fd, buf, count) with fd 1 (standard output) or 2 (standard error); returns count.
+- exit = 93: exit(status) ends the program; the exit status is the low 8 bits of status.
+- exit_group = 94: the same as exit.
+Any other system call number or file descriptor stops the program with an error, and so does a buffer that is not entirely inside the program's memory.
+
+Memory: the program's own sections plus a stack of 1 MiB below the entry sp. There is no heap (no brk, no mmap, no malloc): put working storage in `.bss` (zero-initialised), at most 1 MiB in total, or on the stack. Code is not writable. Any access outside these areas stops the program. Each test run may execute at most 200,000,000 instructions.
+
+Output format: one complete assembly source file in GNU assembler (GNU as) syntax for AArch64. Examples: `ldr x2, [x0, x1, lsl #3]`, `ldrb w3, [x1], #1`, `stp x29, x30, [sp, #-16]!`. Comments start with `//`; do not use `;`.
+Allowed in the file:
+- Sections: `.text` (code), `.section .rodata` (read-only data), `.data` (initialised writable data), `.bss` (zero-initialised space: only `.zero`/`.space` and alignment). Instructions go in `.text` only.
+- Data directives: `.byte`, `.short`/`.2byte`, `.word` (4 bytes on this target), `.long`/`.int`/`.4byte`, `.quad`/`.8byte`, `.ascii`, `.asciz`/`.string`, `.zero`/`.space`, alignment with `.align`/`.balign`/`.p2align`, and `.globl`/`.global` (write `.globl _start`).
+- Labels `name:` in any section, and GNU local labels `1:` referenced as `1f` (next) / `1b` (previous).
+- Constants: `.equ name, value` (or `.set name, value`, or `name = value`), where value is a number or a difference of labels defined earlier in the same section (e.g. `msg_len = . - msg`). Define every constant before its first use.
+- Addressing data: `adrp x0, label` followed by `add x0, x0, :lo12:label` (or a load/store `ldr x1, [x0, :lo12:label]`); `adr x0, label` also works within +-1 MiB. Literal pools are NOT allowed: no `ldr x0, =label` and no `ldr x0, =constant` (build constants with mov/movz/movk).
+Not allowed: macros (`.macro`, `.rept`, `.irp`), conditional assembly (`.if`), `.include`, `.incbin`, `.fill`, `.org`, `.comm`/`.lcomm`, `.inst`, `.cfi_*` directives, section stacks (`.pushsection`) and any other section. No libc and no other library: there is nothing to link against, so every symbol you use must be defined in your file.
+Instruction set: ARMv8.0-A with floating point and Advanced SIMD (NEON). Not supported (rejected): CRC32, LSE atomics, dot product, half-precision, crypto (AES/SHA/PMULL) and SVE.
+Output ONLY the assembly source: no Markdown fences, no prose before or after it.
+
+Specification: Task `sort_lines`: print the lines of standard input sorted in ascending byte-wise order.
+
+- Lines are defined as follows: a line is a (possibly empty) sequence of bytes terminated by a newline 0x0A; if
+  the input does not end with a newline, the bytes after the last newline form one more, final line. Empty input
+  has no lines, and the empty remainder after a final newline is not a line.
+- Order: compare two lines byte by byte as UNSIGNED values 0x00-0xFF (like C `memcmp`); the first differing
+  byte decides. If one line is a prefix of the other, the shorter line comes first (so the empty line sorts
+  before every non-empty line). Equal lines are all printed (duplicates are kept).
+- Print every line followed by one newline 0x0A (the final line gets a newline even if it had none in the
+  input). Empty input prints nothing. A carriage return 0x0D and every other byte value are ordinary bytes.
+
+Example: `pear\napple\nPear\n\napple` prints `\nPear\napple\napple\npear\n`.
+
+Limits: the input is at most 32768 bytes and has at most 1000 lines. Exit status 0.
+
+Input and output (applies to this whole task):
+- The input is the complete contents of standard input (file descriptor 0). Read it with `read` until `read`
+  returns 0 (end of input). A `read` may return FEWER bytes than requested, at any position (in the middle of a
+  line, a token or a group of bytes), so keep calling it; only a return value of 0 means end of input.
+- Write the output to standard output (file descriptor 1). Only the bytes this task describes may appear on
+  standard output (standard error is ignored). Every output byte must be written before the program exits.
+- Finish with `exit` (or `exit_group`) and the exit status this task gives. The program must not run off the end
+  of its code or crash.
+
+Your previous attempt was:
+<previous>
+.section .text
+.globl _start
+
+_start:
+	// Read all of stdin into input_buf
+	adrp	x10, input_buf
+	add	x10, x10, :lo12:input_buf
+	mov	x11, #0
+.Lread_loop:
+	cmp	x11, #32768
+	b.ge	.Lread_done
+	mov	x0, #0
+	mov	x1, x10
+	mov	x2, #32768
+	sub	x2, x2, x11
+	mov	x8, #63
+	svc	#0
+	cmp	x0, #0
+	b.le	.Lread_done
+	add	x11, x11, x0
+	add	x10, x10, x0
+	b	.Lread_loop
+
+.Lread_done:
+	// Parse lines
+	mov	x12, #0
+	mov	x13, #0
+	adrp	x14, input_buf
+	add	x14, x14, :lo12:input_buf
+.Lparse_loop:
+	cmp	x13, x11
+	b.ge	.Lparse_done
+	mov	x15, x13
+.Lscan:
+	cmp	x15, x11
+	b.ge	.Lfinal_line
+	ldrb	w16, [x14, x15]
+	cmp	w16, #0x0a
+	b.eq	.Lfound_nl
+	add	x15, x15, #1
+	b	.Lscan
+
+.Lfound_nl:
+	sub	x16, x15, x13
+	adrp	x17, lines
+	add	x17, x17, :lo12:lines
+	add	x18, x17, x12, lsl #3
+	str	w13, [x18]
+	str	w16, [x18, #4]
+	add	x12, x12, #1
+	add	x13, x15, #1
+	b	.Lparse_loop
+
+.Lfinal_line:
+	cmp	x13, x11
+	b.ge	.Lparse_done
+	sub	x16, x11, x13
+	adrp	x17, lines
+	add	x17, x17, :lo12:lines
+	add	x18, x17, x12, lsl #3
+	str	w13, [x18]
+	str	w16, [x18, #4]
+	add	x12, x12, #1
+.Lparse_done:
+	mov	x19, x12
+
+	// Insertion sort
+	cmp	x19, #1
+	b.le	.Lsort_done
+	mov	x20, #1
+.Lsort_outer:
+	cmp	x20, x19
+	b.ge	.Lsort_done
+
+	adrp	x17, lines
+	add	x17, x17, :lo12:lines
+	lsl	x21, x20, #3
+	add	x21, x17, x21
+	ldr	w23, [x21]
+	ldr	w24, [x21, #4]
+
+	sub	x25, x20, #1
+.Lsort_inner:
+	cmp	x25, #0
+	b.lt	.Linsert
+
+	lsl	x22, x25, #3
+	add	x22, x17, x22
+	ldr	w26, [x22]
+	ldr	w27, [x22, #4]
+
+	cmp	w27, w24
+	b.eq	.Llen_eq
+	b.lo	.Llen_lt
+
+.Llen_gt:
+	cmp	w24, #0
+	b.eq	.Lshift
+	mov	x28, #0
+.Lcj_gt:
+	cmp	x28, w24
+	b.ge	.Lshift
+	add	x29, x26, x28
+	ldrb	w30, [x14, x29]
+	add	x0, x23, x28
+	ldrb	w0, [x14, x0]
+	cmp	w30, w0
+	b.hi	.Lshift
+	b.lo	.Lnoshift
+	add	x28, x28, #1
+	b	.Lcj_gt
+
+.Llen_lt:
+	cmp	w27, #0
+	b.eq	.Lnoshift
+	mov	x28, #0
+.Lcj_lt:
+	cmp	x28, w27
+	b.ge	.Lnoshift
+	add	x29, x26, x28
+	ldrb	w30, [x14, x29]
+	add	x0, x23, x28
+	ldrb	w0, [x14, x0]
+	cmp	w30, w0
+	b.hi	.Lshift
+	b.lo	.Lnoshift
+	add	x28, x28, #1
+	b	.Lcj_lt
+
+.Llen_eq:
+	cmp	w27, #0
+	b.eq	.Lnoshift
+	mov	x28, #0
+.Lcej:
+	cmp	x28, w27
+	b.ge	.Lnoshift
+	add	x29, x26, x28
+	ldrb	w30, [x14, x29]
+	add	x0, x23, x28
+	ldrb	w0, [x14, x0]
+	cmp	w30, w0
+	b.hi	.Lshift
+	b.lo	.Lnoshift
+	add	x28, x28, #1
+	b	.Lcej
+
+.Lshift:
+	add	x29, x25, #1
+	lsl	x22, x29, #3
+	add	x22, x17, x22
+	str	w26, [x22]
+	str	w27, [x22, #4]
+	sub	x25, x25, #1
+	b	.Lsort_inner
+
+.Lnoshift:
+	b	.Linsert
+
+.Linsert:
+	add	x29, x25, #1
+	lsl	x22, x29, #3
+	add	x22, x17, x22
+	str	w23, [x22]
+	str	w24, [x22, #4]
+	add	x20, x20, #1
+	b	.Lsort_outer
+
+.Lsort_done:
+	// Output sorted lines
+	mov	x20, #0
+.Lout_loop:
+	cmp	x20, x19
+	b.ge	.Lexit
+
+	adrp	x17, lines
+	add	x17, x17, :lo12:lines
+	lsl	x21, x20, #3
+	add	x21, x17, x21
+	ldr	w22, [x21]
+	ldr	w23, [x21, #4]
+
+	mov	x0, #1
+	adrp	x24, input_buf
+	add	x24, x24, :lo12:input_buf
+	add	x1, x24, x22, uxtw
+	mov	x2, x23
+	mov	x8, #64
+	svc	#0
+
+	mov	x0, #1
+	adrp	x1, newline
+	add	x1, x1, :lo12:newline
+	mov	x2, #1
+	mov	x8, #64
+	svc	#0
+
+	add	x20, x20, #1
+	b	.Lout_loop
+
+.Lexit:
+	mov	x0, #0
+	mov	x8, #93
+	svc	#0
+
+.section .bss
+.balign 4
+input_buf:	.space 32768
+.balign 4
+lines:		.space 8000
+
+.section .rodata
+newline:	.byte 0x0a
+</previous>
+It failed:
+<failure>
+GNU as rejected the program:
+line 101: missing extend operator at operand 2 -- `cmp x28,w24'
+line 118: missing extend operator at operand 2 -- `cmp x28,w27'
+line 135: missing extend operator at operand 2 -- `cmp x28,w27'
+</failure>
+Write a corrected, complete version. Same output format; output only the code.

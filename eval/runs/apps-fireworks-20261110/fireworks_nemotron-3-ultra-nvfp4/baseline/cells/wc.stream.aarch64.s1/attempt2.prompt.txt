@@ -1,0 +1,193 @@
+Write the complete program `wc`: a static Linux executable for AArch64 (ARMv8-A, little-endian), written in assembly. There is no C library, no C runtime and no helper code: you write the entry point `_start`, every function, every table and string, and make the system calls yourself.
+
+Entry state (as the Linux kernel sets it up): execution starts at the label `_start`. sp is 16-byte aligned and points at argc = 0, followed by the NULL terminators of an empty argv, an empty envp and an empty auxiliary vector: the program gets no arguments. Every other general-purpose register (x0-x30) is zero; x30 is not a return address, so `_start` must never return with `ret`; the program ends only through the exit system call.
+
+System calls: the `svc #0` instruction, with the system call number in x8 and the arguments in x0, x1, x2; the result comes back in x0. Every other register is preserved. Exactly these four are available:
+- read = 63: read(fd = 0, buf, count) reads up to count bytes of standard input into buf; returns the number of bytes read, 0 at end of input.
+- write = 64: write(fd, buf, count) with fd 1 (standard output) or 2 (standard error); returns count.
+- exit = 93: exit(status) ends the program; the exit status is the low 8 bits of status.
+- exit_group = 94: the same as exit.
+Any other system call number or file descriptor stops the program with an error, and so does a buffer that is not entirely inside the program's memory.
+
+Memory: the program's own sections plus a stack of 1 MiB below the entry sp. There is no heap (no brk, no mmap, no malloc): put working storage in `.bss` (zero-initialised), at most 1 MiB in total, or on the stack. Code is not writable. Any access outside these areas stops the program. Each test run may execute at most 50,000,000 instructions.
+
+Output format: one complete assembly source file in GNU assembler (GNU as) syntax for AArch64. Examples: `ldr x2, [x0, x1, lsl #3]`, `ldrb w3, [x1], #1`, `stp x29, x30, [sp, #-16]!`. Comments start with `//`; do not use `;`.
+Allowed in the file:
+- Sections: `.text` (code), `.section .rodata` (read-only data), `.data` (initialised writable data), `.bss` (zero-initialised space: only `.zero`/`.space` and alignment). Instructions go in `.text` only.
+- Data directives: `.byte`, `.short`/`.2byte`, `.word` (4 bytes on this target), `.long`/`.int`/`.4byte`, `.quad`/`.8byte`, `.ascii`, `.asciz`/`.string`, `.zero`/`.space`, alignment with `.align`/`.balign`/`.p2align`, and `.globl`/`.global` (write `.globl _start`).
+- Labels `name:` in any section, and GNU local labels `1:` referenced as `1f` (next) / `1b` (previous).
+- Constants: `.equ name, value` (or `.set name, value`, or `name = value`), where value is a number or a difference of labels defined earlier in the same section (e.g. `msg_len = . - msg`). Define every constant before its first use.
+- Addressing data: `adrp x0, label` followed by `add x0, x0, :lo12:label` (or a load/store `ldr x1, [x0, :lo12:label]`); `adr x0, label` also works within +-1 MiB. Literal pools are NOT allowed: no `ldr x0, =label` and no `ldr x0, =constant` (build constants with mov/movz/movk).
+Not allowed: macros (`.macro`, `.rept`, `.irp`), conditional assembly (`.if`), `.include`, `.incbin`, `.fill`, `.org`, `.comm`/`.lcomm`, `.inst`, `.cfi_*` directives, section stacks (`.pushsection`) and any other section. No libc and no other library: there is nothing to link against, so every symbol you use must be defined in your file.
+Instruction set: ARMv8.0-A with floating point and Advanced SIMD (NEON). Not supported (rejected): CRC32, LSE atomics, dot product, half-precision, crypto (AES/SHA/PMULL) and SVE.
+Output ONLY the assembly source: no Markdown fences, no prose before or after it.
+
+Specification: Task `wc`: count the lines, words and bytes of standard input and print them.
+
+- lines = the number of newline bytes (0x0A) in the input. A final line without a newline is NOT counted.
+- words = the number of maximal non-empty runs of non-whitespace bytes. Whitespace is exactly these six bytes:
+  space 0x20, tab 0x09, newline 0x0A, vertical tab 0x0B, form feed 0x0C, carriage return 0x0D. Every other byte
+  value (including 0x00, other control bytes and bytes >= 0x80) is a word byte.
+- bytes = the total number of input bytes.
+
+Output exactly one line: the three counts in decimal, separated by single spaces, followed by a newline:
+`<lines> <words> <bytes>\n` (no padding, no leading zeros; zero is printed as `0`). Example: input
+`hello world\nbye` prints `1 3 15\n`; empty input prints `0 0 0\n`.
+
+Limits: the input is at most 65536 bytes. Exit status 0.
+
+Input and output (applies to this whole task):
+- The input is the complete contents of standard input (file descriptor 0). Read it with `read` until `read`
+  returns 0 (end of input). A `read` may return FEWER bytes than requested, at any position (in the middle of a
+  line, a token or a group of bytes), so keep calling it; only a return value of 0 means end of input.
+- Write the output to standard output (file descriptor 1). Only the bytes this task describes may appear on
+  standard output (standard error is ignored). Every output byte must be written before the program exits.
+- Finish with `exit` (or `exit_group`) and the exit status this task gives. The program must not run off the end
+  of its code or crash.
+
+Your previous attempt was:
+<previous>
+.section .text
+.global _start
+
+_start:
+    // Initialize counters
+    mov x19, 0          // lines
+    mov x20, 0          // words
+    mov x21, 0          // bytes
+    mov x22, 0          // in_word (0 = false, 1 = true)
+
+    // Get buffer address
+    adrp x23, buffer
+    add x23, x23, :lo12:buffer
+
+.Lread_loop:
+    // read(0, buffer, 65536)
+    mov x0, 0
+    mov x1, x23
+    mov x2, 65536
+    mov x8, 63
+    svc #0
+
+    // x0 = bytes read
+    cbz x0, .Lread_done
+
+    mov x24, x0         // count
+    mov x25, 0          // index
+
+.Lprocess_loop:
+    ldrb w26, [x23, x25]
+    add x21, x21, 1     // bytes++
+
+    // Check for newline
+    cmp w26, 0x0A
+    b.ne .Lnot_newline
+    add x19, x19, 1     // lines++
+.Lnot_newline:
+
+    // Check for whitespace (space, tab, newline, vt, ff, cr)
+    cmp w26, 0x20
+    b.eq .Lwhitespace
+    cmp w26, 0x09
+    b.eq .Lwhitespace
+    cmp w26, 0x0A
+    b.eq .Lwhitespace
+    cmp w26, 0x0B
+    b.eq .Lwhitespace
+    cmp w26, 0x0C
+    b.eq .Lwhitespace
+    cmp w26, 0x0D
+    b.eq .Lwhitespace
+
+    // Non-whitespace
+    cbz x22, .Lstart_word
+    b .Lcontinue
+
+.Lstart_word:
+    mov x22, 1
+    b .Lcontinue
+
+.Lwhitespace:
+    cbnz x22, .Lend_word
+    b .Lcontinue
+
+.Lend_word:
+    add x20, x20, 1
+    mov x22, 0
+
+.Lcontinue:
+    add x25, x25, 1
+    cmp x25, x24
+    b.lt .Lprocess_loop
+    b .Lread_loop
+
+.Lread_done:
+    // Count final word if input ended while in a word
+    cbz x22, .Loutput
+    add x20, x20, 1
+
+.Loutput:
+    // Set up stack buffers
+    sub sp, sp, 128
+    mov x23, sp         // output buffer pointer
+    add x24, sp, 64     // temporary conversion buffer
+
+    // Convert and copy lines (x19)
+    mov x0, x19
+    mov x1, x24
+    bl itoa
+    mov x25, x0         // length
+    mov x26, x1         // source
+    cbz x25, .Lafter_copy1
+.Lcopy1:
+    ldrb w27, [x26], 1
+    strb w27, [x23], 1
+    subs x25, x25, 1
+    b.ne .Lcopy1
+.Lafter_copy1:
+    mov w27, ' '
+    strb w27, [x23], 1
+
+    // Convert and copy words (x20)
+    mov x0, x20
+    mov x1, x24
+    bl itoa
+    mov x25, x0
+    mov x26, x1
+    cbz x25, .Lafter_copy2
+.Lcopy2:
+    ldrb w27, [x26], 1
+    strb w27, [x23], 1
+    subs x25, x25, 1
+    b.ne .Lcopy2
+.Lafter_copy2:
+    mov w27, ' '
+    strb w27, [x23], 1
+
+    // Convert and copy bytes (x21)
+    mov x0, x21
+    mov x1, x24
+    bl itoa
+    mov x25, x0
+    mov x26, x1
+    cbz x25, .Lafter_copy3
+.Lcopy3:
+    ldrb w27, [x26], 1
+    strb w27, [x23], 1
+    subs x25, x25, 1
+    b.ne .Lcopy3
+.Lafter_copy3:
+    mov w27, '\n'
+    strb w27, [x23], 1
+
+    // Write output
+    mov x0, 1
+    mov x1, sp
+    sub x2, x23, sp
+</previous>
+It failed:
+<failure>
+The assembler rejected line 137 (`sub x2, x23, sp`): aarch64: Unknown error; GNU as: unexpected register in the immediate operand at operand 3 -- `sub x2,x23,sp' (line 137: 'sub x2, x23, sp')
+Generation was stopped at that line; the 86 instructions before it had been accepted.
+</failure>
+Write a corrected, complete version. Same output format; output only the code.

@@ -1,0 +1,197 @@
+.equ SYS_READ, 0
+.equ SYS_WRITE, 1
+.equ SYS_EXIT, 60
+.equ STDIN, 0
+.equ STDOUT, 1
+.equ MAX_INPUT, 32768
+.equ MAX_LINES, 1000
+
+.section .rodata
+newline: .byte 0x0A
+
+.section .bss
+.align 16
+input_buf: .zero MAX_INPUT
+.align 16
+line_array: .zero 16000
+input_len: .zero 8
+line_count: .zero 8
+
+.text
+.global _start
+_start:
+    # read all input
+    xor r12, r12          # input length accumulator
+read_loop:
+    mov rax, MAX_INPUT
+    sub rax, r12
+    test rax, rax
+    jz read_done
+    mov rdi, STDIN
+    lea rsi, [input_buf + r12]
+    mov rdx, rax
+    mov rax, SYS_READ
+    syscall
+    test rax, rax
+    jz read_done
+    add r12, rax
+    jmp read_loop
+
+read_done:
+    # parse lines
+    lea r14, [rip + line_array]  # current write pointer in line_array
+    xor r13, r13          # line count
+    xor rbx, rbx          # index into input_buf
+    xor r15, r15          # start of current line
+parse_loop:
+    cmp rbx, r12
+    jae parse_done
+    movzx eax, byte ptr [input_buf + rbx]
+    cmp al, 0x0A
+    jne not_newline
+    # newline found
+    mov rax, rbx
+    sub rax, r15          # length
+    lea rdx, [input_buf + r15]
+    mov qword ptr [r14], rdx
+    mov qword ptr [r14 + 8], rax
+    add r14, 16
+    inc r13
+    lea r15, [rbx + 1]    # next line start
+    inc rbx
+    jmp parse_loop
+not_newline:
+    inc rbx
+    jmp parse_loop
+
+parse_done:
+    # final line without newline?
+    cmp r15, r12
+    jae no_final_line
+    mov rax, r12
+    sub rax, r15
+    lea rdx, [input_buf + r15]
+    mov qword ptr [r14], rdx
+    mov qword ptr [r14 + 8], rax
+    add r14, 16
+    inc r13
+no_final_line:
+    mov qword ptr [rip + line_count], r13
+
+    # sort lines with insertion sort
+    mov r12, r13          # line count
+    test r12, r12
+    jz write_output
+    lea r13, [rip + line_array]  # base of line array
+    mov r14, 1            # i = 1
+outer_loop:
+    cmp r14, r12
+    jae write_output
+    mov r15, r14          # j = i
+inner_loop:
+    test r15, r15
+    jz inner_done
+    mov rax, r15
+    shl rax, 4            # multiply by 16
+    # load descriptor j
+    mov rdi, qword ptr [r13 + rax]
+    mov rsi, qword ptr [r13 + rax + 8]
+    # load descriptor j-1
+    mov rdx, qword ptr [r13 + rax - 16]
+    mov rcx, qword ptr [r13 + rax - 8]
+    call compare_lines
+    jnc swap_and_continue   # swap if line_j < line_{j-1} (CF=0)
+    jmp inner_done
+swap_and_continue:
+    mov rax, r15
+    shl rax, 4
+    movdqu xmm0, [r13 + rax]
+    movdqu xmm1, [r13 + rax - 16]
+    movdqu [r13 + rax], xmm1
+    movdqu [r13 + rax - 16], xmm0
+    dec r15
+    jmp inner_loop
+inner_done:
+    inc r14
+    jmp outer_loop
+
+write_output:
+    mov r14, 0
+    mov r12, qword ptr [rip + line_count]
+    test r12, r12
+    jz exit_program
+1:
+    mov rax, r14
+    shl rax, 4
+    mov rdi, STDOUT
+    mov rsi, qword ptr [r13 + rax]
+    mov rdx, qword ptr [r13 + rax + 8]
+    call write_all
+    # write newline
+    mov rdi, STDOUT
+    lea rsi, [rip + newline]
+    mov rdx, 1
+    call write_all
+    inc r14
+    cmp r14, r12
+    jne 1b
+
+exit_program:
+    mov rdi, 0
+    mov rax, SYS_EXIT
+    syscall
+
+# compare_lines: returns CF=1 if line1 > line2 (unsigned byte-wise)
+# rdi = ptr1, rsi = len1, rdx = ptr2, rcx = len2
+compare_lines:
+    mov r8, rsi
+    mov r9, rcx
+    cmp r8, r9
+    cmovg r8, r9          # r8 = min(len1, len2)
+    test r8, r8
+    jz 1f
+    xor r10, r10
+2:
+    movzx eax, byte ptr [rdi + r10]
+    movzx ebx, byte ptr [rdx + r10]
+    cmp al, bl
+    ja 3f
+    jb 4f
+    inc r10
+    cmp r10, r8
+    jne 2b
+    cmp rsi, rcx
+    ja 3f
+    jb 4f
+    clc
+    ret
+3:
+    stc
+    ret
+4:
+    clc
+    ret
+1:
+    cmp rsi, rcx
+    ja 3b
+    jb 4b
+    clc
+    ret
+
+# write_all: write full buffer, looping on partial writes
+# rdi = fd, rsi = buf, rdx = count
+write_all:
+    push r12
+    push r13
+    mov r12, rdx
+    mov r13, rsi
+1:
+    mov rax, SYS_WRITE
+    syscall
+    sub r12, rax
+    add r13, rax
+    test r12, r12
+    jnz 1b
+    pop r13
+    pop r12
+    ret

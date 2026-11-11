@@ -1,0 +1,212 @@
+.section .rodata
+newline: .byte 10
+
+.bss
+.balign 16
+input_buf: .space 32768
+.balign 16
+entries:   .space 8000
+
+.text
+.globl _start
+_start:
+    # r12 = input_buf base
+    lea r12, [rip + input_buf]
+    xor r15, r15                # total bytes read = 0
+.read_loop:
+    mov eax, 0                  # sys_read
+    mov edi, 0
+    lea rsi, [r12 + r15]
+    mov rdx, 32768
+    sub rdx, r15
+    syscall
+    test rax, rax
+    jle .read_done
+    add r15, rax
+    cmp r15, 32768
+    jb .read_loop
+.read_done:
+
+    # parse lines into entries
+    lea r13, [rip + entries]
+    xor r14, r14                # line count
+    xor rbx, rbx                # current offset = 0
+.parse_loop:
+    cmp rbx, r15
+    jae .parse_done
+    mov rdx, r15
+    sub rdx, rbx                # remaining bytes
+    mov rsi, r12
+    add rsi, rbx                # pointer to current byte
+.find_nl:
+    test rdx, rdx
+    jz .no_nl
+    movzx eax, byte ptr [rsi]
+    cmp al, 10
+    je .nl_found
+    inc rsi
+    dec rdx
+    jmp .find_nl
+.nl_found:
+    # length = rsi - (r12 + rbx)
+    mov rax, rsi
+    sub rax, r12
+    sub rax, rbx
+    # pack: offset (low 32) | (length << 32)
+    mov rcx, rax
+    shl rcx, 32
+    or rcx, rbx
+    lea rdi, [r13 + r14*8]
+    mov [rdi], rcx
+    inc r14
+    # advance past newline
+    mov rbx, rsi
+    sub rbx, r12
+    inc rbx
+    jmp .parse_loop
+.no_nl:
+    mov rax, r15
+    sub rax, rbx                # length = total - offset
+    mov rcx, rax
+    shl rcx, 32
+    or rcx, rbx
+    lea rdi, [r13 + r14*8]
+    mov [rdi], rcx
+    inc r14
+.parse_done:
+
+    # insertion sort using rbp=i, rbx=j, r15=key
+    mov rbp, 1
+.outer_loop:
+    cmp rbp, r14
+    jae .sort_done
+    lea rax, [r13 + rbp*8]
+    mov r15, [rax]              # key = entries[i]
+    mov rbx, rbp
+    dec rbx                     # j = i-1
+.inner_loop:
+    cmp rbx, 0
+    jl .inner_done
+    mov rdi, rbx
+    mov rsi, r15
+    call compare_with_key
+    test eax, eax
+    jle .inner_done              # if entry[j] <= key, stop shifting
+    # shift entry[j] right
+    lea rax, [r13 + rbx*8]
+    mov r10, [rax]
+    lea rax, [r13 + rbx*8 + 8]
+    mov [rax], r10
+    dec rbx
+    jmp .inner_loop
+.inner_done:
+    # place key at position j+1
+    lea rax, [r13 + rbx*8 + 8]
+    mov [rax], r15
+    inc rbp
+    jmp .outer_loop
+.sort_done:
+
+    # output sorted lines
+    xor rcx, rcx
+.output_loop:
+    cmp rcx, r14
+    jae .exit
+    lea rax, [r13 + rcx*8]
+    mov r9, [rax]                # packed entry
+    mov ebx, r9d                # offset (low 32)
+    shr r9, 32
+    mov r11, r9                 # length
+    test r11, r11
+    jz .write_newline_only
+    mov eax, 1
+    mov edi, 1
+    lea rsi, [r12 + rbx]
+    mov edx, r11d
+    syscall
+    jmp .write_newline
+.write_newline_only:
+.write_newline:
+    mov eax, 1
+    mov edi, 1
+    lea rsi, [rip + newline]
+    mov edx, 1
+    syscall
+    inc rcx
+    jmp .output_loop
+.exit:
+    mov eax, 60
+    mov edi, 0
+    syscall
+
+# compare entry at index rdi with key in rsi (packed offset|len)
+compare_with_key:
+    push rbx
+    push rbp
+    push r12
+    push r13
+    push r14
+    push r15
+
+    # load entry[i]
+    mov rax, [r13 + rdi*8]
+    mov r8d, eax                # offset_i (low 32)
+    shr rax, 32
+    mov r9, rax                 # length_i
+
+    # key
+    mov r10d, esi               # offset_key
+    shr rsi, 32
+    mov r11, rsi                # length_key
+
+    # min_len = min(length_i, length_key)
+    mov rbx, r9
+    cmp rbx, r11
+    jle 1f
+    mov rbx, r11
+1:
+    xor rcx, rcx                # k = 0
+2:
+    cmp rcx, rbx
+    jae 3f
+    # byte from entry_i
+    lea rdi, [r12 + r8]
+    add rdi, rcx
+    movzx edx, byte ptr [rdi]
+    # byte from key
+    lea rsi, [r12 + r10]
+    add rsi, rcx
+    movzx eax, byte ptr [rsi]
+    cmp edx, eax
+    je 4f
+    jb 5f
+    # entry_i > key
+    mov eax, 1
+    jmp 6f
+5:
+    # entry_i < key
+    mov eax, -1
+    jmp 6f
+4:
+    inc rcx
+    jmp 2
+3:
+    # all bytes equal up to min_len
+    cmp r9, r11
+    je 7f
+    jb 8f
+    mov eax, 1
+    jmp 6f
+8:
+    mov eax, -1
+    jmp 6f
+7:
+    mov eax, 0
+6:
+    pop r15
+    pop r14
+    pop r13
+    pop r12
+    pop rbp
+    pop rbx
+    ret

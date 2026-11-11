@@ -1,0 +1,162 @@
+.section .bss
+.align 12
+input_buf:
+    .zero 32768
+line_array:
+    .zero 16000
+
+.section .text
+.globl _start
+
+_start:
+// Read all input from stdin (fd=0) into input_buf (max 32768 bytes)
+    mov x19, 0                      // total_read = 0
+    adrp x20, input_buf
+    add x20, x20, :lo12:input_buf   // x20 = current buffer position
+    mov x21, 32768                  // remaining capacity
+
+read_loop:
+    mov x8, 63                      // syscall read
+    mov x0, 0                       // fd = 0
+    mov x1, x20                     // buf
+    mov x2, x21                     // count
+    svc #0
+    cbz x0, read_done               // EOF
+    add x19, x19, x0                // total_read += bytes_read
+    add x20, x20, x0                // advance buffer pointer
+    sub x21, x21, x0                // remaining -= bytes_read
+    cbnz x21, read_loop             // continue if buffer not full
+
+read_done:
+// Parse lines from input_buf
+    adrp x23, input_buf
+    add x23, x23, :lo12:input_buf   // x23 = start of input
+    add x24, x23, x19               // x24 = end of input
+    mov x22, 0                      // line_count = 0
+    adrp x25, line_array
+    add x25, x25, :lo12:line_array  // x25 = line_array base
+
+parse_loop:
+    cmp x23, x24
+    b.ge parse_done                 // no more data
+    mov x26, x23                    // start of current line
+
+scan_loop:
+    cmp x23, x24
+    b.ge scan_end                   // reached end without newline
+    ldrb w27, [x23], #1             // load byte and advance
+    cmp w27, 0x0A                   // newline?
+    b.ne scan_loop
+    // Found newline at x23-1, line length = (x23-1) - x26
+    sub x27, x23, x26
+    sub x27, x27, 1                 // exclude newline
+    b store_line
+
+scan_end:
+    // Reached end of input without newline
+    sub x27, x24, x26               // line length = end - start
+
+store_line:
+    // Store pointer (x26) and length (x27) into line_array[line_count]
+    // Each entry is 16 bytes: pointer (8) + length (8)
+    // Compute address: x25 + x22 * 16
+    add x10, x25, x22, lsl #4
+    stp x26, x27, [x10]
+    add x22, x22, 1                 // line_count++
+    // Check if we have more data after newline (if we found one)
+    cmp x23, x24
+    b.lt parse_loop
+
+parse_done:
+// Sort lines using insertion sort
+    // x22 = line_count
+    cbz x22, write_loop             // if 0 lines, skip sort
+    mov x19, 1                      // i = 1
+sort_outer:
+    cmp x19, x22
+    b.ge write_loop                 // done sorting
+    // Load line i into temp registers (x20=ptr, x21=len)
+    add x10, x25, x19, lsl #4
+    ldp x20, x21, [x10]
+    mov x18, x19                    // j = i
+sort_inner:
+    cbz x18, sort_inner_done        // j == 0
+    // Load line j-1
+    sub x11, x18, 1
+    add x12, x25, x11, lsl #4
+    ldp x23, x24, [x12]             // x23=ptr, x24=len of line j-1
+    // Compare line j-1 (x23,x24) with current (x20,x21)
+    bl compare_lines                // returns negative in x0 if line_j-1 > current
+    cmp x0, 0
+    b.le sort_inner_done            // if line_j-1 <= current, stop
+    // Shift line j-1 to j
+    stp x23, x24, [x10]             // store at position j (x10 still holds address of j)
+    // Move to previous position
+    mov x10, x12                    // x10 = address of j-1
+    mov x18, x11                    // j = j-1
+    b sort_inner
+sort_inner_done:
+    // Store current line at position j (x10)
+    stp x20, x21, [x10]
+    add x19, x19, 1                 // i++
+    b sort_outer
+
+// Compare two lines: (x23,x24) vs (x20,x21)
+// Returns negative in x0 if first > second, 0 if equal, positive if first < second
+compare_lines:
+    // We'll use x25 as temp, x26 as min_len, x27 as loop counter
+    // Determine min length
+    cmp x24, x21
+    csel x26, x24, x21, lo          // x26 = min(len1, len2)
+    mov x27, 0                      // index = 0
+cmp_loop:
+    cmp x27, x26
+    b.ge cmp_lengths                // reached min length, compare lengths
+    ldrb w25, [x23, x27]            // byte from first line
+    ldrb w10, [x20, x27]            // byte from second line
+    cmp w25, w10
+    b.ne cmp_return                 // different bytes, return difference
+    add x27, x27, 1
+    b cmp_loop
+
+cmp_lengths:
+    // All min_len bytes equal, shorter line comes first
+    sub x0, x24, x21                // len1 - len2
+    ret
+
+cmp_return:
+    // Return difference as unsigned byte comparison (w25 - w10)
+    sub x0, x25, x10
+    ret
+
+// Write sorted lines to stdout
+write_loop:
+    mov x19, 0                      // i = 0
+write_loop_start:
+    cmp x19, x22
+    b.ge exit_prog                  // done
+    add x10, x25, x19, lsl #4
+    ldp x20, x21, [x10]             // x20=ptr, x21=len
+    // Write line
+    mov x8, 64                      // syscall write
+    mov x0, 1                       // fd = 1 (stdout)
+    mov x1, x20                     // buf
+    mov x2, x21                     // count
+    svc #0
+    // Write newline
+    mov x8, 64
+    mov x0, 1
+    adr x1, newline_char
+    mov x2, 1
+    svc #0
+    add x19, x19, 1
+    b write_loop_start
+
+exit_prog:
+    mov x8, 93                      // syscall exit
+    mov x0, 0                       // status 0
+    svc #0
+
+.section .rodata
+newline_char:
+    .byte 0x0A

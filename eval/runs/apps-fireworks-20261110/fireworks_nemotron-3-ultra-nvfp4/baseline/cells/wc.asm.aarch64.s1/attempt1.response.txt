@@ -1,0 +1,179 @@
+.section .bss
+.align 12
+buffer: .space 8192
+outbuf: .space 64
+
+.section .text
+.globl _start
+
+_start:
+    // Initialize counters
+    mov x19, #0          // lines
+    mov x20, #0          // words
+    mov x21, #0          // bytes
+    mov x22, #0          // in_word (0 = false, 1 = true)
+
+    // Get buffer address
+    adrp x24, buffer
+    add x24, x24, :lo12:buffer
+    mov x25, #8192       // buffer size
+
+read_loop:
+    // read(fd=0, buffer, size)
+    mov x0, #0
+    mov x1, x24
+    mov x2, x25
+    mov x8, #63
+    svc #0
+
+    // x0 = bytes read
+    cbz x0, read_done    // EOF
+
+    // Process the buffer
+    add x2, x1, x0       // end pointer
+    // x21 += x0 (bytes count) - we'll add after processing loop to avoid extra instruction in loop
+    // but we can add now:
+    add x21, x21, x0
+
+process_loop:
+    cmp x1, x2
+    b.eq read_loop       // processed all bytes, go read more
+
+    ldrb w3, [x1], #1    // load byte, post-increment
+
+    // Check for newline (0x0A) for line count
+    cmp w3, #0x0A
+    b.ne check_space
+    add x19, x19, #1     // lines++
+
+check_space:
+    // Determine if whitespace (space, tab, newline, vt, ff, cr)
+    // We already know it's not newline if we branched, but we can still check all.
+    // Use w4 as is_space flag (0 or 1)
+    mov w4, #0
+    cmp w3, #0x20        // space
+    cset w5, eq
+    orr w4, w4, w5
+    cmp w3, #0x09        // tab
+    cset w5, eq
+    orr w4, w4, w5
+    cmp w3, #0x0A        // newline
+    cset w5, eq
+    orr w4, w4, w5
+    cmp w3, #0x0B        // vertical tab
+    cset w5, eq
+    orr w4, w4, w5
+    cmp w3, #0x0C        // form feed
+    cset w5, eq
+    orr w4, w4, w5
+    cmp w3, #0x0D        // carriage return
+    cset w5, eq
+    orr w4, w4, w5
+
+    // Word counting state machine
+    cbnz x22, in_word_true
+    // not in word
+    cbnz w4, process_loop   // if whitespace, stay out
+    // non-whitespace and not in word -> start word
+    mov x22, #1
+    add x20, x20, #1       // words++
+    b process_loop
+
+in_word_true:
+    // in word
+    cbz w4, process_loop   // if non-whitespace, stay in
+    // whitespace and in word -> end word
+    mov x22, #0
+    b process_loop
+
+read_done:
+    // Build output string in outbuf
+    adrp x23, outbuf
+    add x23, x23, :lo12:outbuf
+
+    // Append lines
+    mov x0, x19
+    mov x1, x23
+    bl append_number
+    mov x23, x0
+    // space
+    mov w0, #0x20
+    strb w0, [x23], #1
+
+    // Append words
+    mov x0, x20
+    mov x1, x23
+    bl append_number
+    mov x23, x0
+    // space
+    mov w0, #0x20
+    strb w0, [x23], #1
+
+    // Append bytes
+    mov x0, x21
+    mov x1, x23
+    bl append_number
+    mov x23, x0
+    // newline
+    mov w0, #0x0A
+    strb w0, [x23], #1
+
+    // Write output
+    mov x0, #1                     // stdout
+    adrp x1, outbuf
+    add x1, x1, :lo12:outbuf
+    sub x2, x23, x1                // length
+    mov x8, #64                    // write
+    svc #0
+
+    // Exit
+    mov x0, #0
+    mov x8, #93
+    svc #0
+
+// append_number: converts unsigned 64-bit integer in x0 to decimal string at x1.
+// Returns new buffer pointer in x0.
+// Uses stack for temporary digit buffer (32 bytes).
+// Preserves x19-x28.
+append_number:
+    // Stack frame: 16 bytes for saved regs + 32 bytes for digits = 48 bytes, aligned to 16.
+    stp x29, x30, [sp, #-16]!
+    mov x29, sp
+    sub sp, sp, #32                // digit buffer at sp .. sp+31
+
+    // Point to end of digit buffer
+    add x2, sp, #31                // x2 = &digit_buffer[31]
+    mov x3, #10                    // divisor
+
+    cbz x0, write_zero
+
+convert_loop:
+    udiv x4, x0, x3                // x4 = x0 / 10
+    msub x5, x4, x3, x0            // x5 = x0 % 10
+    add w5, w5, #0x30              // '0' + remainder
+    strb w5, [x2], #-1             // store digit, decrement pointer
+    mov x0, x4
+    cbnz x0, convert_loop
+
+    // Digits are from x2+1 to sp+31. Copy to destination x1.
+    add x6, sp, #31                // end of digits
+    mov x7, x1                     // destination pointer
+copy_loop:
+    add x2, x2, #1                 // advance to next digit
+    ldrb w5, [x2]
+    strb w5, [x7], #1
+    cmp x2, x6
+    b.ne copy_loop
+
+    mov x0, x7                     // return new destination pointer
+    add sp, sp, #32
+    ldp x29, x30, [sp], #16
+    ret
+
+write_zero:
+    mov w5, #0x30
+    strb w5, [x1], #1
+    mov x0, x1
+    add sp, sp, #32
+    ldp x29, x30, [sp], #16
+    ret

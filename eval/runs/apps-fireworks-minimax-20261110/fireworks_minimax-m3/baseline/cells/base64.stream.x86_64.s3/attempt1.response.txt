@@ -1,0 +1,188 @@
+# base64 - RFC 4648 base64 encoder with line wrapping at 76 chars per line
+
+.equ SYS_READ,     0
+.equ SYS_WRITE,    1
+.equ SYS_EXIT,     60
+.equ FD_STDIN,     0
+.equ FD_STDOUT,    1
+.equ MAX_INPUT,    49152
+.equ LINE_WIDTH,   76
+.equ NEWLINE,      0x0A
+.equ PAD_CHAR,     0x3D
+
+.text
+.global _start
+
+_start:
+    xor r12, r12                            # r12 = total bytes read
+
+.read_input:
+    mov rax, SYS_READ
+    mov rdi, FD_STDIN
+    lea rsi, [rip + input_buf]
+    add rsi, r12
+    mov rdx, MAX_INPUT
+    sub rdx, r12
+    jle .read_done
+    syscall
+    test rax, rax
+    jz .read_done
+    add r12, rax
+    jmp .read_input
+
+.read_done:
+    test r12, r12
+    jz .exit_zero
+
+    lea r9, [rip + base64_table]            # base64 alphabet
+    lea rbx, [rip + line_buf]               # output line buffer
+    xor r13, r13                            # input index
+    xor r14, r14                            # current line column (0..76)
+    xor r15, r15                            # write offset in line_buf
+
+.encode_loop:
+    cmp r13, r12
+    jae .encode_done
+
+    lea rsi, [rip + input_buf]
+    add rsi, r13                            # rsi = &input_buf[r13]
+
+    mov rcx, r12
+    sub rcx, r13                            # rcx = remaining input bytes
+    cmp rcx, 3
+    jb .encode_partial
+
+    # === three-byte group ===
+    movzx eax, byte ptr [rsi]               # B0
+    movzx edx, byte ptr [rsi + 1]           # B1
+    movzx r8d, byte ptr [rsi + 2]           # B2
+
+    # Out0 = base64[B0 >> 2]
+    mov r10d, eax
+    shr r10d, 2
+    movzx r10d, byte ptr [r9 + r10]
+
+    # Out1 = base64[((B0 & 3) << 4) | (B1 >> 4)]
+    mov r11d, eax
+    and r11d, 3
+    shl r11d, 4
+    mov ecx, edx
+    shr ecx, 4
+    or r11d, ecx
+    movzx r11d, byte ptr [r9 + r11]
+
+    # Out2 = base64[((B1 & 0xF) << 2) | (B2 >> 6)]
+    mov ecx, edx
+    and ecx, 0xF
+    shl ecx, 2
+    mov esi, r8d
+    shr esi, 6
+    or ecx, esi
+    movzx ecx, byte ptr [r9 + rcx]
+
+    # Out3 = base64[B2 & 0x3F]
+    and r8d, 0x3F
+    movzx r8d, byte ptr [r9 + r8]
+
+    mov byte ptr [rbx + r15], r10b
+    mov byte ptr [rbx + r15 + 1], r11b
+    mov byte ptr [rbx + r15 + 2], cl
+    mov byte ptr [rbx + r15 + 3], r8b
+
+    add r15, 4
+    add r14, 4
+    add r13, 3
+    jmp .check_flush
+
+.encode_partial:
+    cmp rcx, 2
+    je .two_bytes
+
+.one_byte:
+    movzx eax, byte ptr [rsi]
+    mov r10d, eax
+    shr r10d, 2
+    movzx r10d, byte ptr [r9 + r10]
+    and eax, 3
+    shl eax, 4
+    movzx r11d, byte ptr [r9 + rax]
+    mov byte ptr [rbx + r15], r10b
+    mov byte ptr [rbx + r15 + 1], r11b
+    mov byte ptr [rbx + r15 + 2], PAD_CHAR
+    mov byte ptr [rbx + r15 + 3], PAD_CHAR
+    add r15, 4
+    add r14, 4
+    add r13, 1
+    jmp .check_flush
+
+.two_bytes:
+    movzx eax, byte ptr [rsi]
+    movzx edx, byte ptr [rsi + 1]
+    mov r10d, eax
+    shr r10d, 2
+    movzx r10d, byte ptr [r9 + r10]
+    mov r11d, eax
+    and r11d, 3
+    shl r11d, 4
+    mov ecx, edx
+    shr ecx, 4
+    or r11d, ecx
+    movzx r11d, byte ptr [r9 + r11]
+    and edx, 0xF
+    shl edx, 2
+    movzx ecx, byte ptr [r9 + rdx]
+    mov byte ptr [rbx + r15], r10b
+    mov byte ptr [rbx + r15 + 1], r11b
+    mov byte ptr [rbx + r15 + 2], cl
+    mov byte ptr [rbx + r15 + 3], PAD_CHAR
+    add r15, 4
+    add r14, 4
+    add r13, 2
+    jmp .check_flush
+
+.check_flush:
+    cmp r14, LINE_WIDTH
+    je .flush_line
+    jmp .encode_loop
+
+.flush_line:
+    mov byte ptr [rbx + r15], NEWLINE
+    inc r15
+    mov rax, SYS_WRITE
+    mov rdi, FD_STDOUT
+    mov rsi, rbx
+    mov rdx, r15
+    syscall
+    xor r15, r15
+    xor r14, r14
+    jmp .encode_loop
+
+.encode_done:
+    test r14, r14
+    jz .exit_zero
+    mov byte ptr [rbx + r15], NEWLINE
+    inc r15
+    mov rax, SYS_WRITE
+    mov rdi, FD_STDOUT
+    mov rsi, rbx
+    mov rdx, r15
+    syscall
+
+.exit_zero:
+    mov rax, SYS_EXIT
+    xor rdi, rdi
+    syscall
+
+
+.section .rodata
+base64_table:
+    .ascii "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/"
+
+
+.section .bss
+.balign 16
+input_buf:
+    .space MAX_INPUT
+.balign 16
+line_buf:
+    .space 77

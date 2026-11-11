@@ -1,0 +1,339 @@
+.section .rodata
+error_str: .ascii "error\n"
+
+.section .bss
+.align 4
+input_buf: .space 65536
+.align 4
+eval_stack: .space 8192
+.align 4
+out_buf: .space 32
+
+.text
+.globl _start
+
+_start:
+    mov x9, xzr          // total bytes read
+    adrp x11, input_buf
+    add x11, x11, :lo12:input_buf
+    mov x10, #65536
+
+.Lread_loop:
+    mov x0, #0
+    add x1, x11, x9
+    sub x2, x10, x9
+    mov x8, #63
+    svc #0
+    cmp x0, #0
+    b.le .Lread_done
+    add x9, x9, x0
+    cmp x9, x10
+    b.lt .Lread_loop
+.Lread_done:
+    mov x16, xzr         // current line start index
+.Lmain_line_loop:
+    cmp x16, x9
+    b.ge .Lexit
+    mov x17, x16
+.Lscan_newline:
+    cmp x17, x9
+    b.ge .Lset_end_to_x9
+    ldrb w18, [x11, x17]
+    cmp w18, #0x0A
+    b.eq .Lfound_end
+    add x17, x17, #1
+    b .Lscan_newline
+.Lset_end_to_x9:
+    mov x17, x9
+.Lfound_end:
+    add x0, x11, x16
+    sub x1, x17, x16
+    bl .Lprocess_line
+.Lline_continue:
+    add x16, x17, #1
+    b .Lmain_line_loop
+.Lexit:
+    mov x0, xzr
+    mov x8, #93
+    svc #0
+
+.Lprocess_line:
+    mov x12, xzr         // depth
+    mov x13, xzr         // error flag
+    mov x14, x0          // current pos
+    add x15, x0, x1      // end pos
+    adrp x27, eval_stack
+    add x27, x27, :lo12:eval_stack
+    b .Ltoken_loop
+
+.Ltoken_loop:
+    cmp x13, #1
+    b.eq .Lfinish_line
+    cmp x14, x15
+    b.eq .Lfinish_line
+    ldrb w14, [x14]
+    cmp w14, #0x20
+    b.eq .Lskip_sep
+    cmp w14, #0x09
+    b.eq .Lskip_sep
+    mov x19, x14
+.Lfind_token_end:
+    add x14, x14, #1
+    cmp x14, x15
+    b.eq .Ltoken_found
+    ldrb w14, [x14]
+    cmp w14, #0x20
+    b.eq .Ltoken_found
+    cmp w14, #0x09
+    b.eq .Ltoken_found
+    b .Lfind_token_end
+.Lskip_sep:
+    add x14, x14, #1
+    b .Ltoken_loop
+.Ltoken_found:
+    sub x20, x14, x19
+    cmp x20, #1
+    b.ne .Ltry_literal
+    ldrb w14, [x19]
+    cmp w14, #'+'
+    b.eq .Lop_add
+    cmp w14, #'-'
+    b.eq .Lop_sub
+    cmp w14, #'*'
+    b.eq .Lop_mul
+    cmp w14, #'/'
+    b.eq .Lop_div
+    cmp w14, #'%'
+    b.eq .Lop_mod
+.Ltry_literal:
+    mov x21, xzr         // negative flag
+    mov x22, x19         // digit start
+    mov x23, x20         // digit count
+    ldrb w14, [x19]
+    cmp w14, #'-'
+    b.ne .Ldigits_start
+    mov x21, #1
+    add x22, x19, #1
+    sub x23, x20, #1
+    cmp x23, #0
+    b.eq .Lset_error
+.Ldigits_start:
+    cmp x23, #18
+    b.gt .Lset_error
+    mov x24, xzr         // value
+    mov x25, x22
+    mov x26, x23
+.Ldigit_loop:
+    cmp x26, #0
+    b.eq .Ldigits_done
+    ldrb w14, [x25]
+    cmp w14, #'0'
+    b.lt .Lset_error
+    cmp w14, #'9'
+    b.gt .Lset_error
+    sub w14, w14, #'0'
+    mul x24, x24, #10
+    add x24, x24, w14
+    add x25, x25, #1
+    sub x26, x26, #1
+    b .Ldigit_loop
+.Ldigits_done:
+    add x26, x22, x23
+    cmp x26, x14
+    b.ne .Lset_error
+    cmp x21, #1
+    b.ne .Lpush_value
+    neg x24, x24
+.Lpush_value:
+    cmp x12, #1024
+    b.ge .Lset_error
+    add x26, x27, x12, lsl #3
+    str x24, [x26]
+    add x12, x12, #1
+    b .Ltoken_done
+
+.Lop_add:
+    cmp x12, #2
+    b.lt .Lset_error
+    sub x12, x12, #1
+    add x26, x27, x12, lsl #3
+    ldr x2, [x26]        // b
+    sub x12, x12, #1
+    add x26, x27, x12, lsl #3
+    ldr x1, [x26]        // a
+    add x1, x1, x2
+    add x12, x12, #1
+    add x26, x27, x12, lsl #3
+    str x1, [x26]
+    b .Ltoken_done
+
+.Lop_sub:
+    cmp x12, #2
+    b.lt .Lset_error
+    sub x12, x12, #1
+    add x26, x27, x12, lsl #3
+    ldr x2, [x26]        // b
+    sub x12, x12, #1
+    add x26, x27, x12, lsl #3
+    ldr x1, [x26]        // a
+    sub x1, x1, x2
+    add x12, x12, #1
+    add x26, x27, x12, lsl #3
+    str x1, [x26]
+    b .Ltoken_done
+
+.Lop_mul:
+    cmp x12, #2
+    b.lt .Lset_error
+    sub x12, x12, #1
+    add x26, x27, x12, lsl #3
+    ldr x2, [x26]        // b
+    sub x12, x12, #1
+    add x26, x27, x12, lsl #3
+    ldr x1, [x26]        // a
+    mul x1, x1, x2
+    add x12, x12, #1
+    add x26, x27, x12, lsl #3
+    str x1, [x26]
+    b .Ltoken_done
+
+.Lop_div:
+    cmp x12, #2
+    b.lt .Lset_error
+    sub x12, x12, #1
+    add x26, x27, x12, lsl #3
+    ldr x2, [x26]        // b
+    sub x12, x12, #1
+    add x26, x27, x12, lsl #3
+    ldr x1, [x26]        // a
+    cbnz x2, .Ldiv_check_overflow
+    b .Lset_error
+.Ldiv_check_overflow:
+    mov x3, #0x8000, lsl #48
+    cmp x1, x3
+    b.ne .Ldo_div
+    mvn x4, xzr
+    cmp x2, x4
+    b.ne .Ldo_div
+    b .Lset_error
+.Ldo_div:
+    sdiv x3, x1, x2
+    add x12, x12, #1
+    add x26, x27, x12, lsl #3
+    str x3, [x26]
+    b .Ltoken_done
+
+.Lop_mod:
+    cmp x12, #2
+    b.lt .Lset_error
+    sub x12, x12, #1
+    add x26, x27, x12, lsl #3
+    ldr x2, [x26]        // b
+    sub x12, x12, #1
+    add x26, x27, x12, lsl #3
+    ldr x1, [x26]        // a
+    cbnz x2, .Lmod_check_overflow
+    b .Lset_error
+.Lmod_check_overflow:
+    mov x3, #0x8000, lsl #48
+    cmp x1, x3
+    b.ne .Ldo_mod
+    mvn x4, xzr
+    cmp x2, x4
+    b.ne .Ldo_mod
+    b .Lset_error
+.Ldo_mod:
+    sdiv x3, x1, x2
+    msub x4, x3, x2, x1
+    add x12, x12, #1
+    add x26, x27, x12, lsl #3
+    str x4, [x26]
+    b .Ltoken_done
+
+.Lset_error:
+    mov x13, #1
+    b .Ltoken_done
+
+.Ltoken_done:
+    b .Ltoken_loop
+
+.Lfinish_line:
+    cmp x13, #1
+    b.eq .Loutput_error
+    cmp x12, #1
+    b.ne .Loutput_error
+    ldr x0, [x27]
+    b .Lconvert_and_write
+
+.Loutput_error:
+    mov x0, #1
+    adrp x1, error_str
+    add x1, x1, :lo12:error_str
+    mov x2, #6
+    mov x8, #64
+    svc #0
+    b .Lreturn
+
+.Lconvert_and_write:
+    mov x3, x0
+    mov x4, xzr
+    ands x5, x3, #0x8000000000000000
+    b.eq .Lc_pos
+    mov x4, #1
+.Lc_pos:
+    adrp x6, out_buf
+    add x6, x6, :lo12:out_buf
+    mov x7, xzr
+    mov x8, #10
+.Lc_loop:
+    udiv x10, x3, x8
+    msub x2, x10, x8, x3
+    add w2, w2, #'0'
+    strb w2, [x6, x7]
+    add x7, x7, #1
+    mov x3, x10
+    cbnz x3, .Lc_loop
+    mov x12, xzr
+    sub x13, x7, #1
+.Lc_rev:
+    cmp x12, x13
+    b.ge .Lc_rev_done
+    ldrb w14, [x6, x12]
+    ldrb w15, [x6, x13]
+    strb w15, [x6, x12]
+    strb w14, [x6, x13]
+    add x12, x12, #1
+    sub x13, x13, #1
+    b .Lc_rev
+.Lc_rev_done:
+    cmp x4, #1
+    b.ne .Lc_no_sign
+    sub x12, x7, #1
+.Lc_shift_loop:
+    cmp x12, #0
+    b.lt .Lc_shift_done
+    ldrb w14, [x6, x12]
+    add x13, x12, #1
+    strb w14, [x6, x13]
+    sub x12, x12, #1
+    b .Lc_shift_loop
+.Lc_shift_done:
+    mov w14, #'-'
+    strb w14, [x6, #0]
+    add x7, x7, #2
+    b .Lc_after_sign
+.Lc_no_sign:
+    add x7, x7, #1
+.Lc_after_sign:
+    mov w14, #0x0A
+    sub x13, x7, #1
+    strb w14, [x6, x13]
+    mov x0, #1
+    mov x1, x6
+    mov x2, x7
+    mov x8, #64
+    svc #0
+    b .Lreturn
+
+.Lreturn:
+    b .Lline_continue

@@ -1,0 +1,158 @@
+Write the complete program `rev_lines`: a static Linux executable for AArch64 (ARMv8-A, little-endian), written in assembly. There is no C library, no C runtime and no helper code: you write the entry point `_start`, every function, every table and string, and make the system calls yourself.
+
+Entry state (as the Linux kernel sets it up): execution starts at the label `_start`. sp is 16-byte aligned and points at argc = 0, followed by the NULL terminators of an empty argv, an empty envp and an empty auxiliary vector: the program gets no arguments. Every other general-purpose register (x0-x30) is zero; x30 is not a return address, so `_start` must never return with `ret`; the program ends only through the exit system call.
+
+System calls: the `svc #0` instruction, with the system call number in x8 and the arguments in x0, x1, x2; the result comes back in x0. Every other register is preserved. Exactly these four are available:
+- read = 63: read(fd = 0, buf, count) reads up to count bytes of standard input into buf; returns the number of bytes read, 0 at end of input.
+- write = 64: write(fd, buf, count) with fd 1 (standard output) or 2 (standard error); returns count.
+- exit = 93: exit(status) ends the program; the exit status is the low 8 bits of status.
+- exit_group = 94: the same as exit.
+Any other system call number or file descriptor stops the program with an error, and so does a buffer that is not entirely inside the program's memory.
+
+Memory: the program's own sections plus a stack of 1 MiB below the entry sp. There is no heap (no brk, no mmap, no malloc): put working storage in `.bss` (zero-initialised), at most 1 MiB in total, or on the stack. Code is not writable. Any access outside these areas stops the program. Each test run may execute at most 50,000,000 instructions.
+
+Output format: one complete assembly source file in GNU assembler (GNU as) syntax for AArch64. Examples: `ldr x2, [x0, x1, lsl #3]`, `ldrb w3, [x1], #1`, `stp x29, x30, [sp, #-16]!`. Comments start with `//`; do not use `;`.
+Allowed in the file:
+- Sections: `.text` (code), `.section .rodata` (read-only data), `.data` (initialised writable data), `.bss` (zero-initialised space: only `.zero`/`.space` and alignment). Instructions go in `.text` only.
+- Data directives: `.byte`, `.short`/`.2byte`, `.word` (4 bytes on this target), `.long`/`.int`/`.4byte`, `.quad`/`.8byte`, `.ascii`, `.asciz`/`.string`, `.zero`/`.space`, alignment with `.align`/`.balign`/`.p2align`, and `.globl`/`.global` (write `.globl _start`).
+- Labels `name:` in any section, and GNU local labels `1:` referenced as `1f` (next) / `1b` (previous).
+- Constants: `.equ name, value` (or `.set name, value`, or `name = value`), where value is a number or a difference of labels defined earlier in the same section (e.g. `msg_len = . - msg`). Define every constant before its first use.
+- Addressing data: `adrp x0, label` followed by `add x0, x0, :lo12:label` (or a load/store `ldr x1, [x0, :lo12:label]`); `adr x0, label` also works within +-1 MiB. Literal pools are NOT allowed: no `ldr x0, =label` and no `ldr x0, =constant` (build constants with mov/movz/movk).
+Not allowed: macros (`.macro`, `.rept`, `.irp`), conditional assembly (`.if`), `.include`, `.incbin`, `.fill`, `.org`, `.comm`/`.lcomm`, `.inst`, `.cfi_*` directives, section stacks (`.pushsection`) and any other section. No libc and no other library: there is nothing to link against, so every symbol you use must be defined in your file.
+Instruction set: ARMv8.0-A with floating point and Advanced SIMD (NEON). Not supported (rejected): CRC32, LSE atomics, dot product, half-precision, crypto (AES/SHA/PMULL) and SVE.
+Output ONLY the assembly source: no Markdown fences, no prose before or after it.
+
+Specification: Task `rev_lines`: print every line of standard input with its bytes in reverse order.
+
+- A line is a (possibly empty) sequence of bytes terminated by a newline byte 0x0A. If the input does not end
+  with a newline, the bytes after the last newline form one more, final line. Empty input has no lines, and the
+  empty remainder after a final newline is not a line.
+- For each line, in input order, print the line's bytes in reverse order followed by one newline 0x0A. The
+  newline itself is not part of the line and is not reversed. The final line is printed with a newline even if
+  it had none in the input.
+- Reversal is byte-wise: every byte value 0x00-0xFF is an ordinary byte (no UTF-8 decoding). A carriage return
+  0x0D is an ordinary byte, so `ab\r\n` prints `\rba\n`.
+
+Examples: `abc\nde\n` prints `cba\ned\n`; `abc\n\nxy` prints `cba\n\nyx\n`; empty input prints nothing.
+
+Limits: the input is at most 65536 bytes; a single line may be as long as the whole input. Exit status 0.
+
+Input and output (applies to this whole task):
+- The input is the complete contents of standard input (file descriptor 0). Read it with `read` until `read`
+  returns 0 (end of input). A `read` may return FEWER bytes than requested, at any position (in the middle of a
+  line, a token or a group of bytes), so keep calling it; only a return value of 0 means end of input.
+- Write the output to standard output (file descriptor 1). Only the bytes this task describes may appear on
+  standard output (standard error is ignored). Every output byte must be written before the program exits.
+- Finish with `exit` (or `exit_group`) and the exit status this task gives. The program must not run off the end
+  of its code or crash.
+
+Your previous attempt was:
+<previous>
+//
+// rev_lines for AArch64 Linux
+// Self-contained assembly: no libc, no C runtime.
+// Reads stdin, prints each line byte-reversed followed by newline.
+//
+
+.globl _start
+
+// Uninitialised working storage.
+.section .bss
+inbuf:  .space 65536           // input buffer
+outbuf: .space 65537           // one reversed line incl. newline
+
+.section .text
+
+// _start -- entry point. x0..x30 = 0; never returns; ends via exit.
+_start:
+    // Phase 1: read all of stdin into inbuf.
+    adrp    x16, inbuf
+    add     x16, x16, :lo12:inbuf           // x16 = &inbuf
+    mov     x1, x16                         // x1 = next read position
+    mov     x10, #0                         // x10 = total bytes read
+
+.Lread_loop:
+    mov     x0, #0                          // fd = 0 (stdin)
+    mov     x2, #65536
+    sub     x2, x2, x10                     // remaining buffer space
+    mov     x8, #63                         // sys_read
+    svc     #0
+    cmp     x0, #0
+    b.eq    .Lread_done                     // EOF
+    add     x10, x10, x0
+    add     x1, x1, x0
+    b       .Lread_loop
+
+.Lread_done:
+    // x10 = total bytes; x16 = &inbuf.
+
+    // Phase 2: process each line.
+    adrp    x17, outbuf
+    add     x17, x17, :lo12:outbuf
+    mov     x11, #0                         // x11 = line start offset in inbuf
+
+.Lline_loop:
+    cmp     x11, x10
+    b.ge    .Lexit                          // no more data, exit 0
+
+    // Scan [x11, ...) for newline or end of input.
+    mov     x12, x11                        // x12 = scan position
+    mov     x13, #0                         // x13 = 1 if newline found
+.Lscan_loop:
+    cmp     x12, x10
+    b.ge    .Lscan_done
+    ldrb    w14, [x16, x12]
+    cmp     w14, #0x0A
+    b.eq    .Lscan_newline
+    add     x12, x12, #1
+    b       .Lscan_loop
+.Lscan_newline:
+    mov     x13, #1
+.Lscan_done:
+    // x12 = end position; x13 = 1 if newline, 0 if EOF.
+
+    // Reverse bytes [x11, x12) into outbuf.
+    mov     x18, x11                        // input read index
+    mov     x19, #0                         // output write index
+.Lrev_loop:
+    cmp     x18, x12
+    b.eq    .Lrev_done
+    ldrb    w14, [x16, x18]
+    strb    w14, [x17, x19]
+    add     x18, x18, #1
+    add     x19, x19, #1
+    b       .Lrev_loop
+.Lrev_done:
+    mov     w14, #0x0A
+    strb    w14, [x17, x19]                 // append newline
+    add     x19, x19, #1                    // x19 = total length
+
+    // Write outbuf to stdout.
+    mov     x0, #1
+    mov     x1, x17
+    mov     x2, x19
+    mov     x8, #64                         // sys_write
+    svc     #0
+
+    cbnz    x13, .Lline_next
+    // Final line had no trailing newline; we're done.
+
+.Lexit:
+    mov     x0, #0                          // exit status 0
+    mov     x8, #93                         // sys_exit
+    svc     #0
+
+.Lline_next:
+    add     x11, x12, #1                    // skip past the newline
+    b       .Lline_loop
+</previous>
+It failed:
+<failure>
+Test `one_line` failed (stdin delivered whole; test run 4 of 38; the runs before it passed).
+stdin (4 bytes): "abc\n"
+exit status: expected 0, got 0
+stdout differs from byte 0 on (line 1, column 1 of the expected output); expected 4 bytes in total, got 4
+  expected from byte 0: "cba\n"
+  actual from byte 0:   "abc\n"
+</failure>
+Write a corrected, complete version. Same output format; output only the code.

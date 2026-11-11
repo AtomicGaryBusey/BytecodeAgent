@@ -1,0 +1,367 @@
+.section .rodata
+error_msg:
+    .ascii "error\n"
+.equ error_len, . - error_msg
+
+min_str:
+    .ascii "-9223372036854775808\n"
+.equ min_len, . - min_str
+
+zero_str:
+    .ascii "0\n"
+.equ zero_len, . - zero_str
+
+int_min_q:
+    .quad 0x8000000000000000
+
+.section .bss
+.balign 16
+input_buf:
+    .space 65536
+
+.balign 8
+stack:
+    .zero 8192
+
+.balign 8
+stack_depth:
+    .zero 8
+
+.balign 1
+error_flag:
+    .zero 1
+
+.balign 8
+out_buf:
+    .space 32
+
+.section .text
+.globl _start
+
+_start:
+    lea rsi, [rip + input_buf]
+    mov r14, 65536
+.read_loop:
+    mov rax, 0
+    mov rdi, 0
+    mov rdx, r14
+    syscall
+    test rax, rax
+    jz .read_done
+    add rsi, rax
+    sub r14, rax
+    jnz .read_loop
+.read_done:
+    lea rax, [rip + input_buf]
+    sub rsi, rax
+    je .exit_program
+
+    mov rbp, rax
+    xor r12, r12
+
+.line_loop:
+    mov r13, r12
+.find_eol:
+    cmp r12, rsi
+    jae .final_line
+    movzx edx, byte ptr [rbp + r12]
+    cmp dl, 0x0A
+    je .eol_found
+    inc r12
+    jmp .find_eol
+
+.eol_found:
+    push rbp
+    push r12
+    mov rdi, r13
+    mov rsi, r12
+    call evaluate_line
+    pop r12
+    pop rbp
+    inc r12
+    cmp r12, rsi
+    jb .line_loop
+    jmp .exit_program
+
+.final_line:
+    push rbp
+    push r12
+    mov rdi, r13
+    mov rsi, r12
+    call evaluate_line
+    pop r12
+    pop rbp
+
+.exit_program:
+    mov rax, 60
+    xor rdi, rdi
+    syscall
+
+
+evaluate_line:
+    lea rbp, [rip + input_buf]
+    mov r12, rdi
+    mov r13, rsi
+
+    mov qword ptr [stack_depth], 0
+    mov byte ptr [error_flag], 0
+
+.tok_loop:
+    cmp r12, r13
+    jae .end_eval
+
+    movzx eax, byte ptr [rbp + r12]
+    cmp al, 0x20
+    je .skip_ws
+    cmp al, 0x09
+    je .skip_ws
+
+    mov r14, r12
+    inc r12
+.tok_scan:
+    cmp r12, r13
+    jae .tok_done
+    movzx eax, byte ptr [rbp + r12]
+    cmp al, 0x20
+    je .tok_done
+    cmp al, 0x09
+    je .tok_done
+    inc r12
+    jmp .tok_scan
+
+.tok_done:
+    mov r15, r12
+    sub r15, r14
+
+    push r12
+    lea rsi, [rbp + r14]
+    mov rdx, r15
+    call process_token
+    pop r12
+
+    cmp byte ptr [error_flag], 0
+    jne .end_eval
+    jmp .tok_loop
+
+.skip_ws:
+    inc r12
+    jmp .tok_loop
+
+.end_eval:
+    cmp byte ptr [error_flag], 0
+    jne .print_err
+    cmp qword ptr [stack_depth], 1
+    jne .print_err
+    mov rax, qword ptr [stack]
+    call print_number
+    ret
+
+.print_err:
+    mov rax, 1
+    mov rdi, 1
+    lea rsi, [rip + error_msg]
+    mov rdx, error_len
+    syscall
+    ret
+
+
+process_token:
+    cmp rdx, 1
+    jne .not_op
+    movzx eax, byte ptr [rsi]
+    cmp al, '+'
+    je .apply_op
+    cmp al, '-'
+    je .apply_op
+    cmp al, '*'
+    je .apply_op
+    cmp al, '/'
+    je .apply_op
+    cmp al, '%'
+    je .apply_op
+
+.not_op:
+    xor r8, r8
+    test rdx, rdx
+    jz .invalid_tok
+
+    movzx eax, byte ptr [rsi]
+    cmp al, '-'
+    jne .no_sign
+    mov r8, 1
+    inc rsi
+    dec rdx
+.no_sign:
+    test rdx, rdx
+    jz .invalid_tok
+    cmp rdx, 18
+    ja .invalid_tok
+
+    xor r9, r9
+.parse_digit:
+    test rdx, rdx
+    jz .check_sign
+    movzx eax, byte ptr [rsi]
+    cmp al, '0'
+    jb .invalid_tok
+    cmp al, '9'
+    ja .invalid_tok
+    sub al, '0'
+    movzx r10d, al
+    imul r9, r9, 10
+    add r9, r10
+    inc rsi
+    dec rdx
+    jmp .parse_digit
+
+.check_sign:
+    mov rax, r9
+    test r8, r8
+    jz .push_value
+    neg rax
+.push_value:
+    mov r11, qword ptr [stack_depth]
+    mov qword ptr [stack + r11*8], rax
+    inc qword ptr [stack_depth]
+    ret
+
+.invalid_tok:
+    mov byte ptr [error_flag], 1
+    ret
+
+.apply_op:
+    mov r11, qword ptr [stack_depth]
+    cmp r11, 2
+    jb .op_err
+
+    mov r12, r11
+    dec r12
+    mov rbx, qword ptr [stack + r12*8]
+    mov r12, r11
+    sub r12, 2
+    mov rax, qword ptr [stack + r12*8]
+
+    sub qword ptr [stack_depth], 2
+
+    cmp al, '+'
+    je .do_add
+    cmp al, '-'
+    je .do_sub
+    cmp al, '*'
+    je .do_mul
+    cmp al, '/'
+    je .do_div
+    cmp al, '%'
+    je .do_mod
+    jmp .op_err
+
+.do_add:
+    add rax, rbx
+    jmp .push_value
+.do_sub:
+    sub rax, rbx
+    jmp .push_value
+.do_mul:
+    imul rax, rbx
+    jmp .push_value
+
+.do_div:
+    test rbx, rbx
+    jz .op_err
+    cmp rbx, -1
+    jne .do_div_norm
+    mov rcx, qword ptr [rip + int_min_q]
+    cmp rax, rcx
+    je .op_err
+.do_div_norm:
+    cqo
+    idiv rbx
+    jmp .push_value
+
+.do_mod:
+    test rbx, rbx
+    jz .op_err
+    cmp rbx, -1
+    jne .do_mod_norm
+    mov rcx, qword ptr [rip + int_min_q]
+    cmp rax, rcx
+    je .op_err
+.do_mod_norm:
+    cqo
+    idiv rbx
+    mov rax, rdx
+    jmp .push_value
+
+.op_err:
+    mov byte ptr [error_flag], 1
+    ret
+
+
+print_number:
+    test rax, rax
+    jz .print_zero
+
+    mov rcx, qword ptr [rip + int_min_q]
+    cmp rax, rcx
+    je .print_min
+
+    test rax, rax
+    xor r12, r12
+    mov r13, rax
+    jns .format
+
+    inc r12
+    neg r13
+
+.format:
+    lea rbx, [rip + out_buf]
+    lea r15, [rbx + 32]
+
+.digit_loop:
+    xor rdx, rdx
+    mov rax, r13
+    mov rcx, 10
+    div rcx
+    add dl, '0'
+    dec r15
+    mov byte ptr [r15], dl
+    mov r13, rax
+    test r13, r13
+    jnz .digit_loop
+
+    test r12, r12
+    jz .write_digits
+    dec r15
+    mov byte ptr [r15], '-'
+
+.write_digits:
+    lea rax, [rip + out_buf]
+    add rax, 32
+    sub rax, r15
+    lea r14, [r15 + rax]
+    mov byte ptr [r14], 0x0A
+
+    mov rdx, rax
+    inc rdx
+
+    mov rax, 1
+    mov rdi, 1
+    mov rsi, r15
+    syscall
+    ret
+
+.print_zero:
+    mov rax, 1
+    mov rdi, 1
+    lea rsi, [rip + zero_str]
+    mov rdx, zero_len
+    syscall
+    ret
+
+.print_min:
+    mov rax, 1
+    mov rdi, 1
+    lea rsi, [rip + min_str]
+    mov rdx, min_len
+    syscall
+    ret

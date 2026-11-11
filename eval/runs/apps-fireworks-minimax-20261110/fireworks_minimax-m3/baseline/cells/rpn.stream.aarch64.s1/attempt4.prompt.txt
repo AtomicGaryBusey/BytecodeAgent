@@ -1,0 +1,475 @@
+Write the complete program `rpn`: a static Linux executable for AArch64 (ARMv8-A, little-endian), written in assembly. There is no C library, no C runtime and no helper code: you write the entry point `_start`, every function, every table and string, and make the system calls yourself.
+
+Entry state (as the Linux kernel sets it up): execution starts at the label `_start`. sp is 16-byte aligned and points at argc = 0, followed by the NULL terminators of an empty argv, an empty envp and an empty auxiliary vector: the program gets no arguments. Every other general-purpose register (x0-x30) is zero; x30 is not a return address, so `_start` must never return with `ret`; the program ends only through the exit system call.
+
+System calls: the `svc #0` instruction, with the system call number in x8 and the arguments in x0, x1, x2; the result comes back in x0. Every other register is preserved. Exactly these four are available:
+- read = 63: read(fd = 0, buf, count) reads up to count bytes of standard input into buf; returns the number of bytes read, 0 at end of input.
+- write = 64: write(fd, buf, count) with fd 1 (standard output) or 2 (standard error); returns count.
+- exit = 93: exit(status) ends the program; the exit status is the low 8 bits of status.
+- exit_group = 94: the same as exit.
+Any other system call number or file descriptor stops the program with an error, and so does a buffer that is not entirely inside the program's memory.
+
+Memory: the program's own sections plus a stack of 1 MiB below the entry sp. There is no heap (no brk, no mmap, no malloc): put working storage in `.bss` (zero-initialised), at most 1 MiB in total, or on the stack. Code is not writable. Any access outside these areas stops the program. Each test run may execute at most 50,000,000 instructions.
+
+Output format: one complete assembly source file in GNU assembler (GNU as) syntax for AArch64. Examples: `ldr x2, [x0, x1, lsl #3]`, `ldrb w3, [x1], #1`, `stp x29, x30, [sp, #-16]!`. Comments start with `//`; do not use `;`.
+Allowed in the file:
+- Sections: `.text` (code), `.section .rodata` (read-only data), `.data` (initialised writable data), `.bss` (zero-initialised space: only `.zero`/`.space` and alignment). Instructions go in `.text` only.
+- Data directives: `.byte`, `.short`/`.2byte`, `.word` (4 bytes on this target), `.long`/`.int`/`.4byte`, `.quad`/`.8byte`, `.ascii`, `.asciz`/`.string`, `.zero`/`.space`, alignment with `.align`/`.balign`/`.p2align`, and `.globl`/`.global` (write `.globl _start`).
+- Labels `name:` in any section, and GNU local labels `1:` referenced as `1f` (next) / `1b` (previous).
+- Constants: `.equ name, value` (or `.set name, value`, or `name = value`), where value is a number or a difference of labels defined earlier in the same section (e.g. `msg_len = . - msg`). Define every constant before its first use.
+- Addressing data: `adrp x0, label` followed by `add x0, x0, :lo12:label` (or a load/store `ldr x1, [x0, :lo12:label]`); `adr x0, label` also works within +-1 MiB. Literal pools are NOT allowed: no `ldr x0, =label` and no `ldr x0, =constant` (build constants with mov/movz/movk).
+Not allowed: macros (`.macro`, `.rept`, `.irp`), conditional assembly (`.if`), `.include`, `.incbin`, `.fill`, `.org`, `.comm`/`.lcomm`, `.inst`, `.cfi_*` directives, section stacks (`.pushsection`) and any other section. No libc and no other library: there is nothing to link against, so every symbol you use must be defined in your file.
+Instruction set: ARMv8.0-A with floating point and Advanced SIMD (NEON). Not supported (rejected): CRC32, LSE atomics, dot product, half-precision, crypto (AES/SHA/PMULL) and SVE.
+Output ONLY the assembly source: no Markdown fences, no prose before or after it.
+
+Specification: Task `rpn`: evaluate one Reverse Polish Notation expression per input line and print one result line per input
+line.
+
+Lines: a line is a (possibly empty) sequence of bytes terminated by a newline 0x0A; if the input does not end
+with a newline, the bytes after the last newline form one more, final line. Empty input has no lines (prints
+nothing), and the empty remainder after a final newline is not a line.
+
+Tokens: the separators are space 0x20 and tab 0x09 only; a token is a maximal run of other bytes. Any number of
+separators may appear before, between and after tokens. A token is exactly one of:
+- an integer literal: an optional `-` followed by 1 to 18 decimal digits `0`-`9` (leading zeros allowed, `-0`
+  is 0). A literal with 19 or more digits is invalid;
+- an operator: exactly one of `+` `-` `*` `/` `%` (a lone `-` is the subtraction operator);
+- anything else (for example `1a`, `+5`, `--3`, `1.5`, `x`, or a token containing 0x0D or any other byte) is
+  invalid.
+
+Evaluation uses a stack of signed 64-bit integers, empty at the start of each line. Process tokens left to right:
+a literal is pushed; an operator pops b (top) then a, and pushes `a op b`. `+`, `-`, `*` wrap modulo 2^64 (two's
+complement). `/` is division truncated toward zero; `%` is the remainder with the sign of a (a == (a/b)*b +
+a%b), as in C. A line is an ERROR if: it contains an invalid token; an operator finds fewer than two values on
+the stack; `/` or `%` has b == 0; `/` or `%` has a == -9223372036854775808 and b == -1; or, after the last token,
+the stack does not hold exactly one value (this includes a line with no tokens, e.g. an empty line).
+
+Output per line: if it is not an error, the single remaining value in decimal (a `-` sign if negative, no `+`,
+no leading zeros; -9223372036854775808 must print correctly) followed by a newline; if it is an error, exactly
+`error\n`. After an error the rest of that line is ignored and evaluation continues with the next line.
+
+Example: input `3 4 +\n-7 2 /\n1 +\n\n5 1 2 + 4 * + 3 -` prints `7\n-3\nerror\nerror\n14\n`.
+
+Limits: the input is at most 65536 bytes; a line is at most 1000 bytes. Exit status 0.
+
+Input and output (applies to this whole task):
+- The input is the complete contents of standard input (file descriptor 0). Read it with `read` until `read`
+  returns 0 (end of input). A `read` may return FEWER bytes than requested, at any position (in the middle of a
+  line, a token or a group of bytes), so keep calling it; only a return value of 0 means end of input.
+- Write the output to standard output (file descriptor 1). Only the bytes this task describes may appear on
+  standard output (standard error is ignored). Every output byte must be written before the program exits.
+- Finish with `exit` (or `exit_group`) and the exit status this task gives. The program must not run off the end
+  of its code or crash.
+
+Your previous attempt was:
+<previous>
+.equ SYS_read, 63
+.equ SYS_write, 64
+.equ SYS_exit, 93
+
+.section .bss
+.align 4
+input_buf:
+    .skip 65536
+.align 3
+val_stack:
+    .skip 8192
+.align 3
+num_buf:
+    .skip 32
+
+.section .rodata
+err_msg:
+    .ascii "error\n"
+err_len = . - err_msg
+nl_msg:
+    .ascii "\n"
+.align 3
+min_str:
+    .ascii "-9223372036854775808"
+min_len = . - min_str
+
+.section .text
+.globl _start
+_start:
+    adrp x19, input_buf
+    add x19, x19, :lo12:input_buf
+    mov x20, #0
+    mov x24, #65536
+
+.Lread_loop:
+    mov x0, #0
+    add x1, x19, x20
+    sub x2, x24, x20
+    mov x8, #SYS_read
+    svc #0
+    cmp x0, #0
+    b.le .Lread_done
+    add x20, x20, x0
+    cmp x20, x24
+    b.lt .Lread_loop
+
+.Lread_done:
+    add x21, x19, x20
+    mov x22, x19
+
+.Lline_loop:
+    cmp x22, x21
+    b.ge .Lall_done
+    mov x23, x22
+
+.Lfind_nl:
+    cmp x23, x21
+    b.ge .Lno_nl
+    ldrb w0, [x23]
+    cmp w0, #10
+    b.eq .Lfound_nl
+    add x23, x23, #1
+    b .Lfind_nl
+
+.Lfound_nl:
+    mov x0, x22
+    mov x1, x23
+    bl process_line
+    add x22, x23, #1
+    b .Lline_loop
+
+.Lno_nl:
+    cmp x22, x21
+    b.eq .Lall_done
+    mov x0, x22
+    mov x1, x21
+    bl process_line
+
+.Lall_done:
+    mov x0, #0
+    mov x8, #SYS_exit
+    svc #0
+
+
+process_line:
+    stp x29, x30, [sp, #-16]!
+    mov x29, sp
+    stp x19, x20, [sp, #-16]!
+    stp x21, x22, [sp, #-16]!
+
+    mov x19, x0
+    mov x20, x1
+    mov x21, #0
+    adrp x22, val_stack
+    add x22, x22, :lo12:val_stack
+    mov x9, x19
+
+.Lpl_loop:
+.Lpl_skip:
+    cmp x9, x20
+    b.ge .Lpl_end
+    ldrb w0, [x9]
+    cmp w0, #0x20
+    b.eq .Lpl_ws
+    cmp w0, #0x09
+    b.eq .Lpl_ws
+    mov x10, x9
+
+.Lpl_tok_loop:
+    cmp x9, x20
+    b.ge .Lpl_tok_end
+    ldrb w0, [x9]
+    cmp w0, #0x20
+    b.eq .Lpl_tok_end
+    cmp w0, #0x09
+    b.eq .Lpl_tok_end
+    add x9, x9, #1
+    b .Lpl_tok_loop
+
+.Lpl_tok_end:
+    mov x0, x10
+    mov x1, x9
+    bl classify
+    cmp w0, #0
+    b.eq .Lpl_number
+    cmp w0, #1
+    b.eq .Lpl_operator
+    b .Lpl_err
+
+.Lpl_ws:
+    add x9, x9, #1
+    b .Lpl_skip
+
+.Lpl_number:
+    lsl x11, x21, #3
+    str x2, [x22, x11]
+    add x21, x21, #1
+    b .Lpl_loop
+
+.Lpl_operator:
+    cmp x21, #2
+    b.lt .Lpl_err
+    sub x21, x21, #1
+    lsl x11, x21, #3
+    ldr x4, [x22, x11]
+    sub x21, x21, #1
+    lsl x11, x21, #3
+    ldr x5, [x22, x11]
+    cmp w3, #'+'
+    b.eq .Lpl_add
+    cmp w3, #'-'
+    b.eq .Lpl_sub
+    cmp w3, #'*'
+    b.eq .Lpl_mul
+    cmp w3, #'/'
+    b.eq .Lpl_div
+    b .Lpl_mod
+
+.Lpl_add:
+    add x2, x5, x4
+    b .Lpl_push
+.Lpl_sub:
+    sub x2, x5, x4
+    b .Lpl_push
+.Lpl_mul:
+    mul x2, x5, x4
+    b .Lpl_push
+
+.Lpl_div:
+    cbnz x4, .Lpl_div2
+    b .Lpl_err
+.Lpl_div2:
+    movz x14, #0x8000, lsl #48
+    cmp x5, x14
+    b.ne .Lpl_div3
+    cmn x4, #1
+    b.eq .Lpl_err
+.Lpl_div3:
+    sdiv x2, x5, x4
+    b .Lpl_push
+
+.Lpl_mod:
+    cbnz x4, .Lpl_mod2
+    b .Lpl_err
+.Lpl_mod2:
+    movz x14, #0x8000, lsl #48
+    cmp x5, x14
+    b.ne .Lpl_mod3
+    cmn x4, #1
+    b.eq .Lpl_err
+.Lpl_mod3:
+    sdiv x13, x5, x4
+    msub x2, x13, x4, x5
+    b .Lpl_push
+
+.Lpl_push:
+    lsl x11, x21, #3
+    str x2, [x22, x11]
+    add x21, x21, #1
+    b .Lpl_loop
+
+.Lpl_end:
+    cmp x21, #1
+    b.ne .Lpl_err
+    sub x21, x21, #1
+    ldr x0, [x22, x21, lsl #3]
+    bl print_int
+    b .Lpl_ret
+
+.Lpl_err:
+    mov x0, #1
+    adrp x1, err_msg
+    add x1, x1, :lo12:err_msg
+    mov x2, #err_len
+    mov x8, #SYS_write
+    svc #0
+
+.Lpl_ret:
+    ldp x21, x22, [sp], #16
+    ldp x19, x20, [sp], #16
+    ldp x29, x30, [sp], #16
+    ret
+
+
+classify:
+    sub x9, x1, x0
+    cbz x9, .Lcl_err
+    ldrb w10, [x0]
+    cmp w10, #'+'
+    b.eq .Lcl_plus_op
+    cmp w10, #'-'
+    b.eq .Lcl_minus_check
+    cmp w10, #'*'
+    b.eq .Lcl_star_op
+    cmp w10, #'/'
+    b.eq .Lcl_slash_op
+    cmp w10, #'%'
+    b.eq .Lcl_percent_op
+    cmp w10, #'0'
+    b.lt .Lcl_err
+    cmp w10, #'9'
+    b.gt .Lcl_err
+    mov x16, xzr
+    mov x11, x0
+    b .Lcl_digit_len
+
+.Lcl_minus_check:
+    cmp x9, #1
+    b.eq .Lcl_minus_op
+    mov x16, #1
+    mov x11, x0
+    add x11, x11, #1
+    sub x9, x9, #1
+
+.Lcl_digit_len:
+    cmp x9, #0
+    b.eq .Lcl_err
+    cmp x9, #19
+    b.ge .Lcl_err
+    mov x14, xzr
+    mov x15, #10
+
+.Lcl_digit_loop:
+    cmp x11, x1
+    b.eq .Lcl_digit_done
+    ldrb w13, [x11]
+    cmp w13, #'0'
+    b.lt .Lcl_err
+    cmp w13, #'9'
+    b.gt .Lcl_err
+    mul x14, x14, x15
+    and w13, w13, #0xf
+    add x14, x14, x13
+    add x11, x11, #1
+    b .Lcl_digit_loop
+
+.Lcl_digit_done:
+    cbz x16, .Lcl_positive
+    neg x14, x14
+
+.Lcl_positive:
+    mov x2, x14
+    mov w0, #0
+    ret
+
+.Lcl_plus_op:
+    cmp x9, #1
+    b.ne .Lcl_err
+    mov w3, #'+'
+    mov w0, #1
+    ret
+
+.Lcl_minus_op:
+    mov w3, #'-'
+    mov w0, #1
+    ret
+
+.Lcl_star_op:
+    cmp x9, #1
+    b.ne .Lcl_err
+    mov w3, #'*'
+    mov w0, #1
+    ret
+
+.Lcl_slash_op:
+    cmp x9, #1
+    b.ne .Lcl_err
+    mov w3, #'/'
+    mov w0, #1
+    ret
+
+.Lcl_percent_op:
+    cmp x9, #1
+    b.ne .Lcl_err
+    mov w3, #'%'
+    mov w0, #1
+    ret
+
+.Lcl_err:
+    mov w0, #2
+    ret
+
+
+print_int:
+    stp x29, x30, [sp, #-16]!
+    mov x29, sp
+
+    movz x14, #0x8000, lsl #48
+    cmp x0, x14
+    b.ne .Lpi_not_min
+
+    mov x0, #1
+    adrp x1, min_str
+    add x1, x1, :lo12:min_str
+    mov x2, #min_len
+    mov x8, #SYS_write
+    svc #0
+    b .Lpi_newline
+
+.Lpi_not_min:
+    mov x3, xzr
+    cbz x0, .Lpi_zero
+
+    cmp x0, #0
+    b.gt .Lpi_doit
+    mov x3, #1
+    neg x0, x0
+    b .Lpi_doit
+
+.Lpi_zero:
+    adrp x4, num_buf
+    add x4, x4, :lo12:num_buf
+    add x5, x4, #19
+    sub x5, x5, #1
+    mov w8, #'0'
+    strb w8, [x5]
+    b .Lpi_sign
+
+.Lpi_doit:
+    adrp x4, num_buf
+    add x4, x4, :lo12:num_buf
+    add x5, x4, #19
+    mov x6, #10
+
+.Lpi_dloop:
+    udiv x7, x0, x6
+    msub x8, x7, x6, x0
+    add w8, w8, #'0'
+    sub x5, x5, #1
+    strb w8, [x5]
+    mov x0, x7
+    cbnz x0, .Lpi_dloop
+
+.Lpi_sign:
+    cbz x3, .Lpi_no_sign
+    sub x5, x5, #1
+    mov w8, #'-'
+    strb w8, [x5]
+
+.Lpi_no_sign:
+    add x4, x4, #19
+    sub x2, x4, x5
+
+    mov x0, #1
+    mov x1, x5
+    mov x8, #SYS_write
+    svc #0
+
+.Lpi_newline:
+    mov x0, #1
+    adrp x1, nl_msg
+    add x1, x1, :lo12:nl_msg
+    mov x2, #1
+    mov x8, #SYS_write
+    svc #0
+
+    ldp x29, x30, [sp], #16
+    ret
+</previous>
+It failed:
+<failure>
+Test `one_digit_no_nl` failed (stdin delivered whole; test run 3 of 46; the runs before it passed).
+stdin (1 bytes): "7"
+The program stopped with a fault (oob): 1-byte read of unmapped memory at 0x1, pc=0x4000cc at pc 0x4000cc [the faulting instruction is line 102: `ldrb w0, [x9]`]
+exit status: expected 0, got none (the program did not exit)
+stdout differs from byte 0 on (line 1, column 1 of the expected output); expected 2 bytes in total, got 0
+  expected from byte 0: "7\n"
+  actual from byte 0:   (end of output)
+</failure>
+Write a corrected, complete version. Same output format; output only the code.

@@ -1,0 +1,222 @@
+.section .text
+.globl _start
+
+// Constants
+.equ INPUT_MAX, 65536
+.equ MATCH_TABLE_SIZE, 65536
+.equ TAPE_SIZE, 30000
+.equ OUTPUT_MAX, 65536
+.equ BRACKET_STACK_MAX, 1000
+
+// System call numbers
+.equ SYS_READ, 63
+.equ SYS_WRITE, 64
+.equ SYS_EXIT, 93
+
+_start:
+    // Read all input into input_buffer
+    adrp x19, input_buffer
+    add x19, x19, :lo12:input_buffer
+    mov x20, #0                     // total_bytes_read
+    mov x21, #INPUT_MAX             // remaining
+
+read_loop:
+    mov x8, #SYS_READ
+    mov x0, #0                      // fd = stdin
+    add x1, x19, x20                // buf = input_buffer + total_bytes_read
+    mov x2, x21                     // count = remaining
+    svc #0
+    cbz x0, read_done               // EOF
+    add x20, x20, x0                // total_bytes_read += bytes_read
+    sub x21, x21, x0                // remaining -= bytes_read
+    cbnz x21, read_loop
+read_done:
+    // x20 = total bytes read
+
+    // Find first '!' (0x21)
+    mov x22, x19                    // current pointer
+    mov x23, x20                    // bytes left
+    mov x24, #0                     // program_length (will be index of '!' or total)
+find_bang:
+    cbz x23, no_bang
+    ldrb w0, [x22], #1
+    sub x23, x23, #1
+    add x24, x24, #1
+    cmp w0, #0x21                   // '!'
+    b.ne find_bang
+    // Found '!': program_length = x24 - 1, input_data_start = x22, input_data_length = x23
+    sub x21, x24, #1                // program_length
+    b bracket_check
+
+no_bang:
+    mov x21, x20                    // program_length = total_read
+    mov x22, xzr                    // input_data_start = NULL
+    mov x23, #0                     // input_data_length = 0
+
+bracket_check:
+    // Build match_table and validate brackets
+    adrp x25, match_table
+    add x25, x25, :lo12:match_table
+    adrp x26, bracket_stack
+    add x26, x26, :lo12:bracket_stack
+    mov x27, #0                     // stack pointer (number of elements)
+    mov x28, #0                     // pc index
+
+scan_loop:
+    cmp x28, x21
+    b.ge scan_done
+    ldrb w0, [x19, x28]
+    cmp w0, #'['
+    b.eq push_bracket
+    cmp w0, #']'
+    b.eq pop_bracket
+    add x28, x28, #1
+    b scan_loop
+
+push_bracket:
+    str w28, [x26, x27, lsl #2]
+    add x27, x27, #1
+    add x28, x28, #1
+    b scan_loop
+
+pop_bracket:
+    cbz x27, bracket_error
+    sub x27, x27, #1
+    ldr w3, [x26, x27, lsl #2]      // matching '[' index
+    str w28, [x25, x3, lsl #2]      // match_table['['] = ']'
+    str w3, [x25, x28, lsl #2]      // match_table[']'] = '['
+    add x28, x28, #1
+    b scan_loop
+
+bracket_error:
+    mov x8, #SYS_EXIT
+    mov x0, #1
+    svc #0
+
+scan_done:
+    cbnz x27, bracket_error
+
+    // Execution setup
+    adrp x26, tape
+    add x26, x26, :lo12:tape
+    mov x27, #0                     // tape_ptr
+    mov x28, #0                     // pc
+    mov x29, #0                     // ip (input pointer)
+    adrp x9, output_buffer
+    add x9, x9, :lo12:output_buffer
+    mov x30, #0                     // op (output pointer)
+
+exec_loop:
+    cmp x28, x21
+    b.ge exec_done
+    ldrb w0, [x19, x28]
+
+    cmp w0, #'>'
+    b.eq cmd_right
+    cmp w0, #'<'
+    b.eq cmd_left
+    cmp w0, #'+'
+    b.eq cmd_inc
+    cmp w0, #'-'
+    b.eq cmd_dec
+    cmp w0, #'.'
+    b.eq cmd_out
+    cmp w0, #','
+    b.eq cmd_in
+    cmp w0, #'['
+    b.eq cmd_jz
+    cmp w0, #']'
+    b.eq cmd_jnz
+
+    // Comment: ignore
+    add x28, x28, #1
+    b exec_loop
+
+cmd_right:
+    add x27, x27, #1
+    add x28, x28, #1
+    b exec_loop
+
+cmd_left:
+    sub x27, x27, #1
+    add x28, x28, #1
+    b exec_loop
+
+cmd_inc:
+    ldrb w1, [x26, x27]
+    add w1, w1, #1
+    strb w1, [x26, x27]
+    add x28, x28, #1
+    b exec_loop
+
+cmd_dec:
+    ldrb w1, [x26, x27]
+    sub w1, w1, #1
+    strb w1, [x26, x27]
+    add x28, x28, #1
+    b exec_loop
+
+cmd_out:
+    ldrb w1, [x26, x27]
+    strb w1, [x9, x30]
+    add x30, x30, #1
+    add x28, x28, #1
+    b exec_loop
+
+cmd_in:
+    cmp x29, x23
+    b.ge cmd_in_eof
+    ldrb w1, [x22, x29]
+    add x29, x29, #1
+    strb w1, [x26, x27]
+    add x28, x28, #1
+    b exec_loop
+cmd_in_eof:
+    strb wzr, [x26, x27]
+    add x28, x28, #1
+    b exec_loop
+
+cmd_jz:
+    ldrb w1, [x26, x27]
+    cbnz w1, cmd_jz_nojump
+    ldr w1, [x25, x28, lsl #2]
+    mov x28, x1
+cmd_jz_nojump:
+    add x28, x28, #1
+    b exec_loop
+
+cmd_jnz:
+    ldrb w1, [x26, x27]
+    cbz w1, cmd_jnz_nojump
+    ldr w1, [x25, x28, lsl #2]
+    mov x28, x1
+cmd_jnz_nojump:
+    add x28, x28, #1
+    b exec_loop
+
+exec_done:
+    // Write output
+    cbz x30, exit_success
+    mov x8, #SYS_WRITE
+    mov x0, #1
+    mov x1, x9
+    mov x2, x30
+    svc #0
+
+exit_success:
+    mov x8, #SYS_EXIT
+    mov x0, #0
+    svc #0
+
+.section .bss
+.align 3
+input_buffer:
+    .zero INPUT_MAX
+match_table:
+    .zero MATCH_TABLE_SIZE * 4
+tape:
+    .zero TAPE_SIZE
+output_buffer:
+    .zero OUTPUT_MAX
+bracket_stack:
+    .zero BRACKET_STACK_MAX * 4

@@ -1,0 +1,1 @@
+Cells superseded on 2026-11-11 and re-run from scratch: the stream path refused AArch64 `.align 16` (64 KiB) above its old page-alignment cap, although GNU as and the harness linker accept it. The refusal stopped generation at that line, so the answers could not be rescored. Fixed in bca/stream.py (_MAX_ALIGN_LOG).

@@ -351,3 +351,21 @@ def test_claude_subject_sends_an_oversized_prompt_on_stdin(tmp_path):
     r = subj.complete(big)
     assert r.ok and r.text == f"{len(big)} False"
     assert subj.complete("hi").text == "2 True"
+
+
+def test_raw_stream_is_gzipped_after_the_call_and_byte_identical(tmp_path):
+    """Raw streams are kept gzipped (2026-11-11: per-token Fireworks streams reached 17 MB an attempt)."""
+    import gzip
+
+    from bca.liveeval.runner import compress_raw
+
+    src = tmp_path / "attempt1.raw.jsonl"
+    body = "".join(f'{{"type":"delta","n":{i}}}\n' for i in range(5000))
+    src.write_text(body)
+    dst = compress_raw(src)
+    assert dst == tmp_path / "attempt1.raw.jsonl.gz" and not src.exists()
+    assert gzip.decompress(dst.read_bytes()).decode() == body
+    first = dst.read_bytes()
+    src.write_text(body)
+    assert compress_raw(src).read_bytes() == first  # deterministic: no timestamp in the header
+    assert compress_raw(tmp_path / "missing.raw.jsonl") is None

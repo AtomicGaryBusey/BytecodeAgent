@@ -1,0 +1,228 @@
+//
+// hexdump: print a hex+ASCII dump of stdin, every row printed in full,
+// followed by a final offset line.  AArch64 Linux syscalls only, no libc.
+//
+
+        .globl  _start
+
+        .section .bss
+        .balign 16
+buf_in:
+        .space  65536
+        .balign 16
+line_buf:
+        .space  128
+
+        .section .text
+
+// ---------------------------------------------------------------------------
+// hex_nibble: low 4 bits of w0 -> ASCII hex digit in w0
+// ---------------------------------------------------------------------------
+hex_nibble:
+        and     w0, w0, #0xf
+        cmp     w0, #9
+        b.gt    .Ln_let
+        add     w0, w0, #'0'
+        ret
+.Ln_let:
+        sub     w0, w0, #10
+        add     w0, w0, #'a'
+        ret
+
+// ---------------------------------------------------------------------------
+// hex8_to_buf: writes "xx " at *x0, advances x0.  x0=buf, w1=byte.
+// ---------------------------------------------------------------------------
+hex8_to_buf:
+        stp     x29, x30, [sp, #-16]!
+        mov     x29, sp
+        mov     x9, x0
+        mov     w10, w1
+
+        lsr     w0, w10, #4
+        bl      hex_nibble
+        strb    w0, [x9], #1
+
+        and     w0, w10, #0xf
+        bl      hex_nibble
+        strb    w0, [x9], #1
+
+        mov     w0, #' '
+        strb    w0, [x9], #1
+
+        mov     x0, x9
+        ldp     x29, x30, [sp], #16
+        ret
+
+// ---------------------------------------------------------------------------
+// hex32_to_buf: writes 8 lowercase hex digits at *x0, advances x0.
+// x0=buf, w1=value.
+// ---------------------------------------------------------------------------
+hex32_to_buf:
+        stp     x29, x30, [sp, #-16]!
+        mov     x29, sp
+        mov     x9, x0
+        mov     w10, w1
+        mov     w11, #28
+.Lh32_loop:
+        lsr     w0, w10, w11
+        and     w0, w0, #0xf
+        bl      hex_nibble
+        strb    w0, [x9], #1
+        cbz     w11, .Lh32_done
+        sub     w11, w11, #4
+        b       .Lh32_loop
+.Lh32_done:
+        mov     x0, x9
+        ldp     x29, x30, [sp], #16
+        ret
+
+// ---------------------------------------------------------------------------
+// _start: read all of stdin into buf_in (max 65536 bytes), then walk it
+// 16 bytes at a time, building each line in line_buf and writing it.
+// ---------------------------------------------------------------------------
+_start:
+        adrp    x19, buf_in
+        add     x19, x19, :lo12:buf_in
+
+        // ---- read all of stdin ----
+        mov     x20, #0                  // total bytes read
+        mov     x9,  #65536
+.Lr_loop:
+        cmp     x20, x9
+        b.ge    .Lr_done
+        mov     x0,  #0
+        add     x1, x19, x20
+        sub     x2, x9, x20
+        mov     x8,  #63                // read
+        svc     #0
+        cbz     x0, .Lr_done
+        tbnz    x0, #63, .Lr_done       // negative => stop
+        add     x20, x20, x0
+        b       .Lr_loop
+.Lr_done:
+
+        // ---- for each 16-byte row, build and write the line ----
+        mov     x21, #0                  // current offset
+.Lrow_loop:
+        cmp     x21, x20
+        b.ge    .Lfinal
+
+        sub     x22, x20, x21            // bytes remaining
+        cmp     x22, #16
+        b.le    .Ln_ok
+        mov     x22, #16
+.Ln_ok:
+        adrp    x23, line_buf
+        add     x23, x23, :lo12:line_buf
+        mov     x24, x23                 // write pointer in line_buf
+
+        // offset -> 8 hex digits
+        mov     x0, x24
+        mov     w1, w21
+        bl      hex32_to_buf
+        mov     x24, x0
+
+        // two spaces after the offset
+        mov     w0, #' '
+        strb    w0, [x24], #1
+        strb    w0, [x24], #1
+
+        // 16 hex byte slots
+        mov     x25, #0
+.Lslot_loop:
+        cmp     x25, #16
+        b.ge    .Lslots_done
+
+        cmp     x25, x22
+        b.ge    .Lslot_empty
+
+        add     x0, x19, x21
+        add     x0, x0, x25
+        ldrb    w1, [x0]
+        mov     x0, x24
+        bl      hex8_to_buf
+        mov     x24, x0
+        b       .Lslot_cont
+
+.Lslot_empty:
+        mov     w0, #' '
+        strb    w0, [x24], #1
+        strb    w0, [x24], #1
+        strb    w0, [x24], #1
+
+.Lslot_cont:
+        cmp     x25, #7
+        b.ne    .Lslot_nox
+        mov     w0, #' '
+        strb    w0, [x24], #1
+.Lslot_nox:
+        add     x25, x25, #1
+        b       .Lslot_loop
+
+.Lslots_done:
+        // " |"
+        mov     w0, #' '
+        strb    w0, [x24], #1
+        mov     w0, #'|'
+        strb    w0, [x24], #1
+
+        // n printable chars (or '.')
+        mov     x25, #0
+.Lchar_loop:
+        cmp     x25, x22
+        b.ge    .Lchars_done
+
+        add     x0, x19, x21
+        add     x0, x0, x25
+        ldrb    w1, [x0]
+
+        cmp     w1, #0x20
+        b.lt    .Ldot
+        cmp     w1, #0x7e
+        b.gt    .Ldot
+        b       .Lstore
+.Ldot:
+        mov     w1, #'.'
+.Lstore:
+        strb    w1, [x24], #1
+        add     x25, x25, #1
+        b       .Lchar_loop
+
+.Lchars_done:
+        mov     w0, #'|'
+        strb    w0, [x24], #1
+        mov     w0, #'\n'
+        strb    w0, [x24], #1
+
+        // write the line
+        sub     x2, x24, x23
+        mov     x1, x23
+        mov     x0, #1
+        mov     x8, #64                 // write
+        svc     #0
+
+        add     x21, x21, x22
+        b       .Lrow_loop
+
+// ---- final offset line: total byte count, hex, newline ----
+.Lfinal:
+        adrp    x23, line_buf
+        add     x23, x23, :lo12:line_buf
+        mov     x24, x23
+
+        mov     x0, x24
+        mov     w1, w20
+        bl      hex32_to_buf
+        mov     x24, x0
+        mov     w0, #'\n'
+        strb    w0, [x24], #1
+
+        sub     x2, x24, x23
+        mov     x1, x23
+        mov     x0, #1
+        mov     x8, #64
+        svc     #0
+
+        mov     x0, #0
+        mov     x8, #93                 // exit
+        svc     #0

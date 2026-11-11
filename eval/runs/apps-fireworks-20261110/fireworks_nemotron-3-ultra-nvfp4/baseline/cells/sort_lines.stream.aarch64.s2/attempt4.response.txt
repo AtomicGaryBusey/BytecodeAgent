@@ -1,0 +1,359 @@
+.globl _start
+
+.equ STDIN_FD, 0
+.equ STDOUT_FD, 1
+.equ STDERR_FD, 2
+
+.equ SYS_READ, 63
+.equ SYS_WRITE, 64
+.equ SYS_EXIT, 93
+.equ SYS_EXIT_GROUP, 94
+
+.equ MAX_INPUT, 32768
+.equ MAX_LINES, 1000
+.equ LINE_DESC_SIZE, 16   // 8 bytes pointer + 8 bytes length
+
+.section .bss
+.align 12
+input_buffer:
+    .space MAX_INPUT
+line_descriptors:
+    .space MAX_LINES * LINE_DESC_SIZE
+line_count:
+    .space 8
+
+.section .text
+.align 4
+
+// _start: entry point
+_start:
+    // Read all input into input_buffer
+    bl read_all_input
+    // x0 = total bytes read
+    cbz x0, exit_success   // empty input -> nothing to do
+
+    // Parse lines
+    mov x1, x0             // x1 = total bytes
+    bl parse_lines
+    // x0 = number of lines
+    cbz x0, exit_success   // no lines
+
+    // Sort lines
+    bl sort_lines
+
+    // Write sorted lines
+    bl write_sorted_lines
+
+exit_success:
+    mov x0, #0
+    mov x8, #SYS_EXIT
+    svc #0
+
+// read_all_input: reads from stdin until EOF into input_buffer
+// Returns total bytes read in x0
+read_all_input:
+    // Use x19 as buffer pointer, x20 as total read, x21 as remaining capacity
+    adrp x19, input_buffer
+    add x19, x19, :lo12:input_buffer
+    mov x20, #0
+    mov x21, #MAX_INPUT
+
+read_loop:
+    // Check if buffer full
+    cmp x21, #0
+    beq read_done
+
+    // read(fd=0, buf=x19, count=x21)
+    mov x0, #STDIN_FD
+    mov x1, x19
+    mov x2, x21
+    mov x8, #SYS_READ
+    svc #0
+
+    // x0 = bytes read (or -errno)
+    cbz x0, read_done      // EOF
+    // Check for error (negative)
+    cmp x0, #0
+    blt read_error
+
+    // Update pointers
+    add x19, x19, x0
+    add x20, x20, x0
+    sub x21, x21, x0
+    b read_loop
+
+read_done:
+    mov x0, x20
+    ret
+
+read_error:
+    // Exit with error status 1
+    mov x0, #1
+    mov x8, #SYS_EXIT
+    svc #0
+
+// parse_lines: parse input_buffer into line_descriptors
+// x1 = total bytes in buffer
+// Returns number of lines in x0
+parse_lines:
+    // x19 = current pointer in buffer
+    adrp x19, input_buffer
+    add x19, x19, :lo12:input_buffer
+    // x20 = end of buffer
+    add x20, x19, x1
+    // x21 = line_descriptors array pointer
+    adrp x21, line_descriptors
+    add x21, x21, :lo12:line_descriptors
+    // x22 = line count
+    mov x22, #0
+    // x23 = start of current line
+    mov x23, x19
+
+parse_loop:
+    cmp x19, x20
+    b.hs parse_check_last_line   // unsigned >=
+
+    // Load byte
+    ldrb w24, [x19]
+    cmp w24, #0x0A   // '\n'
+    b.ne parse_next_char
+
+    // Found newline: line from x23 to x19 (exclusive)
+    // Length = x19 - x23
+    sub x24, x19, x23
+    // Store descriptor: pointer = x23, length = x24
+    str x23, [x21]
+    str x24, [x21, #8]
+    add x21, x21, #LINE_DESC_SIZE
+    add x22, x22, #1
+
+    // Next line starts after newline
+    add x23, x19, #1
+
+parse_next_char:
+    add x19, x19, #1
+    b parse_loop
+
+parse_check_last_line:
+    // If buffer doesn't end with newline, last line from x23 to x20
+    cmp x23, x20
+    b.hs parse_done
+    sub x24, x20, x23
+    str x23, [x21]
+    str x24, [x21, #8]
+    add x22, x22, #1
+
+parse_done:
+    // Store line count
+    adrp x25, line_count
+    add x25, x25, :lo12:line_count
+    str x22, [x25]
+    mov x0, x22
+    ret
+
+// sort_lines: sort line_descriptors array using insertion sort
+// Uses line_count from memory
+sort_lines:
+    // Load line count
+    adrp x19, line_count
+    add x19, x19, :lo12:line_count
+    ldr x20, [x19]   // n
+    cbz x20, sort_done
+    // Array pointer
+    adrp x21, line_descriptors
+    add x21, x21, :lo12:line_descriptors
+
+    // Insertion sort: for i = 1 to n-1
+    mov x22, #1          // i
+sort_outer_loop:
+    cmp x22, x20
+    b.hs sort_done
+
+    // Save current element (key) at index i
+    lsl x23, x22, #4
+    add x23, x21, x23
+    ldr x24, [x23]       // key pointer
+    ldr x25, [x23, #8]   // key length
+
+    // j = i - 1
+    sub x26, x22, #1     // j
+
+sort_inner_loop:
+    // Compare element at j with key
+    // If j < 0, break
+    cbz x26, sort_inner_done   // j == 0? Actually we need to check if j < 0, but j is unsigned. We'll use signed comparison.
+    // We'll do a signed compare: if j < 0, break. But j is unsigned, so we can check if x26 > x20? No, j goes down to 0.
+    // Better: use a signed register for j. Let's use x26 as signed.
+    // We'll change: after sub x26, x22, #1, x26 is i-1. For i=1, x26=0. For i=0? i starts at 1.
+    // We'll loop while j >= 0 and lines[j] > key.
+    // Since x26 is unsigned, we can't directly check j >= 0. We'll use a signed comparison by checking if x26 > x20? No.
+    // Instead, we can use a signed register: we'll keep j in x26 and use `cmp x26, #0` with `b.lt` for signed less than 0.
+    // But x26 is 64-bit. We'll do:
+    //   cmp x26, #0
+    //   b.lt sort_inner_done
+    // However, x26 is unsigned, but cmp sets flags for signed. So b.lt works for signed less than 0.
+    // But x26 will never be negative because we stop at 0. Actually, when j becomes -1, x26 will be 0xFFFFFFFFFFFFFFFF, which is negative signed.
+    // So we can do:
+    //   subs x26, x26, #1  // decrement j
+    //   b.lt sort_inner_done
+    // But we need to compare before decrement? Let's restructure.
+
+    // We'll do a standard insertion sort inner loop:
+    // j = i - 1
+    // while j >= 0 and lines[j] > key:
+    //     move lines[j] to lines[j+1]
+    //     j--
+    // lines[j+1] = key
+
+    // We'll implement with a pre-check.
+
+    // Actually, let's do:
+    // mov x26, x22
+    // sub x26, x26, #1   // j = i-1
+    // b sort_inner_check
+    // sort_inner_loop_body:
+    //   // shift element j to j+1
+    //   ...
+    //   sub x26, x26, #1
+    // sort_inner_check:
+    //   cmp x26, #0
+    //   b.lt sort_inner_done
+    //   // compare lines[j] with key
+    //   ...
+    //   b.le sort_inner_done
+    //   b sort_inner_loop_body
+
+    // But we already have x26 = j. Let's just use a label.
+
+    // We'll jump to check first.
+    b sort_inner_check
+
+sort_inner_loop_body:
+    // Shift element j to j+1
+    // descriptor at j
+    lsl x27, x26, #4
+    add x27, x21, x27
+    ldr x28, [x27]
+    ldr x29, [x27, #8]
+    // store at j+1
+    lsl x30, x26, #4
+    add x30, x21, x30
+    add x30, x30, #LINE_DESC_SIZE
+    str x28, [x30]
+    str x29, [x30, #8]
+
+    sub x26, x26, #1
+
+sort_inner_check:
+    // Check if j < 0 (signed)
+    cmp x26, #0
+    b.lt sort_inner_done
+
+    // Compare lines[j] with key
+    lsl x27, x26, #4
+    add x27, x21, x27
+    ldr x28, [x27]       // element pointer
+    ldr x29, [x27, #8]   // element length
+
+    // memcmp(element, key)
+    mov x0, x28
+    mov x1, x24
+    mov x2, x29
+    mov x3, x25
+    bl memcmp_lines
+    // x0 = result
+    cmp x0, #0
+    b.le sort_inner_done   // element <= key, stop
+
+    b sort_inner_loop_body
+
+sort_inner_done:
+    // Insert key at j+1
+    add x26, x26, #1   // j+1
+    lsl x27, x26, #4
+    add x27, x21, x27
+    str x24, [x27]
+    str x25, [x27, #8]
+
+    add x22, x22, #1
+    b sort_outer_loop
+
+sort_done:
+    ret
+
+// memcmp_lines: compare two lines
+// x0 = ptr1, x1 = ptr2, x2 = len1, x3 = len2
+// Returns: x0 <0, 0, >0 (like memcmp)
+memcmp_lines:
+    // Use x4 as min_len, x5 as index
+    cmp x2, x3
+    csel x4, x2, x3, lt   // min_len = min(len1, len2)
+    mov x5, #0
+    cbz x4, memcmp_len_check
+
+memcmp_loop:
+    ldrb w6, [x0, x5]
+    ldrb w7, [x1, x5]
+    cmp w6, w7
+    b.ne memcmp_diff
+    add x5, x5, #1
+    cmp x5, x4
+    b.lt memcmp_loop
+
+memcmp_len_check:
+    // All min_len bytes equal, compare lengths
+    sub x0, x2, x3
+    ret
+
+memcmp_diff:
+    // Return difference as signed byte
+    sub w0, w6, w7
+    sxtw x0, w0
+    ret
+
+// write_sorted_lines: write all lines in sorted order to stdout
+write_sorted_lines:
+    // Load line count
+    adrp x19, line_count
+    add x19, x19, :lo12:line_count
+    ldr x20, [x19]   // n
+    cbz x20, write_done
+
+    // Array pointer
+    adrp x21, line_descriptors
+    add x21, x21, :lo12:line_descriptors
+
+    mov x22, #0      // index
+write_loop:
+    cmp x22, x20
+    b.hs write_done
+
+    // Get descriptor
+    lsl x23, x22, #4
+    add x23, x21, x23
+    ldr x1, [x23]     // pointer
+    ldr x2, [x23, #8] // length
+
+    // Write line
+    mov x0, #STDOUT_FD
+    mov x8, #SYS_WRITE
+    svc #0
+
+    // Write newline
+    adrp x24, newline_char
+    add x24, x24, :lo12:newline_char
+    mov x0, #STDOUT_FD
+    mov x1, x24
+    mov x2, #1
+    mov x8, #SYS_WRITE
+    svc #0
+
+    add x22, x22, #1
+    b write_loop
+
+write_done:
+    ret
+
+.section .rodata
+newline_char:
+    .byte 0x0A

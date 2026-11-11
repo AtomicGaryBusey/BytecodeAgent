@@ -1,0 +1,255 @@
+.globl _start
+
+.equ SYS_READ, 0
+.equ SYS_WRITE, 1
+.equ SYS_EXIT, 60
+.equ STDIN, 0
+.equ STDOUT, 1
+.equ MAX_INPUT, 32768
+.equ MAX_LINES, 1000
+
+.section .rodata
+newline:
+    .byte 0x0a
+
+.section .bss
+.align 16
+buf:
+    .zero MAX_INPUT
+.align 16
+lines:
+    .zero MAX_LINES * 8
+key_temp:
+    .zero 8
+
+.section .text
+_start:
+    # Read all of stdin into buf.
+    lea r12, [rip + buf]
+    mov r13d, MAX_INPUT
+
+.Lread_loop:
+    mov eax, SYS_READ
+    xor edi, edi
+    mov rsi, r12
+    mov edx, r13
+    syscall
+    test rax, rax
+    jz .Lread_done
+    js .Lexit_err
+    add r12, rax
+    sub r13, rax
+    jnz .Lread_loop
+
+.Lread_done:
+    mov r13, r12                  # r13 = buf_end
+
+    # Parse lines into lines[].
+    lea r12, [rip + buf]          # r12 = buf base
+    xor ebx, ebx                  # ebx = n_lines
+    lea r15, [rip + lines]
+    mov r14, r12                  # parse pointer
+
+.Lparse_top:
+    cmp r14, r13
+    jae .Lparse_done
+
+.Lparse_one:
+    mov rdi, r14                  # rdi = line_start
+
+.Lfind_nl:
+    cmp r14, r13
+    jae .Lno_nl
+    cmp byte ptr [r14], 0x0a
+    je .Lhave_nl
+    inc r14
+    jmp .Lfind_nl
+
+.Lhave_nl:
+    mov eax, r14d
+    sub eax, edi
+    mov edx, edi
+    sub edx, r12d
+    lea rcx, [r15 + rbx*8]
+    mov dword ptr [rcx], edx
+    mov dword ptr [rcx + 4], eax
+    inc ebx
+    inc r14
+    jmp .Lparse_top
+
+.Lno_nl:
+    mov eax, r14d
+    sub eax, edi
+    mov edx, edi
+    sub edx, r12d
+    lea rcx, [r15 + rbx*8]
+    mov dword ptr [rcx], edx
+    mov dword ptr [rcx + 4], eax
+    inc ebx
+
+.Lparse_done:
+    cmp ebx, 2
+    jl .Lsort_done                 # already sorted if 0 or 1 lines
+
+    mov r14d, 1                   # i = 1
+
+.Louter_loop:
+    cmp r14d, ebx
+    jge .Lsort_done
+
+    # Save key = lines[i] in key_temp.
+    mov rax, r14
+    lea rdi, [r15 + rax*8]
+    lea rsi, [rip + key_temp]
+    mov eax, dword ptr [rdi]
+    mov dword ptr [rsi], eax
+    mov eax, dword ptr [rdi + 4]
+    mov dword ptr [rsi + 4], eax
+
+    mov r13d, r14d                # j = i
+
+.Linner_loop:
+    test r13d, r13d
+    jz .Linsert
+
+    # Compare lines[j-1] (A) with key (K).
+    mov rax, r13
+    dec rax
+    lea r8, [r15 + rax*8]
+    mov r9d, dword ptr [r8]
+    mov r10d, dword ptr [r8 + 4]
+
+    lea r8, [rip + key_temp]
+    mov r11d, dword ptr [r8]
+    mov r12d, dword ptr [r8 + 4]
+
+    mov edi, r9d
+    mov esi, r10d
+    mov edx, r11d
+    mov ecx, r12d
+
+    call compare
+    test eax, eax
+    jle .Linsert
+
+    # Shift: lines[j] = lines[j-1].
+    mov rax, r13
+    dec rax
+    lea r8, [r15 + rax*8]
+    lea r9, [r15 + r13*8]
+    mov eax, dword ptr [r8]
+    mov dword ptr [r9], eax
+    mov eax, dword ptr [r8 + 4]
+    mov dword ptr [r9 + 4], eax
+
+    dec r13d
+    jmp .Linner_loop
+
+.Linsert:
+    # lines[j] = key.
+    mov rax, r13
+    lea r8, [r15 + rax*8]
+    lea r9, [rip + key_temp]
+    mov eax, dword ptr [r9]
+    mov dword ptr [r8], eax
+    mov eax, dword ptr [r9 + 4]
+    mov dword ptr [r8 + 4], eax
+
+    inc r14d
+    jmp .Louter_loop
+
+.Lsort_done:
+    # Output sorted lines.
+    xor ebp, ebp
+
+.Loutput_loop:
+    cmp ebp, ebx
+    jge .Lexit_ok
+
+    lea r8, [r15 + rbp*8]
+    mov r9d, dword ptr [r8]
+    mov r10d, dword ptr [r8 + 4]
+
+    lea rsi, [rip + buf]
+    add rsi, r9
+    mov eax, SYS_WRITE
+    mov edi, STDOUT
+    mov edx, r10d
+    syscall
+
+    lea rsi, [rip + newline]
+    mov eax, SYS_WRITE
+    mov edi, STDOUT
+    mov edx, 1
+    syscall
+
+    inc ebp
+    jmp .Loutput_loop
+
+.Lexit_ok:
+    mov eax, SYS_EXIT
+    xor edi, edi
+    syscall
+
+.Lexit_err:
+    mov eax, SYS_EXIT
+    mov edi, 1
+    syscall
+
+# Comparator: signed byte-wise comparison of two lines.
+# Args: edi=A.off, esi=A.len, edx=B.off, ecx=B.len.
+# Returns: <0, 0, or >0 in eax.
+compare:
+    push rbx
+    push rbp
+    push r12
+    push r13
+    push r14
+    push r15
+
+    mov r12, rdi
+    mov r13, rsi
+    mov r14, rdx
+    mov r15, rcx
+
+    mov rax, r13
+    cmp rax, r15
+    jle .Lmin_set
+    mov rax, r15
+.Lmin_set:
+    mov rbp, rax
+
+    lea rdi, [rip + buf]
+    add rdi, r12
+    lea rbx, [rip + buf]
+    add rbx, r14
+
+    test rbp, rbp
+    jz .Lcmp_len
+
+.Lcmp_loop:
+    movzx eax, byte ptr [rdi]
+    movzx edx, byte ptr [rbx]
+    cmp eax, edx
+    jne .Lcmp_diff
+    inc rdi
+    inc rbx
+    dec rbp
+    jnz .Lcmp_loop
+
+.Lcmp_len:
+    mov eax, r13d
+    sub eax, r15d
+    jmp .Lcmp_done
+
+.Lcmp_diff:
+    sub eax, edx
+
+.Lcmp_done:
+    pop r15
+    pop r14
+    pop r13
+    pop r12
+    pop rbp
+    pop rbx
+    ret

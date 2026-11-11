@@ -1,0 +1,237 @@
+.equ PROG_BUF_SIZE, 65536
+.equ TAPE_SIZE, 30000
+.equ NESTING_MAX, 1000
+
+.text
+.globl _start
+
+_start:
+    # Step 1: Read all of stdin into input_buf
+    lea r12, [rip + input_buf]
+    xor r13, r13
+
+.read_loop:
+    mov rax, 0
+    mov rdi, 0
+    lea rsi, [r12 + r13]
+    mov rdx, PROG_BUF_SIZE
+    sub rdx, r13
+    syscall
+    test rax, rax
+    jz .read_done
+    js .read_done
+    add r13, rax
+    cmp r13, PROG_BUF_SIZE
+    jb .read_loop
+
+.read_done:
+    # Step 2: Find first '!' byte (0x21)
+    xor rcx, rcx
+
+.find_bang:
+    cmp rcx, r13
+    jae .no_bang
+    movzx eax, byte ptr [r12 + rcx]
+    cmp al, 0x21
+    je .found_bang
+    inc rcx
+    jmp .find_bang
+
+.found_bang:
+    mov r15, rcx
+    jmp .validate
+
+.no_bang:
+    mov r15, r13
+
+.validate:
+    # Step 3: Validate that [] are balanced
+    lea rdi, [rip + bracket_stack]
+    xor rsi, rsi
+    xor rcx, rcx
+
+.v_loop:
+    cmp rcx, r15
+    jae .v_end
+    movzx eax, byte ptr [r12 + rcx]
+    cmp al, '['
+    je .v_open
+    cmp al, ']'
+    je .v_close
+    jmp .v_next
+
+.v_open:
+    cmp rsi, NESTING_MAX
+    jae .v_err
+    mov qword ptr [rdi + rsi*8], rcx
+    inc rsi
+    jmp .v_next
+
+.v_close:
+    test rsi, rsi
+    jz .v_err
+    dec rsi
+    jmp .v_next
+
+.v_next:
+    inc rcx
+    jmp .v_loop
+
+.v_end:
+    test rsi, rsi
+    jnz .v_err
+    jmp .build_jump_table
+
+.v_err:
+    mov rax, 60
+    mov rdi, 1
+    syscall
+
+.build_jump_table:
+    # Step 4: Build jump offsets for matched brackets
+    lea r8, [rip + jump_table]
+    xor rcx, rcx
+    xor rdx, rdx
+
+.bj_loop:
+    cmp rcx, r15
+    jae .execute
+    movzx eax, byte ptr [r12 + rcx]
+    cmp al, '['
+    je .bj_open
+    cmp al, ']'
+    je .bj_close
+    jmp .bj_next
+
+.bj_open:
+    mov qword ptr [rdi + rdx*8], rcx
+    inc rdx
+    jmp .bj_next
+
+.bj_close:
+    dec rdx
+    mov rbx, qword ptr [rdi + rdx*8]
+    # jump_table[p] = m - p (negative)
+    mov eax, ebx
+    sub eax, ecx
+    mov dword ptr [r8 + rcx*4], eax
+    # jump_table[m] = p - m (positive)
+    mov eax, ecx
+    sub eax, ebx
+    mov dword ptr [r8 + rbx*4], eax
+    jmp .bj_next
+
+.bj_next:
+    inc rcx
+    jmp .bj_loop
+
+.execute:
+    # Step 5: Execute the brainfuck program
+    lea rdi, [rip + tape]
+    lea rsi, [rip + jump_table]
+    lea r10, [rip + output_buf]
+    xor rcx, rcx
+    xor r8, r8
+    xor r9, r9
+    xor r11, r11
+
+.exec_loop:
+    cmp r8, r15
+    jae .exec_end
+
+    movzx eax, byte ptr [r12 + r8]
+
+    cmp al, '>'
+    je .cmd_gt
+    cmp al, '<'
+    je .cmd_lt
+    cmp al, '+'
+    je .cmd_plus
+    cmp al, '-'
+    je .cmd_minus
+    cmp al, '.'
+    je .cmd_dot
+    cmp al, ','
+    je .cmd_comma
+    cmp al, '['
+    je .cmd_lbra
+    cmp al, ']'
+    je .cmd_rbra
+    jmp .cmd_step
+
+.cmd_gt:
+    inc rcx
+    jmp .cmd_step
+.cmd_lt:
+    dec rcx
+    jmp .cmd_step
+.cmd_plus:
+    add byte ptr [rdi + rcx], 1
+    jmp .cmd_step
+.cmd_minus:
+    sub byte ptr [rdi + rcx], 1
+    jmp .cmd_step
+.cmd_dot:
+    mov al, byte ptr [rdi + rcx]
+    mov byte ptr [r10 + r11], al
+    inc r11
+    jmp .cmd_step
+.cmd_comma:
+    cmp r15, r13
+    je .comma_eof
+    mov rax, r13
+    sub rax, r15
+    dec rax
+    cmp r9, rax
+    jae .comma_eof
+    movzx eax, byte ptr [r12 + r15 + 1 + r9]
+    mov byte ptr [rdi + rcx], al
+    inc r9
+    jmp .cmd_step
+.comma_eof:
+    mov byte ptr [rdi + rcx], 0
+    jmp .cmd_step
+.cmd_lbra:
+    movzx eax, byte ptr [rdi + rcx]
+    test al, al
+    jnz .cmd_step
+    movsxd rax, dword ptr [rsi + r8*4]
+    lea r8, [rax + r8 + 1]
+    jmp .exec_loop
+.cmd_rbra:
+    movzx eax, byte ptr [rdi + rcx]
+    test al, al
+    jz .cmd_step
+    movsxd rax, dword ptr [rsi + r8*4]
+    lea r8, [rax + r8 + 1]
+    jmp .exec_loop
+.cmd_step:
+    inc r8
+    jmp .exec_loop
+
+.exec_end:
+    # Step 6: Flush output and exit
+    test r11, r11
+    jz .exit_ok
+    mov rax, 1
+    mov rdi, 1
+    mov rsi, r10
+    mov rdx, r11
+    syscall
+
+.exit_ok:
+    mov rax, 60
+    xor rdi, rdi
+    syscall
+
+.bss
+.balign 16
+input_buf:     .space 65536
+.balign 16
+tape:          .space 30000
+.balign 16
+bracket_stack: .space 8000
+.balign 16
+jump_table:    .space 262144
+.balign 16
+output_buf:    .space 65536

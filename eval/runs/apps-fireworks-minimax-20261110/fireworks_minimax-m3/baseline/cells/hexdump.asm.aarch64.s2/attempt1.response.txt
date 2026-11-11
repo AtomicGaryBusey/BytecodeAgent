@@ -1,0 +1,247 @@
+//
+// hexdump: canonical hex+ASCII dump of stdin (like hexdump -C)
+//
+// Build with:  as -o hexdump.o hexdump.s ; ld -o hexdump hexdump.o
+//
+
+.section .bss
+.align 4
+input_buf:
+    .space 65536
+
+.section .text
+.globl _start
+
+//
+// hex_nibble: w0 low nibble -> ASCII hex digit in w0
+// Leaf.
+hex_nibble:
+    and w0, w0, #0xf
+    cmp w0, #9
+    b.gt 1f
+    add w0, w0, #'0'
+    ret
+1:  add w0, w0, #0x57        // +('a'-10)
+    ret
+
+//
+// format_8hex: write 8 lowercase hex digits of w0 at [x1]
+//
+format_8hex:
+    stp x29, x30, [sp, #-32]!
+    stp x18, x19, [sp, #16]
+    mov x29, sp
+    mov w18, w0
+    mov w19, #28
+11: lsr w0, w18, w19
+    and w0, w0, #0xf
+    bl hex_nibble
+    strb w0, [x1]
+    add x1, x1, #1
+    subs w19, w19, #4
+    b.ge 11b
+    ldp x18, x19, [sp, #16]
+    ldp x29, x30, [sp], #32
+    ret
+
+//
+// fmt_hex_byte: write "XX " at [x1] from byte w0
+//
+fmt_hex_byte:
+    stp x29, x30, [sp, #-32]!
+    stp x18, x19, [sp, #16]
+    mov x29, sp
+    mov w18, w0
+    lsr w0, w18, #4
+    bl hex_nibble
+    strb w0, [x1]
+    and w0, w18, #0xf
+    bl hex_nibble
+    strb w0, [x1, #1]
+    mov w0, #' '
+    strb w0, [x1, #2]
+    ldp x18, x19, [sp, #16]
+    ldp x29, x30, [sp], #32
+    ret
+
+//
+// store_3spaces: write "   " at [x1]
+//
+store_3spaces:
+    mov w0, #' '
+    strb w0, [x1]
+    strb w0, [x1, #1]
+    strb w0, [x1, #2]
+    ret
+
+//
+// print_row: x15=offset, x16=n (1..16), x10=buf_base
+//
+// Output line layout (for n=16, total 79 chars; partial row shorter):
+//   [0..7]:     8 lowercase hex digits of offset
+//   [8..9]:     "  "
+//   [10..33]:   8 byte groups "XX " for positions 0..7 (or "   " if past end)
+//   [34]:       one extra space
+//   [35..58]:   8 byte groups "XX " for positions 8..15 (or "   " if past end)
+//   [59..60]:   " |"
+//   [61..60+n]: n ASCII chars ('.' outside [0x20,0x7e]), NOT padded
+//   [61+n..62+n]: "|\n"
+//
+print_row:
+    stp x29, x30, [sp, #-16]!
+    mov x29, sp
+    mov x19, x10                   // buf base
+    mov x20, x15                   // offset
+    mov x21, x16                   // n
+    add x23, x19, x20              // x23 = buf + offset (constant this row)
+    sub sp, sp, #80                // line buffer
+
+    // Section A: [0..9] = offset hex + "  "
+    mov w0, w20
+    mov x1, sp
+    bl format_8hex
+    mov w0, #' '
+    strb w0, [sp, #8]
+    strb w0, [sp, #9]
+
+    // Section B: [10..33] = positions 0..7
+    mov x22, #0
+21: cmp x22, #8
+    b.ge 22f
+    cmp x22, x21
+    b.ge 23f
+    ldrb w0, [x23, x22]
+    add x1, sp, #10
+    add x1, x1, x22, lsl #1
+    add x1, x1, x22              // x1 = sp + 10 + 3*x22
+    bl fmt_hex_byte
+    b 24f
+23: add x1, sp, #10
+    add x1, x1, x22, lsl #1
+    add x1, x1, x22
+    bl store_3spaces
+24: add x22, x22, #1
+    b 21b
+22:
+
+    // Section C: [34] = extra space
+    mov w0, #' '
+    strb w0, [sp, #34]
+
+    // Section D: [35..58] = positions 8..15
+    mov x22, #0
+31: cmp x22, #8
+    b.ge 32f
+    add x24, x22, #8             // actual position = 8 + k
+    cmp x24, x21
+    b.ge 33f
+    ldrb w0, [x23, x24]
+    add x1, sp, #35
+    add x1, x1, x22, lsl #1
+    add x1, x1, x22              // x1 = sp + 35 + 3*k
+    bl fmt_hex_byte
+    b 34f
+33: add x1, sp, #35
+    add x1, x1, x22, lsl #1
+    add x1, x1, x22
+    bl store_3spaces
+34: add x22, x22, #1
+    b 31b
+32:
+
+    // Section E: [59..60] = " |"
+    mov w0, #' '
+    strb w0, [sp, #59]
+    mov w0, #'|'
+    strb w0, [sp, #60]
+
+    // Section F: [61..60+n] = n ASCII chars
+    mov x22, #0
+41: cmp x22, x21
+    b.ge 42f
+    ldrb w0, [x23, x22]
+    cmp w0, #0x20
+    b.lt 43f
+    cmp w0, #0x7e
+    b.le 44f
+43: mov w0, #'.'
+44: add x1, sp, #61
+    add x1, x1, x22
+    strb w0, [x1]
+    add x22, x22, #1
+    b 41b
+42:
+
+    // Section G: [61+n..62+n] = "|\n"
+    add x25, x21, #61
+    mov w0, #'|'
+    strb w0, [sp, x25]
+    add x25, x25, #1
+    mov w0, #10
+    strb w0, [sp, x25]
+
+    // write entire line to stdout
+    add x2, x21, #63              // total length = 63 + n
+    mov x0, #1
+    mov x1, sp
+    mov x8, #64
+    svc #0
+
+    add sp, sp, #80
+    ldp x29, x30, [sp], #16
+    ret
+
+//
+// _start: entry point. x0..x30 = 0; sp 16-aligned.
+//
+_start:
+    adrp x10, input_buf
+    add x10, x10, :lo12:input_buf
+
+    // Read all of stdin into input_buf
+    mov x11, #0
+    mov x12, #65536
+51: mov x0, #0
+    add x1, x10, x11
+    sub x2, x12, x11
+    mov x8, #63
+    svc #0
+    cbz x0, 52f
+    add x11, x11, x0
+    cmp x11, x12
+    b.ne 51b
+52:                              // x11 = total bytes read
+
+    // Print each row
+    mov x13, #0                   // current offset
+53: cmp x11, x13
+    b.ls 55f
+    sub x14, x11, x13             // remaining (>= 1 here)
+    cmp x14, #16
+    b.le 54f
+    mov x14, #16
+54: mov x15, x13                 // offset
+    mov x16, x14                 // n
+    bl print_row
+    add x13, x13, #16
+    b 53b
+55:
+
+    // Print total length line: 8 hex digits + '\n'
+    sub sp, sp, #16
+    mov w0, w11
+    mov x1, sp
+    bl format_8hex
+    mov w0, #10
+    strb w0, [sp, #8]
+    mov x0, #1
+    mov x1, sp
+    mov x2, #9
+    mov x8, #64
+    svc #0
+    add sp, sp, #16
+
+    // exit(0)
+    mov x0, #0
+    mov x8, #93
+    svc #0

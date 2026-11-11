@@ -1,0 +1,215 @@
+.section .text
+.globl _start
+
+.equ BUF_SIZE, 32768
+.equ MAX_LINES, 1000
+.equ LINE_DESC_SIZE, 16
+
+_start:
+// Read all input into buffer
+    adrp x19, input_buffer
+    add  x19, x19, :lo12:input_buffer
+    mov  x20, #0                  // total_read = 0
+    mov  x21, #BUF_SIZE
+
+read_loop:
+    cmp  x20, x21
+    b.ge read_done                // buffer full
+    mov  x0, #0                   // fd = 0 (stdin)
+    add  x1, x19, x20             // buf = buffer + total_read
+    sub  x2, x21, x20             // count = remaining
+    mov  x8, #63                  // read syscall
+    svc  #0
+    cbz  x0, read_done            // EOF
+    add  x20, x20, x0             // total_read += bytes_read
+    b    read_loop
+read_done:
+
+// Parse lines
+    adrp x22, line_array
+    add  x22, x22, :lo12:line_array
+    mov  x23, #0                  // line_count = 0
+    mov  x24, #0                  // current index in buffer
+
+parse_loop:
+    cmp  x24, x20
+    b.ge parse_done
+
+    // line_start = buffer + x24
+    add  x26, x19, x24
+    // remaining = x20 - x24
+    sub  x27, x20, x24
+    // scan_ptr = x26, scan_rem = x27
+    mov  x28, x26
+    mov  x29, x27
+
+scan_loop:
+    cbz  x29, no_newline          // if scan_rem == 0, no newline found
+    ldrb w30, [x28]               // load byte
+    cmp  w30, #0x0A
+    b.eq found_newline
+    add  x28, x28, #1
+    sub  x29, x29, #1
+    b    scan_loop
+
+found_newline:
+    // line length = x28 - x26
+    sub  x30, x28, x26
+    // store line: pointer x26, length x30
+    lsl  x4, x23, #4
+    add  x5, x22, x4
+    str  x26, [x5]
+    str  x30, [x5, #8]
+    add  x23, x23, #1
+    // next index = (x28 - x19) + 1
+    sub  x24, x28, x19
+    add  x24, x24, #1
+    b    parse_loop
+
+no_newline:
+    // line length = x27 (original remaining)
+    lsl  x4, x23, #4
+    add  x5, x22, x4
+    str  x26, [x5]
+    str  x27, [x5, #8]
+    add  x23, x23, #1
+    b    parse_done
+
+parse_done:
+// Sort lines with insertion sort
+    mov  x19, x23                 // n = line_count
+    mov  x20, x22                 // base = line_array
+    mov  x21, #1                  // i = 1
+
+outer_loop:
+    cmp  x21, x19
+    b.ge sort_done
+    // Load key = array[i]
+    lsl  x4, x21, #4
+    add  x5, x20, x4
+    ldr  x26, [x5]                // key_ptr
+    ldr  x27, [x5, #8]            // key_len
+    mov  x22, x21
+    sub  x22, x22, #1             // j = i-1
+
+inner_loop:
+    cbz  x22, inner_done          // j < 0
+    // Load array[j]
+    lsl  x4, x22, #4
+    add  x5, x20, x4
+    ldr  x25, [x5]
+    ldr  x28, [x5, #8]
+    // Compare array[j] with key
+    mov  x0, x25
+    mov  x1, x28
+    mov  x2, x26
+    mov  x3, x27
+    bl   compare_lines
+    // x0 = 1 if array[j] > key, 0 if equal, -1 if less
+    cmp  x0, #1
+    b.ne inner_done
+    // Shift array[j] to array[j+1]
+    lsl  x4, x22, #4
+    add  x4, x4, #16              // (j+1)*16
+    add  x5, x20, x4
+    str  x25, [x5]
+    str  x28, [x5, #8]
+    sub  x22, x22, #1
+    b    inner_loop
+
+inner_done:
+    // Insert key at j+1
+    add  x22, x22, #1
+    lsl  x4, x22, #4
+    add  x5, x20, x4
+    str  x26, [x5]
+    str  x27, [x5, #8]
+    add  x21, x21, #1
+    b    outer_loop
+
+sort_done:
+// Output sorted lines
+    adrp x25, newline_char
+    add  x25, x25, :lo12:newline_char
+    mov  x21, #0                  // i = 0
+
+output_loop:
+    cmp  x21, x19
+    b.ge output_done
+    lsl  x4, x21, #4
+    add  x5, x20, x4
+    ldr  x22, [x5]                // line_ptr
+    ldr  x23, [x5, #8]            // line_len
+    // Write line data
+    mov  x0, #1
+    mov  x1, x22
+    mov  x2, x23
+    mov  x8, #64
+    svc  #0
+    // Write newline
+    mov  x0, #1
+    mov  x1, x25
+    mov  x2, #1
+    mov  x8, #64
+    svc  #0
+    add  x21, x21, #1
+    b    output_loop
+
+output_done:
+// Exit
+    mov  x0, #0
+    mov  x8, #93
+    svc  #0
+
+// compare_lines: compares two lines
+// x0 = ptr1, x1 = len1, x2 = ptr2, x3 = len2
+// returns x0 = -1 (less), 0 (equal), 1 (greater)
+compare_lines:
+    mov  x4, #0
+    mov  x5, #0
+cmp_loop:
+    cmp  x4, x1
+    b.ge check_len1
+    cmp  x5, x3
+    b.ge check_len2
+    ldrb w6, [x0, x4]
+    ldrb w7, [x2, x5]
+    cmp  w6, w7
+    b.lt less
+    b.gt greater
+    add  x4, x4, #1
+    add  x5, x5, #1
+    b    cmp_loop
+
+check_len1:
+    cmp  x5, x3
+    b.ge equal
+    mov  x0, #-1
+    ret
+
+check_len2:
+    mov  x0, #1
+    ret
+
+less:
+    mov  x0, #-1
+    ret
+
+greater:
+    mov  x0, #1
+    ret
+
+equal:
+    mov  x0, #0
+    ret
+
+.section .rodata
+newline_char:
+    .byte 0x0A
+
+.section .bss
+.align 12
+input_buffer:
+    .space BUF_SIZE
+line_array:
+    .space MAX_LINES * LINE_DESC_SIZE

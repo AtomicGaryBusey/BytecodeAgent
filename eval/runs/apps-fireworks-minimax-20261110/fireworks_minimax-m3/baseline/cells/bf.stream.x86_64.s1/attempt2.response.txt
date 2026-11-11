@@ -1,0 +1,124 @@
+.section .bss
+.align 16
+input_buf: .space 65536
+.align 4
+match_tbl: .space 262144
+.align 16
+tape: .space 30000
+bracket_stack: .space 4096
+.align 8
+jump_table: .space 2048
+
+.text
+.globl _start
+_start:
+  # Initialize jump table with address of nop_handler
+  lea rdi, [rip + jump_table]
+  lea rax, [rip + nop_handler]
+  mov rcx, 256
+  rep stosq
+
+  # Patch jump table for the 8 BF commands
+  lea rdi, [rip + jump_table]
+  lea rax, [rip + gt_handler]
+  mov [rdi + 62*8], rax      # '>'
+  lea rax, [rip + lt_handler]
+  mov [rdi + 60*8], rax      # '<'
+  lea rax, [rip + plus_handler]
+  mov [rdi + 43*8], rax      # '+'
+  lea rax, [rip + minus_handler]
+  mov [rdi + 45*8], rax      # '-'
+  lea rax, [rip + dot_handler]
+  mov [rdi + 46*8], rax      # '.'
+  lea rax, [rip + comma_handler]
+  mov [rdi + 44*8], rax      # ','
+  lea rax, [rip + open_bracket]
+  mov [rdi + 91*8], rax      # '['
+  lea rax, [rip + close_bracket]
+  mov [rdi + 93*8], rax      # ']'
+
+  # Set up base pointers for buffers
+  lea r12, [rip + input_buf]
+  lea r13, [rip + tape]
+  lea r14, [rip + match_tbl]
+
+  # Read all of standard input into input_buf (max 65536 bytes)
+  xor r15, r15               # total_read = 0
+read_loop:
+  cmp r15, 65536
+  je read_done
+  mov rdi, 0                 # fd = 0 (stdin)
+  lea rsi, [r12 + r15]
+  mov rdx, 65536
+  sub rdx, r15
+  mov rax, 0                 # sys_read
+  syscall
+  cmp rax, 0
+  jle read_done              # EOF or error
+  add r15, rax
+  jmp read_loop
+read_done:
+  # r15 = total bytes read
+
+  # Find first '!' (0x21) to separate program from input
+  xor rbx, rbx               # index i = 0
+  mov rcx, -1                # bang_pos = -1
+find_bang_loop:
+  cmp rbx, r15
+  je find_bang_done
+  cmp byte ptr [r12 + rbx], 0x21
+  jne find_bang_next
+  mov rcx, rbx
+  jmp find_bang_done
+find_bang_next:
+  inc rbx
+  jmp find_bang_loop
+find_bang_done:
+  # rcx = bang_pos (-1 if no '!')
+
+  # Compute program_len, input_start, input_end, input_len
+  # Register usage:
+  # r8  = input_len
+  # r9  = program_len (program starts at offset 0)
+  # r10 = input_start
+  # r11 = input_end
+  cmp rcx, -1
+  je no_bang
+  mov r9, rcx                # program_len = bang_pos
+  lea r10, [rcx + 1]         # input_start = bang_pos + 1
+  mov r11, r15               # input_end = total_read
+  jmp have_parts
+no_bang:
+  mov r9, r15                # program_len = total_read
+  mov r10, r15               # input_start = total_read
+  mov r11, r15               # input_end = total_read
+have_parts:
+  mov r8, r11
+  sub r8, r10                # r8 = input_len
+
+  # Validate brackets and build match table
+  xor rbx, rbx               # pc = 0
+  xor rdx, rdx               # stack_top = 0
+val_loop:
+  cmp rbx, r9
+  je val_done
+  movzx eax, byte ptr [r12 + rbx]
+  cmp al, 0x5B               # '['
+  je val_open
+  cmp al, 0x5D               # ']'
+  je val_close
+val_next:
+  inc rbx
+  jmp val_loop
+val_open:
+  lea rsi, [rip + bracket_stack]
+  mov [rsi + rdx*4], ebx
+  inc rdx
+  jmp val_next
+val_close:
+  test rdx, rdx
+  jz invalid_exit
+  dec rdx
+  lea rsi, [rip + bracket_stack]
+  mov eax, [rsi + rdx*4]
+  mov [r14 + eax*4], ebx     # match[open] = close

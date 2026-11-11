@@ -1,0 +1,759 @@
+Write the complete program `sort_lines`: a static Linux executable for x86-64 (AMD64), written in assembly. There is no C library, no C runtime and no helper code: you write the entry point `_start`, every function, every table and string, and make the system calls yourself.
+
+Entry state (as the Linux kernel sets it up): execution starts at the label `_start`. rsp is 16-byte aligned and points at argc = 0, followed by the NULL terminators of an empty argv, an empty envp and an empty auxiliary vector: the program gets no arguments. Every other general-purpose register is zero, and the direction flag is clear. There is no return address: `_start` must never return with `ret`; the program ends only through the exit system call.
+
+System calls: the `syscall` instruction, with the system call number in rax and the arguments in rdi, rsi, rdx; the result comes back in rax. The kernel overwrites rcx and r11; every other register is preserved. Exactly these four are available:
+- read = 0: read(fd = 0, buf, count) reads up to count bytes of standard input into buf; returns the number of bytes read, 0 at end of input.
+- write = 1: write(fd, buf, count) with fd 1 (standard output) or 2 (standard error); returns count.
+- exit = 60: exit(status) ends the program; the exit status is the low 8 bits of status.
+- exit_group = 231: the same as exit.
+Any other system call number, another file descriptor, `int 0x80` or `sysenter` stops the program with an error, and so does a buffer that is not entirely inside the program's memory.
+
+Memory: the program's own sections plus a stack of 1 MiB below the entry sp. There is no heap (no brk, no mmap, no malloc): put working storage in `.bss` (zero-initialised), at most 1 MiB in total, or on the stack. Code is not writable. Any access outside these areas stops the program. Each test run may execute at most 200,000,000 instructions.
+
+Output format: one complete assembly source file in GNU assembler (GNU as) syntax, Intel flavour without register prefixes: the harness puts `.intel_syntax noprefix` in front of your text, so do not write it yourself. Examples: `mov rax, qword ptr [rbx + rcx*8]`, `movzx eax, byte ptr [rsi]`, `lea rsi, [rip + buffer]`. Comments start with `#`; do not use `;`.
+Allowed in the file:
+- Sections: `.text` (code), `.section .rodata` (read-only data), `.data` (initialised writable data), `.bss` (zero-initialised space: only `.zero`/`.space` and alignment). Instructions go in `.text` only.
+- Data directives: `.byte`, `.short`/`.2byte`, `.word` (2 bytes on this target), `.long`/`.int`/`.4byte`, `.quad`/`.8byte`, `.ascii`, `.asciz`/`.string`, `.zero`/`.space`, alignment with `.align`/`.balign`/`.p2align`, and `.globl`/`.global` (write `.globl _start`).
+- Labels `name:` in any section, and GNU local labels `1:` referenced as `1f` (next) / `1b` (previous).
+- Constants: `.equ name, value` (or `.set name, value`, or `name = value`), where value is a number or a difference of labels defined earlier in the same section (e.g. `msg_len = . - msg`). Define every constant before its first use.
+- Addressing data: rip-relative, `lea rdi, [rip + table]` or `mov al, byte ptr [rip + table + 3]`. The program is linked at fixed low addresses, so absolute forms (`mov esi, offset buffer`, `movzx eax, byte ptr [table + rcx]`) work as well.
+Not allowed: macros (`.macro`, `.rept`, `.irp`), conditional assembly (`.if`), `.include`, `.incbin`, `.fill`, `.org`, `.comm`/`.lcomm`, `.inst`, `.cfi_*` directives, section stacks (`.pushsection`) and any other section. No libc and no other library: there is nothing to link against, so every symbol you use must be defined in your file.
+Instruction set: x86-64 with SSE up to SSE4.2 (including SSSE3, SSE4.1 and crc32), POPCNT, LZCNT, BMI1/BMI2 (andn, bextr, blsi, blsr, tzcnt, bzhi, mulx, pdep, pext, rorx, sarx, shlx, shrx), MOVBE, AES-NI and PCLMULQDQ. Not supported (rejected): AVX, AVX2, AVX-512, FMA, F16C and every other VEX/EVEX vector instruction, ADX (adcx/adox; use adc) and SHA.
+Output ONLY the assembly source: no Markdown fences, no prose before or after it.
+
+Specification: Task `sort_lines`: print the lines of standard input sorted in ascending byte-wise order.
+
+- Lines are defined as follows: a line is a (possibly empty) sequence of bytes terminated by a newline 0x0A; if
+  the input does not end with a newline, the bytes after the last newline form one more, final line. Empty input
+  has no lines, and the empty remainder after a final newline is not a line.
+- Order: compare two lines byte by byte as UNSIGNED values 0x00-0xFF (like C `memcmp`); the first differing
+  byte decides. If one line is a prefix of the other, the shorter line comes first (so the empty line sorts
+  before every non-empty line). Equal lines are all printed (duplicates are kept).
+- Print every line followed by one newline 0x0A (the final line gets a newline even if it had none in the
+  input). Empty input prints nothing. A carriage return 0x0D and every other byte value are ordinary bytes.
+
+Example: `pear\napple\nPear\n\napple` prints `\nPear\napple\napple\npear\n`.
+
+Limits: the input is at most 32768 bytes and has at most 1000 lines. Exit status 0.
+
+Input and output (applies to this whole task):
+- The input is the complete contents of standard input (file descriptor 0). Read it with `read` until `read`
+  returns 0 (end of input). A `read` may return FEWER bytes than requested, at any position (in the middle of a
+  line, a token or a group of bytes), so keep calling it; only a return value of 0 means end of input.
+- Write the output to standard output (file descriptor 1). Only the bytes this task describes may appear on
+  standard output (standard error is ignored). Every output byte must be written before the program exits.
+- Finish with `exit` (or `exit_group`) and the exit status this task gives. The program must not run off the end
+  of its code or crash.
+
+Your previous attempt was:
+<previous>
+.section .bss
+.align 16
+input_buf: .zero 32768
+line_array: .zero 16000   # 1000 * 16
+sort_stack: .zero 16000   # 1000 * 16 (pairs of left, right)
+
+.section .rodata
+newline_char: .byte 0x0A
+
+.section .text
+.globl _start
+
+.equ SYS_READ, 0
+.equ SYS_WRITE, 1
+.equ SYS_EXIT, 60
+.equ MAX_INPUT, 32768
+.equ MAX_LINES, 1000
+
+_start:
+    # --- Read all input ---
+    xor r12, r12            # total_read = 0
+    lea r13, [rip + input_buf]  # current buffer pointer
+    mov r14, MAX_INPUT      # remaining
+
+.read_loop:
+    mov rax, SYS_READ
+    xor rdi, rdi            # fd = 0
+    mov rsi, r13
+    mov rdx, r14
+    syscall
+    test rax, rax
+    jz .read_done
+    add r12, rax            # total_read += bytes_read
+    add r13, rax            # advance buffer pointer
+    sub r14, rax            # remaining -= bytes_read
+    jnz .read_loop
+
+.read_done:
+    test r12, r12
+    jz .exit_success        # empty input
+
+    # --- Parse lines ---
+    lea rsi, [rip + input_buf]   # src
+    lea rdi, [rsi + r12]         # end
+    lea r13, [rip + line_array]  # line_array pointer
+    xor r14, r14                 # line_count = 0
+    mov r15, rsi                 # line_start = src
+
+.parse_loop:
+    cmp rsi, rdi
+    jae .parse_check_last
+    movzx eax, byte ptr [rsi]
+    cmp al, 0x0A
+    jne .parse_next
+    # Found newline
+    mov rax, rsi
+    sub rax, r15                # line_len = src - line_start
+    mov qword ptr [r13], r15    # store start
+    mov qword ptr [r13+8], rax  # store len
+    add r13, 16
+    inc r14                     # line_count++
+    lea r15, [rsi+1]            # line_start = src + 1
+.parse_next:
+    inc rsi
+    jmp .parse_loop
+
+.parse_check_last:
+    cmp r15, rdi
+    jae .sort_prepare
+    # last line without terminating newline
+    mov rax, rdi
+    sub rax, r15
+    mov qword ptr [r13], r15
+    mov qword ptr [r13+8], rax
+    inc r14
+
+.sort_prepare:
+    test r14, r14
+    jz .exit_success
+    cmp r14, 1
+    je .output_lines
+
+    # --- Iterative quicksort ---
+    # r14 = line_count
+    # We'll use sort_stack as a stack of (left, right) pairs (each 16 bytes).
+    lea r13, [rip + sort_stack]  # stack top pointer
+    # Push initial range (0, line_count-1)
+    mov qword ptr [r13], 0
+    mov qword ptr [r13+8], r14
+    dec qword ptr [r13+8]        # right = line_count-1
+    add r13, 16
+
+.sort_loop:
+    # Pop range
+    sub r13, 16
+    cmp r13, [rip + sort_stack]
+    jb .output_lines             # stack empty
+    mov r8, qword ptr [r13]      # left
+    mov r9, qword ptr [r13+8]    # right
+    cmp r8, r9
+    jge .sort_loop               # invalid range, continue
+
+    # Choose pivot: mid = (left + right) >> 1
+    mov rax, r8
+    add rax, r9
+    shr rax, 1                   # pivot_index
+    # Copy pivot descriptor to stack (16 bytes) for stable comparison
+    sub rsp, 16
+    lea r10, [rip + line_array]
+    mov r11, qword ptr [r10 + rax*16]      # pivot.start
+    mov r12, qword ptr [r10 + rax*16 + 8]  # pivot.len
+    mov qword ptr [rsp], r11
+    mov qword ptr [rsp+8], r12
+
+    # Hoare partition
+    lea rdi, [r8-1]   # i = left - 1
+    lea rsi, [r9+1]   # j = right + 1
+
+.partition_outer:
+    # increment i until line[i] >= pivot
+.inc_i:
+    inc rdi
+    cmp rdi, r9
+    jg .partition_done
+    # compare line_array[rdi] with pivot (at rsp)
+    lea rdx, [rip + line_array]
+    mov rcx, qword ptr [rdx + rdi*16]      # line.start
+    mov r8, qword ptr [rdx + rdi*16 + 8]   # line.len
+    # Call compare_lines(line_ptr, pivot_ptr)
+    # We'll inline the comparison to avoid call overhead and register pressure.
+    # Compare (rcx, r8) with (rsp, rsp+8)
+    mov r9, qword ptr [rsp]        # pivot.start
+    mov r10, qword ptr [rsp+8]     # pivot.len
+    call compare_lines_inline      # returns in rax: -1,0,1
+    test rax, rax
+    jl .inc_i                      # line < pivot, continue incrementing
+    # Now decrement j until line[j] <= pivot
+.dec_j:
+    dec rsi
+    cmp rsi, r8_orig?  # we need original left? Actually j can go below left, but we'll check in loop.
+    # We'll just loop and compare.
+    lea rdx, [rip + line_array]
+    mov rcx, qword ptr [rdx + rsi*16]
+    mov r8, qword ptr [rdx + rsi*16 + 8]
+    mov r9, qword ptr [rsp]
+    mov r10, qword ptr [rsp+8]
+    call compare_lines_inline
+    test rax, rax
+    jg .dec_j                      # line > pivot, continue decrementing
+
+    # Check if i >= j
+    cmp rdi, rsi
+    jge .partition_done
+
+    # Swap line_array[rdi] and line_array[rsi]
+    lea rdx, [rip + line_array]
+    mov rax, qword ptr [rdx + rdi*16]
+    mov rcx, qword ptr [rdx + rdi*16 + 8]
+    mov r8, qword ptr [rdx + rsi*16]
+    mov r9, qword ptr [rdx + rsi*16 + 8]
+    mov qword ptr [rdx + rdi*16], r8
+    mov qword ptr [rdx + rdi*16 + 8], r9
+    mov qword ptr [rdx + rsi*16], rax
+    mov qword ptr [rdx + rsi*16 + 8], rcx
+    jmp .partition_outer
+
+.partition_done:
+    add rsp, 16   # remove pivot from stack
+    # Now push sub-ranges (left, j) and (j+1, right) if they have >1 element
+    # rdi is i, rsi is j, and we know i >= j, so partition point is j.
+    # Left range: (r8_orig, rsi) but we lost original left/right? We have them in registers? We used r8,r9 for left,right but they were overwritten.
+    # We need to save left and right across partition. Let's use callee-saved registers for left/right.
+    # We'll restructure: use rbx for left, rbp for right.
+    # Let's redo the partition with saved registers.
+
+    # We'll restart the sort_loop with better register allocation.
+    # Instead of fixing here, we'll rewrite the sort loop with proper register saving.
+    # Since we are in the middle of code, we'll jump to a label that does the correct version.
+    # But we can't jump backwards easily. Let's just rewrite the whole sort section from .sort_prepare.
+    # We'll output a corrected version.
+
+    # For now, we'll note that the above partition code is flawed because we lost left/right.
+    # We'll instead write a new version below.
+
+    # We'll abandon this attempt and write a clean version in the final code.
+    # The final code will be written from scratch with proper register usage.
+
+    # Since we cannot have two versions, we'll just write the correct code in the final answer.
+    # The above is just a draft. We'll now write the complete correct program.
+
+    # We'll exit with error for now, but the final code will be correct.
+    mov rax, SYS_EXIT
+    mov rdi, 1
+    syscall
+
+# We need to provide a complete working program. Let's write the entire program correctly now.
+
+# We'll start over with a clean implementation.
+
+# However, the assistant must output only the final code. So we'll write the complete correct assembly below.
+
+# But the previous attempt was incomplete. We'll now write the full program in the next block.
+
+# Since we are in the middle of a response, we need to output the entire program as a single block.
+# We'll discard the above and write the final code now..section .bss
+.align 16
+input_buf: .zero 32768
+line_array: .zero 16000
+sort_stack: .zero 16000
+
+.section .rodata
+newline_char: .byte 0x0A
+
+.section .text
+.globl _start
+
+.equ SYS_READ, 0
+.equ SYS_WRITE, 1
+.equ SYS_EXIT, 60
+.equ MAX_INPUT, 32768
+.equ MAX_LINES, 1000
+
+_start:
+    # --- Read all input ---
+    xor r12, r12                    # total_read = 0
+    lea r13, [rip + input_buf]      # current buffer pointer
+    mov r14, MAX_INPUT              # remaining
+
+.read_loop:
+    mov rax, SYS_READ
+    xor rdi, rdi                    # fd = 0
+    mov rsi, r13
+    mov rdx, r14
+    syscall
+    test rax, rax
+    jz .read_done
+    add r12, rax                    # total_read += bytes_read
+    add r13, rax                    # advance buffer pointer
+    sub r14, rax                    # remaining -= bytes_read
+    jnz .read_loop
+
+.read_done:
+    test r12, r12
+    jz .exit_success                # empty input
+
+    # --- Parse lines ---
+    lea rsi, [rip + input_buf]      # src
+    lea rdi, [rsi + r12]            # end
+    lea r13, [rip + line_array]     # line_array pointer
+    xor r14, r14                    # line_count = 0
+    mov r15, rsi                    # line_start = src
+
+.parse_loop:
+    cmp rsi, rdi
+    jae .parse_check_last
+    movzx eax, byte ptr [rsi]
+    cmp al, 0x0A
+    jne .parse_next
+    # Found newline
+    mov rax, rsi
+    sub rax, r15                    # line_len = src - line_start
+    mov qword ptr [r13], r15        # store start
+    mov qword ptr [r13+8], rax      # store len
+    add r13, 16
+    inc r14                         # line_count++
+    lea r15, [rsi+1]                # line_start = src + 1
+.parse_next:
+    inc rsi
+    jmp .parse_loop
+
+.parse_check_last:
+    cmp r15, rdi
+    jae .sort_prepare
+    # last line without terminating newline
+    mov rax, rdi
+    sub rax, r15
+    mov qword ptr [r13], r15
+    mov qword ptr [r13+8], rax
+    inc r14
+
+.sort_prepare:
+    cmp r14, 1
+    jbe .output_lines               # 0 or 1 line, no sort needed
+
+    # --- Iterative quicksort ---
+    # r14 = line_count
+    # Use rbx for left, rbp for right (callee-saved across partition)
+    # Stack for ranges: sort_stack, each entry 16 bytes (left, right)
+    lea r13, [rip + sort_stack]     # stack top pointer
+    # Push initial range (0, line_count-1)
+    mov qword ptr [r13], 0
+    mov qword ptr [r13+8], r14
+    dec qword ptr [r13+8]           # right = line_count-1
+    add r13, 16
+
+.sort_loop:
+    # Pop range
+    sub r13, 16
+    cmp r13, [rip + sort_stack]
+    jb .output_lines                # stack empty
+    mov rbx, qword ptr [r13]        # left
+    mov rbp, qword ptr [r13+8]      # right
+    cmp rbx, rbp
+    jge .sort_loop                  # invalid range
+
+    # Choose pivot: mid = (left + right) >> 1
+    mov rax, rbx
+    add rax, rbp
+    shr rax, 1                      # pivot_index
+    # Copy pivot descriptor to stack (16 bytes) for stable comparison
+    sub rsp, 16
+    lea r10, [rip + line_array]
+    mov r11, qword ptr [r10 + rax*16]      # pivot.start
+    mov r12, qword ptr [r10 + rax*16 + 8]  # pivot.len
+    mov qword ptr [rsp], r11
+    mov qword ptr [rsp+8], r12
+
+    # Hoare partition
+    lea rdi, [rbx-1]                # i = left - 1
+    lea rsi, [rbp+1]                # j = right + 1
+
+.partition_outer:
+    # increment i until line[i] >= pivot
+.inc_i:
+    inc rdi
+    cmp rdi, rbp
+    jg .partition_done
+    # compare line_array[rdi] with pivot (at rsp)
+    lea rdx, [rip + line_array]
+    mov rcx, qword ptr [rdx + rdi*16]      # line.start
+    mov r8, qword ptr [rdx + rdi*16 + 8]   # line.len
+    # Inline comparison: returns -1,0,1 in rax
+    mov r9, qword ptr [rsp]        # pivot.start
+    mov r10, qword ptr [rsp+8]     # pivot.len
+    call compare_lines              # uses rcx,r8,r9,r10 -> rax
+    test rax, rax
+    jl .inc_i                       # line < pivot, continue incrementing
+
+    # decrement j until line[j] <= pivot
+.dec_j:
+    dec rsi
+    cmp rsi, rbx
+    jl .partition_done              # should not happen because pivot is in range
+    lea rdx, [rip + line_array]
+    mov rcx, qword ptr [rdx + rsi*16]
+    mov r8, qword ptr [rdx + rsi*16 + 8]
+    mov r9, qword ptr [rsp]
+    mov r10, qword ptr [rsp+8]
+    call compare_lines
+    test rax, rax
+    jg .dec_j                       # line > pivot, continue decrementing
+
+    # Check if i >= j
+    cmp rdi, rsi
+    jge .partition_done
+
+    # Swap line_array[rdi] and line_array[rsi]
+    lea rdx, [rip + line_array]
+    mov rax, qword ptr [rdx + rdi*16]
+    mov rcx, qword ptr [rdx + rdi*16 + 8]
+    mov r8, qword ptr [rdx + rsi*16]
+    mov r9, qword ptr [rdx + rsi*16 + 8]
+    mov qword ptr [rdx + rdi*16], r8
+    mov qword ptr [rdx + rdi*16 + 8], r9
+    mov qword ptr [rdx + rsi*16], rax
+    mov qword ptr [rdx + rsi*16 + 8], rcx
+    jmp .partition_outer
+
+.partition_done:
+    add rsp, 16                     # remove pivot from stack
+    # Now rsi is j (partition point), rdi is i (>= j)
+    # Push left range (rbx, rsi) if size > 1
+    cmp rbx, rsi
+    jge .check_right_range
+    mov qword ptr [r13], rbx
+    mov qword ptr [r13+8], rsi
+    add r13, 16
+.check_right_range:
+    # Push right range (rsi+1, rbp) if size > 1
+    lea rax, [rsi+1]
+    cmp rax, rbp
+    jge .sort_loop
+    mov qword ptr [r13], rax
+    mov qword ptr [r13+8], rbp
+    add r13, 16
+    jmp .sort_loop
+
+# --- compare_lines ---
+# Input: rcx = lineA.start, r8 = lineA.len, r9 = lineB.start, r10 = lineB.len
+# Output: rax = -1, 0, or 1
+# Clobbers: rax, r11, r12, r13 (but r13 is our stack pointer, we must not clobber it!)
+# We'll use different registers: r11, r12 for bytes, r13 is used for sort_stack, so we must preserve it.
+# Let's use r11, r12, and maybe r14, r15? But r14,r15 hold line_count and line_start? Actually after parsing, r14=line_count, r15=unused. We can use r14,r15 as temporaries.
+# We'll change compare_lines to use r11,r12 for bytes and not touch r13,r14,r15.
+# However, we are calling compare_lines from partition loop where r13 is sort_stack top, r14=line_count, r15 unused.
+# We'll use r11,r12 for bytes, and r13 is preserved because we don't touch it.
+# But we used r13 in the partition loop for sort_stack? Actually we used r13 as stack top, but in compare_lines we don't use r13. So it's safe.
+# We'll write compare_lines as a function that preserves rbx, rbp, r13, r14, r15 (callee-saved).
+# We'll use rax, rcx, rdx, rsi, rdi, r8, r9, r10, r11, r12 as scratch.
+
+compare_lines:
+    # rcx = A.start, r8 = A.len, r9 = B.start, r10 = B.len
+    # Compute min_len
+    mov rax, r8
+    cmp rax, r10
+    cmovg rax, r10                # rax = min_len
+    test rax, rax
+    jz .cmp_lengths               # one line empty
+
+    xor r11, r11                  # index = 0
+.cmp_loop:
+    movzx r12, byte ptr [rcx + r11]
+    movzx r13, byte ptr [r9 + r11]   # r13 is sort_stack top? Wait, we must not clobber r13!
+    # We cannot use r13 because it's our sort_stack pointer. Use r14 instead.
+    # Let's change: use r14 for the second byte.
+    # We'll redo: use r12 and r14.
+    # Actually we can use r11 for index, r12 for byteA, r14 for byteB.
+    # But we already used r11 as index. Let's use r12 for byteA, r14 for byteB.
+    # We'll rewrite this function with correct registers.
+
+    # Since we are in the middle of writing, we'll just write the correct version below.
+    # We'll abort this function and write a correct one in the final code.
+    # We'll jump to a label that does the correct compare.
+    jmp .compare_correct
+
+.compare_correct:
+    # We'll implement compare_lines properly later.
+    # For now, we'll just exit with error.
+    mov rax, SYS_EXIT
+    mov rdi, 1
+    syscall
+
+# The above compare_lines is incomplete. We need to write a complete working program.
+# Let's write the entire program correctly in one go, without the flawed parts.
+
+# We'll now output the final correct assembly. The previous code was a draft.
+# We'll write a new version from scratch below.
+
+# But the assistant must output only one code block. So we'll replace the entire text with the correct program.
+
+# We'll start over with a clean implementation.
+
+# However, we are in the middle of a response. We'll now write the complete correct program in the next lines.
+
+# We'll delete the previous code and write the final version.
+
+# Note: The final code must be a single assembly file. We'll write it now..section .bss
+.align 16
+input_buf: .zero 32768
+line_array: .zero 16000
+sort_stack: .zero 16000
+
+.section .rodata
+newline_char: .byte 0x0A
+
+.section .text
+.globl _start
+
+.equ SYS_READ, 0
+.equ SYS_WRITE, 1
+.equ SYS_EXIT, 60
+.equ MAX_INPUT, 32768
+.equ MAX_LINES, 1000
+
+_start:
+    # --- Read all input ---
+    xor r12, r12                    # total_read = 0
+    lea r13, [rip + input_buf]      # current buffer pointer
+    mov r14, MAX_INPUT              # remaining
+
+.read_loop:
+    mov rax, SYS_READ
+    xor rdi, rdi                    # fd = 0
+    mov rsi, r13
+    mov rdx, r14
+    syscall
+    test rax, rax
+    jz .read_done
+    add r12, rax                    # total_read += bytes_read
+    add r13, rax                    # advance buffer pointer
+    sub r14, rax                    # remaining -= bytes_read
+    jnz .read_loop
+
+.read_done:
+    test r12, r12
+    jz .exit_success                # empty input
+
+    # --- Parse lines ---
+    lea rsi, [rip + input_buf]      # src
+    lea rdi, [rsi + r12]            # end
+    lea r13, [rip + line_array]     # line_array pointer
+    xor r14, r14                    # line_count = 0
+    mov r15, rsi                    # line_start = src
+
+.parse_loop:
+    cmp rsi, rdi
+    jae .parse_check_last
+    movzx eax, byte ptr [rsi]
+    cmp al, 0x0A
+    jne .parse_next
+    # Found newline
+    mov rax, rsi
+    sub rax, r15                    # line_len = src - line_start
+    mov qword ptr [r13], r15        # store start
+    mov qword ptr [r13+8], rax      # store len
+    add r13, 16
+    inc r14                         # line_count++
+    lea r15, [rsi+1]                # line_start = src + 1
+.parse_next:
+    inc rsi
+    jmp .parse_loop
+
+.parse_check_last:
+    cmp r15, rdi
+    jae .sort_prepare
+    # last line without terminating newline
+    mov rax, rdi
+    sub rax, r15
+    mov qword ptr [r13], r15
+    mov qword ptr [r13+8], rax
+    inc r14
+
+.sort_prepare:
+    cmp r14, 1
+    jbe .output_lines               # 0 or 1 line, no sort needed
+
+    # --- Iterative quicksort ---
+    # r14 = line_count
+    # Use rbx for left, rbp for right (callee-saved across partition)
+    # Stack for ranges: sort_stack, each entry 16 bytes (left, right)
+    lea r13, [rip + sort_stack]     # stack top pointer
+    # Push initial range (0, line_count-1)
+    mov qword ptr [r13], 0
+    mov qword ptr [r13+8], r14
+    dec qword ptr [r13+8]           # right = line_count-1
+    add r13, 16
+
+.sort_loop:
+    # Pop range
+    sub r13, 16
+    cmp r13, [rip + sort_stack]
+    jb .output_lines                # stack empty
+    mov rbx, qword ptr [r13]        # left
+    mov rbp, qword ptr [r13+8]      # right
+    cmp rbx, rbp
+    jge .sort_loop                  # invalid range
+
+    # Choose pivot: mid = (left + right) >> 1
+    mov rax, rbx
+    add rax, rbp
+    shr rax, 1                      # pivot_index
+    # Copy pivot descriptor to stack (16 bytes) for stable comparison
+    sub rsp, 16
+    lea r10, [rip + line_array]
+    mov r11, qword ptr [r10 + rax*16]      # pivot.start
+    mov r12, qword ptr [r10 + rax*16 + 8]  # pivot.len
+    mov qword ptr [rsp], r11
+    mov qword ptr [rsp+8], r12
+
+    # Hoare partition
+    lea rdi, [rbx-1]                # i = left - 1
+    lea rsi, [rbp+1]                # j = right + 1
+
+.partition_outer:
+    # increment i until line[i] >= pivot
+.inc_i:
+    inc rdi
+    cmp rdi, rbp
+    jg .partition_done
+    # compare line_array[rdi] with pivot (at rsp)
+    lea rdx, [rip + line_array]
+    mov rcx, qword ptr [rdx + rdi*16]      # line.start
+    mov r8, qword ptr [rdx + rdi*16 + 8]   # line.len
+    call compare_lines              # returns -1,0,1 in rax; args: rcx,r8,rsp,rsp+8
+    test rax, rax
+    jl .inc_i                       # line < pivot, continue incrementing
+
+    # decrement j until line[j] <= pivot
+.dec_j:
+    dec rsi
+    cmp rsi, rbx
+    jl .partition_done
+    lea rdx, [rip + line_array]
+    mov rcx, qword ptr [rdx + rsi*16]
+    mov r8, qword ptr [rdx + rsi*16 + 8]
+    call compare_lines
+    test rax, rax
+    jg .dec_j                       # line > pivot, continue decrementing
+
+    # Check if i >= j
+    cmp rdi, rsi
+    jge .partition_done
+
+    # Swap line_array[rdi] and line_array[rsi]
+    lea rdx, [rip + line_array]
+    mov rax, qword ptr [rdx + rdi*16]
+    mov rcx, qword ptr [rdx + rdi*16 + 8]
+    mov r8, qword ptr [rdx + rsi*16]
+    mov r9, qword ptr [rdx + rsi*16 + 8]
+    mov qword ptr [rdx + rdi*16], r8
+    mov qword ptr [rdx + rdi*16 + 8], r9
+    mov qword ptr [rdx + rsi*16], rax
+    mov qword ptr [rdx + rsi*16 + 8], rcx
+    jmp .partition_outer
+
+.partition_done:
+    add rsp, 16                     # remove pivot from stack
+    # Now rsi is j (partition point), rdi is i (>= j)
+    # Push left range (rbx, rsi) if size > 1
+    cmp rbx, rsi
+    jge .check_right_range
+    mov qword ptr [r13], rbx
+    mov qword ptr [r13+8], rsi
+    add r13, 16
+.check_right_range:
+    # Push right range (rsi+1, rbp) if size > 1
+    lea rax, [rsi+1]
+    cmp rax, rbp
+    jge .sort_loop
+    mov qword ptr [r13], rax
+    mov qword ptr [r13+8], rbp
+    add r13, 16
+    jmp .sort_loop
+
+# --- compare_lines ---
+# Input: rcx = lineA.start, r8 = lineA.len, pivot at [rsp] (start), [rsp+8] (len)
+# Output: rax = -1, 0, or 1
+# Preserves: rbx, rbp, r13, r14, r15 (callee-saved)
+# Clobbers: rax, rdx, rsi, rdi, r9, r10, r11, r12
+compare_lines:
+    mov r9, qword ptr [rsp]         # pivot.start
+    mov r10, qword ptr [rsp+8]      # pivot.len
+    # Compute min_len
+    mov rax, r8
+    cmp rax, r10
+    cmovg rax, r10                  # rax = min_len
+    test rax, rax
+    jz .cmp_lengths                 # one line empty
+
+    xor r11, r11                    # index = 0
+.cmp_loop:
+    movzx r12, byte ptr [rcx + r11]
+    movzx rdx, byte ptr [r9 + r11]
+    cmp r12, rdx
+    jne .cmp_bytes_done
+    inc r11
+    cmp r11, rax
+    jne .cmp_loop
+
+.cmp_lengths:
+    # all min_len bytes equal, compare lengths
+    cmp r8, r10
+    jl .a_less
+    jg .a_greater
+    xor rax, rax
+    ret
+
+.cmp_bytes_done:
+    cmp r12, rdx
+    jl .a_less
+    jg .a_greater
+    # should not reach here
+    xor rax, rax
+    ret
+
+.a_less:
+    mov rax, -1
+    ret
+
+.a_greater:
+    mov rax, 1
+    ret
+
+# --- Output lines ---
+.output_lines:
+    # r14 = line_count
+    # line_array at rip+line_array
+    test r14, r14
+    jz .exit_success
+    xor r15, r15                    # index = 0
+    lea r13, [rip + line_array]
+.output_loop:
+    mov rsi, qword ptr [r13 + r15*16]      # line.start
+    mov rdx, qword ptr [r13 + r15*16 + 8]  # line.len
+    # write line
+    mov rax, SYS_WRITE
+    mov rdi, 1
+    syscall
+    # write newline
+    mov rax, SYS_WRITE
+    mov rdi, 1
+    lea rsi, [rip + newline_char]
+    mov rdx, 1
+    syscall
+    inc r15
+    cmp r15, r14
+    jne .output_loop
+
+.exit_success:
+    mov rax, SYS_EXIT
+    xor rdi, rdi
+    syscall
+</previous>
+It failed:
+<failure>
+GNU as rejected the program:
+line 207: .zero is not allowed in .text (only instructions and alignment); put data in .data or .rodata
+</failure>
+Write a corrected, complete version. Same output format; output only the code.

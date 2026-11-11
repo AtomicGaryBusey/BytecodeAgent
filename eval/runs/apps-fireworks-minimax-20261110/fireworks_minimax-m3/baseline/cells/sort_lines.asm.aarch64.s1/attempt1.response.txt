@@ -1,0 +1,185 @@
+.text
+.globl _start
+
+_start:
+    // Load addresses of buffers and arrays
+    adrp x19, input_buf
+    add x19, x19, :lo12:input_buf
+    adrp x20, line_off
+    add x20, x20, :lo12:line_off
+    adrp x21, line_len
+    add x21, x21, :lo12:line_len
+    adrp x22, newline_buf
+    add x22, x22, :lo12:newline_buf
+
+    // Initialize newline_buf with 0x0A
+    mov w0, #0x0a
+    strb w0, [x22]
+
+    // Read all input from stdin into input_buf
+    mov x25, #0           // total_read = 0
+    mov w26, #0x8000      // max_input = 32768
+read_loop:
+    cmp x25, x26
+    b.ge read_done
+    sub x2, x26, x25      // count = max - total_read
+    add x1, x19, x25      // buf + total_read
+    mov x0, #0
+    mov x8, #63           // sys_read
+    svc #0
+    cmp x0, #0
+    b.le read_done
+    add x25, x25, x0
+    b read_loop
+read_done:
+
+    // Parse input into lines
+    mov x26, #0           // cur_offset = 0
+    mov x27, #0           // start_offset = 0
+    mov x28, #0           // n_lines = 0
+parse_loop:
+    cmp x26, x25
+    b.ge parse_final
+    ldrb w0, [x19, x26]
+    cmp w0, #0x0a
+    b.ne parse_next
+    // Line terminated by newline
+    sub w1, w26, w27
+    str w1, [x21, x28, lsl #2]   // line_len[n_lines] = length
+    str w27, [x20, x28, lsl #2]  // line_off[n_lines] = start_offset
+    add x28, x28, #1
+    add x26, x26, #1
+    mov x27, x26
+    b parse_loop
+parse_next:
+    add x26, x26, #1
+    b parse_loop
+parse_final:
+    cmp x27, x25
+    b.ge sort_start
+    sub w1, w25, w27
+    str w1, [x21, x28, lsl #2]
+    str w27, [x20, x28, lsl #2]
+    add x28, x28, #1
+
+sort_start:
+    // If no lines, skip sorting and output
+    cmp x28, #0
+    b.eq exit_prog
+
+    // Insertion sort
+    mov x25, #1           // i = 1
+sort_outer:
+    cmp x25, x28
+    b.ge output_start
+
+    ldr w23, [x20, x25, lsl #2]   // e_off = line_off[i]
+    ldr w24, [x21, x25, lsl #2]   // e_len = line_len[i]
+    mov x26, x25                 // j = i
+sort_inner:
+    cmp x26, #0
+    b.le sort_place
+
+    // Compare entries[j-1] with e
+    sub x9, x26, #1
+    ldr w0, [x20, x9, lsl #2]    // p_off
+    ldr w1, [x21, x9, lsl #2]    // p_len
+    mov w2, w23                  // e_off
+    mov w3, w24                  // e_len
+    bl cmp_lines
+    cmp w0, #0
+    b.le sort_place              // if prev <= e, stop shifting
+
+    // Shift p to position j
+    ldr w10, [x20, x9, lsl #2]
+    ldr w11, [x21, x9, lsl #2]
+    str w10, [x20, x26, lsl #2]
+    str w11, [x21, x26, lsl #2]
+
+    sub x26, x26, #1
+    b sort_inner
+sort_place:
+    str w23, [x20, x26, lsl #2]
+    str w24, [x21, x26, lsl #2]
+
+    add x25, x25, #1
+    b sort_outer
+
+output_start:
+    mov x25, #0           // i = 0
+output_loop:
+    cmp x25, x28
+    b.ge exit_prog
+
+    ldr w26, [x20, x25, lsl #2]   // off
+    ldr w27, [x21, x25, lsl #2]   // len
+    // write(1, buf+off, len)
+    mov x0, #1
+    add x1, x19, x26
+    mov x2, x27
+    mov x8, #64
+    svc #0
+    // write(1, newline_buf, 1)
+    mov x0, #1
+    mov x1, x22
+    mov x2, #1
+    mov x8, #64
+    svc #0
+
+    add x25, x25, #1
+    b output_loop
+
+exit_prog:
+    mov x0, #0
+    mov x8, #93           // sys_exit
+    svc #0
+    mov x8, #94           // sys_exit_group fallback
+    svc #0
+    b .
+
+// Comparison subroutine for two lines
+// Args: w0=a_off, w1=a_len, w2=b_off, w3=b_len
+// Returns: w0 = -1 if a<b, 0 if a==b, 1 if a>b
+// Uses x19 as base pointer to input buffer (callee-saved)
+cmp_lines:
+    cmp w1, w3
+    csel w4, w1, w3, lt          // w4 = min_len
+    add x9, x19, w0, uxtw        // a_ptr = base + a_off
+    add x10, x19, w2, uxtw       // b_ptr = base + b_off
+    cbz w4, len_cmp
+    mov w11, #0                  // i = 0
+byte_loop:
+    ldrb w12, [x9, w11, uxtw]
+    ldrb w13, [x10, w11, uxtw]
+    cmp w12, w13
+    b.ne diff
+    add w11, w11, #1
+    cmp w11, w4
+    b.lt byte_loop
+len_cmp:
+    cmp w1, w3
+    b.eq eq
+    b.gt gt
+    mov w0, #-1
+    ret
+gt:
+    mov w0, #1
+    ret
+eq:
+    mov w0, #0
+    ret
+diff:
+    cmp w12, w13
+    b.gt gt
+    mov w0, #-1
+    ret
+
+.bss
+.align 4
+input_buf: .skip 32768
+.align 4
+line_off: .skip 4000
+.align 4
+line_len: .skip 4000
+.align 4
+newline_buf: .skip 16

@@ -1,0 +1,170 @@
+.section .rodata
+newline: .byte 0x0A
+
+.section .bss
+.align 16
+input_buffer: .zero 32768
+line_ptrs: .zero 8000
+line_lens: .zero 8000
+
+.section .text
+.globl _start
+
+.equ STDIN, 0
+.equ STDOUT, 1
+.equ SYS_READ, 0
+.equ SYS_WRITE, 1
+.equ SYS_EXIT, 60
+.equ BUF_SIZE, 32768
+.equ MAX_LINES, 1000
+
+_start:
+    # Read all input into input_buffer
+    xor r12, r12                # total_bytes = 0
+    lea r13, [input_buffer]     # current write position
+    mov r14, BUF_SIZE           # remaining space
+
+.read_loop:
+    mov rax, SYS_READ
+    mov rdi, STDIN
+    mov rsi, r13
+    mov rdx, r14
+    syscall
+    test rax, rax
+    jz .read_done
+    add r12, rax                # total_bytes += bytes_read
+    add r13, rax                # advance write position
+    sub r14, rax                # remaining -= bytes_read
+    jnz .read_loop
+
+.read_done:
+    # Parse lines from input_buffer
+    xor r15, r15                # line_count = 0
+    test r12, r12
+    jz .sort_done               # empty input, nothing to sort or print
+
+    xor rsi, rsi                # scan index = 0
+    xor rdi, rdi                # line start = 0
+
+.parse_loop:
+    cmp rsi, r12
+    jae .parse_final_line
+    mov al, byte ptr [input_buffer + rsi]
+    cmp al, 0x0A
+    je .parse_found_newline
+    inc rsi
+    jmp .parse_loop
+
+.parse_found_newline:
+    # line from rdi to rsi-1, length = rsi - rdi
+    mov rax, rsi
+    sub rax, rdi                # length
+    lea rdx, [input_buffer + rdi]  # line pointer
+    mov qword ptr [line_ptrs + r15*8], rdx
+    mov qword ptr [line_lens + r15*8], rax
+    inc r15
+    inc rsi                     # skip newline
+    mov rdi, rsi                # next line starts here
+    jmp .parse_loop
+
+.parse_final_line:
+    cmp rdi, r12
+    jae .sort_done              # no final line (input ended with newline)
+    mov rax, r12
+    sub rax, rdi                # length
+    lea rdx, [input_buffer + rdi]
+    mov qword ptr [line_ptrs + r15*8], rdx
+    mov qword ptr [line_lens + r15*8], rax
+    inc r15
+
+.sort_done:
+    # Insertion sort on line_ptrs/line_lens arrays (0 to r15-1)
+    cmp r15, 1
+    jbe .output_lines           # 0 or 1 line, already sorted
+
+    mov rbx, 1                  # i = 1
+
+.outer_loop:
+    # key = line[i]
+    mov r8, qword ptr [line_ptrs + rbx*8]
+    mov r9, qword ptr [line_lens + rbx*8]
+    mov rcx, rbx
+    dec rcx                     # j = i-1
+
+.inner_loop:
+    # Compare line[j] (rcx) with key (r8,r9)
+    # Returns: CF=1 if line[j] > key (shift), CF=0 if line[j] <= key (insert)
+    mov rsi, qword ptr [line_ptrs + rcx*8]
+    mov rdi, qword ptr [line_lens + rcx*8]
+    xor r10, r10                # byte offset k = 0
+
+.cmp_loop:
+    cmp r10, rdi
+    jae .line_j_exhausted       # line[j] exhausted
+    cmp r10, r9
+    jae .key_exhausted          # key exhausted
+    mov al, byte ptr [rsi + r10]
+    mov bl, byte ptr [r8 + r10]
+    cmp al, bl
+    ja .do_shift                # line[j] > key (unsigned)
+    jb .do_insert               # line[j] < key
+    inc r10
+    jmp .cmp_loop
+
+.line_j_exhausted:
+    # line[j] exhausted (k >= len_j)
+    cmp r10, r9
+    jae .do_insert              # both exhausted or key longer -> line[j] <= key
+    # line[j] shorter -> line[j] < key
+    jmp .do_insert
+
+.key_exhausted:
+    # key exhausted (k >= len_key), line[j] longer -> line[j] > key
+    jmp .do_shift
+
+.do_shift:
+    # Move line[j] to line[j+1]
+    mov r11, qword ptr [line_ptrs + rcx*8]
+    mov r12, qword ptr [line_lens + rcx*8]
+    mov qword ptr [line_ptrs + rcx*8 + 8], r11
+    mov qword ptr [line_lens + rcx*8 + 8], r12
+    dec rcx
+    jns .inner_loop             # continue while j >= 0
+    # j == -1, fall through to insert at 0
+
+.do_insert:
+    # Insert key at line[j+1] (rcx+1)
+    mov qword ptr [line_ptrs + rcx*8 + 8], r8
+    mov qword ptr [line_lens + rcx*8 + 8], r9
+
+    inc rbx
+    cmp rbx, r15
+    jb .outer_loop
+
+.output_lines:
+    xor rbx, rbx                # line index
+
+.print_loop:
+    cmp rbx, r15
+    jae .exit_prog
+    mov rsi, qword ptr [line_ptrs + rbx*8]
+    mov rdx, qword ptr [line_lens + rbx*8]
+    test rdx, rdx
+    jz .print_newline_only
+    mov rax, SYS_WRITE
+    mov rdi, STDOUT
+    syscall
+
+.print_newline_only:
+    mov rax, SYS_WRITE
+    mov rdi, STDOUT
+    lea rsi, [rip + newline]
+    mov rdx, 1
+    syscall
+    inc rbx
+    jmp .print_loop
+
+.exit_prog:
+    mov rax, SYS_EXIT
+    xor rdi, rdi
+    syscall

@@ -1,0 +1,377 @@
+// Reverse Polish Notation evaluator for AArch64 Linux
+// Reads stdin lines, evaluates RPN expressions, prints results or "error".
+
+.section .rodata
+err_str: .ascii "error\n"
+minus_char: .byte '-'
+newline_char: .byte 10
+
+.section .bss
+.align 3
+input_buf: .space 65536
+.align 3
+val_stack: .space 8192
+.align 3
+digit_buf: .space 32
+
+.section .text
+.globl _start
+
+_start:
+    // Set up input buffer pointer
+    adrp x10, input_buf
+    add x10, x10, :lo12:input_buf
+    mov x9, #0          // bytes read so far
+
+.read_input:
+    // Compute buffer address = input_buf + x9
+    add x11, x10, x9
+    // Remaining bytes to read
+    mov x12, #65536
+    sub x12, x12, x9
+    cbz x12, .read_done
+    // syscall read
+    mov x0, #0          // fd stdin
+    mov x1, x11         // buf
+    mov x2, x12         // count
+    mov x8, #63         // __NR_read
+    svc #0
+    cmp x0, #0
+    b.lt .read_error
+    b.eq .read_done
+    add x9, x9, x0
+    b .read_input
+
+.read_error:
+    mov x0, #1
+    mov x8, #93
+    svc #0
+
+.read_done:
+    // x9 = total bytes read
+    mov x15, x9          // total length
+
+    // Initialize line pointer
+    mov x14, #0          // current index
+
+.line_loop:
+    cmp x14, x15
+    b.ge .end_all
+    mov x16, x14         // line_start
+    mov x17, x14         // scan index
+
+.find_newline:
+    cmp x17, x15
+    b.ge .no_newline
+    ldrb w18, [input_buf, x17]
+    cmp w18, #10
+    b.eq .newline_found
+    add x17, x17, #1
+    b .find_newline
+
+.newline_found:
+    add x14, x17, #1
+    mov x0, x16
+    mov x1, x17
+    bl process_line
+    b .line_loop
+
+.no_newline:
+    mov x14, x15
+    mov x0, x16
+    mov x1, x15
+    bl process_line
+
+.end_all:
+    mov x0, #0
+    mov x8, #93
+    svc #0
+
+// Process a line; x0 = start pointer, x1 = end pointer (exclusive)
+process_line:
+    mov x2, x0           // current pointer p
+    mov x3, x1           // end pointer
+    mov x4, #0           // sp_idx = 0
+    mov x5, #0           // error flag = 0
+    adrp x21, val_stack
+    add x21, x21, :lo12:val_stack
+    b .token_loop
+
+.token_loop:
+    // skip separators
+    cmp x2, x3
+    b.ge .line_end
+    ldrb w9, [x2]
+    cmp w9, #' '
+    b.eq .skip_sep
+    cmp w9, #'\t'
+    b.ne .not_sep
+.skip_sep:
+    add x2, x2, #1
+    b .token_loop
+
+.not_sep:
+    mov x8, x2           // token_start
+    // find token end
+.find_end:
+    cmp x2, x3
+    b.ge .end_of_token
+    ldrb w9, [x2]
+    cmp w9, #' '
+    b.eq .end_of_token
+    cmp w9, #'\t'
+    b.eq .end_of_token
+    add x2, x2, #1
+    b .find_end
+
+.end_of_token:
+    sub x7, x2, x8       // token_len = p - token_start
+    // load first byte
+    ldrb w6, [x8]
+
+    // Check for operator (single char)
+    cmp x7, #1
+    b.ne .not_op
+    cmp w6, #'+'
+    b.eq .handle_op
+    cmp w6, #'-'
+    b.eq .handle_op
+    cmp w6, #'*'
+    b.eq .handle_op
+    cmp w6, #'/'
+    b.eq .handle_op
+    cmp w6, #'%'
+    b.eq .handle_op
+    b .invalid_token
+
+.not_op:
+    // Check if starts with '-'
+    cmp w6, #'-'
+    b.eq .maybe_negative
+
+    // else must be digit
+    cmp w6, #'0'
+    b.lt .invalid_token
+    cmp w6, #'9'
+    b.gt .invalid_token
+    // positive literal
+    mov x26, #0          // sign = 0
+    mov x24, x8          // digit pointer
+    mov x25, x7          // digit count
+    b .parse_int
+
+.maybe_negative:
+    // token_len must be >= 2
+    cmp x7, #1
+    b.le .invalid_token
+    mov x26, #1          // sign = -1
+    add x24, x8, #1      // digit pointer after '-'
+    sub x25, x7, #1      // digit count
+    b .parse_int
+
+.parse_int:
+    // Validate digit count 1..18
+    cmp x25, #0
+    b.le .invalid_token
+    cmp x25, #18
+    b.gt .invalid_token
+
+    mov x29, #0          // magnitude = 0
+    mov x30, x24         // current digit pointer
+    mov x31, x25         // remaining digits
+
+.parse_loop:
+    cmp x31, #0
+    b.eq .parse_done
+    ldrb w9, [x30]
+    sub w9, w9, #'0'
+    cmp w9, #0
+    b.lt .invalid_token
+    cmp w9, #9
+    b.gt .invalid_token
+    mov x12, #10
+    mul x29, x29, x12
+    add x29, x29, x9, uxtw
+    add x30, x30, #1
+    sub x31, x31, #1
+    b .parse_loop
+
+.parse_done:
+    cmp x26, #1
+    b.ne .store_val
+    neg x29
+
+.store_val:
+    // push value onto stack
+    mov x9, x4
+    lsl x9, x9, #3
+    add x9, x9, x21
+    str x29, [x9]
+    add x4, x4, #1
+    b .token_loop
+
+.handle_op:
+    // operator handling, check stack has at least two values
+    cmp x4, #2
+    b.lt .invalid_token
+
+    // pop b then a
+    sub x4, x4, #1
+    mov x9, x4
+    lsl x9, x9, #3
+    add x9, x9, x21
+    ldr x10, [x9]          // b
+
+    sub x4, x4, #1
+    mov x9, x4
+    lsl x9, x9, #3
+    add x9, x9, x21
+    ldr x11, [x9]          // a
+
+    // branch based on operator
+    cmp w6, #'+'
+    b.eq .op_plus
+    cmp w6, #'-'
+    b.eq .op_minus
+    cmp w6, #'*'
+    b.eq .op_mul
+    cmp w6, #'/'
+    b.eq .op_div
+    cmp w6, #'%'
+    b.eq .op_mod
+
+.op_plus:
+    add x11, x11, x10
+    b .push_result
+
+.op_minus:
+    sub x11, x11, x10
+    b .push_result
+
+.op_mul:
+    mul x11, x11, x10
+    b .push_result
+
+.op_div:
+    cbz x10, .invalid_token
+    mov x12, #0x8000000000000000
+    cmp x11, x12
+    b.ne .op_div_ok
+    mov x13, #0xffffffffffffffff
+    cmp x10, x13
+    b.eq .invalid_token
+.op_div_ok:
+    sdiv x11, x11, x10
+    b .push_result
+
+.op_mod:
+    cbz x10, .invalid_token
+    mov x12, #0x8000000000000000
+    cmp x11, x12
+    b.ne .op_mod_ok
+    mov x13, #0xffffffffffffffff
+    cmp x10, x13
+    b.eq .invalid_token
+.op_mod_ok:
+    sdiv x14, x11, x10
+    msub x11, x14, x10, x11
+    b .push_result
+
+.push_result:
+    // push result (x11) onto stack
+    mov x9, x4
+    lsl x9, x9, #3
+    add x9, x9, x21
+    str x11, [x9]
+    add x4, x4, #1
+    b .token_loop
+
+.invalid_token:
+    mov x5, #1
+    b .line_end
+
+.line_end:
+    // after token loop or error
+    cmp x5, #0
+    b.ne .output_error
+
+    // check exactly one value left
+    cmp x4, #1
+    b.ne .output_error
+
+    // load top value
+    ldr x0, [x21]
+    bl print_number
+    ret
+
+.output_error:
+    bl print_error
+    ret
+
+// Print "error\n"
+print_error:
+    mov x0, #1
+    adrp x1, err_str
+    add x1, x1, :lo12:err_str
+    mov x2, #6
+    mov x8, #64
+    svc #0
+    ret
+
+// Print signed integer in x0 followed by newline
+print_number:
+    mov x9, x0           // number
+    mov x10, #0          // sign flag (0 positive, 1 negative)
+    tst x9, #0x8000000000000000
+    b.eq .pos
+    mov x10, #1          // negative
+.pos:
+    // convert magnitude (x9 treated as unsigned) to decimal digits
+    adrp x11, digit_buf
+    add x11, x11, :lo12:digit_buf
+    add x12, x11, #31    // point to end of buffer
+    mov x13, x9
+    mov x14, #0          // digit count
+
+    cbnz x13, .conv_loop
+    // zero case
+    mov w15, #'0'
+    strb w15, [x12]
+    mov x14, #1
+    b .conv_done
+
+.conv_loop:
+    udiv x15, x13, #10
+    msub x16, x15, #10, x13
+    add x16, x16, #'0'
+    strb w16, [x12]
+    sub x12, x12, #1
+    add x14, x14, #1
+    mov x13, x15
+    cbnz x13, .conv_loop
+
+.conv_done:
+    // write sign if needed
+    cmp x10, #0
+    b.eq .skip_sign
+    mov x0, #1
+    adrp x1, minus_char
+    add x1, x1, :lo12:minus_char
+    mov x2, #1
+    mov x8, #64
+    svc #0
+.skip_sign:
+    // write digits
+    add x1, x12, #1
+    mov x2, x14
+    mov x0, #1
+    mov x8, #64
+    svc #0
+    // write newline
+    mov x0, #1
+    adrp x1, newline_char
+    add x1, x1, :lo12:newline_char
+    mov x2, #1
+    mov x8, #64
+    svc #0
+    ret

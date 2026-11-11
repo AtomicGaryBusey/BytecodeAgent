@@ -1,0 +1,248 @@
+.section .bss
+.align 4
+tape:        .space 30000
+prog_buf:    .space 65536
+input_buf:   .space 65536
+bracket_map: .space 262144
+out_buf:     .space 65536
+
+.section .rodata
+.align 3
+instr_limit: .quad 5000000
+
+.section .text
+.globl _start
+
+.equ SYS_READ, 63
+.equ SYS_WRITE, 64
+.equ SYS_EXIT, 93
+
+// read all stdin into prog_buf, return total bytes in x0
+read_all:
+    mov x19, xzr            // bytes read so far
+    mov x20, #65536         // max bytes
+    adr x21, prog_buf
+1:
+    mov x8, #SYS_READ
+    mov x0, #0
+    add x1, x21, x19
+    sub x2, x20, x19
+    svc #0
+    cbz x0, 2f
+    add x19, x19, x0
+    cmp x19, x20
+    b.lt 1b
+2:
+    mov x0, x19
+    ret
+
+// split program at first '!' (0x21)
+// x0 = total_len
+// returns x0 = prog_len, x1 = input_len, x2 = input_offset
+split_program:
+    adr x3, prog_buf
+    mov x4, xzr             // index
+    mov x5, x0              // save total_len
+1:
+    cmp x4, x5
+    b.ge 2f                 // not found
+    ldrb w6, [x3, x4]
+    cmp w6, #0x21
+    b.eq 3f
+    add x4, x4, #1
+    b 1b
+2:
+    mov x0, x5              // prog_len = total_len
+    mov x1, xzr             // input_len = 0
+    mov x2, xzr             // input_offset = 0
+    ret
+3:
+    mov x0, x4              // prog_len = index of '!'
+    sub x1, x5, x4          // total_len - prog_len
+    sub x1, x1, #1          // minus '!'
+    add x2, x4, #1          // input_offset
+    ret
+
+// validate brackets and fill bracket_map
+// x0 = prog_len, x1 = prog_buf
+// returns x0 = 0 ok, 1 error
+validate_brackets:
+    adr x10, bracket_map
+    mov x9, xzr             // stack depth
+    mov x11, xzr            // pc
+1:
+    cmp x11, x0
+    b.ge 2f
+    ldrb w12, [x1, x11]
+    cmp w12, #0x5B          // '['
+    b.eq 3f
+    cmp w12, #0x5D          // ']'
+    b.eq 4f
+    add x11, x11, #1
+    b 1b
+3:
+    cmp x9, #1000
+    b.ge error
+    str w11, [x10, x9, lsl #2]
+    add x9, x9, #1
+    add x11, x11, #1
+    b 1b
+4:
+    cbz x9, error
+    sub x9, x9, #1
+    ldr w12, [x10, x9, lsl #2]  // matching '['
+    str w11, [x10, x12, lsl #2] // map '[' -> ']'
+    str w12, [x10, x11, lsl #2] // map ']' -> '['
+    add x11, x11, #1
+    b 1b
+2:
+    cbnz x9, error
+    mov x0, xzr
+    ret
+error:
+    mov x0, #1
+    ret
+
+// flush output buffer
+// x0 = buffer base, x1 = count
+flush_output:
+    cbz x1, 1f
+    mov x8, #SYS_WRITE
+    mov x2, x1
+    mov x1, x0
+    mov x0, #1
+    svc #0
+1:
+    ret
+
+_start:
+    // read all input
+    bl read_all
+    // split program
+    bl split_program
+    // x0 = prog_len, x1 = input_len, x2 = input_offset
+    mov x22, x0             // prog_len
+    mov x25, x1             // input_len
+    adr x21, prog_buf
+    add x24, x21, x2        // input base = prog_buf + input_offset
+    // validate brackets
+    mov x0, x22
+    mov x1, x21
+    bl validate_brackets
+    cbnz x0, exit_error
+    // interpreter setup
+    adr x19, tape
+    mov x20, xzr            // data pointer
+    mov x23, xzr            // program counter
+    mov x26, xzr            // input pointer
+    adr x27, bracket_map
+    // instruction limit = 5000000
+    movz x28, #0x4B40
+    movk x28, #0x4C, lsl #16
+    adr x29, out_buf
+    mov x9, xzr             // output count
+
+interpret_loop:
+    cmp x23, x22
+    b.ge interpret_done
+    cmp x28, xzr
+    b.eq interpret_done
+    ldrb w10, [x21, x23]
+    // decode
+    cmp w10, #0x3E          // '>'
+    b.eq op_right
+    cmp w10, #0x3C          // '<'
+    b.eq op_left
+    cmp w10, #0x2B          // '+'
+    b.eq op_inc
+    cmp w10, #0x2D          // '-'
+    b.eq op_dec
+    cmp w10, #0x2E          // '.'
+    b.eq op_out
+    cmp w10, #0x2C          // ','
+    b.eq op_in
+    cmp w10, #0x5B          // '['
+    b.eq op_loop_start
+    cmp w10, #0x5D          // ']'
+    b.eq op_loop_end
+    b op_next
+
+op_right:
+    add x20, x20, #1
+    b op_next
+
+op_left:
+    sub x20, x20, #1
+    b op_next
+
+op_inc:
+    ldrb w11, [x19, x20]
+    add w11, w11, #1
+    strb w11, [x19, x20]
+    b op_next
+
+op_dec:
+    ldrb w11, [x19, x20]
+    sub w11, w11, #1
+    strb w11, [x19, x20]
+    b op_next
+
+op_out:
+    ldrb w11, [x19, x20]
+    strb w11, [x29, x9]
+    add x9, x9, #1
+    cmp x9, #65536
+    b.ne op_next
+    mov x0, x29
+    mov x1, x9
+    bl flush_output
+    mov x9, xzr
+    b op_next
+
+op_in:
+    cmp x26, x25
+    b.ge op_in_eof
+    ldrb w11, [x24, x26]
+    add x26, x26, #1
+    b op_in_store
+op_in_eof:
+    mov w11, #0
+op_in_store:
+    strb w11, [x19, x20]
+    b op_next
+
+op_loop_start:
+    ldrb w11, [x19, x20]
+    cbnz w11, op_next
+    ldr w11, [x27, x23, lsl #2]
+    mov x23, x11
+    b op_next
+
+op_loop_end:
+    ldrb w11, [x19, x20]
+    cbz w11, op_next
+    ldr w11, [x27, x23, lsl #2]
+    mov x23, x11
+    b op_next
+
+op_next:
+    add x23, x23, #1
+    sub x28, x28, #1
+    b interpret_loop
+
+interpret_done:
+    cbz x9, exit_success
+    mov x0, x29
+    mov x1, x9
+    bl flush_output
+
+exit_success:
+    mov x0, #0
+    b exit_prog
+
+exit_error:
+    mov x0, #1
+
+exit_prog:
+    mov x8, #SYS_EXIT
+    svc #0

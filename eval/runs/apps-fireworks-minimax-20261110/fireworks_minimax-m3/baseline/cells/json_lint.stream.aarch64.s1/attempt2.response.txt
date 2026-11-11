@@ -1,0 +1,706 @@
+    .section .rodata
+msg_ok:      .ascii "ok\n"
+msg_ok_len = . - msg_ok
+
+msg_err_prefix:
+    .ascii "error at "
+msg_err_prefix_len = . - msg_err_prefix
+
+msg_newline:
+    .ascii "\n"
+msg_newline_len = . - msg_newline
+
+    .section .bss
+    .align 4
+input_buf:
+    .zero 65536
+
+    .text
+    .globl _start
+
+//
+// Utility: skip whitespace (space, tab, LF, CR)
+// In:  x0 = current pointer, x1 = end pointer
+// Out: x0 = pointer after whitespace (>= input)
+skip_ws:
+skip_ws_loop:
+    cmp x0, x1
+    b.ge skip_ws_done
+    ldrb w2, [x0]
+    cmp w2, #0x20
+    b.eq skip_ws_inc
+    cmp w2, #0x09
+    b.eq skip_ws_inc
+    cmp w2, #0x0A
+    b.eq skip_ws_inc
+    cmp w2, #0x0D
+    b.eq skip_ws_inc
+    b skip_ws_done
+skip_ws_inc:
+    add x0, x0, #1
+    b skip_ws_loop
+skip_ws_done:
+    ret
+
+//
+// Print unsigned integer (x0) in decimal, followed by nothing.
+// The number is written to fd 1 using the write syscall.
+// Temporary buffer on stack (max 5 digits).
+print_number:
+    sub sp, sp, #32
+    mov x9, sp
+    add x9, x9, #31          // x9 points to last byte of buffer
+    mov x10, #0              // digit count
+    cbz x0, print_zero
+    mov x11, #10
+print_loop:
+    udiv x12, x0, x11        // quotient = x0 / 10
+    msub x13, x12, x11, x0   // remainder = x0 - quotient*10
+    add w14, w13, #0x30      // ascii digit
+    strb w14, [x9], #-1
+    add x10, x10, #1
+    mov x0, x12
+    cbnz x0, print_loop
+    b print_write
+print_zero:
+    mov w14, #0x30
+    strb w14, [x9], #-1
+    mov x10, #1
+print_write:
+    add x1, x9, #1
+    mov x2, x10
+    mov x0, #1               // stdout
+    mov x8, #64              // write syscall
+    svc #0
+    add sp, sp, #32
+    ret
+
+//
+// Parse a JSON string.
+// In:  x0 = pointer to opening double‑quote
+// Out: x0 = pointer after closing quote (or error position)
+//      x10 = 0 on success, 1 on error (x0 = error position)
+parse_string:
+    mov x10, #0
+    add x9, x0, #1           // scan position after opening quote
+ps_loop:
+    cmp x9, x1
+    b.ge ps_err_unterminated
+    ldrb w2, [x9]
+    cmp w2, #0x22            // closing quote
+    b.eq ps_end
+    cmp w2, #0x5C            // backslash
+    b.eq ps_escape
+    cmp w2, #0x20            // control character < 0x20 ?
+    b.lt ps_err_control
+    add x9, x9, #1
+    b ps_loop
+ps_escape:
+    add x11, x9, #1
+    cmp x11, x1
+    b.ge ps_err_unterminated
+    ldrb w2, [x11]
+    cmp w2, #0x22            // \" 
+    b.eq ps_escape_ok
+    cmp w2, #0x5C            // \\ 
+    b.eq ps_escape_ok
+    cmp w2, #0x2F            // \/ 
+    b.eq ps_escape_ok
+    cmp w2, #0x62            // \b 
+    b.eq ps_escape_ok
+    cmp w2, #0x66            // \f 
+    b.eq ps_escape_ok
+    cmp w2, #0x6E            // \n 
+    b.eq ps_escape_ok
+    cmp w2, #0x72            // \r 
+    b.eq ps_escape_ok
+    cmp w2, #0x74            // \t 
+    b.eq ps_escape_ok
+    cmp w2, #0x75            // \u 
+    b.eq ps_unicode
+    // invalid escape character
+    mov x0, x11
+    mov x10, #1
+    ret
+ps_escape_ok:
+    add x9, x11, #1
+    b ps_loop
+ps_unicode:
+    add x12, x11, #1        // first hex digit
+    add x13, x12, #4        // after 4 digits
+    cmp x13, x1
+    b.gt ps_err_unterminated
+    mov x14, x12
+    mov x15, #4
+pu_digit_loop:
+    ldrb w2, [x14]
+    sub w3, w2, #0x30
+    cmp w3, #9
+    b.le pu_digit_ok
+    sub w3, w2, #0x61
+    cmp w3, #5
+    b.le pu_digit_ok
+    sub w3, w2, #0x41
+    cmp w3, #5
+    b.le pu_digit_ok
+    mov x0, x14
+    mov x10, #1
+    ret
+pu_digit_ok:
+    add x14, x14, #1
+    sub x15, x15, #1
+    cbnz x15, pu_digit_loop
+    mov x9, x13
+    b ps_loop
+ps_end:
+    add x0, x9, #1
+    mov x10, #0
+    ret
+ps_err_control:
+    mov x0, x9
+    mov x10, #1
+    ret
+ps_err_unterminated:
+    mov x0, x1
+    mov x10, #1
+    ret
+
+//
+// Parse a JSON number.
+// In:  x0 = start pointer
+// Out: x0 = pointer after successful parse (or error position)
+//      x10 = 0 on success, 1 on error
+parse_number:
+    mov x9, x0              // scanning pointer
+    ldrb w2, [x9]
+    cmp w2, #0x2D            // '-'
+    b.ne pn_no_sign
+    add x9, x9, #1
+    cmp x9, x1
+    b.ge pn_err_eof          // missing digits after sign
+pn_no_sign:
+    cmp x9, x1
+    b.ge pn_err_eof          // no digit at all
+    ldrb w2, [x9]
+    cmp w2, #0x30            // '0'
+    b.eq pn_zero
+    // must be 1-9
+    cmp w2, #0x31
+    b.lt pn_err_invalid_char
+    cmp w2, #0x39
+    b.gt pn_err_invalid_char
+pn_digits_loop:
+    add x9, x9, #1
+    cmp x9, x1
+    b.ge pn_after_int
+    ldrb w2, [x9]
+    cmp w2, #0x30
+    b.lt pn_after_int
+    cmp w2, #0x39
+    b.gt pn_after_int
+    b pn_digits_loop
+pn_zero:
+    add x9, x9, #1
+    cmp x9, x1
+    b.ge pn_after_int
+    ldrb w2, [x9]
+    cmp w2, #0x30
+    b.lt pn_after_int
+    cmp w2, #0x39
+    b.le pn_err_invalid_digit_after_zero
+pn_after_int:
+    cmp x9, x1
+    b.ge pn_done
+    ldrb w2, [x9]
+    cmp w2, #0x2E            // '.'
+    b.ne pn_check_exp
+    // fractional part
+    add x9, x9, #1
+    cmp x9, x1
+    b.ge pn_err_frac_missing
+    ldrb w2, [x9]
+    cmp w2, #0x30
+    b.lt pn_err_frac_invalid
+    cmp w2, #0x39
+    b.gt pn_err_frac_invalid
+    add x9, x9, #1
+pn_frac_digits_loop:
+    cmp x9, x1
+    b.ge pn_check_exp
+    ldrb w2, [x9]
+    cmp w2, #0x30
+    b.lt pn_check_exp
+    cmp w2, #0x39
+    b.gt pn_check_exp
+    add x9, x9, #1
+    b pn_frac_digits_loop
+pn_check_exp:
+    cmp x9, x1
+    b.ge pn_done
+    ldrb w2, [x9]
+    cmp w2, #0x65            // 'e'
+    b.eq pn_exp
+    cmp w2, #0x45            // 'E'
+    b.eq pn_exp
+    b pn_done
+pn_exp:
+    add x9, x9, #1
+    cmp x9, x1
+    b.ge pn_err_exp_missing
+    ldrb w2, [x9]
+    cmp w2, #0x2B            // '+'
+    b.eq pn_exp_sign
+    cmp w2, #0x2D            // '-'
+    b.eq pn_exp_sign
+    b pn_exp_no_sign
+pn_exp_sign:
+    add x9, x9, #1
+    cmp x9, x1
+    b.ge pn_err_exp_missing
+pn_exp_no_sign:
+    ldrb w2, [x9]
+    cmp w2, #0x30
+    b.lt pn_err_exp_invalid
+    cmp w2, #0x39
+    b.gt pn_err_exp_invalid
+    add x9, x9, #1
+pn_exp_digits_loop:
+    cmp x9, x1
+    b.ge pn_done
+    ldrb w2, [x9]
+    cmp w2, #0x30
+    b.lt pn_done
+    cmp w2, #0x39
+    b.gt pn_done
+    add x9, x9, #1
+    b pn_exp_digits_loop
+pn_done:
+    mov x0, x9
+    mov x10, #0
+    ret
+pn_err_eof:
+    mov x0, x1
+    mov x10, #1
+    ret
+pn_err_invalid_char:
+    mov x0, x9
+    mov x10, #1
+    ret
+pn_err_invalid_digit_after_zero:
+    mov x0, x9
+    mov x10, #1
+    ret
+pn_err_frac_missing:
+    mov x0, x9
+    mov x10, #1
+    ret
+pn_err_frac_invalid:
+    mov x0, x9
+    mov x10, #1
+    ret
+pn_err_exp_missing:
+    mov x0, x9
+    mov x10, #1
+    ret
+pn_err_exp_invalid:
+    mov x0, x9
+    mov x10, #1
+    ret
+
+//
+// Parse literal true
+parse_true:
+    add x11, x0, #4
+    cmp x11, x1
+    b.gt true_err_eof
+    ldrb w2, [x0, #1]
+    cmp w2, #0x72            // 'r'
+    b.ne true_err1
+    ldrb w2, [x0, #2]
+    cmp w2, #0x75            // 'u'
+    b.ne true_err2
+    ldrb w2, [x0, #3]
+    cmp w2, #0x65            // 'e'
+    b.ne true_err3
+    add x0, x0, #4
+    mov x10, #0
+    ret
+true_err_eof:
+    mov x0, x1
+    mov x10, #1
+    ret
+true_err1:
+    add x0, x0, #1
+    mov x10, #1
+    ret
+true_err2:
+    add x0, x0, #2
+    mov x10, #1
+    ret
+true_err3:
+    add x0, x0, #3
+    mov x10, #1
+    ret
+
+//
+// Parse literal false
+parse_false:
+    add x11, x0, #5
+    cmp x11, x1
+    b.gt false_err_eof
+    ldrb w2, [x0, #1]
+    cmp w2, #0x61            // 'a'
+    b.ne false_err1
+    ldrb w2, [x0, #2]
+    cmp w2, #0x6C            // 'l'
+    b.ne false_err2
+    ldrb w2, [x0, #3]
+    cmp w2, #0x73            // 's'
+    b.ne false_err3
+    ldrb w2, [x0, #4]
+    cmp w2, #0x65            // 'e'
+    b.ne false_err4
+    add x0, x0, #5
+    mov x10, #0
+    ret
+false_err_eof:
+    mov x0, x1
+    mov x10, #1
+    ret
+false_err1:
+    add x0, x0, #1
+    mov x10, #1
+    ret
+false_err2:
+    add x0, x0, #2
+    mov x10, #1
+    ret
+false_err3:
+    add x0, x0, #3
+    mov x10, #1
+    ret
+false_err4:
+    add x0, x0, #4
+    mov x10, #1
+    ret
+
+//
+// Parse literal null
+parse_null:
+    add x11, x0, #4
+    cmp x11, x1
+    b.gt null_err_eof
+    ldrb w2, [x0, #1]
+    cmp w2, #0x75            // 'u'
+    b.ne null_err1
+    ldrb w2, [x0, #2]
+    cmp w2, #0x6C            // 'l'
+    b.ne null_err2
+    ldrb w2, [x0, #3]
+    cmp w2, #0x6C            // 'l'
+    b.ne null_err3
+    add x0, x0, #4
+    mov x10, #0
+    ret
+null_err_eof:
+    mov x0, x1
+    mov x10, #1
+    ret
+null_err1:
+    add x0, x0, #1
+    mov x10, #1
+    ret
+null_err2:
+    add x0, x0, #2
+    mov x10, #1
+    ret
+null_err3:
+    add x0, x0, #3
+    mov x10, #1
+    ret
+
+//
+// Parse a JSON object.
+// In:  x0 points to '{'
+// Out: x0 = pointer after closing '}' on success,
+//      x0 = error position on failure, x10=1
+parse_object:
+    add x9, x0, #1           // first position after '{'
+    mov x0, x9
+    bl skip_ws
+    mov x9, x0
+    cmp x9, x1
+    b.ge po_err_eof
+    ldrb w2, [x9]
+    cmp w2, #0x7D            // '}'
+    b.eq po_close
+po_member_start:
+    // key string
+    mov x0, x9
+    bl parse_string
+    cbnz x10, po_err_return
+    mov x9, x0
+    // skip ws after key
+    mov x0, x9
+    bl skip_ws
+    mov x9, x0
+    // colon
+    cmp x9, x1
+    b.ge po_err_eof
+    ldrb w2, [x9]
+    cmp w2, #0x3A            // ':'
+    b.ne po_err_expected_colon
+    add x9, x9, #1
+    // skip ws after colon
+    mov x0, x9
+    bl skip_ws
+    mov x9, x0
+    // value
+    mov x0, x9
+    bl parse_value
+    cbnz x10, po_err_return
+    mov x9, x0
+    // skip ws after value
+    mov x0, x9
+    bl skip_ws
+    mov x9, x0
+    // next token: '}' or ',' 
+    cmp x9, x1
+    b.ge po_err_eof
+    ldrb w2, [x9]
+    cmp w2, #0x7D            // '}'
+    b.eq po_close
+    cmp w2, #0x2C            // ','
+    b.ne po_err_expected_comma_or_close
+    // comma found
+    add x9, x9, #1
+    mov x0, x9
+    bl skip_ws
+    mov x9, x0
+    // after comma must be another member: expect '"'
+    cmp x9, x1
+    b.ge po_err_eof
+    ldrb w2, [x9]
+    cmp w2, #0x22            // '"'
+    b.ne po_err_expected_string_key
+    b po_member_start
+po_close:
+    add x9, x9, #1
+    mov x0, x9
+    mov x10, #0
+    ret
+po_err_return:
+    // x0 already set to error, x10 already set to 1
+    ret
+po_err_eof:
+    mov x0, x1
+    mov x10, #1
+    ret
+po_err_expected_colon:
+    mov x0, x9
+    mov x10, #1
+    ret
+po_err_expected_comma_or_close:
+    mov x0, x9
+    mov x10, #1
+    ret
+po_err_expected_string_key:
+    mov x0, x9
+    mov x10, #1
+    ret
+
+//
+// Parse a JSON array.
+// In:  x0 points to '['
+// Out: same conventions as parse_object
+parse_array:
+    add x9, x0, #1           // after '['
+    mov x0, x9
+    bl skip_ws
+    mov x9, x0
+    cmp x9, x1
+    b.ge pa_err_eof
+    ldrb w2, [x9]
+    cmp w2, #0x5D            // ']'
+    b.eq pa_close
+pa_elem_start:
+    mov x0, x9
+    bl parse_value
+    cbnz x10, pa_err_return
+    mov x9, x0
+    mov x0, x9
+    bl skip_ws
+    mov x9, x0
+    cmp x9, x1
+    b.ge pa_err_eof
+    ldrb w2, [x9]
+    cmp w2, #0x5D            // ']'
+    b.eq pa_close
+    cmp w2, #0x2C            // ','
+    b.ne pa_err_expected_comma_or_close
+    add x9, x9, #1
+    mov x0, x9
+    bl skip_ws
+    mov x9, x0
+    b pa_elem_start
+pa_close:
+    add x9, x9, #1
+    mov x0, x9
+    mov x10, #0
+    ret
+pa_err_return:
+    ret
+pa_err_eof:
+    mov x0, x1
+    mov x10, #1
+    ret
+pa_err_expected_comma_or_close:
+    mov x0, x9
+    mov x10, #1
+    ret
+
+//
+// Top‑level value dispatcher
+parse_value:
+    cmp x0, x1
+    b.ge pv_err_eof
+    ldrb w2, [x0]
+    cmp w2, #0x22            // '"'
+    b.eq pv_str
+    cmp w2, #0x7B            // '{'
+    b.eq pv_obj
+    cmp w2, #0x5B            // '['
+    b.eq pv_arr
+    cmp w2, #0x2D            // '-'
+    b.eq pv_num
+    cmp w2, #0x30
+    b.lt pv_letters
+    cmp w2, #0x39
+    b.gt pv_letters
+pv_num:
+    bl parse_number
+    ret
+pv_letters:
+    cmp w2, #0x74            // 't'
+    b.eq pv_true
+    cmp w2, #0x66            // 'f'
+    b.eq pv_false
+    cmp w2, #0x6E            // 'n'
+    b.eq pv_null
+    // unexpected character
+    mov x10, #1
+    ret
+pv_str:
+    bl parse_string
+    ret
+pv_obj:
+    bl parse_object
+    ret
+pv_arr:
+    bl parse_array
+    ret
+pv_true:
+    bl parse_true
+    ret
+pv_false:
+    bl parse_false
+    ret
+pv_null:
+    bl parse_null
+    ret
+pv_err_eof:
+    mov x0, x1
+    mov x10, #1
+    ret
+
+//
+// Entry point
+_start:
+    // buffer base address
+    adrp x9, input_buf
+    add x9, x9, :lo12:input_buf
+    // offset in buffer
+    mov x12, #0
+read_loop:
+    // remaining bytes = 65536 - x12
+    mov x13, #65536
+    sub x14, x13, x12
+    cbz x14, read_done
+    // set up read syscall
+    mov x0, #0               // fd = stdin
+    mov x1, x9
+    add x1, x1, x12          // current buffer position
+    mov x2, x14
+    mov x8, #63              // read
+    svc #0
+    // x0 = bytes read (0 on EOF, negative on error)
+    cbz x0, read_done
+    add x12, x12, x0
+    b read_loop
+read_done:
+    // compute end pointer
+    add x1, x9, x12          // x1 = buffer + length
+    // start parsing
+    mov x0, x9               // start of input
+    mov x10, #0              // clear error flag
+    // skip leading whitespace
+    bl skip_ws
+    // if only whitespace -> error at length
+    cmp x0, x1
+    b.eq error_empty
+    // parse a value
+    bl parse_value
+    cbnz x10, error_exit
+    // skip trailing whitespace
+    bl skip_ws
+    // must be at EOF
+    cmp x0, x1
+    b.ne error_extra
+    // success
+    mov x0, #1
+    adrp x1, msg_ok
+    add x1, x1, :lo12:msg_ok
+    mov x2, #msg_ok_len
+    mov x8, #64
+    svc #0
+    mov x0, #0
+    mov x8, #93
+    svc #0
+
+error_empty:
+    // only whitespace or empty input; offset = length
+    mov x0, x1
+    b error_print
+error_exit:
+    // x0 already points to error location
+    b error_print
+error_extra:
+    // x0 points to trailing non‑ws character
+    b error_print
+
+error_print:
+    // compute offset = error pointer - buffer base
+    adrp x5, input_buf
+    add x5, x5, :lo12:input_buf
+    sub x4, x0, x5            // x4 = offset
+    // write "error at "
+    mov x0, #1
+    adrp x1, msg_err_prefix
+    add x1, x1, :lo12:msg_err_prefix
+    mov x2, #msg_err_prefix_len
+    mov x8, #64
+    svc #0
+    // write number
+    mov x0, x4
+    bl print_number
+    // write newline
+    mov x0, #1
+    adrp x1, msg_newline
+    add x1, x1, :lo12:msg_newline
+    mov x2, #msg_newline_len
+    mov x8, #64
+    svc #0
+    // exit with status 1
+    mov x0, #1
+    mov x8, #93
+    svc #0

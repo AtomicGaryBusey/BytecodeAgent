@@ -9,8 +9,10 @@ Layout of a run directory:
     attempts.jsonl                    one record per attempt (a model answer that was scored)
     infra.jsonl                       one record per infrastructure failure (retried, not an attempt)
     cells/<task>.<path>.<isa>[.s<k>]/   (.s<k>: sample k of a sampled cell; app cells always are)
-        attemptN.prompt.txt  attemptN.response.txt  attemptN.raw.jsonl  attemptN.verdict.json
-        attemptN.infraK.response.txt / .raw.jsonl   (a failed call of attempt N, kept for debugging)
+        attemptN.prompt.txt  attemptN.response.txt  attemptN.raw.jsonl.gz  attemptN.verdict.json
+        attemptN.infraK.response.txt / .raw.jsonl.gz   (a failed call of attempt N, kept for debugging)
+        (the raw stream is written plain during the call and gzipped when it returns: since 2026-11-11;
+        older runs were compressed in place by eval/compress_raw.py)
         final.disasm.txt  cell.json   (cell.json marks the cell complete: resume skips it)
 
 A cell without cell.json resumes from its last scored attempt (attemptN.verdict.json): attempt
@@ -31,6 +33,7 @@ subjects and variants. Records then carry "subject", "variant" and "battery" fie
 from __future__ import annotations
 
 import fcntl
+import gzip
 import json
 import os
 import re
@@ -260,12 +263,30 @@ def _stored_attempts(cdir: Path) -> list[dict]:
     return out
 
 
+def compress_raw(path: str | Path) -> Path | None:
+    """Gzip a finished raw stream in place (`x.raw.jsonl` -> `x.raw.jsonl.gz`) and return the new path. A raw
+    stream is an audit record nothing scores from; per-token streams (Fireworks: one event per token) run to tens
+    of MB uncompressed and compress about 70-fold. Deterministic output (mtime 0), so a re-run is byte-identical."""
+    src = Path(path)
+    if not src.exists():
+        return None
+    dst = src.with_name(src.name + ".gz")
+    tmp = dst.with_name(dst.name + ".tmp")
+    with open(src, "rb") as fin, open(tmp, "wb") as raw_out:
+        with gzip.GzipFile(filename="", mode="wb", fileobj=raw_out, compresslevel=9, mtime=0) as out:
+            while chunk := fin.read(1 << 20):
+                out.write(chunk)
+    tmp.replace(dst)
+    src.unlink()
+    return dst
+
+
 def _keep_infra_artifacts(cdir: Path, n: int) -> int:
     """Rename attempt N's response/raw files to attemptN.infraK.*; returns K."""
     k = 1
     while (cdir / f"attempt{n}.infra{k}.response.txt").exists():
         k += 1
-    for suffix in ("response.txt", "raw.jsonl"):
+    for suffix in ("response.txt", "raw.jsonl", "raw.jsonl.gz"):
         src = cdir / f"attempt{n}.{suffix}"
         if src.exists():
             src.replace(cdir / f"attempt{n}.infra{k}.{suffix}")
@@ -324,6 +345,7 @@ def run_cell(subject: Subject, task: Task, path: str, isa: str, run_dir: Path, *
         (cdir / f"attempt{n}.prompt.txt").write_text(prompt)
         raw = str(cdir / f"attempt{n}.raw.jsonl")
         a = attempt(subject, path, isa, task, prompt, raw_path=raw, timeout=timeout)
+        compress_raw(raw)
         (cdir / f"attempt{n}.response.txt").write_text(a.response.text if a.response else "")
         if _is_budget_refusal(a):
             stop = "budget"
