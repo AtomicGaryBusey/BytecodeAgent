@@ -1,0 +1,263 @@
+.globl _start
+
+.text
+_start:
+    lea r12, [rip + inbuf]
+    lea r13, [rip + inbuf]
+    add r13, 65536
+read_loop:
+    mov rdx, r13
+    sub rdx, r12
+    jz read_done
+    xor eax, eax
+    xor edi, edi
+    mov rsi, r12
+    syscall
+    test rax, rax
+    jle read_done
+    add r12, rax
+    jmp read_loop
+read_done:
+    mov r13, r12
+    lea r12, [rip + inbuf]
+    lea r14, [rip + outbuf]
+
+process_lines:
+    cmp r12, r13
+    jae done
+    mov r15, r12
+scan_nl:
+    cmp r15, r13
+    jae scan_end
+    cmp byte ptr [r15], 10
+    je scan_found
+    inc r15
+    jmp scan_nl
+scan_found:
+    lea rax, [r15 + 1]
+    mov [rip + next_start], rax
+    jmp line_begin
+scan_end:
+    mov [rip + next_start], r15
+line_begin:
+    lea rbp, [rip + rpnstack]
+    mov rsi, r12
+tok_loop:
+    cmp rsi, r15
+    jae tokens_done
+    movzx eax, byte ptr [rsi]
+    cmp al, 0x20
+    je tok_sep
+    cmp al, 0x09
+    jne tok_start
+tok_sep:
+    inc rsi
+    jmp tok_loop
+tok_start:
+    mov rdi, rsi
+find_end:
+    cmp rsi, r15
+    jae got_tok
+    movzx eax, byte ptr [rsi]
+    cmp al, 0x20
+    je got_tok
+    cmp al, 0x09
+    je got_tok
+    inc rsi
+    jmp find_end
+got_tok:
+    mov rcx, rsi
+    sub rcx, rdi
+    cmp rcx, 1
+    jne parse_literal
+    movzx eax, byte ptr [rdi]
+    cmp al, '+'
+    je op_is
+    cmp al, '-'
+    je op_is
+    cmp al, '*'
+    je op_is
+    cmp al, '/'
+    je op_is
+    cmp al, '%'
+    je op_is
+    jmp parse_literal
+
+op_is:
+    mov r10d, eax
+    lea rcx, [rip + rpnstack]
+    mov r8, rbp
+    sub r8, rcx
+    cmp r8, 16
+    jl line_error
+    mov rbx, [rbp - 8]
+    mov rax, [rbp - 16]
+    sub rbp, 16
+    cmp r10b, '+'
+    je do_add
+    cmp r10b, '-'
+    je do_sub
+    cmp r10b, '*'
+    je do_mul
+    cmp r10b, '/'
+    je do_div
+    jmp do_mod
+do_add:
+    add rax, rbx
+    jmp push_res
+do_sub:
+    sub rax, rbx
+    jmp push_res
+do_mul:
+    imul rax, rbx
+    jmp push_res
+do_div:
+    test rbx, rbx
+    jz line_error
+    cmp rbx, -1
+    jne dd1
+    mov rdx, 0x8000000000000000
+    cmp rax, rdx
+    je line_error
+dd1:
+    cqo
+    idiv rbx
+    jmp push_res
+do_mod:
+    test rbx, rbx
+    jz line_error
+    cmp rbx, -1
+    jne dm1
+    mov rdx, 0x8000000000000000
+    cmp rax, rdx
+    je line_error
+dm1:
+    cqo
+    idiv rbx
+    mov rax, rdx
+    jmp push_res
+push_res:
+    mov [rbp], rax
+    add rbp, 8
+    jmp tok_loop
+
+parse_literal:
+    mov r8, rdi
+    xor r9d, r9d
+    movzx eax, byte ptr [r8]
+    cmp al, '-'
+    jne pl_digits
+    mov r9d, 1
+    inc r8
+pl_digits:
+    mov r10, rsi
+    sub r10, r8
+    cmp r10, 1
+    jl line_error
+    cmp r10, 18
+    jg line_error
+    xor eax, eax
+pl_loop:
+    cmp r8, rsi
+    jae pl_done
+    movzx edx, byte ptr [r8]
+    sub edx, '0'
+    cmp edx, 9
+    ja line_error
+    lea rax, [rax + rax*4]
+    add rax, rax
+    add rax, rdx
+    inc r8
+    jmp pl_loop
+pl_done:
+    test r9d, r9d
+    jz pl_push
+    neg rax
+pl_push:
+    mov [rbp], rax
+    add rbp, 8
+    jmp tok_loop
+
+tokens_done:
+    lea rax, [rip + rpnstack]
+    mov rcx, rbp
+    sub rcx, rax
+    cmp rcx, 8
+    jne line_error
+    mov rax, [rip + rpnstack]
+
+print_value:
+    test rax, rax
+    jns pv_pos
+    mov byte ptr [r14], '-'
+    inc r14
+    neg rax
+pv_pos:
+    lea rdi, [rip + numbuf]
+    add rdi, 32
+    mov rcx, rdi
+    mov rbx, 10
+pv_conv:
+    xor rdx, rdx
+    div rbx
+    add dl, '0'
+    dec rcx
+    mov [rcx], dl
+    test rax, rax
+    jnz pv_conv
+pv_copy:
+    cmp rcx, rdi
+    jae pv_nl
+    mov al, [rcx]
+    mov [r14], al
+    inc r14
+    inc rcx
+    jmp pv_copy
+pv_nl:
+    mov byte ptr [r14], 10
+    inc r14
+    jmp next_line
+
+line_error:
+    lea r8, [rip + errstr]
+    xor ecx, ecx
+le_loop:
+    movzx eax, byte ptr [r8 + rcx]
+    mov [r14 + rcx], al
+    inc ecx
+    cmp ecx, 6
+    jb le_loop
+    add r14, 6
+    jmp next_line
+
+next_line:
+    mov r12, [rip + next_start]
+    jmp process_lines
+
+done:
+    lea rsi, [rip + outbuf]
+    mov rdx, r14
+    sub rdx, rsi
+    mov edi, 1
+    mov eax, 1
+    syscall
+    mov edi, 0
+    mov eax, 60
+    syscall
+
+.section .rodata
+errstr:
+    .ascii "error\n"
+
+.bss
+.balign 8
+inbuf:
+    .zero 65536
+rpnstack:
+    .zero 8192
+numbuf:
+    .zero 32
+next_start:
+    .zero 8
+outbuf:
+    .zero 655360

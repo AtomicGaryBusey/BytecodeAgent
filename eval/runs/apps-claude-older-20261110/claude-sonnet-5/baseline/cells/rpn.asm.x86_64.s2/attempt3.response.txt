@@ -1,0 +1,378 @@
+.globl _start
+
+.equ INSZ, 65536
+.equ VCAP, 1024
+
+.text
+
+_start:
+    xor r13, r13
+read_loop:
+    mov rdx, INSZ
+    sub rdx, r13
+    cmp rdx, 0
+    jle read_done
+    mov rdi, 0
+    lea rsi, [inbuf+r13]
+    mov rax, 0
+    syscall
+    cmp rax, 0
+    jle read_done
+    add r13, rax
+    jmp read_loop
+read_done:
+    xor r12, r12
+    xor r15, r15
+
+outer_loop:
+    cmp r12, r13
+    jge finish
+
+    mov rcx, r12
+find_nl:
+    cmp rcx, r13
+    jge no_nl
+    movzx eax, byte ptr [inbuf+rcx]
+    cmp al, 10
+    je got_nl
+    inc rcx
+    jmp find_nl
+got_nl:
+    mov r8, r12
+    mov r9, rcx
+    lea r12, [rcx+1]
+    call process_line
+    jmp outer_loop
+no_nl:
+    mov r8, r12
+    mov r9, r13
+    mov r12, r13
+    call process_line
+    jmp outer_loop
+
+finish:
+    mov rdi, 1
+    lea rsi, [outbuf]
+    mov rdx, r15
+    mov rax, 1
+    syscall
+    mov rdi, 0
+    mov rax, 60
+    syscall
+
+# ---------------------------------------------------------
+# process_line: r8 = start idx, r9 = end idx (into inbuf)
+# uses/updates global r15 (output length). must not touch
+# r12, r13, r15 (except r15 intentionally for output).
+# ---------------------------------------------------------
+process_line:
+    mov r10, r8
+    xor r11, r11
+    xor r14, r14
+
+skip_sep:
+    cmp r10, r9
+    jge pl_end
+    movzx eax, byte ptr [inbuf+r10]
+    cmp al, 0x20
+    je sep_adv
+    cmp al, 0x09
+    jne token_start
+sep_adv:
+    inc r10
+    jmp skip_sep
+
+token_start:
+    mov rbx, r10
+tok_scan:
+    cmp r10, r9
+    jge tok_end
+    movzx eax, byte ptr [inbuf+r10]
+    cmp al, 0x20
+    je tok_end
+    cmp al, 0x09
+    je tok_end
+    inc r10
+    jmp tok_scan
+tok_end:
+    mov rcx, r10
+    sub rcx, rbx
+    call parse_token
+    cmp al, 2
+    je pl_error
+    cmp al, 1
+    je pl_do_op
+    cmp r11, VCAP
+    jae pl_error
+    mov qword ptr [vstack+r11*8], rdi
+    inc r11
+    jmp skip_sep
+
+pl_do_op:
+    cmp r11, 2
+    jb pl_error
+    dec r11
+    mov rsi, qword ptr [vstack+r11*8]
+    dec r11
+    mov rbx, qword ptr [vstack+r11*8]
+    cmp dl, '+'
+    je op_add
+    cmp dl, '-'
+    je op_sub
+    cmp dl, '*'
+    je op_mul
+    cmp dl, '/'
+    je op_div
+    jmp op_mod
+
+op_add:
+    mov rdi, rbx
+    add rdi, rsi
+    jmp op_push
+op_sub:
+    mov rdi, rbx
+    sub rdi, rsi
+    jmp op_push
+op_mul:
+    mov rdi, rbx
+    imul rdi, rsi
+    jmp op_push
+op_div:
+    test rsi, rsi
+    jz pl_error
+    mov rax, rbx
+    mov rdx, 0x8000000000000000
+    cmp rax, rdx
+    jne op_div_ok
+    cmp rsi, -1
+    je pl_error
+op_div_ok:
+    mov rax, rbx
+    cqo
+    idiv rsi
+    mov rdi, rax
+    jmp op_push
+op_mod:
+    test rsi, rsi
+    jz pl_error
+    mov rax, rbx
+    mov rdx, 0x8000000000000000
+    cmp rax, rdx
+    jne op_mod_ok
+    cmp rsi, -1
+    je pl_error
+op_mod_ok:
+    mov rax, rbx
+    cqo
+    idiv rsi
+    mov rdi, rdx
+    jmp op_push
+
+op_push:
+    mov qword ptr [vstack+r11*8], rdi
+    inc r11
+    jmp skip_sep
+
+pl_error:
+    mov r14, 1
+    jmp pl_end
+
+pl_end:
+    cmp r14, 1
+    je pl_output_error
+    cmp r11, 1
+    jne pl_output_error
+    mov rdi, qword ptr [vstack]
+    call print_number
+    ret
+pl_output_error:
+    call print_error
+    ret
+
+# ---------------------------------------------------------
+# parse_token: rbx = token start idx, rcx = token length
+# returns: al = 0 literal (value in rdi), 1 operator (char in dl), 2 invalid
+# ---------------------------------------------------------
+parse_token:
+    cmp rcx, 1
+    jne pt_multi
+    movzx eax, byte ptr [inbuf+rbx]
+    cmp al, '+'
+    je pt_op
+    cmp al, '-'
+    je pt_op
+    cmp al, '*'
+    je pt_op
+    cmp al, '/'
+    je pt_op
+    cmp al, '%'
+    je pt_op
+    cmp al, '0'
+    jb pt_invalid
+    cmp al, '9'
+    ja pt_invalid
+    sub al, '0'
+    movzx edi, al
+    mov al, 0
+    ret
+pt_op:
+    mov dl, al
+    mov al, 1
+    ret
+pt_invalid:
+    mov al, 2
+    ret
+
+pt_multi:
+    movzx eax, byte ptr [inbuf+rbx]
+    cmp al, '-'
+    je pt_neg
+    cmp al, '0'
+    jb pt_invalid
+    cmp al, '9'
+    ja pt_invalid
+    cmp rcx, 18
+    ja pt_invalid
+    xor rdi, rdi
+    xor r8, r8
+pt_pos_loop:
+    cmp r8, rcx
+    jge pt_pos_done
+    movzx eax, byte ptr [inbuf+rbx+r8]
+    cmp al, '0'
+    jb pt_invalid
+    cmp al, '9'
+    ja pt_invalid
+    sub al, '0'
+    movzx eax, al
+    imul rdi, rdi, 10
+    add rdi, rax
+    inc r8
+    jmp pt_pos_loop
+pt_pos_done:
+    mov al, 0
+    ret
+
+pt_neg:
+    mov rdx, rcx
+    dec rdx
+    cmp rdx, 1
+    jb pt_invalid
+    cmp rdx, 18
+    ja pt_invalid
+    xor rdi, rdi
+    xor r8, r8
+pt_neg_loop:
+    cmp r8, rdx
+    jge pt_neg_done
+    movzx eax, byte ptr [inbuf+rbx+1+r8]
+    cmp al, '0'
+    jb pt_invalid
+    cmp al, '9'
+    ja pt_invalid
+    sub al, '0'
+    movzx eax, al
+    imul rdi, rdi, 10
+    add rdi, rax
+    inc r8
+    jmp pt_neg_loop
+pt_neg_done:
+    neg rdi
+    mov al, 0
+    ret
+
+# ---------------------------------------------------------
+# print_number: rdi = signed 64-bit value; appends decimal + '\n'
+# to outbuf at r15, updates r15.
+# ---------------------------------------------------------
+print_number:
+    mov r9, 0x8000000000000000
+    cmp rdi, r9
+    je pn_minint
+    xor r8, r8
+    mov rax, rdi
+    test rax, rax
+    jns pn_nonneg
+    mov r8, 1
+    neg rax
+pn_nonneg:
+    mov rcx, 23
+    test rax, rax
+    jnz pn_loop
+    mov byte ptr [numbuf+rcx], '0'
+    dec rcx
+    jmp pn_loop_done
+pn_loop:
+    test rax, rax
+    jz pn_loop_done
+    xor rdx, rdx
+    mov r9, 10
+    div r9
+    add dl, '0'
+    mov byte ptr [numbuf+rcx], dl
+    dec rcx
+    jmp pn_loop
+pn_loop_done:
+    inc rcx
+    mov r9, 23
+    sub r9, rcx
+    inc r9
+    cmp r8, 1
+    jne pn_copy
+    mov byte ptr [outbuf+r15], '-'
+    inc r15
+pn_copy:
+    xor r10, r10
+pn_copy_loop:
+    cmp r10, r9
+    jge pn_copy_done
+    mov al, byte ptr [numbuf+rcx+r10]
+    mov byte ptr [outbuf+r15+r10], al
+    inc r10
+    jmp pn_copy_loop
+pn_copy_done:
+    add r15, r9
+    mov byte ptr [outbuf+r15], 10
+    inc r15
+    ret
+
+pn_minint:
+    mov rcx, 0
+pn_mi_loop:
+    cmp rcx, 21
+    jge pn_mi_done
+    movzx eax, byte ptr [mininstr+rcx]
+    mov byte ptr [outbuf+r15], al
+    inc r15
+    inc rcx
+    jmp pn_mi_loop
+pn_mi_done:
+    ret
+
+# ---------------------------------------------------------
+# print_error: appends "error\n" to outbuf at r15, updates r15.
+# ---------------------------------------------------------
+print_error:
+    mov byte ptr [outbuf+r15], 'e'
+    mov byte ptr [outbuf+r15+1], 'r'
+    mov byte ptr [outbuf+r15+2], 'r'
+    mov byte ptr [outbuf+r15+3], 'o'
+    mov byte ptr [outbuf+r15+4], 'r'
+    mov byte ptr [outbuf+r15+5], 10
+    add r15, 6
+    ret
+
+.section .rodata
+mininstr:
+    .ascii "-9223372036854775808\n"
+
+.bss
+.align 8
+inbuf:
+    .zero 65536
+vstack:
+    .zero 8192
+numbuf:
+    .zero 24
+outbuf:
+    .zero 900000

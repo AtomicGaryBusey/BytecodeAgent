@@ -1,0 +1,300 @@
+```
+.globl _start
+
+.text
+
+_start:
+    lea rbx, [rip + inbuf]        # rbx = base of input buffer (constant)
+    xor r13, r13                   # r13 = total bytes read so far
+
+read_loop:
+    xor rax, rax                   # sys_read = 0
+    xor rdi, rdi                   # fd = 0
+    lea rsi, [rbx + r13]
+    mov rdx, 65536
+    sub rdx, r13
+    syscall
+    test rax, rax
+    jz read_done
+    add r13, rax
+    jmp read_loop
+
+read_done:
+    lea r14, [rbx + r13]           # r14 = end pointer (one past last byte read)
+    mov r15, rbx                    # r15 = current line start pointer
+    lea rbp, [rip + rpnstack]       # rbp = rpn stack base pointer (constant)
+
+line_loop:
+    cmp r15, r14
+    jae prog_done
+
+    mov rsi, r15
+find_nl:
+    cmp rsi, r14
+    jae no_nl
+    movzx eax, byte ptr [rsi]
+    cmp al, 10
+    je nl_found
+    inc rsi
+    jmp find_nl
+no_nl:
+    mov r9, r14
+    xor r8, r8
+    jmp got_line
+nl_found:
+    mov r9, rsi
+    mov r8, 1
+
+got_line:
+    mov r10, r15                   # token scan cursor
+    mov r13, rbp                    # stack top pointer (reset for this line)
+    xor r11, r11                    # error flag
+
+token_loop:
+    cmp r10, r9
+    jae token_loop_end
+    movzx eax, byte ptr [r10]
+    cmp al, 0x20
+    je sep_skip
+    cmp al, 0x09
+    je sep_skip
+    jmp have_tok
+sep_skip:
+    inc r10
+    jmp token_loop
+
+have_tok:
+    mov rsi, r10
+scan_tok:
+    inc r10
+    cmp r10, r9
+    jae tok_end
+    movzx eax, byte ptr [r10]
+    cmp al, 0x20
+    je tok_end
+    cmp al, 0x09
+    je tok_end
+    jmp scan_tok
+tok_end:
+    mov rcx, r10
+    sub rcx, rsi
+    call process_token
+    cmp r11, 0
+    jne token_loop_end
+    jmp token_loop
+
+token_loop_end:
+    cmp r11, 0
+    jne line_error
+    mov rax, r13
+    sub rax, rbp
+    cmp rax, 8
+    jne line_error
+    mov rax, qword ptr [rbp]
+    call print_number
+    jmp line_done
+
+line_error:
+    lea rsi, [rip + error_msg]
+    mov rdx, 6
+    call write_out
+
+line_done:
+    cmp r8, 1
+    jne advance_no_nl
+    mov r15, r9
+    inc r15
+    jmp line_loop
+advance_no_nl:
+    mov r15, r9
+    jmp line_loop
+
+prog_done:
+    mov rax, 60
+    xor rdi, rdi
+    syscall
+
+# ---------------------------------------------------------------
+# process_token: rsi = absolute ptr to token start, rcx = token length
+# modifies: r13 (stack top ptr), r11 (set to 1 on error)
+# must not touch: r8, r9, r10, r14, r15, rbx, rbp
+# ---------------------------------------------------------------
+process_token:
+    cmp rcx, 1
+    jne pt_multi
+    movzx eax, byte ptr [rsi]
+    cmp al, 0x30
+    jl pt_check_op
+    cmp al, 0x39
+    jg pt_check_op
+    sub eax, 0x30
+    jmp pt_push
+
+pt_check_op:
+    cmp al, 0x2B
+    jne pchk2
+    mov dil, 0
+    jmp pt_op_common
+pchk2:
+    cmp al, 0x2D
+    jne pchk3
+    mov dil, 1
+    jmp pt_op_common
+pchk3:
+    cmp al, 0x2A
+    jne pchk4
+    mov dil, 2
+    jmp pt_op_common
+pchk4:
+    cmp al, 0x2F
+    jne pchk5
+    mov dil, 3
+    jmp pt_op_common
+pchk5:
+    cmp al, 0x25
+    jne pt_err
+    mov dil, 4
+    jmp pt_op_common
+
+pt_multi:
+    movzx eax, byte ptr [rsi]
+    cmp al, 0x2D
+    jne pt_nosign
+    mov dil, 1
+    inc rsi
+    dec rcx
+    jmp pt_digits
+pt_nosign:
+    xor edi, edi
+pt_digits:
+    cmp rcx, 1
+    jl pt_err
+    cmp rcx, 18
+    jg pt_err
+    xor rax, rax
+    mov rdx, rcx
+pt_dloop:
+    test rdx, rdx
+    jz pt_dloop_done
+    movzx ecx, byte ptr [rsi]
+    cmp cl, 0x30
+    jl pt_err
+    cmp cl, 0x39
+    jg pt_err
+    sub cl, 0x30
+    imul rax, rax, 10
+    add rax, rcx
+    inc rsi
+    dec rdx
+    jmp pt_dloop
+pt_dloop_done:
+    cmp dil, 1
+    jne pt_push
+    neg rax
+    jmp pt_push
+
+pt_op_common:
+    mov rcx, r13
+    sub rcx, rbp
+    cmp rcx, 16
+    jl pt_err
+    sub r13, 8
+    mov rdx, qword ptr [r13]
+    sub r13, 8
+    mov rax, qword ptr [r13]
+    cmp dil, 0
+    je op_add
+    cmp dil, 1
+    je op_sub
+    cmp dil, 2
+    je op_mul
+    jmp op_divmod
+
+op_add:
+    add rax, rdx
+    jmp pt_push
+op_sub:
+    sub rax, rdx
+    jmp pt_push
+op_mul:
+    imul rax, rdx
+    jmp pt_push
+
+op_divmod:
+    mov rcx, rdx
+    test rcx, rcx
+    jz pt_err
+    mov rsi, 0x8000000000000000
+    cmp rax, rsi
+    jne dm_ok
+    cmp rcx, -1
+    je pt_err
+dm_ok:
+    cqo
+    idiv rcx
+    cmp dil, 3
+    je pt_push
+    mov rax, rdx
+    jmp pt_push
+
+pt_push:
+    mov qword ptr [r13], rax
+    add r13, 8
+    ret
+
+pt_err:
+    mov r11, 1
+    ret
+
+# ---------------------------------------------------------------
+# print_number: rax = signed 64-bit value to print, then newline.
+# must not touch: r8, r9, r10, r13, r14, r15, rbx, rbp
+# ---------------------------------------------------------------
+print_number:
+    lea rcx, [rip + linebuf + 23]
+    mov byte ptr [rcx], 10
+    xor rdi, rdi
+    test rax, rax
+    jns pn_nonneg
+    mov rdi, 1
+    neg rax
+pn_nonneg:
+    mov rsi, rcx
+pn_loop:
+    xor rdx, rdx
+    mov r11, 10
+    div r11
+    add dl, 0x30
+    dec rsi
+    mov byte ptr [rsi], dl
+    test rax, rax
+    jnz pn_loop
+    cmp rdi, 1
+    jne pn_sign_done
+    dec rsi
+    mov byte ptr [rsi], 0x2D
+pn_sign_done:
+    lea rdx, [rcx + 1]
+    sub rdx, rsi
+    call write_out
+    ret
+
+# ---------------------------------------------------------------
+# write_out: rsi = ptr, rdx = length, writes to fd 1
+# must not touch: r8, r9, r10, r13, r14, r15, rbx, rbp
+# ---------------------------------------------------------------
+write_out:
+    mov rax, 1
+    mov rdi, 1
+    syscall
+    ret
+
+.section .rodata
+error_msg: .ascii "error\n"
+
+.section .bss
+.align 8
+inbuf: .zero 65536
+rpnstack: .zero 8192
+linebuf: .zero 32
+```

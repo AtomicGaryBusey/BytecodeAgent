@@ -1,0 +1,455 @@
+.globl _start
+
+.section .rodata
+msg_ok:    .ascii "ok\n"
+msg_err:   .ascii "error at "
+msg_nl:    .ascii "\n"
+lit_true:  .ascii "true"
+lit_false: .ascii "false"
+lit_null:  .ascii "null"
+
+.text
+
+// ---- skip_ws: advance x21 over whitespace; leaf, clobbers w0 ----
+skip_ws:
+    cmp x21, x20
+    bge .sw_done
+    ldrb w0, [x19, x21]
+    cmp w0, 0x20
+    beq .sw_adv
+    cmp w0, 0x09
+    beq .sw_adv
+    cmp w0, 0x0a
+    beq .sw_adv
+    cmp w0, 0x0d
+    beq .sw_adv
+.sw_done:
+    ret
+.sw_adv:
+    add x21, x21, 1
+    b skip_ws
+
+// ---- match_lit: x0=lit ptr, w1=len; advance x21; w0=0 ok / 1 fail ----
+match_lit:
+    mov x2, 0
+.ml_loop:
+    cmp w2, w1
+    beq .ml_ok
+    cmp x21, x20
+    bge .ml_fail
+    ldrb w3, [x19, x21]
+    ldrb w4, [x0, x2]
+    cmp w3, w4
+    bne .ml_fail
+    add x21, x21, 1
+    add x2, x2, 1
+    b .ml_loop
+.ml_ok:
+    mov w0, 0
+    ret
+.ml_fail:
+    mov w0, 1
+    ret
+
+// ---- parse_value: w0=0 ok / 1 fail; leaf (tail-calls) ----
+parse_value:
+    cmp x21, x20
+    bge .pv_fail
+    ldrb w0, [x19, x21]
+    cmp w0, '{'
+    beq parse_object
+    cmp w0, '['
+    beq parse_array
+    cmp w0, '"'
+    beq parse_string
+    cmp w0, '-'
+    beq parse_number
+    cmp w0, '0'
+    blt .pv_check_lit
+    cmp w0, '9'
+    ble parse_number
+.pv_check_lit:
+    cmp w0, 't'
+    beq .pv_true
+    cmp w0, 'f'
+    beq .pv_false
+    cmp w0, 'n'
+    beq .pv_null
+.pv_fail:
+    mov w0, 1
+    ret
+.pv_true:
+    adrp x0, lit_true
+    add x0, x0, :lo12:lit_true
+    mov w1, 4
+    b match_lit
+.pv_false:
+    adrp x0, lit_false
+    add x0, x0, :lo12:lit_false
+    mov w1, 5
+    b match_lit
+.pv_null:
+    adrp x0, lit_null
+    add x0, x0, :lo12:lit_null
+    mov w1, 4
+    b match_lit
+
+// ---- parse_string: buf[p]=='"'; leaf ----
+parse_string:
+    add x21, x21, 1
+.ps_loop:
+    cmp x21, x20
+    bge .ps_fail
+    ldrb w0, [x19, x21]
+    cmp w0, '"'
+    beq .ps_end
+    cmp w0, 0x5c
+    beq .ps_esc
+    cmp w0, 0x20
+    blt .ps_fail
+    add x21, x21, 1
+    b .ps_loop
+.ps_end:
+    add x21, x21, 1
+    mov w0, 0
+    ret
+.ps_fail:
+    mov w0, 1
+    ret
+.ps_esc:
+    add x21, x21, 1
+    cmp x21, x20
+    bge .ps_fail
+    ldrb w0, [x19, x21]
+    cmp w0, 'u'
+    beq .ps_u
+    cmp w0, '"'
+    beq .ps_esc_ok
+    cmp w0, 0x5c
+    beq .ps_esc_ok
+    cmp w0, '/'
+    beq .ps_esc_ok
+    cmp w0, 'b'
+    beq .ps_esc_ok
+    cmp w0, 'f'
+    beq .ps_esc_ok
+    cmp w0, 'n'
+    beq .ps_esc_ok
+    cmp w0, 'r'
+    beq .ps_esc_ok
+    cmp w0, 't'
+    beq .ps_esc_ok
+    b .ps_fail
+.ps_esc_ok:
+    add x21, x21, 1
+    b .ps_loop
+.ps_u:
+    add x21, x21, 1
+    mov w5, 4
+.ps_u_loop:
+    cmp w5, 0
+    beq .ps_loop
+    cmp x21, x20
+    bge .ps_fail
+    ldrb w0, [x19, x21]
+    cmp w0, '0'
+    blt .ps_fail
+    cmp w0, '9'
+    ble .ps_u_ok
+    cmp w0, 'a'
+    blt .ps_u_chkA
+    cmp w0, 'f'
+    ble .ps_u_ok
+    b .ps_fail
+.ps_u_chkA:
+    cmp w0, 'A'
+    blt .ps_fail
+    cmp w0, 'F'
+    ble .ps_u_ok
+    b .ps_fail
+.ps_u_ok:
+    add x21, x21, 1
+    sub w5, w5, 1
+    b .ps_u_loop
+
+// ---- parse_number: leaf ----
+parse_number:
+    cmp x21, x20
+    bge .pn_fail
+    ldrb w0, [x19, x21]
+    cmp w0, '-'
+    bne .pn_int
+    add x21, x21, 1
+.pn_int:
+    cmp x21, x20
+    bge .pn_fail
+    ldrb w0, [x19, x21]
+    cmp w0, '0'
+    beq .pn_zero
+    cmp w0, '1'
+    blt .pn_fail
+    cmp w0, '9'
+    bgt .pn_fail
+    add x21, x21, 1
+.pn_digs:
+    cmp x21, x20
+    bge .pn_frac
+    ldrb w0, [x19, x21]
+    cmp w0, '0'
+    blt .pn_frac
+    cmp w0, '9'
+    bgt .pn_frac
+    add x21, x21, 1
+    b .pn_digs
+.pn_zero:
+    add x21, x21, 1
+.pn_frac:
+    cmp x21, x20
+    bge .pn_ok
+    ldrb w0, [x19, x21]
+    cmp w0, '.'
+    bne .pn_exp
+    add x21, x21, 1
+    cmp x21, x20
+    bge .pn_fail
+    ldrb w0, [x19, x21]
+    cmp w0, '0'
+    blt .pn_fail
+    cmp w0, '9'
+    bgt .pn_fail
+    add x21, x21, 1
+.pn_frac_digs:
+    cmp x21, x20
+    bge .pn_ok
+    ldrb w0, [x19, x21]
+    cmp w0, '0'
+    blt .pn_exp
+    cmp w0, '9'
+    bgt .pn_exp
+    add x21, x21, 1
+    b .pn_frac_digs
+.pn_exp:
+    cmp x21, x20
+    bge .pn_ok
+    ldrb w0, [x19, x21]
+    cmp w0, 'e'
+    beq .pn_exp_go
+    cmp w0, 'E'
+    beq .pn_exp_go
+    b .pn_ok
+.pn_exp_go:
+    add x21, x21, 1
+    cmp x21, x20
+    bge .pn_fail
+    ldrb w0, [x19, x21]
+    cmp w0, '+'
+    beq .pn_exp_sign
+    cmp w0, '-'
+    beq .pn_exp_sign
+    b .pn_exp_digs_first
+.pn_exp_sign:
+    add x21, x21, 1
+.pn_exp_digs_first:
+    cmp x21, x20
+    bge .pn_fail
+    ldrb w0, [x19, x21]
+    cmp w0, '0'
+    blt .pn_fail
+    cmp w0, '9'
+    bgt .pn_fail
+    add x21, x21, 1
+.pn_exp_digs:
+    cmp x21, x20
+    bge .pn_ok
+    ldrb w0, [x19, x21]
+    cmp w0, '0'
+    blt .pn_ok
+    cmp w0, '9'
+    bgt .pn_ok
+    add x21, x21, 1
+    b .pn_exp_digs
+.pn_ok:
+    mov w0, 0
+    ret
+.pn_fail:
+    mov w0, 1
+    ret
+
+// ---- parse_object: buf[p]=='{' ----
+parse_object:
+    stp x29, x30, [sp, #-16]!
+    add x21, x21, 1
+    bl skip_ws
+    cmp x21, x20
+    bge .po_fail
+    ldrb w0, [x19, x21]
+    cmp w0, '}'
+    beq .po_close
+.po_member:
+    cmp x21, x20
+    bge .po_fail
+    ldrb w0, [x19, x21]
+    cmp w0, '"'
+    bne .po_fail
+    bl parse_string
+    cbnz w0, .po_ret
+    bl skip_ws
+    cmp x21, x20
+    bge .po_fail
+    ldrb w0, [x19, x21]
+    cmp w0, ':'
+    bne .po_fail
+    add x21, x21, 1
+    bl skip_ws
+    bl parse_value
+    cbnz w0, .po_ret
+    bl skip_ws
+    cmp x21, x20
+    bge .po_fail
+    ldrb w0, [x19, x21]
+    cmp w0, ','
+    beq .po_comma
+    cmp w0, '}'
+    beq .po_close
+    b .po_fail
+.po_comma:
+    add x21, x21, 1
+    bl skip_ws
+    b .po_member
+.po_close:
+    add x21, x21, 1
+    mov w0, 0
+    ldp x29, x30, [sp], #16
+    ret
+.po_fail:
+    mov w0, 1
+.po_ret:
+    ldp x29, x30, [sp], #16
+    ret
+
+// ---- parse_array: buf[p]=='[' ----
+parse_array:
+    stp x29, x30, [sp, #-16]!
+    add x21, x21, 1
+    bl skip_ws
+    cmp x21, x20
+    bge .pa_fail
+    ldrb w0, [x19, x21]
+    cmp w0, ']'
+    beq .pa_close
+.pa_elem:
+    bl parse_value
+    cbnz w0, .pa_ret
+    bl skip_ws
+    cmp x21, x20
+    bge .pa_fail
+    ldrb w0, [x19, x21]
+    cmp w0, ','
+    beq .pa_comma
+    cmp w0, ']'
+    beq .pa_close
+    b .pa_fail
+.pa_comma:
+    add x21, x21, 1
+    bl skip_ws
+    b .pa_elem
+.pa_close:
+    add x21, x21, 1
+    mov w0, 0
+    ldp x29, x30, [sp], #16
+    ret
+.pa_fail:
+    mov w0, 1
+.pa_ret:
+    ldp x29, x30, [sp], #16
+    ret
+
+// ---- entry ----
+_start:
+    adrp x19, inbuf
+    add x19, x19, :lo12:inbuf
+    mov x22, 0
+.rd_loop:
+    mov x2, 65536
+    sub x2, x2, x22
+    cbz x2, .rd_done
+    mov x0, 0
+    add x1, x19, x22
+    mov x8, 63
+    svc #0
+    cmp x0, 0
+    ble .rd_done
+    add x22, x22, x0
+    b .rd_loop
+.rd_done:
+    mov x20, x22
+    mov x21, 0
+    bl skip_ws
+    bl parse_value
+    cbnz w0, .err
+    bl skip_ws
+    cmp x21, x20
+    bne .err
+
+    mov x0, 1
+    adrp x1, msg_ok
+    add x1, x1, :lo12:msg_ok
+    mov x2, 3
+    mov x8, 64
+    svc #0
+    mov x0, 0
+    mov x8, 93
+    svc #0
+
+.err:
+    mov x0, 1
+    adrp x1, msg_err
+    add x1, x1, :lo12:msg_err
+    mov x2, 9
+    mov x8, 64
+    svc #0
+
+    sub sp, sp, #32
+    mov x9, x21
+    mov x10, 31
+    cmp x9, 0
+    bne .conv_loop
+    mov w11, '0'
+    strb w11, [sp, x10]
+    sub x10, x10, 1
+    b .conv_done
+.conv_loop:
+    cbz x9, .conv_done
+    mov x12, 10
+    udiv x13, x9, x12
+    msub x14, x13, x12, x9
+    add w14, w14, '0'
+    strb w14, [sp, x10]
+    sub x10, x10, 1
+    mov x9, x13
+    b .conv_loop
+.conv_done:
+    add x1, sp, x10
+    add x1, x1, 1
+    mov x2, 31
+    sub x2, x2, x10
+    mov x0, 1
+    mov x8, 64
+    svc #0
+
+    mov x0, 1
+    adrp x1, msg_nl
+    add x1, x1, :lo12:msg_nl
+    mov x2, 1
+    mov x8, 64
+    svc #0
+    add sp, sp, #32
+
+    mov x0, 1
+    mov x8, 93
+    svc #0
+
+.bss
+.balign 16
+inbuf:
+    .zero 65536

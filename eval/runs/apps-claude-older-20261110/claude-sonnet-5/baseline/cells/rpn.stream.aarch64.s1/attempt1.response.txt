@@ -1,0 +1,343 @@
+```asm
+.globl _start
+
+.section .rodata
+ERR_MSG:
+    .ascii "error\n"
+ERR_LEN = . - ERR_MSG
+
+MINSTR:
+    .ascii "-9223372036854775808\n"
+MINLEN = . - MINSTR
+
+.bss
+    .align 3
+INBUF:
+    .space 65536
+    .align 3
+STACK:
+    .space 8192
+
+.text
+
+// -------------------------------------------------------------
+// _start
+// -------------------------------------------------------------
+_start:
+    mov x19, #0          // total bytes read
+
+read_loop:
+    mov x0, #0
+    adrp x1, INBUF
+    add x1, x1, :lo12:INBUF
+    add x1, x1, x19
+    mov x2, #65536
+    sub x2, x2, x19
+    mov x8, #63
+    svc #0
+    cmp x0, #0
+    b.eq read_done
+    add x19, x19, x0
+    b read_loop
+
+read_done:
+    adrp x20, INBUF
+    add x20, x20, :lo12:INBUF
+    add x21, x20, x19
+    mov x22, x20
+
+line_loop:
+    cmp x22, x21
+    b.ge all_done
+    mov x23, x22
+
+scan_nl:
+    cmp x22, x21
+    b.ge scan_nl_notfound
+    ldrb w0, [x22]
+    cmp w0, #10
+    b.eq scan_nl_found
+    add x22, x22, #1
+    b scan_nl
+
+scan_nl_found:
+    mov x24, x22
+    add x22, x22, #1
+    b process_this_line
+
+scan_nl_notfound:
+    mov x24, x21
+    mov x22, x21
+
+process_this_line:
+    mov x0, x23
+    mov x1, x24
+    bl process_line
+    b line_loop
+
+all_done:
+    mov x0, #0
+    mov x8, #93
+    svc #0
+
+// -------------------------------------------------------------
+// process_line(x0 = line_start, x1 = line_end)
+// -------------------------------------------------------------
+process_line:
+    sub sp, sp, #16
+    str x30, [sp]
+
+    mov x25, x0          // p
+    mov x26, x1          // le
+    mov x27, #0          // stack count
+    mov x28, #0          // error flag
+    adrp x29, STACK
+    add x29, x29, :lo12:STACK
+
+token_loop:
+    cmp x25, x26
+    b.ge end_tokens
+    ldrb w0, [x25]
+    cmp w0, #32
+    b.eq skip_sep
+    cmp w0, #9
+    b.eq skip_sep
+    b got_token_start
+skip_sep:
+    add x25, x25, #1
+    b token_loop
+
+got_token_start:
+    mov x1, x25
+scan_token:
+    add x25, x25, #1
+    cmp x25, x26
+    b.ge token_end_reached
+    ldrb w0, [x25]
+    cmp w0, #32
+    b.eq token_end_reached
+    cmp w0, #9
+    b.eq token_end_reached
+    b scan_token
+
+token_end_reached:
+    mov x2, x25
+    ldrb w0, [x1]
+    mov x3, x2
+    sub x3, x3, x1
+    cmp x3, #1
+    b.ne try_literal
+    cmp w0, #43
+    b.eq do_op_plus
+    cmp w0, #45
+    b.eq do_op_minus
+    cmp w0, #42
+    b.eq do_op_mul
+    cmp w0, #47
+    b.eq do_op_div
+    cmp w0, #37
+    b.eq do_op_mod
+
+try_literal:
+    mov x4, x1
+    mov x6, #0
+    ldrb w0, [x4]
+    cmp w0, #45
+    b.ne lit_nosign
+    mov x6, #1
+    add x4, x4, #1
+lit_nosign:
+    sub x7, x2, x4
+    cmp x7, #1
+    b.lt invalid_token
+    cmp x7, #18
+    b.gt invalid_token
+    mov x8, #0
+    mov x9, x4
+lit_loop:
+    cmp x9, x2
+    b.ge lit_done
+    ldrb w0, [x9]
+    sub w0, w0, #48
+    cmp w0, #0
+    b.lt invalid_token
+    cmp w0, #9
+    b.gt invalid_token
+    mov x10, #10
+    mul x8, x8, x10
+    add x8, x8, x0
+    add x9, x9, #1
+    b lit_loop
+lit_done:
+    cbz x6, lit_push
+    neg x8, x8
+lit_push:
+    str x8, [x29, x27, lsl #3]
+    add x27, x27, #1
+    b token_continue
+
+do_op_plus:
+    cmp x27, #2
+    b.lt invalid_token
+    sub x27, x27, #1
+    ldr x11, [x29, x27, lsl #3]
+    sub x27, x27, #1
+    ldr x10, [x29, x27, lsl #3]
+    add x10, x10, x11
+    str x10, [x29, x27, lsl #3]
+    add x27, x27, #1
+    b token_continue
+
+do_op_minus:
+    cmp x27, #2
+    b.lt invalid_token
+    sub x27, x27, #1
+    ldr x11, [x29, x27, lsl #3]
+    sub x27, x27, #1
+    ldr x10, [x29, x27, lsl #3]
+    sub x10, x10, x11
+    str x10, [x29, x27, lsl #3]
+    add x27, x27, #1
+    b token_continue
+
+do_op_mul:
+    cmp x27, #2
+    b.lt invalid_token
+    sub x27, x27, #1
+    ldr x11, [x29, x27, lsl #3]
+    sub x27, x27, #1
+    ldr x10, [x29, x27, lsl #3]
+    mul x10, x10, x11
+    str x10, [x29, x27, lsl #3]
+    add x27, x27, #1
+    b token_continue
+
+do_op_div:
+    cmp x27, #2
+    b.lt invalid_token
+    sub x27, x27, #1
+    ldr x11, [x29, x27, lsl #3]
+    sub x27, x27, #1
+    ldr x10, [x29, x27, lsl #3]
+    cmp x11, #0
+    b.eq invalid_token
+    cmn x11, #1
+    b.ne div_ok
+    mov x12, #1
+    lsl x12, x12, #63
+    cmp x10, x12
+    b.eq invalid_token
+div_ok:
+    sdiv x10, x10, x11
+    str x10, [x29, x27, lsl #3]
+    add x27, x27, #1
+    b token_continue
+
+do_op_mod:
+    cmp x27, #2
+    b.lt invalid_token
+    sub x27, x27, #1
+    ldr x11, [x29, x27, lsl #3]
+    sub x27, x27, #1
+    ldr x10, [x29, x27, lsl #3]
+    cmp x11, #0
+    b.eq invalid_token
+    cmn x11, #1
+    b.ne mod_ok
+    mov x12, #1
+    lsl x12, x12, #63
+    cmp x10, x12
+    b.eq invalid_token
+mod_ok:
+    sdiv x13, x10, x11
+    msub x10, x13, x11, x10
+    str x10, [x29, x27, lsl #3]
+    add x27, x27, #1
+    b token_continue
+
+token_continue:
+    b token_loop
+
+invalid_token:
+    mov x28, #1
+    b end_tokens
+
+end_tokens:
+    cbnz x28, do_error
+    cmp x27, #1
+    b.ne do_error
+    ldr x0, [x29]
+    bl print_i64
+    b proc_line_done
+do_error:
+    bl write_error
+proc_line_done:
+    ldr x30, [sp]
+    add sp, sp, #16
+    ret
+
+// -------------------------------------------------------------
+// write_error: writes "error\n" to stdout
+// -------------------------------------------------------------
+write_error:
+    adrp x1, ERR_MSG
+    add x1, x1, :lo12:ERR_MSG
+    mov x2, #ERR_LEN
+    mov x0, #1
+    mov x8, #64
+    svc #0
+    ret
+
+// -------------------------------------------------------------
+// print_i64: prints signed decimal value in x0 followed by newline
+// -------------------------------------------------------------
+print_i64:
+    mov x9, #1
+    lsl x9, x9, #63
+    cmp x0, x9
+    b.ne 1f
+    adrp x1, MINSTR
+    add x1, x1, :lo12:MINSTR
+    mov x2, #MINLEN
+    mov x0, #1
+    mov x8, #64
+    svc #0
+    ret
+1:
+    mov x1, #0
+    cmp x0, #0
+    b.ge 2f
+    neg x0, x0
+    mov x1, #1
+2:
+    sub sp, sp, #32
+    add x9, sp, #31
+    mov x12, x9
+    mov w11, #10
+    strb w11, [x9]
+    sub x9, x9, #1
+    mov x13, x0
+    mov x10, #10
+3:
+    udiv x14, x13, x10
+    msub x15, x14, x10, x13
+    add w15, w15, #48
+    strb w15, [x9]
+    sub x9, x9, #1
+    mov x13, x14
+    cbnz x13, 3b
+    cbz x1, 4f
+    mov w15, #45
+    strb w15, [x9]
+    sub x9, x9, #1
+4:
+    add x9, x9, #1
+    sub x2, x12, x9
+    add x2, x2, #1
+    mov x1, x9
+    mov x0, #1
+    mov x8, #64
+    svc #0
+    add sp, sp, #32
+    ret
+```

@@ -1,0 +1,360 @@
+```
+.section .rodata
+error_msg:
+    .ascii "error\n"
+error_len = . - error_msg
+minus_str:
+    .ascii "-"
+newline_str:
+    .ascii "\n"
+
+.bss
+scan_pos:            .zero 8
+line_end:            .zero 8
+stack_depth:         .zero 8
+parse_result_type:   .zero 8
+parse_result_value:  .zero 8
+parse_result_opchar: .zero 1
+pn_digit_start:      .zero 8
+pn_digit_count:      .zero 8
+out_len:             .zero 8
+total_len:           .zero 8
+num_buf:             .zero 24
+input_buf:           .zero 65600
+output_buf:          .zero 400000
+val_stack:           .zero 16384
+
+.text
+.globl _start
+
+_start:
+    xor r12, r12
+read_loop:
+    mov rax, 65600
+    sub rax, r12
+    cmp rax, 0
+    jle read_done
+    lea rsi, [rip+input_buf]
+    add rsi, r12
+    mov rdx, rax
+    mov rax, 0
+    mov rdi, 0
+    syscall
+    cmp rax, 0
+    je read_done
+    add r12, rax
+    jmp read_loop
+read_done:
+    mov qword ptr [rip+total_len], r12
+
+    xor r13, r13
+line_loop:
+    mov rax, qword ptr [rip+total_len]
+    cmp r13, rax
+    jge flush_exit
+    mov rbx, r13
+find_nl:
+    cmp rbx, rax
+    jge no_nl
+    lea rdx, [rip+input_buf]
+    movzx ecx, byte ptr [rdx+rbx]
+    cmp cl, 10
+    je nl_found
+    inc rbx
+    jmp find_nl
+no_nl:
+    mov r8, r13
+    mov r9, rax
+    call process_line
+    mov r13, qword ptr [rip+total_len]
+    jmp line_loop
+nl_found:
+    mov r8, r13
+    mov r9, rbx
+    push rbx
+    call process_line
+    pop rbx
+    lea r13, [rbx+1]
+    jmp line_loop
+
+flush_exit:
+    mov rdx, qword ptr [rip+out_len]
+    cmp rdx, 0
+    je do_exit
+    lea rsi, [rip+output_buf]
+    mov rax, 1
+    mov rdi, 1
+    syscall
+do_exit:
+    mov rdi, 0
+    mov rax, 60
+    syscall
+
+process_line:
+    mov qword ptr [rip+scan_pos], r8
+    mov qword ptr [rip+line_end], r9
+    mov qword ptr [rip+stack_depth], 0
+pl_loop:
+    mov rax, qword ptr [rip+scan_pos]
+    mov rcx, qword ptr [rip+line_end]
+    cmp rax, rcx
+    jge pl_after
+    lea rdx, [rip+input_buf]
+    movzx esi, byte ptr [rdx+rax]
+    cmp sil, 0x20
+    je pl_skip1
+    cmp sil, 0x09
+    je pl_skip1
+    jmp pl_tokstart
+pl_skip1:
+    inc rax
+    mov qword ptr [rip+scan_pos], rax
+    jmp pl_loop
+pl_tokstart:
+    mov r8, rax
+pl_findend:
+    cmp rax, rcx
+    jge pl_tokend
+    lea rdx, [rip+input_buf]
+    movzx esi, byte ptr [rdx+rax]
+    cmp sil, 0x20
+    je pl_tokend
+    cmp sil, 0x09
+    je pl_tokend
+    inc rax
+    jmp pl_findend
+pl_tokend:
+    mov qword ptr [rip+scan_pos], rax
+    mov rsi, r8
+    mov rdx, rax
+    call parse_token
+    mov rax, qword ptr [rip+parse_result_type]
+    cmp rax, 0
+    je pl_err
+    cmp rax, 1
+    je pl_push_lit
+    mov rax, qword ptr [rip+stack_depth]
+    cmp rax, 2
+    jl pl_err
+    lea rdx, [rip+val_stack]
+    mov r10, qword ptr [rdx+rax*8-8]
+    mov r9, qword ptr [rdx+rax*8-16]
+    sub rax, 2
+    mov qword ptr [rip+stack_depth], rax
+    movzx ecx, byte ptr [rip+parse_result_opchar]
+    cmp cl, 43
+    je pl_op_add
+    cmp cl, 45
+    je pl_op_sub
+    cmp cl, 42
+    je pl_op_mul
+    cmp cl, 47
+    je pl_op_div
+    jmp pl_op_mod
+
+pl_op_add:
+    mov r11, r9
+    add r11, r10
+    jmp pl_push_res
+pl_op_sub:
+    mov r11, r9
+    sub r11, r10
+    jmp pl_push_res
+pl_op_mul:
+    mov r11, r9
+    imul r11, r10
+    jmp pl_push_res
+pl_op_div:
+    cmp r10, 0
+    je pl_err
+    mov rax, 0x8000000000000000
+    cmp r9, rax
+    jne pl_div_ok
+    cmp r10, -1
+    je pl_err
+pl_div_ok:
+    mov rax, r9
+    cqo
+    idiv r10
+    mov r11, rax
+    jmp pl_push_res
+pl_op_mod:
+    cmp r10, 0
+    je pl_err
+    mov rax, 0x8000000000000000
+    cmp r9, rax
+    jne pl_mod_ok
+    cmp r10, -1
+    je pl_err
+pl_mod_ok:
+    mov rax, r9
+    cqo
+    idiv r10
+    mov r11, rdx
+    jmp pl_push_res
+
+pl_push_lit:
+    mov r11, qword ptr [rip+parse_result_value]
+pl_push_res:
+    mov rax, qword ptr [rip+stack_depth]
+    lea rdx, [rip+val_stack]
+    mov qword ptr [rdx+rax*8], r11
+    inc rax
+    mov qword ptr [rip+stack_depth], rax
+    jmp pl_loop
+
+pl_after:
+    mov rax, qword ptr [rip+stack_depth]
+    cmp rax, 1
+    jne pl_err
+    lea rdx, [rip+val_stack]
+    mov rax, qword ptr [rdx]
+    call print_number
+    ret
+pl_err:
+    call emit_error
+    ret
+
+parse_token:
+    mov r8, rsi
+    mov r9, rdx
+    mov rax, r9
+    sub rax, r8
+    cmp rax, 1
+    jne pt_lit
+    lea r10, [rip+input_buf]
+    movzx ecx, byte ptr [r10+r8]
+    cmp cl, 43
+    je pt_isop
+    cmp cl, 45
+    je pt_isop
+    cmp cl, 42
+    je pt_isop
+    cmp cl, 47
+    je pt_isop
+    cmp cl, 37
+    je pt_isop
+    jmp pt_lit
+pt_isop:
+    mov qword ptr [rip+parse_result_type], 2
+    mov byte ptr [rip+parse_result_opchar], cl
+    ret
+pt_lit:
+    lea r10, [rip+input_buf]
+    mov r11, r8
+    xor ebx, ebx
+    movzx ecx, byte ptr [r10+r11]
+    cmp cl, 45
+    jne pt_digcheck
+    mov ebx, 1
+    inc r11
+pt_digcheck:
+    mov rax, r9
+    sub rax, r11
+    cmp rax, 1
+    jl pt_bad
+    cmp rax, 18
+    jg pt_bad
+    xor rdx, rdx
+pt_digloop:
+    cmp r11, r9
+    jge pt_digdone
+    movzx ecx, byte ptr [r10+r11]
+    cmp cl, 48
+    jl pt_bad
+    cmp cl, 57
+    jg pt_bad
+    sub cl, 48
+    imul rdx, rdx, 10
+    movzx eax, cl
+    add rdx, rax
+    inc r11
+    jmp pt_digloop
+pt_digdone:
+    cmp ebx, 0
+    je pt_pos
+    neg rdx
+pt_pos:
+    mov qword ptr [rip+parse_result_type], 1
+    mov qword ptr [rip+parse_result_value], rdx
+    ret
+pt_bad:
+    mov qword ptr [rip+parse_result_type], 0
+    ret
+
+append_bytes:
+    mov rax, qword ptr [rip+out_len]
+    lea rdi, [rip+output_buf]
+    add rdi, rax
+    mov rcx, rdx
+ab_loop:
+    cmp rcx, 0
+    je ab_done
+    mov r8b, byte ptr [rsi]
+    mov byte ptr [rdi], r8b
+    inc rsi
+    inc rdi
+    dec rcx
+    jmp ab_loop
+ab_done:
+    add qword ptr [rip+out_len], rdx
+    ret
+
+emit_error:
+    lea rsi, [rip+error_msg]
+    mov rdx, error_len
+    call append_bytes
+    ret
+
+print_number:
+    mov r9, rax
+    xor r10, r10
+    cmp rax, 0
+    jge pn_mag
+    mov r10, 1
+pn_mag:
+    mov rax, r9
+    cmp r10, 0
+    je pn_havemag
+    neg rax
+pn_havemag:
+    mov r8, rax
+    lea rdi, [rip+num_buf]
+    mov rsi, 23
+    cmp r8, 0
+    jne pn_loop
+    dec rsi
+    mov byte ptr [rdi+rsi], 48
+    jmp pn_after
+pn_loop:
+    cmp r8, 0
+    je pn_after
+    mov rax, r8
+    xor rdx, rdx
+    mov rcx, 10
+    div rcx
+    add dl, 48
+    dec rsi
+    mov byte ptr [rdi+rsi], dl
+    mov r8, rax
+    jmp pn_loop
+pn_after:
+    mov qword ptr [rip+pn_digit_start], rsi
+    mov rax, 23
+    sub rax, rsi
+    mov qword ptr [rip+pn_digit_count], rax
+    cmp r10, 0
+    je pn_emit
+    lea rsi, [rip+minus_str]
+    mov rdx, 1
+    call append_bytes
+pn_emit:
+    lea rsi, [rip+num_buf]
+    add rsi, qword ptr [rip+pn_digit_start]
+    mov rdx, qword ptr [rip+pn_digit_count]
+    call append_bytes
+    lea rsi, [rip+newline_str]
+    mov rdx, 1
+    call append_bytes
+    ret
+```

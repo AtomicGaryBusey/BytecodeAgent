@@ -1,0 +1,344 @@
+```asm
+.text
+.globl _start
+
+_start:
+    mov     x9, #0                  // total bytes read so far
+
+read_loop:
+    cmp     x9, #65536
+    bge     read_done
+    mov     x2, #65536
+    sub     x2, x2, x9
+    adrp    x1, INBUF
+    add     x1, x1, :lo12:INBUF
+    add     x1, x1, x9
+    mov     x0, #0                  // fd = stdin
+    mov     x8, #63                 // SYS_READ
+    svc     #0
+    cmp     x0, #0
+    beq     read_done
+    add     x9, x9, x0
+    b       read_loop
+
+read_done:
+    adrp    x10, LEN
+    add     x10, x10, :lo12:LEN
+    str     x9, [x10]
+    adrp    x10, IDX
+    add     x10, x10, :lo12:IDX
+    mov     x11, #0
+    str     x11, [x10]
+
+main_line_loop:
+    adrp    x10, IDX
+    add     x10, x10, :lo12:IDX
+    ldr     x0, [x10]               // idx
+    adrp    x11, LEN
+    add     x11, x11, :lo12:LEN
+    ldr     x1, [x11]               // len
+    cmp     x0, x1
+    bge     all_done
+    mov     x2, x0                  // scan pos
+    adrp    x12, INBUF
+    add     x12, x12, :lo12:INBUF
+find_nl_loop:
+    cmp     x2, x1
+    bge     no_nl
+    ldrb    w3, [x12, x2]
+    cmp     w3, #0x0A
+    beq     got_nl
+    add     x2, x2, #1
+    b       find_nl_loop
+no_nl:
+    mov     x5, x1                  // line end offset = len
+    mov     x4, x1                  // next idx = len
+    b       call_proc
+got_nl:
+    mov     x5, x2                  // line end offset = pos of '\n'
+    add     x4, x2, #1              // next idx
+call_proc:
+    str     x4, [x10]
+    add     x6, x12, x0             // line_start_addr
+    add     x7, x12, x5             // line_end_addr
+    mov     x0, x6
+    mov     x1, x7
+    bl      process_line
+    b       main_line_loop
+
+all_done:
+    mov     x0, #0
+    mov     x8, #93                 // SYS_EXIT
+    svc     #0
+
+// ---------------------------------------------------------------
+// process_line: x0 = line_start_addr, x1 = line_end_addr (exclusive)
+// ---------------------------------------------------------------
+process_line:
+    mov     x2, x0                  // pos
+    mov     x3, #0                  // stack count
+    adrp    x4, STK
+    add     x4, x4, :lo12:STK
+
+pl_token_loop:
+pl_skip_sep:
+    cmp     x2, x1
+    bge     pl_line_end_check
+    ldrb    w6, [x2]
+    cmp     w6, #0x20
+    beq     pl_sep_adv
+    cmp     w6, #0x09
+    beq     pl_sep_adv
+    b       pl_token_start
+pl_sep_adv:
+    add     x2, x2, #1
+    b       pl_skip_sep
+
+pl_token_start:
+    mov     x7, x2
+pl_find_tok_end:
+    cmp     x2, x1
+    bge     pl_tok_end_found
+    ldrb    w6, [x2]
+    cmp     w6, #0x20
+    beq     pl_tok_end_found
+    cmp     w6, #0x09
+    beq     pl_tok_end_found
+    add     x2, x2, #1
+    b       pl_find_tok_end
+pl_tok_end_found:
+    sub     x8, x2, x7              // token length
+
+    cmp     x8, #1
+    bne     pl_maybe_literal
+    ldrb    w6, [x7]
+    cmp     w6, #0x2B               // '+'
+    beq     pl_op_plus
+    cmp     w6, #0x2D               // '-'
+    beq     pl_do_sub
+    cmp     w6, #0x2A               // '*'
+    beq     pl_op_mul
+    cmp     w6, #0x2F               // '/'
+    beq     pl_op_div
+    cmp     w6, #0x25               // '%'
+    beq     pl_op_mod
+    b       pl_maybe_literal
+
+pl_maybe_literal:
+    mov     x9, x7
+    mov     x10, #0
+    ldrb    w6, [x9]
+    cmp     w6, #0x2D
+    bne     pl_parse_digits
+    mov     x10, #1
+    add     x9, x9, #1
+pl_parse_digits:
+    subs    x11, x2, x9
+    ble     pl_line_error
+    cmp     x11, #18
+    bgt     pl_line_error
+    mov     x12, #0
+    mov     x13, #10
+pl_digit_loop:
+    cmp     x9, x2
+    bge     pl_digits_done
+    ldrb    w6, [x9]
+    sub     w6, w6, #0x30
+    cmp     w6, #0
+    blt     pl_line_error
+    cmp     w6, #9
+    bgt     pl_line_error
+    mul     x12, x12, x13
+    add     x12, x12, x6
+    add     x9, x9, #1
+    b       pl_digit_loop
+pl_digits_done:
+    cmp     x10, #1
+    bne     pl_push_literal
+    neg     x12, x12
+pl_push_literal:
+    cmp     x3, #512
+    bge     pl_line_error
+    str     x12, [x4, x3, lsl #3]
+    add     x3, x3, #1
+    b       pl_after_token
+
+pl_do_sub:
+    cmp     x3, #2
+    blt     pl_line_error
+    sub     x3, x3, #1
+    ldr     x14, [x4, x3, lsl #3]
+    sub     x3, x3, #1
+    ldr     x15, [x4, x3, lsl #3]
+    sub     x14, x15, x14
+    str     x14, [x4, x3, lsl #3]
+    add     x3, x3, #1
+    b       pl_after_token
+
+pl_op_plus:
+    cmp     x3, #2
+    blt     pl_line_error
+    sub     x3, x3, #1
+    ldr     x14, [x4, x3, lsl #3]
+    sub     x3, x3, #1
+    ldr     x15, [x4, x3, lsl #3]
+    add     x14, x15, x14
+    str     x14, [x4, x3, lsl #3]
+    add     x3, x3, #1
+    b       pl_after_token
+
+pl_op_mul:
+    cmp     x3, #2
+    blt     pl_line_error
+    sub     x3, x3, #1
+    ldr     x14, [x4, x3, lsl #3]
+    sub     x3, x3, #1
+    ldr     x15, [x4, x3, lsl #3]
+    mul     x14, x15, x14
+    str     x14, [x4, x3, lsl #3]
+    add     x3, x3, #1
+    b       pl_after_token
+
+pl_op_div:
+    cmp     x3, #2
+    blt     pl_line_error
+    sub     x3, x3, #1
+    ldr     x14, [x4, x3, lsl #3]
+    sub     x3, x3, #1
+    ldr     x15, [x4, x3, lsl #3]
+    cmp     x14, #0
+    beq     pl_line_error
+    mov     x16, #1
+    lsl     x16, x16, #63
+    cmp     x15, x16
+    bne     pl_do_div_op
+    mov     x16, #-1
+    cmp     x14, x16
+    beq     pl_line_error
+pl_do_div_op:
+    sdiv    x17, x15, x14
+    str     x17, [x4, x3, lsl #3]
+    add     x3, x3, #1
+    b       pl_after_token
+
+pl_op_mod:
+    cmp     x3, #2
+    blt     pl_line_error
+    sub     x3, x3, #1
+    ldr     x14, [x4, x3, lsl #3]
+    sub     x3, x3, #1
+    ldr     x15, [x4, x3, lsl #3]
+    cmp     x14, #0
+    beq     pl_line_error
+    mov     x16, #1
+    lsl     x16, x16, #63
+    cmp     x15, x16
+    bne     pl_do_mod_op
+    mov     x16, #-1
+    cmp     x14, x16
+    beq     pl_line_error
+pl_do_mod_op:
+    sdiv    x17, x15, x14
+    msub    x17, x17, x14, x15
+    str     x17, [x4, x3, lsl #3]
+    add     x3, x3, #1
+    b       pl_after_token
+
+pl_after_token:
+    b       pl_token_loop
+
+pl_line_end_check:
+    cmp     x3, #1
+    bne     pl_line_error
+    ldr     x0, [x4]
+    b       print_result            // tail call, preserves original return address
+
+pl_line_error:
+    adrp    x5, ERRMSG
+    add     x5, x5, :lo12:ERRMSG
+    mov     x0, #1
+    mov     x1, x5
+    mov     x2, #ERRMSG_LEN
+    mov     x8, #64
+    svc     #0
+    ret
+
+// ---------------------------------------------------------------
+// print_result: x0 = signed 64-bit value to print, followed by '\n'
+// ---------------------------------------------------------------
+print_result:
+    mov     x1, #1
+    lsl     x1, x1, #63
+    cmp     x0, x1
+    bne     pr_not_min
+    adrp    x2, MINSTR
+    add     x2, x2, :lo12:MINSTR
+    mov     x0, #1
+    mov     x1, x2
+    mov     x2, #MINSTR_LEN
+    mov     x8, #64
+    svc     #0
+    ret
+
+pr_not_min:
+    adrp    x3, NUMBUF
+    add     x3, x3, :lo12:NUMBUF
+    add     x4, x3, #23
+    mov     w5, #0x0A
+    strb    w5, [x4]
+    mov     x6, #0
+    cmp     x0, #0
+    bge     pr_nonneg
+    mov     x6, #1
+    neg     x0, x0
+pr_nonneg:
+    mov     x7, #10
+pr_digit_loop:
+    sub     x4, x4, #1
+    udiv    x9, x0, x7
+    msub    x10, x9, x7, x0
+    add     w10, w10, #0x30
+    strb    w10, [x4]
+    mov     x0, x9
+    cmp     x0, #0
+    bne     pr_digit_loop
+    cmp     x6, #1
+    bne     pr_compute_len
+    sub     x4, x4, #1
+    mov     w10, #0x2D
+    strb    w10, [x4]
+pr_compute_len:
+    add     x11, x3, #24
+    sub     x2, x11, x4
+    mov     x1, x4
+    mov     x0, #1
+    mov     x8, #64
+    svc     #0
+    ret
+
+.section .rodata
+ERRMSG:
+    .ascii "error\n"
+ERRMSG_LEN = . - ERRMSG
+
+MINSTR:
+    .ascii "-9223372036854775808\n"
+MINSTR_LEN = . - MINSTR
+
+.bss
+.align 3
+INBUF:
+    .zero 65536
+.align 3
+STK:
+    .zero 4096
+.align 3
+LEN:
+    .zero 8
+.align 3
+IDX:
+    .zero 8
+.align 3
+NUMBUF:
+    .zero 24
+```

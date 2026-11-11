@@ -1,0 +1,546 @@
+```asm
+// json_lint - AArch64 static executable, no libc.
+// Reads stdin, validates RFC 8259 JSON, prints ok/error per spec.
+
+.section .rodata
+msg_ok:
+    .ascii "ok\n"
+msg_err:
+    .ascii "error at "
+msg_nl:
+    .ascii "\n"
+lit_true:
+    .ascii "true"
+lit_false:
+    .ascii "false"
+lit_null:
+    .ascii "null"
+
+.section .bss
+.balign 8
+buf:
+    .space 65536
+numbuf:
+    .space 24
+
+.section .text
+.globl _start
+
+// ---------------------------------------------------------------
+// _start: entry point
+// x19 = pos, x20 = buf base, x21 = len (set up here, used globally)
+// ---------------------------------------------------------------
+_start:
+    adrp x20, buf
+    add  x20, x20, :lo12:buf
+    mov  x9, #0            // bytes read so far
+
+read_loop:
+    movz x10, #1, lsl #16  // 65536
+    cmp  x9, x10
+    b.ge read_done
+    sub  x2, x10, x9       // capacity
+    add  x1, x20, x9       // buf + offset
+    mov  x0, #0            // fd 0
+    mov  x8, #63           // read
+    svc  #0
+    cmp  x0, #0
+    b.eq read_done
+    add  x9, x9, x0
+    b    read_loop
+
+read_done:
+    mov  x21, x9           // len
+    mov  x19, #0           // pos
+    bl   skip_ws
+    bl   parse_value
+    cmp  x0, #0
+    b.eq top_fail
+    bl   skip_ws
+    cmp  x19, x21
+    b.ne top_fail
+
+    adrp x1, msg_ok
+    add  x1, x1, :lo12:msg_ok
+    mov  x2, #3
+    mov  x0, #1
+    mov  x8, #64
+    svc  #0
+    mov  x0, #0
+    mov  x8, #93
+    svc  #0
+
+top_fail:
+    bl   print_error
+    mov  x0, #1
+    mov  x8, #93
+    svc  #0
+
+// ---------------------------------------------------------------
+// skip_ws: advance x19 over space/tab/lf/cr while pos<len.
+// leaf (no calls)
+// ---------------------------------------------------------------
+skip_ws:
+ws_loop:
+    cmp  x19, x21
+    b.ge ws_done
+    ldrb w0, [x20, x19]
+    cmp  w0, #0x20
+    b.eq ws_adv
+    cmp  w0, #0x09
+    b.eq ws_adv
+    cmp  w0, #0x0a
+    b.eq ws_adv
+    cmp  w0, #0x0d
+    b.eq ws_adv
+    b    ws_done
+ws_adv:
+    add  x19, x19, #1
+    b    ws_loop
+ws_done:
+    ret
+
+// ---------------------------------------------------------------
+// parse_value: dispatch on current byte, returns x0=1/0
+// ---------------------------------------------------------------
+parse_value:
+    str  x30, [sp, #-16]!
+    cmp  x19, x21
+    b.ge pv_fail
+    ldrb w0, [x20, x19]
+    cmp  w0, #0x22
+    b.eq pv_string
+    cmp  w0, #0x7b
+    b.eq pv_object
+    cmp  w0, #0x5b
+    b.eq pv_array
+    cmp  w0, #0x74
+    b.eq pv_true
+    cmp  w0, #0x66
+    b.eq pv_false
+    cmp  w0, #0x6e
+    b.eq pv_null
+    cmp  w0, #0x2d
+    b.eq pv_number
+    cmp  w0, #0x30
+    b.lt pv_fail
+    cmp  w0, #0x39
+    b.gt pv_fail
+    b    pv_number
+pv_string:
+    bl   parse_string
+    b    pv_done
+pv_object:
+    bl   parse_object
+    b    pv_done
+pv_array:
+    bl   parse_array
+    b    pv_done
+pv_true:
+    adrp x1, lit_true
+    add  x1, x1, :lo12:lit_true
+    mov  x2, #4
+    bl   match_literal
+    b    pv_done
+pv_false:
+    adrp x1, lit_false
+    add  x1, x1, :lo12:lit_false
+    mov  x2, #5
+    bl   match_literal
+    b    pv_done
+pv_null:
+    adrp x1, lit_null
+    add  x1, x1, :lo12:lit_null
+    mov  x2, #4
+    bl   match_literal
+    b    pv_done
+pv_number:
+    bl   parse_number
+    b    pv_done
+pv_fail:
+    mov  x0, #0
+    b    pv_done
+pv_done:
+    ldr  x30, [sp], #16
+    ret
+
+// ---------------------------------------------------------------
+// match_literal: x1=ptr, x2=count. leaf.
+// ---------------------------------------------------------------
+match_literal:
+    mov  x3, #0
+ml_loop:
+    cmp  x3, x2
+    b.ge ml_ok
+    add  x4, x19, x3
+    cmp  x4, x21
+    b.ge ml_fail
+    ldrb w5, [x20, x4]
+    ldrb w6, [x1, x3]
+    cmp  w5, w6
+    b.ne ml_fail
+    add  x3, x3, #1
+    b    ml_loop
+ml_ok:
+    add  x19, x19, x2
+    mov  x0, #1
+    ret
+ml_fail:
+    mov  x19, x4
+    mov  x0, #0
+    ret
+
+// ---------------------------------------------------------------
+// parse_string: leaf (no calls). returns x0=1/0.
+// ---------------------------------------------------------------
+parse_string:
+    cmp  x19, x21
+    b.ge str_fail
+    ldrb w0, [x20, x19]
+    cmp  w0, #0x22
+    b.ne str_fail
+    add  x19, x19, #1
+str_loop:
+    cmp  x19, x21
+    b.ge str_fail
+    ldrb w0, [x20, x19]
+    cmp  w0, #0x22
+    b.eq str_done
+    cmp  w0, #0x5c
+    b.eq str_esc
+    cmp  w0, #0x20
+    b.lt str_fail
+    add  x19, x19, #1
+    b    str_loop
+str_esc:
+    add  x19, x19, #1
+    cmp  x19, x21
+    b.ge str_fail
+    ldrb w0, [x20, x19]
+    cmp  w0, #0x22
+    b.eq str_esc_simple
+    cmp  w0, #0x5c
+    b.eq str_esc_simple
+    cmp  w0, #0x2f
+    b.eq str_esc_simple
+    cmp  w0, #0x62
+    b.eq str_esc_simple
+    cmp  w0, #0x66
+    b.eq str_esc_simple
+    cmp  w0, #0x6e
+    b.eq str_esc_simple
+    cmp  w0, #0x72
+    b.eq str_esc_simple
+    cmp  w0, #0x74
+    b.eq str_esc_simple
+    cmp  w0, #0x75
+    b.eq str_esc_u
+    b    str_fail
+str_esc_simple:
+    add  x19, x19, #1
+    b    str_loop
+str_esc_u:
+    add  x19, x19, #1
+    mov  x7, #0
+str_u_loop:
+    cmp  x7, #4
+    b.ge str_loop
+    cmp  x19, x21
+    b.ge str_fail
+    ldrb w0, [x20, x19]
+    cmp  w0, #0x30
+    b.lt str_fail
+    cmp  w0, #0x39
+    b.le str_u_ok
+    cmp  w0, #0x41
+    b.lt str_fail
+    cmp  w0, #0x46
+    b.le str_u_ok
+    cmp  w0, #0x61
+    b.lt str_fail
+    cmp  w0, #0x66
+    b.gt str_fail
+str_u_ok:
+    add  x19, x19, #1
+    add  x7, x7, #1
+    b    str_u_loop
+str_done:
+    add  x19, x19, #1
+    mov  x0, #1
+    ret
+str_fail:
+    mov  x0, #0
+    ret
+
+// ---------------------------------------------------------------
+// parse_number: leaf (no calls). returns x0=1/0.
+// ---------------------------------------------------------------
+parse_number:
+    cmp  x19, x21
+    b.ge num_fail
+    ldrb w0, [x20, x19]
+    cmp  w0, #0x2d
+    b.ne num_int
+    add  x19, x19, #1
+num_int:
+    cmp  x19, x21
+    b.ge num_fail
+    ldrb w0, [x20, x19]
+    cmp  w0, #0x30
+    b.eq num_zero
+    cmp  w0, #0x31
+    b.lt num_fail
+    cmp  w0, #0x39
+    b.gt num_fail
+    add  x19, x19, #1
+    b    num_int_loop
+num_zero:
+    add  x19, x19, #1
+    b    num_frac_check
+num_int_loop:
+    cmp  x19, x21
+    b.ge num_frac_check
+    ldrb w0, [x20, x19]
+    cmp  w0, #0x30
+    b.lt num_frac_check
+    cmp  w0, #0x39
+    b.gt num_frac_check
+    add  x19, x19, #1
+    b    num_int_loop
+num_frac_check:
+    cmp  x19, x21
+    b.ge num_exp_check
+    ldrb w0, [x20, x19]
+    cmp  w0, #0x2e
+    b.ne num_exp_check
+    add  x19, x19, #1
+    cmp  x19, x21
+    b.ge num_fail
+    ldrb w0, [x20, x19]
+    cmp  w0, #0x30
+    b.lt num_fail
+    cmp  w0, #0x39
+    b.gt num_fail
+    add  x19, x19, #1
+num_frac_loop:
+    cmp  x19, x21
+    b.ge num_exp_check
+    ldrb w0, [x20, x19]
+    cmp  w0, #0x30
+    b.lt num_exp_check
+    cmp  w0, #0x39
+    b.gt num_exp_check
+    add  x19, x19, #1
+    b    num_frac_loop
+num_exp_check:
+    cmp  x19, x21
+    b.ge num_ok
+    ldrb w0, [x20, x19]
+    cmp  w0, #0x65
+    b.eq num_exp_go
+    cmp  w0, #0x45
+    b.eq num_exp_go
+    b    num_ok
+num_exp_go:
+    add  x19, x19, #1
+    cmp  x19, x21
+    b.ge num_fail
+    ldrb w0, [x20, x19]
+    cmp  w0, #0x2b
+    b.eq num_exp_sign
+    cmp  w0, #0x2d
+    b.eq num_exp_sign
+    b    num_exp_digit1
+num_exp_sign:
+    add  x19, x19, #1
+num_exp_digit1:
+    cmp  x19, x21
+    b.ge num_fail
+    ldrb w0, [x20, x19]
+    cmp  w0, #0x30
+    b.lt num_fail
+    cmp  w0, #0x39
+    b.gt num_fail
+    add  x19, x19, #1
+num_exp_loop:
+    cmp  x19, x21
+    b.ge num_ok
+    ldrb w0, [x20, x19]
+    cmp  w0, #0x30
+    b.lt num_ok
+    cmp  w0, #0x39
+    b.gt num_ok
+    add  x19, x19, #1
+    b    num_exp_loop
+num_ok:
+    mov  x0, #1
+    ret
+num_fail:
+    mov  x0, #0
+    ret
+
+// ---------------------------------------------------------------
+// parse_array
+// ---------------------------------------------------------------
+parse_array:
+    str  x30, [sp, #-16]!
+    cmp  x19, x21
+    b.ge pa_fail
+    ldrb w0, [x20, x19]
+    cmp  w0, #0x5b
+    b.ne pa_fail
+    add  x19, x19, #1
+    bl   skip_ws
+    cmp  x19, x21
+    b.ge pa_members
+    ldrb w0, [x20, x19]
+    cmp  w0, #0x5d
+    b.ne pa_members
+    add  x19, x19, #1
+    mov  x0, #1
+    b    pa_done
+pa_members:
+    bl   parse_value
+    cmp  x0, #0
+    b.eq pa_fail2
+    bl   skip_ws
+    cmp  x19, x21
+    b.ge pa_fail
+    ldrb w0, [x20, x19]
+    cmp  w0, #0x2c
+    b.eq pa_comma
+    cmp  w0, #0x5d
+    b.eq pa_close
+    b    pa_fail
+pa_comma:
+    add  x19, x19, #1
+    bl   skip_ws
+    b    pa_members
+pa_close:
+    add  x19, x19, #1
+    mov  x0, #1
+    b    pa_done
+pa_fail:
+    mov  x0, #0
+    b    pa_done
+pa_fail2:
+    b    pa_done
+pa_done:
+    ldr  x30, [sp], #16
+    ret
+
+// ---------------------------------------------------------------
+// parse_object
+// ---------------------------------------------------------------
+parse_object:
+    str  x30, [sp, #-16]!
+    cmp  x19, x21
+    b.ge po_fail
+    ldrb w0, [x20, x19]
+    cmp  w0, #0x7b
+    b.ne po_fail
+    add  x19, x19, #1
+    bl   skip_ws
+    cmp  x19, x21
+    b.ge po_members
+    ldrb w0, [x20, x19]
+    cmp  w0, #0x7d
+    b.ne po_members
+    add  x19, x19, #1
+    mov  x0, #1
+    b    po_done
+po_members:
+    bl   parse_string
+    cmp  x0, #0
+    b.eq po_fail2
+    bl   skip_ws
+    cmp  x19, x21
+    b.ge po_fail
+    ldrb w0, [x20, x19]
+    cmp  w0, #0x3a
+    b.ne po_fail
+    add  x19, x19, #1
+    bl   skip_ws
+    bl   parse_value
+    cmp  x0, #0
+    b.eq po_fail2
+    bl   skip_ws
+    cmp  x19, x21
+    b.ge po_fail
+    ldrb w0, [x20, x19]
+    cmp  w0, #0x2c
+    b.eq po_comma
+    cmp  w0, #0x7d
+    b.eq po_close
+    b    po_fail
+po_comma:
+    add  x19, x19, #1
+    bl   skip_ws
+    b    po_members
+po_close:
+    add  x19, x19, #1
+    mov  x0, #1
+    b    po_done
+po_fail:
+    mov  x0, #0
+    b    po_done
+po_fail2:
+    b    po_done
+po_done:
+    ldr  x30, [sp], #16
+    ret
+
+// ---------------------------------------------------------------
+// print_error: writes "error at " + decimal(x19) + "\n" to fd1.
+// ---------------------------------------------------------------
+print_error:
+    str  x30, [sp, #-16]!
+
+    adrp x1, msg_err
+    add  x1, x1, :lo12:msg_err
+    mov  x2, #9
+    mov  x0, #1
+    mov  x8, #64
+    svc  #0
+
+    adrp x10, numbuf
+    add  x10, x10, :lo12:numbuf
+    mov  x11, #23
+    mov  x3, x19
+    mov  x4, #10
+    mov  x9, #0
+pe_check:
+    cbnz x3, pe_loop
+    mov  w6, #0x30
+    strb w6, [x10, x11]
+    sub  x11, x11, #1
+    add  x9, x9, #1
+    b    pe_done
+pe_loop:
+    cbz  x3, pe_done
+    udiv x5, x3, x4
+    msub x6, x5, x4, x3
+    add  w6, w6, #0x30
+    strb w6, [x10, x11]
+    sub  x11, x11, #1
+    add  x9, x9, #1
+    mov  x3, x5
+    b    pe_loop
+pe_done:
+    add  x1, x10, x11
+    add  x1, x1, #1
+    mov  x2, x9
+    mov  x0, #1
+    mov  x8, #64
+    svc  #0
+
+    adrp x1, msg_nl
+    add  x1, x1, :lo12:msg_nl
+    mov  x2, #1
+    mov  x0, #1
+    mov  x8, #64
+    svc  #0
+
+    ldr  x30, [sp], #16
+    ret
+```

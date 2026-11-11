@@ -1,0 +1,340 @@
+```asm
+.text
+.globl _start
+_start:
+    // read entire stdin into inbuf
+    adrp x24, inbuf
+    add  x24, x24, :lo12:inbuf
+    mov  x27, #0                 // total bytes read
+
+read_loop:
+    mov  x0, #0                  // fd = 0
+    add  x1, x24, x27            // buf = inbuf + offset
+    mov  x2, #65536
+    sub  x2, x2, x27             // remaining capacity
+    mov  x8, #63
+    svc  #0
+    cmp  x0, #0
+    b.eq read_done
+    add  x27, x27, x0
+    b    read_loop
+
+read_done:
+    mov  x19, x24                 // line cursor
+    add  x20, x24, x27            // end of input
+
+    adrp x21, outbuf
+    add  x21, x21, :lo12:outbuf
+
+    adrp x23, stackarr
+    add  x23, x23, :lo12:stackarr
+
+line_loop:
+    cmp  x19, x20
+    b.ge all_done
+
+    mov  x9, x19
+find_nl:
+    cmp  x9, x20
+    b.ge line_no_nl
+    ldrb w10, [x9]
+    cmp  w10, #0x0A
+    b.eq line_has_nl
+    add  x9, x9, #1
+    b    find_nl
+
+line_has_nl:
+    mov  x28, x9
+    add  x12, x9, #1
+    b    line_bounds_done
+
+line_no_nl:
+    mov  x28, x20
+    mov  x12, x20
+
+line_bounds_done:
+    mov  x22, #0        // stack count
+    mov  x13, #0        // error flag
+    mov  x14, x19       // token scanner
+
+token_loop:
+    cmp  x14, x28
+    b.ge tokens_done
+    ldrb w10, [x14]
+    cmp  w10, #0x20
+    b.eq skip_sep
+    cmp  w10, #0x09
+    b.eq skip_sep
+    b    token_start_found
+skip_sep:
+    add  x14, x14, #1
+    b    token_loop
+
+token_start_found:
+    mov  x15, x14
+find_token_end:
+    add  x14, x14, #1
+    cmp  x14, x28
+    b.ge token_end_found
+    ldrb w10, [x14]
+    cmp  w10, #0x20
+    b.eq token_end_found
+    cmp  w10, #0x09
+    b.eq token_end_found
+    b    find_token_end
+
+token_end_found:
+    sub  x16, x14, x15     // token length
+
+    cmp  x16, #1
+    b.eq classify_len1
+    b    classify_len_ge2
+
+classify_len1:
+    ldrb w0, [x15]
+    cmp  w0, #'+'
+    b.eq set_plus
+    cmp  w0, #'-'
+    b.eq set_minus
+    cmp  w0, #'*'
+    b.eq set_mul
+    cmp  w0, #'/'
+    b.eq set_div
+    cmp  w0, #'%'
+    b.eq set_mod
+    cmp  w0, #'0'
+    b.lt set_invalid
+    cmp  w0, #'9'
+    b.gt set_invalid
+    sub  w0, w0, #'0'
+    mov  w17, #0
+    b    classify_done
+
+set_plus:
+    mov  w17, #1
+    b    classify_done
+set_minus:
+    mov  w17, #2
+    b    classify_done
+set_mul:
+    mov  w17, #3
+    b    classify_done
+set_div:
+    mov  w17, #4
+    b    classify_done
+set_mod:
+    mov  w17, #5
+    b    classify_done
+set_invalid:
+    mov  w17, #9
+    b    classify_done
+
+classify_len_ge2:
+    ldrb w0, [x15]
+    mov  x1, x15
+    mov  x2, x16
+    mov  x3, #0
+    cmp  w0, #'-'
+    b.ne cl_no_sign
+    mov  x3, #1
+    add  x1, x1, #1
+    sub  x2, x2, #1
+cl_no_sign:
+    cmp  x2, #1
+    b.lt cl_invalid
+    cmp  x2, #18
+    b.gt cl_invalid
+
+    mov  x4, #0
+    mov  x5, x1
+    mov  x6, x2
+cl_digit_loop:
+    cbz  x6, cl_digits_done
+    ldrb w7, [x5], #1
+    cmp  w7, #'0'
+    b.lt cl_invalid
+    cmp  w7, #'9'
+    b.gt cl_invalid
+    sub  w7, w7, #'0'
+    mov  x8, #10
+    mul  x4, x4, x8
+    add  x4, x4, x7
+    sub  x6, x6, #1
+    b    cl_digit_loop
+cl_digits_done:
+    cmp  x3, #1
+    b.ne cl_positive
+    neg  x4, x4
+cl_positive:
+    mov  x0, x4
+    mov  w17, #0
+    b    classify_done
+cl_invalid:
+    mov  w17, #9
+    b    classify_done
+
+classify_done:
+    cmp  w17, #9
+    b.eq token_invalid
+    cmp  w17, #0
+    b.eq do_push
+    b    do_operator
+
+do_push:
+    cmp  x22, #1024
+    b.ge token_invalid
+    str  x0, [x23, x22, lsl #3]
+    add  x22, x22, #1
+    b    token_continue
+
+do_operator:
+    cmp  x22, #2
+    b.lt token_invalid
+    sub  x22, x22, #1
+    ldr  x1, [x23, x22, lsl #3]
+    sub  x22, x22, #1
+    ldr  x0, [x23, x22, lsl #3]
+    cmp  w17, #1
+    b.eq op_add
+    cmp  w17, #2
+    b.eq op_sub
+    cmp  w17, #3
+    b.eq op_mul
+    cmp  w17, #4
+    b.eq op_div
+    b    op_mod
+
+op_add:
+    add  x0, x0, x1
+    b    op_push_result
+op_sub:
+    sub  x0, x0, x1
+    b    op_push_result
+op_mul:
+    mul  x0, x0, x1
+    b    op_push_result
+op_div:
+    cbz  x1, token_invalid
+    mov  x2, #1
+    lsl  x2, x2, #63
+    cmp  x0, x2
+    b.ne div_ok
+    cmn  x1, #1
+    b.eq token_invalid
+div_ok:
+    sdiv x0, x0, x1
+    b    op_push_result
+op_mod:
+    cbz  x1, token_invalid
+    mov  x2, #1
+    lsl  x2, x2, #63
+    cmp  x0, x2
+    b.ne mod_ok
+    cmn  x1, #1
+    b.eq token_invalid
+mod_ok:
+    sdiv x3, x0, x1
+    msub x0, x3, x1, x0
+    b    op_push_result
+
+op_push_result:
+    str  x0, [x23, x22, lsl #3]
+    add  x22, x22, #1
+    b    token_continue
+
+token_invalid:
+    mov  x13, #1
+    b    tokens_done
+
+token_continue:
+    b    token_loop
+
+tokens_done:
+    cmp  x13, #0
+    b.ne emit_error
+    cmp  x22, #1
+    b.ne emit_error
+
+    ldr  x0, [x23]
+    cmp  x0, #0
+    b.lt dc_neg
+    mov  x2, x0
+    b    dc_digits
+dc_neg:
+    mov  w3, #'-'
+    strb w3, [x21], #1
+    neg  x2, x0
+dc_digits:
+    cbz  x2, dc_zero
+    adrp x4, digitbuf
+    add  x4, x4, :lo12:digitbuf
+    add  x4, x4, #24
+    mov  x5, x4
+dc_loop:
+    cbz  x2, dc_copy
+    mov  x7, #10
+    udiv x6, x2, x7
+    msub x8, x6, x7, x2
+    add  w8, w8, #'0'
+    sub  x4, x4, #1
+    strb w8, [x4]
+    mov  x2, x6
+    b    dc_loop
+dc_zero:
+    mov  w6, #'0'
+    strb w6, [x21], #1
+    b    dc_after
+dc_copy:
+    sub  x9, x5, x4
+dc_copy_loop:
+    cbz  x9, dc_after
+    ldrb w10, [x4], #1
+    strb w10, [x21], #1
+    sub  x9, x9, #1
+    b    dc_copy_loop
+dc_after:
+    mov  w10, #0x0A
+    strb w10, [x21], #1
+    b    line_next
+
+emit_error:
+    mov  w0, #'e'
+    strb w0, [x21], #1
+    mov  w0, #'r'
+    strb w0, [x21], #1
+    mov  w0, #'r'
+    strb w0, [x21], #1
+    mov  w0, #'o'
+    strb w0, [x21], #1
+    mov  w0, #'r'
+    strb w0, [x21], #1
+    mov  w0, #0x0A
+    strb w0, [x21], #1
+    b    line_next
+
+line_next:
+    mov  x19, x12
+    b    line_loop
+
+all_done:
+    adrp x1, outbuf
+    add  x1, x1, :lo12:outbuf
+    sub  x2, x21, x1
+    mov  x0, #1
+    mov  x8, #64
+    svc  #0
+    mov  x0, #0
+    mov  x8, #93
+    svc  #0
+
+.bss
+    .align 3
+inbuf:
+    .space 65536
+outbuf:
+    .space 400000
+stackarr:
+    .space 8192
+digitbuf:
+    .space 24
+```

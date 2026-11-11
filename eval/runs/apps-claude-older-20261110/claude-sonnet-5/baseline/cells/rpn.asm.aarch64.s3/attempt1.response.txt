@@ -1,0 +1,336 @@
+```
+.section .rodata
+error_msg:
+    .ascii "error\n"
+
+.bss
+    .balign 8
+input_buf:
+    .space 65536
+stack_arr:
+    .space 8192
+
+.text
+.globl _start
+
+_start:
+    adrp x22, input_buf
+    add  x22, x22, :lo12:input_buf
+    mov  x19, #0              // total bytes read
+
+read_loop:
+    mov  x0, #0                // fd = 0 (stdin)
+    add  x1, x22, x19          // buf pointer
+    mov  x2, #65536
+    sub  x2, x2, x19           // remaining space
+    cmp  x2, #0
+    beq  read_done
+    mov  x8, #63                // sys_read
+    svc  #0
+    cmp  x0, #0
+    beq  read_done
+    add  x19, x19, x0
+    b    read_loop
+
+read_done:
+    mov  x20, #0                // pos
+    mov  x21, #0                // line_start
+
+line_scan_loop:
+    cmp  x20, x19
+    bge  line_scan_after
+    ldrb w0, [x22, x20]
+    cmp  w0, #10                 // '\n'
+    bne  line_scan_next
+    sub  x1, x20, x21
+    add  x0, x22, x21
+    bl   process_line
+    add  x21, x20, #1
+
+line_scan_next:
+    add  x20, x20, #1
+    b    line_scan_loop
+
+line_scan_after:
+    cmp  x21, x19
+    bge  all_done
+    sub  x1, x19, x21
+    add  x0, x22, x21
+    bl   process_line
+
+all_done:
+    mov  x0, #0
+    mov  x8, #93                 // exit
+    svc  #0
+
+// ----------------------------------------------------------------
+// process_line(x0 = line ptr, x1 = line len)
+// ----------------------------------------------------------------
+process_line:
+    stp  x29, x30, [sp, #-128]!
+    stp  x19, x20, [sp, #16]
+    stp  x21, x22, [sp, #32]
+    stp  x23, x24, [sp, #48]
+    stp  x25, x26, [sp, #64]
+    stp  x27, x28, [sp, #80]
+
+    mov  x19, x0                 // line base
+    mov  x20, x1                 // line length
+    add  x21, x19, x20           // line end
+    mov  x22, x19                 // scan pointer i
+    mov  x23, #0                  // stack count
+    mov  x24, #0                  // error flag
+    adrp x27, stack_arr
+    add  x27, x27, :lo12:stack_arr
+
+token_loop:
+    cmp  x22, x21
+    bge  token_loop_end
+    ldrb w0, [x22]
+    cmp  w0, #32
+    beq  skip_sep
+    cmp  w0, #9
+    beq  skip_sep
+    b    find_token_end
+skip_sep:
+    add  x22, x22, #1
+    b    token_loop
+
+find_token_end:
+    mov  x25, x22
+find_token_end_loop:
+    cmp  x22, x21
+    bge  find_token_end_done
+    ldrb w0, [x22]
+    cmp  w0, #32
+    beq  find_token_end_done
+    cmp  w0, #9
+    beq  find_token_end_done
+    add  x22, x22, #1
+    b    find_token_end_loop
+find_token_end_done:
+    sub  x26, x22, x25           // token length
+
+    cmp  x26, #1
+    bne  multi_char_token
+    ldrb w0, [x25]
+    cmp  w0, #43                  // '+'
+    beq  op_plus
+    cmp  w0, #45                  // '-'
+    beq  op_minus
+    cmp  w0, #42                  // '*'
+    beq  op_mul
+    cmp  w0, #47                  // '/'
+    beq  op_div
+    cmp  w0, #37                  // '%'
+    beq  op_mod
+    cmp  w0, #48
+    blt  token_invalid
+    cmp  w0, #57
+    bgt  token_invalid
+    sub  w0, w0, #48
+    b    push_value
+
+multi_char_token:
+    mov  x1, x25
+    mov  x2, x26
+    mov  x3, #0
+    mov  x4, #0
+    ldrb w0, [x1]
+    cmp  w0, #45
+    bne  parse_digits
+    mov  x4, #1
+    mov  x3, #1
+parse_digits:
+    sub  x5, x2, x3
+    cmp  x5, #1
+    blt  token_invalid
+    cmp  x5, #18
+    bgt  token_invalid
+    mov  x6, #0
+    mov  x7, x3
+digit_loop:
+    cmp  x7, x2
+    bge  digit_loop_done
+    ldrb w0, [x1, x7]
+    cmp  w0, #48
+    blt  token_invalid
+    cmp  w0, #57
+    bgt  token_invalid
+    sub  w0, w0, #48
+    mov  x8, #10
+    mul  x6, x6, x8
+    add  x6, x6, x0
+    add  x7, x7, #1
+    b    digit_loop
+digit_loop_done:
+    cmp  x4, #1
+    bne  literal_done
+    neg  x6, x6
+literal_done:
+    mov  x0, x6
+    b    push_value
+
+push_value:
+    str  x0, [x27, x23, lsl #3]
+    add  x23, x23, #1
+    b    continue_token_loop
+
+op_plus:
+    cmp  x23, #2
+    blt  token_invalid
+    sub  x23, x23, #2
+    ldr  x0, [x27, x23, lsl #3]
+    add  x9, x23, #1
+    ldr  x1, [x27, x9, lsl #3]
+    add  x0, x0, x1
+    str  x0, [x27, x23, lsl #3]
+    add  x23, x23, #1
+    b    continue_token_loop
+
+op_minus:
+    cmp  x23, #2
+    blt  token_invalid
+    sub  x23, x23, #2
+    ldr  x0, [x27, x23, lsl #3]
+    add  x9, x23, #1
+    ldr  x1, [x27, x9, lsl #3]
+    sub  x0, x0, x1
+    str  x0, [x27, x23, lsl #3]
+    add  x23, x23, #1
+    b    continue_token_loop
+
+op_mul:
+    cmp  x23, #2
+    blt  token_invalid
+    sub  x23, x23, #2
+    ldr  x0, [x27, x23, lsl #3]
+    add  x9, x23, #1
+    ldr  x1, [x27, x9, lsl #3]
+    mul  x0, x0, x1
+    str  x0, [x27, x23, lsl #3]
+    add  x23, x23, #1
+    b    continue_token_loop
+
+op_div:
+    cmp  x23, #2
+    blt  token_invalid
+    sub  x23, x23, #2
+    ldr  x0, [x27, x23, lsl #3]
+    add  x9, x23, #1
+    ldr  x1, [x27, x9, lsl #3]
+    cmp  x1, #0
+    beq  token_invalid
+    movz x10, #0x8000, lsl #48
+    cmp  x0, x10
+    bne  do_div
+    mov  x11, #-1
+    cmp  x1, x11
+    beq  token_invalid
+do_div:
+    sdiv x0, x0, x1
+    str  x0, [x27, x23, lsl #3]
+    add  x23, x23, #1
+    b    continue_token_loop
+
+op_mod:
+    cmp  x23, #2
+    blt  token_invalid
+    sub  x23, x23, #2
+    ldr  x0, [x27, x23, lsl #3]
+    add  x9, x23, #1
+    ldr  x1, [x27, x9, lsl #3]
+    cmp  x1, #0
+    beq  token_invalid
+    movz x10, #0x8000, lsl #48
+    cmp  x0, x10
+    bne  do_mod
+    mov  x11, #-1
+    cmp  x1, x11
+    beq  token_invalid
+do_mod:
+    sdiv x2, x0, x1
+    msub x0, x2, x1, x0
+    str  x0, [x27, x23, lsl #3]
+    add  x23, x23, #1
+    b    continue_token_loop
+
+token_invalid:
+    mov  x24, #1
+    b    continue_token_loop
+
+continue_token_loop:
+    cmp  x24, #1
+    beq  token_loop_end
+    b    token_loop
+
+token_loop_end:
+    cmp  x24, #1
+    beq  do_print_error
+    cmp  x23, #1
+    bne  do_print_error
+    ldr  x0, [x27]
+    bl   print_number
+    b    process_line_restore
+
+do_print_error:
+    bl   print_error_msg
+
+process_line_restore:
+    ldp  x27, x28, [sp, #80]
+    ldp  x25, x26, [sp, #64]
+    ldp  x23, x24, [sp, #48]
+    ldp  x21, x22, [sp, #32]
+    ldp  x19, x20, [sp, #16]
+    ldp  x29, x30, [sp], #128
+    ret
+
+// ----------------------------------------------------------------
+print_error_msg:
+    adrp x1, error_msg
+    add  x1, x1, :lo12:error_msg
+    mov  x0, #1
+    mov  x2, #6
+    mov  x8, #64
+    svc  #0
+    ret
+
+// ----------------------------------------------------------------
+// print_number(x0 = signed 64-bit value) -> writes decimal + '\n'
+// ----------------------------------------------------------------
+print_number:
+    sub  sp, sp, #32
+    mov  x1, #0
+    cmp  x0, #0
+    bge  pn_nonneg
+    mov  x1, #1
+    neg  x0, x0
+pn_nonneg:
+    add  x3, sp, #23
+    mov  w4, #10
+    strb w4, [x3]
+    sub  x3, x3, #1
+    mov  x5, #10
+pn_digit_loop:
+    udiv x6, x0, x5
+    msub x7, x6, x5, x0
+    add  w7, w7, #48
+    strb w7, [x3], #-1
+    mov  x0, x6
+    cmp  x0, #0
+    bne  pn_digit_loop
+    cmp  x1, #1
+    bne  pn_no_sign
+    mov  w7, #45
+    strb w7, [x3], #-1
+pn_no_sign:
+    add  x3, x3, #1
+    add  x8, sp, #24
+    sub  x2, x8, x3
+    mov  x1, x3
+    mov  x0, #1
+    mov  x8, #64
+    svc  #0
+    add  sp, sp, #32
+    ret
+```

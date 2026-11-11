@@ -1,0 +1,336 @@
+```
+.text
+.globl _start
+
+_start:
+    lea rbp, [rip + input_buf]
+    xor r8, r8
+read_loop:
+    mov rax, 65536
+    sub rax, r8
+    cmp rax, 0
+    jle read_done
+    mov rdx, rax
+    lea rsi, [rbp + r8]
+    xor rdi, rdi
+    xor eax, eax
+    syscall
+    cmp rax, 0
+    jle read_done
+    add r8, rax
+    jmp read_loop
+read_done:
+    mov qword ptr [rip + input_len], r8
+    xor r9, r9
+    jmp line_loop
+
+line_loop:
+    mov rax, qword ptr [rip + input_len]
+    cmp r9, rax
+    jge all_done
+
+    mov rdi, r9
+    mov rsi, rax
+    mov rcx, rdi
+find_nl:
+    cmp rcx, rsi
+    jge find_nl_done
+    movzx eax, byte ptr [rbp + rcx]
+    cmp eax, 0x0A
+    je find_nl_done
+    inc rcx
+    jmp find_nl
+find_nl_done:
+    mov r13, r9
+    mov r14, rcx
+    push rcx
+    call process_line
+    pop rcx
+    mov rax, qword ptr [rip + input_len]
+    cmp rcx, rax
+    jge advance_done
+    inc rcx
+advance_done:
+    mov r9, rcx
+    jmp line_loop
+
+all_done:
+    call write_output
+    xor edi, edi
+    mov eax, 231
+    syscall
+hang:
+    jmp hang
+
+process_line:
+    xor r15, r15
+    lea r12, [rip + stack_arr]
+    mov rsi, r13
+pl_tok_loop:
+    cmp rsi, r14
+    jge pl_tokens_done
+    movzx eax, byte ptr [rbp + rsi]
+    cmp eax, 0x20
+    je pl_skip_sep
+    cmp eax, 0x09
+    je pl_skip_sep
+    jmp pl_have_tok_start
+pl_skip_sep:
+    inc rsi
+    jmp pl_tok_loop
+pl_have_tok_start:
+    mov rdi, rsi
+pl_find_tok_end:
+    cmp rsi, r14
+    jge pl_tok_end_found
+    movzx eax, byte ptr [rbp + rsi]
+    cmp eax, 0x20
+    je pl_tok_end_found
+    cmp eax, 0x09
+    je pl_tok_end_found
+    inc rsi
+    jmp pl_find_tok_end
+pl_tok_end_found:
+    call classify_and_eval
+    cmp eax, 1
+    je pl_error
+    jmp pl_tok_loop
+pl_tokens_done:
+    cmp r15, 1
+    je pl_output_value
+    jmp pl_error
+pl_output_value:
+    mov rax, qword ptr [r12]
+    call format_and_emit_number
+    ret
+pl_error:
+    call emit_error
+    ret
+
+classify_and_eval:
+    mov r8, rdi
+    xor r9, r9
+    movzx eax, byte ptr [rbp + r8]
+    cmp eax, '-'
+    jne cae_no_sign
+    mov r9, 1
+    inc r8
+cae_no_sign:
+    mov rcx, rsi
+    sub rcx, r8
+    cmp rcx, 1
+    jl cae_not_literal
+    cmp rcx, 18
+    jg cae_not_literal
+    mov r10, r8
+cae_verify_loop:
+    cmp r10, rsi
+    jge cae_verify_ok
+    movzx eax, byte ptr [rbp + r10]
+    sub eax, '0'
+    cmp eax, 9
+    ja cae_not_literal
+    inc r10
+    jmp cae_verify_loop
+cae_verify_ok:
+    xor r11, r11
+    mov r10, r8
+cae_parse_loop:
+    cmp r10, rsi
+    jge cae_parse_done
+    movzx eax, byte ptr [rbp + r10]
+    sub eax, '0'
+    imul r11, r11, 10
+    add r11, rax
+    inc r10
+    jmp cae_parse_loop
+cae_parse_done:
+    cmp r9, 1
+    jne cae_push_val
+    neg r11
+cae_push_val:
+    cmp r15, 512
+    jge cae_error
+    mov qword ptr [r12 + r15*8], r11
+    inc r15
+    xor eax, eax
+    ret
+
+cae_not_literal:
+    mov rcx, rsi
+    sub rcx, rdi
+    cmp rcx, 1
+    jne cae_error
+    movzx eax, byte ptr [rbp + rdi]
+    cmp eax, '+'
+    je cae_do_op
+    cmp eax, '-'
+    je cae_do_op
+    cmp eax, '*'
+    je cae_do_op
+    cmp eax, '/'
+    je cae_do_op
+    cmp eax, '%'
+    je cae_do_op
+    jmp cae_error
+
+cae_do_op:
+    cmp r15, 2
+    jl cae_error
+    sub r15, 2
+    mov rbx, qword ptr [r12 + r15*8]
+    mov rcx, qword ptr [r12 + r15*8 + 8]
+    mov r9d, eax
+    cmp r9d, '+'
+    je cae_op_add
+    cmp r9d, '-'
+    je cae_op_sub
+    cmp r9d, '*'
+    je cae_op_mul
+    cmp r9d, '/'
+    je cae_op_div
+    jmp cae_op_mod
+
+cae_op_add:
+    add rbx, rcx
+    jmp cae_op_store
+cae_op_sub:
+    sub rbx, rcx
+    jmp cae_op_store
+cae_op_mul:
+    imul rbx, rcx
+    jmp cae_op_store
+cae_op_div:
+    cmp rcx, 0
+    je cae_error
+    mov r10, 0x8000000000000000
+    cmp rbx, r10
+    jne cae_div_ok
+    cmp rcx, -1
+    je cae_error
+cae_div_ok:
+    mov rax, rbx
+    cqo
+    idiv rcx
+    mov rbx, rax
+    jmp cae_op_store
+cae_op_mod:
+    cmp rcx, 0
+    je cae_error
+    mov r10, 0x8000000000000000
+    cmp rbx, r10
+    jne cae_mod_ok
+    cmp rcx, -1
+    je cae_error
+cae_mod_ok:
+    mov rax, rbx
+    cqo
+    idiv rcx
+    mov rbx, rdx
+    jmp cae_op_store
+
+cae_op_store:
+    mov qword ptr [r12 + r15*8], rbx
+    inc r15
+    xor eax, eax
+    ret
+
+cae_error:
+    mov eax, 1
+    ret
+
+format_and_emit_number:
+    lea rdi, [rip + output_buf]
+    mov rsi, qword ptr [rip + out_len]
+    add rdi, rsi
+    mov rbx, rax
+    xor r8, r8
+    cmp rbx, 0
+    jge fmt_nonneg
+    mov r8, 1
+    neg rbx
+fmt_nonneg:
+    lea r9, [rip + digit_buf]
+    xor r10, r10
+    mov rax, rbx
+    cmp rax, 0
+    jne fmt_conv_loop
+    mov byte ptr [r9], '0'
+    mov r10, 1
+    jmp fmt_conv_done
+fmt_conv_loop:
+    cmp rax, 0
+    je fmt_conv_done
+    xor rdx, rdx
+    mov rcx, 10
+    div rcx
+    add dl, '0'
+    mov byte ptr [r9 + r10], dl
+    inc r10
+    jmp fmt_conv_loop
+fmt_conv_done:
+    cmp r8, 1
+    jne fmt_write_digits
+    mov byte ptr [rdi], '-'
+    inc rdi
+fmt_write_digits:
+    mov rcx, r10
+fmt_write_loop:
+    cmp rcx, 0
+    je fmt_write_done
+    dec rcx
+    movzx eax, byte ptr [r9 + rcx]
+    mov byte ptr [rdi], al
+    inc rdi
+    jmp fmt_write_loop
+fmt_write_done:
+    mov byte ptr [rdi], 0x0A
+    inc rdi
+    lea rax, [rip + output_buf]
+    sub rdi, rax
+    mov qword ptr [rip + out_len], rdi
+    ret
+
+emit_error:
+    lea rdi, [rip + output_buf]
+    mov rsi, qword ptr [rip + out_len]
+    add rdi, rsi
+    mov byte ptr [rdi+0], 'e'
+    mov byte ptr [rdi+1], 'r'
+    mov byte ptr [rdi+2], 'r'
+    mov byte ptr [rdi+3], 'o'
+    mov byte ptr [rdi+4], 'r'
+    mov byte ptr [rdi+5], 0x0A
+    add rdi, 6
+    lea rax, [rip + output_buf]
+    sub rdi, rax
+    mov qword ptr [rip + out_len], rdi
+    ret
+
+write_output:
+    mov r9, qword ptr [rip + out_len]
+    xor rbx, rbx
+wo_loop:
+    cmp rbx, r9
+    jge wo_done
+    lea rsi, [rip + output_buf]
+    add rsi, rbx
+    mov rdx, r9
+    sub rdx, rbx
+    mov rdi, 1
+    mov rax, 1
+    syscall
+    add rbx, rax
+    jmp wo_loop
+wo_done:
+    ret
+
+.bss
+.align 8
+input_len: .zero 8
+out_len: .zero 8
+input_buf: .zero 65536
+output_buf: .zero 450000
+stack_arr: .zero 4096
+digit_buf: .zero 32
+```

@@ -1,0 +1,504 @@
+Write the complete program `json_lint`: a static Linux executable for x86-64 (AMD64), written in assembly. There is no C library, no C runtime and no helper code: you write the entry point `_start`, every function, every table and string, and make the system calls yourself.
+
+Entry state (as the Linux kernel sets it up): execution starts at the label `_start`. rsp is 16-byte aligned and points at argc = 0, followed by the NULL terminators of an empty argv, an empty envp and an empty auxiliary vector: the program gets no arguments. Every other general-purpose register is zero, and the direction flag is clear. There is no return address: `_start` must never return with `ret`; the program ends only through the exit system call.
+
+System calls: the `syscall` instruction, with the system call number in rax and the arguments in rdi, rsi, rdx; the result comes back in rax. The kernel overwrites rcx and r11; every other register is preserved. Exactly these four are available:
+- read = 0: read(fd = 0, buf, count) reads up to count bytes of standard input into buf; returns the number of bytes read, 0 at end of input.
+- write = 1: write(fd, buf, count) with fd 1 (standard output) or 2 (standard error); returns count.
+- exit = 60: exit(status) ends the program; the exit status is the low 8 bits of status.
+- exit_group = 231: the same as exit.
+Any other system call number, another file descriptor, `int 0x80` or `sysenter` stops the program with an error, and so does a buffer that is not entirely inside the program's memory.
+
+Memory: the program's own sections plus a stack of 1 MiB below the entry sp. There is no heap (no brk, no mmap, no malloc): put working storage in `.bss` (zero-initialised), at most 1 MiB in total, or on the stack. Code is not writable. Any access outside these areas stops the program. Each test run may execute at most 50,000,000 instructions.
+
+Output format: one complete assembly source file in GNU assembler (GNU as) syntax, Intel flavour without register prefixes: the harness puts `.intel_syntax noprefix` in front of your text, so do not write it yourself. Examples: `mov rax, qword ptr [rbx + rcx*8]`, `movzx eax, byte ptr [rsi]`, `lea rsi, [rip + buffer]`. Comments start with `#`; do not use `;`.
+Allowed in the file:
+- Sections: `.text` (code), `.section .rodata` (read-only data), `.data` (initialised writable data), `.bss` (zero-initialised space: only `.zero`/`.space` and alignment). Instructions go in `.text` only.
+- Data directives: `.byte`, `.short`/`.2byte`, `.word` (2 bytes on this target), `.long`/`.int`/`.4byte`, `.quad`/`.8byte`, `.ascii`, `.asciz`/`.string`, `.zero`/`.space`, alignment with `.align`/`.balign`/`.p2align`, and `.globl`/`.global` (write `.globl _start`).
+- Labels `name:` in any section, and GNU local labels `1:` referenced as `1f` (next) / `1b` (previous).
+- Constants: `.equ name, value` (or `.set name, value`, or `name = value`), where value is a number or a difference of labels defined earlier in the same section (e.g. `msg_len = . - msg`). Define every constant before its first use.
+- Addressing data: rip-relative, `lea rdi, [rip + table]` or `mov al, byte ptr [rip + table + 3]`. The program is linked at fixed low addresses, so absolute forms (`mov esi, offset buffer`, `movzx eax, byte ptr [table + rcx]`) work as well.
+Not allowed: macros (`.macro`, `.rept`, `.irp`), conditional assembly (`.if`), `.include`, `.incbin`, `.fill`, `.org`, `.comm`/`.lcomm`, `.inst`, `.cfi_*` directives, section stacks (`.pushsection`) and any other section. No libc and no other library: there is nothing to link against, so every symbol you use must be defined in your file.
+Instruction set: x86-64 with SSE up to SSE4.2 (including SSSE3, SSE4.1 and crc32), POPCNT, LZCNT, BMI1/BMI2 (andn, bextr, blsi, blsr, tzcnt, bzhi, mulx, pdep, pext, rorx, sarx, shlx, shrx), MOVBE, AES-NI and PCLMULQDQ. Not supported (rejected): AVX, AVX2, AVX-512, FMA, F16C and every other VEX/EVEX vector instruction, ADX (adcx/adox; use adc) and SHA.
+Output ONLY the assembly source: no Markdown fences, no prose before or after it.
+
+Specification: Task `json_lint`: check that standard input is exactly one valid JSON document (RFC 8259 grammar) and report
+the byte offset of the first error.
+
+Grammar (byte-level):
+- document = ws value ws, and nothing else. ws = any number of the bytes space 0x20, tab 0x09, newline 0x0A,
+  carriage return 0x0D (only these four).
+- value = object | array | string | number | `true` | `false` | `null` (lowercase only).
+- object = `{` ws `}`, or `{` ws member (ws `,` ws member)* ws `}`, where member = string ws `:` ws value.
+  array = `[` ws `]`, or `[` ws value (ws `,` ws value)* ws `]`. No trailing commas.
+- string = `"` chars `"`. A char is any byte 0x20-0xFF except `"` (0x22) and `\` (0x5C) (bytes >= 0x80 are
+  accepted as they are; no UTF-8 validation), or an escape: `\` followed by one of `"` `\` `/` `b` `f` `n` `r`
+  `t`, or `\u` followed by exactly 4 hex digits (`0-9a-fA-F`; any code unit, surrogates are not checked).
+  Bytes 0x00-0x1F inside a string are errors.
+- number = `-`? int frac? exp?, where int = `0` | a digit `1`-`9` followed by any digits; frac = `.` and one or
+  more digits; exp = `e` or `E`, an optional `+` or `-`, and one or more digits. (So `01`, `+1`, `.5`, `1.`,
+  `1e`, `-` are not valid numbers.)
+
+Output: if the input is valid, print `ok\n` and exit with status 0. Otherwise print `error at N\n` (N in
+decimal, no padding) and exit with status 1, where N is the 0-based offset of the first byte at which the input
+stops being the beginning of some valid document: the first byte that no valid document could have at that
+position given all the bytes before it. If every byte of the input is such a valid beginning but the document is
+incomplete (this includes empty and whitespace-only input), N is the length of the input.
+
+Examples: `[1, 2]` ok; empty input `error at 0`; `[1,]` `error at 3`; `{"a" 1}` `error at 5`; `01` `error at 1`;
+`tru` `error at 3`; `trux` `error at 3`; `[1] x` `error at 4`; `"a<TAB>b"` (a raw tab byte) `error at 2`;
+`-` `error at 1`; `1.e5` `error at 2`.
+
+Limits: the input is at most 65536 bytes; arrays and objects are nested at most 1000 deep. These limits
+describe the inputs you will be given; you do not need to detect or report inputs that exceed them.
+
+Input and output (applies to this whole task):
+- The input is the complete contents of standard input (file descriptor 0). Read it with `read` until `read`
+  returns 0 (end of input). A `read` may return FEWER bytes than requested, at any position (in the middle of a
+  line, a token or a group of bytes), so keep calling it; only a return value of 0 means end of input.
+- Write the output to standard output (file descriptor 1). Only the bytes this task describes may appear on
+  standard output (standard error is ignored). Every output byte must be written before the program exits.
+- Finish with `exit` (or `exit_group`) and the exit status this task gives. The program must not run off the end
+  of its code or crash.
+
+Your previous attempt was:
+<previous>
+.section .rodata
+msg_ok:
+    .ascii "ok\n"
+msg_ok_len = . - msg_ok
+msg_err:
+    .ascii "error at "
+msg_err_len = . - msg_err
+msg_nl:
+    .ascii "\n"
+lit_true:
+    .ascii "true"
+lit_false:
+    .ascii "false"
+lit_null:
+    .ascii "null"
+
+.bss
+.align 8
+g_pos:
+    .zero 8
+g_len:
+    .zero 8
+buf:
+    .zero 65536
+digit_buf:
+    .zero 24
+
+.text
+.globl _start
+
+_start:
+    call read_all
+    call skip_ws
+    call parse_value
+    call skip_ws
+    call peek
+    cmp eax, -1
+    je 1f
+    jmp fail
+1:
+    mov edi, 1
+    lea rsi, [rip + msg_ok]
+    mov edx, msg_ok_len
+    mov eax, 1
+    syscall
+    xor edi, edi
+    mov eax, 60
+    syscall
+
+read_all:
+1:
+    mov r8, qword ptr [rip + g_len]
+    cmp r8, 65536
+    jae 2f
+    lea rsi, [rip + buf]
+    add rsi, r8
+    mov edx, 65536
+    sub rdx, r8
+    xor edi, edi
+    xor eax, eax
+    syscall
+    test rax, rax
+    jle 2f
+    add r8, rax
+    mov qword ptr [rip + g_len], r8
+    jmp 1b
+2:
+    ret
+
+peek:
+    mov rax, qword ptr [rip + g_pos]
+    cmp rax, qword ptr [rip + g_len]
+    jae 1f
+    lea rsi, [rip + buf]
+    movzx eax, byte ptr [rsi + rax]
+    ret
+1:
+    mov eax, -1
+    ret
+
+advance:
+    inc qword ptr [rip + g_pos]
+    ret
+
+skip_ws:
+1:
+    call peek
+    cmp eax, 0x20
+    je 2f
+    cmp eax, 0x09
+    je 2f
+    cmp eax, 0x0A
+    je 2f
+    cmp eax, 0x0D
+    je 2f
+    ret
+2:
+    call advance
+    jmp 1b
+
+check_hex_digit:
+    call peek
+    cmp eax, '0'
+    jl 1f
+    cmp eax, '9'
+    jle 2f
+1:
+    cmp eax, 'A'
+    jl 3f
+    cmp eax, 'F'
+    jle 2f
+    cmp eax, 'a'
+    jl 3f
+    cmp eax, 'f'
+    jg 3f
+2:
+    call advance
+    ret
+3:
+    jmp fail
+
+parse_literal:
+    mov r9d, esi
+    xor ecx, ecx
+1:
+    cmp ecx, r9d
+    jae 2f
+    call peek
+    movzx edx, byte ptr [rdi + rcx]
+    cmp eax, edx
+    jne 3f
+    call advance
+    inc ecx
+    jmp 1b
+2:
+    ret
+3:
+    jmp fail
+
+parse_value:
+    call peek
+    cmp eax, 0x22
+    je 1f
+    cmp eax, '{'
+    je 2f
+    cmp eax, '['
+    je 3f
+    cmp eax, 't'
+    je 4f
+    cmp eax, 'f'
+    je 5f
+    cmp eax, 'n'
+    je 6f
+    cmp eax, '-'
+    je 7f
+    cmp eax, '0'
+    jl 9f
+    cmp eax, '9'
+    jg 9f
+    jmp 7f
+1:
+    call parse_string
+    ret
+2:
+    call parse_object
+    ret
+3:
+    call parse_array
+    ret
+4:
+    lea rdi, [rip + lit_true]
+    mov esi, 4
+    call parse_literal
+    ret
+5:
+    lea rdi, [rip + lit_false]
+    mov esi, 5
+    call parse_literal
+    ret
+6:
+    lea rdi, [rip + lit_null]
+    mov esi, 4
+    call parse_literal
+    ret
+7:
+    call parse_number
+    ret
+9:
+    jmp fail
+
+parse_number:
+    call peek
+    cmp eax, '-'
+    jne 1f
+    call advance
+1:
+    call peek
+    cmp eax, '0'
+    je 2f
+    cmp eax, '1'
+    jl 9f
+    cmp eax, '9'
+    jg 9f
+    call advance
+3:
+    call peek
+    cmp eax, '0'
+    jl 4f
+    cmp eax, '9'
+    jg 4f
+    call advance
+    jmp 3b
+2:
+    call advance
+4:
+    call peek
+    cmp eax, '.'
+    jne 6f
+    call advance
+    call peek
+    cmp eax, '0'
+    jl 9f
+    cmp eax, '9'
+    jg 9f
+    call advance
+5:
+    call peek
+    cmp eax, '0'
+    jl 6f
+    cmp eax, '9'
+    jg 6f
+    call advance
+    jmp 5b
+6:
+    call peek
+    cmp eax, 'e'
+    je 7f
+    cmp eax, 'E'
+    je 7f
+    ret
+7:
+    call advance
+    call peek
+    cmp eax, '+'
+    je 8f
+    cmp eax, '-'
+    je 8f
+    jmp 10f
+8:
+    call advance
+10:
+    call peek
+    cmp eax, '0'
+    jl 9f
+    cmp eax, '9'
+    jg 9f
+    call advance
+11:
+    call peek
+    cmp eax, '0'
+    jl 12f
+    cmp eax, '9'
+    jg 12f
+    call advance
+    jmp 11b
+12:
+    ret
+9:
+    jmp fail
+
+parse_string:
+    call advance
+1:
+    call peek
+    cmp eax, -1
+    je 9f
+    cmp eax, 0x22
+    je 2f
+    cmp eax, 0x5C
+    je 3f
+    cmp eax, 0x20
+    jl 9f
+    call advance
+    jmp 1b
+2:
+    call advance
+    ret
+3:
+    call advance
+    call peek
+    cmp eax, -1
+    je 9f
+    cmp eax, 0x22
+    je 4f
+    cmp eax, 0x5C
+    je 4f
+    cmp eax, '/'
+    je 4f
+    cmp eax, 'b'
+    je 4f
+    cmp eax, 'f'
+    je 4f
+    cmp eax, 'n'
+    je 4f
+    cmp eax, 'r'
+    je 4f
+    cmp eax, 't'
+    je 4f
+    cmp eax, 'u'
+    je 5f
+    jmp 9f
+4:
+    call advance
+    jmp 1b
+5:
+    call advance
+    call check_hex_digit
+    call check_hex_digit
+    call check_hex_digit
+    call check_hex_digit
+    jmp 1b
+9:
+    jmp fail
+
+parse_array:
+    call advance
+    call skip_ws
+    call peek
+    cmp eax, ']'
+    je 5f
+1:
+    call parse_value
+    call skip_ws
+    call peek
+    cmp eax, ','
+    je 2f
+    cmp eax, ']'
+    je 3f
+    jmp 9f
+2:
+    call advance
+    call skip_ws
+    jmp 1b
+3:
+    call advance
+    ret
+5:
+    call advance
+    ret
+9:
+    jmp fail
+
+parse_object:
+    call advance
+    call skip_ws
+    call peek
+    cmp eax, '}'
+    je 6f
+1:
+    call peek
+    cmp eax, 0x22
+    jne 9f
+    call parse_string
+    call skip_ws
+    call peek
+    cmp eax, ':'
+    jne 9f
+    call advance
+    call skip_ws
+    call parse_value
+    call skip_ws
+    call peek
+    cmp eax, ','
+    je 2f
+    cmp eax, '}'
+    je 3f
+    jmp 9f
+2:
+    call advance
+    call skip_ws
+    jmp 1b
+3:
+    call advance
+    ret
+6:
+    call advance
+    ret
+9:
+    jmp fail
+
+fail:
+    mov rax, qword ptr [rip + g_pos]
+    lea r9, [rip + digit_buf + 23]
+    xor r8, r8
+    test rax, rax
+    jnz 1f
+    dec r9
+    mov byte ptr [r9], '0'
+    inc r8
+    jmp 2f
+1:
+    test rax, rax
+    jz 2f
+    xor rdx, rdx
+    mov rcx, 10
+    div rcx
+    add dl, '0'
+    dec r9
+    mov byte ptr [r9], dl
+    inc r8
+    jmp 1b
+2:
+    mov edi, 1
+    lea rsi, [rip + msg_err]
+    mov edx, msg_err_len
+    mov eax, 1
+    syscall
+    mov edi, 1
+    mov rsi, r9
+    mov rdx, r8
+    mov eax, 1
+    syscall
+    mov edi, 1
+    lea rsi, [rip + msg_nl]
+    mov edx, 1
+    mov eax, 1
+    syscall
+    xor edi, edi
+    mov eax, 60
+    syscall
+</previous>
+It failed:
+<failure>
+Test `empty` failed (stdin delivered whole; test run 1 of 80; the runs before it passed).
+stdin (0 bytes): ""
+exit status: expected 1, got 0
+stdout (11 bytes) was as expected
+</failure>
+Write a corrected, complete version. Same output format; output only the code.

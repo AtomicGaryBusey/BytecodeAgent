@@ -1,0 +1,305 @@
+```
+.bss
+.align 8
+INBUF:
+    .zero 65536
+.align 8
+OUTBUF:
+    .zero 524288
+.align 8
+VSTACK:
+    .zero 8192
+.align 8
+DIGBUF:
+    .zero 24
+
+.text
+.globl _start
+_start:
+    lea r12, [rip + INBUF]      # r12 = base of input buffer (constant)
+    lea r15, [rip + OUTBUF]     # r15 = base of output buffer (constant)
+    lea r9,  [rip + VSTACK]     # r9  = base of value stack (constant)
+    xor r13, r13                # r13 = INLEN
+    xor rbx, rbx                # rbx = output position
+
+read_loop:
+    mov rax, 65536
+    sub rax, r13
+    jle after_read
+    mov rdi, 0
+    lea rsi, [r12 + r13]
+    mov rdx, rax
+    mov rax, 0
+    syscall
+    cmp rax, 0
+    jle after_read
+    add r13, rax
+    jmp read_loop
+
+after_read:
+    xor r14, r14                 # r14 = pos (current line start index)
+
+main_loop:
+    cmp r14, r13
+    jge main_done
+
+    lea rsi, [r12 + r14]          # rsi = line start pointer
+    mov rcx, r14                   # cursor index for newline search
+
+find_nl_loop:
+    cmp rcx, r13
+    jge nl_not_found
+    movzx eax, byte ptr [r12 + rcx]
+    cmp al, 0x0A
+    je nl_found
+    inc rcx
+    jmp find_nl_loop
+
+nl_found:
+    lea rdi, [r12 + rcx]           # rdi = line end pointer (points at newline)
+    mov rdx, rcx
+    inc rdx
+    mov r14, rdx                   # next pos
+    jmp have_line_bounds
+
+nl_not_found:
+    lea rdi, [r12 + r13]           # rdi = line end pointer (end of buffer)
+    mov r14, r13                    # next pos = INLEN (loop terminates)
+
+have_line_bounds:
+    xor r10, r10                    # r10 = stack count (sp)
+    xor rbp, rbp                    # rbp = error flag
+
+skip_sep:
+    cmp rsi, rdi
+    jge tokens_done
+    movzx eax, byte ptr [rsi]
+    cmp al, 0x20
+    je sep_found
+    cmp al, 0x09
+    je sep_found
+    jmp token_start
+
+sep_found:
+    inc rsi
+    jmp skip_sep
+
+token_start:
+    mov rcx, rsi
+
+find_tok_end:
+    cmp rcx, rdi
+    jge tok_end_found
+    movzx eax, byte ptr [rcx]
+    cmp al, 0x20
+    je tok_end_found
+    cmp al, 0x09
+    je tok_end_found
+    inc rcx
+    jmp find_tok_end
+
+tok_end_found:
+    mov r8, rcx                      # r8 = token end pointer
+
+parse_literal:
+    mov rcx, rsi
+    xor r11, r11
+    cmp byte ptr [rcx], 0x2D
+    jne ltr_nosign
+    mov r11, 1
+    inc rcx
+ltr_nosign:
+    mov rdx, r8
+    sub rdx, rcx
+    cmp rdx, 1
+    jl try_operator
+    cmp rdx, 18
+    jg try_operator
+    xor rax, rax
+ltr_digits:
+    movzx edx, byte ptr [rcx]
+    sub edx, 0x30
+    cmp edx, 9
+    ja try_operator
+    imul rax, rax, 10
+    add rax, rdx
+    inc rcx
+    cmp rcx, r8
+    jl ltr_digits
+    test r11, r11
+    jz ltr_push
+    neg rax
+ltr_push:
+    cmp r10, 1024
+    jge invalid_token
+    mov qword ptr [r9 + r10*8], rax
+    inc r10
+    jmp token_advance
+
+try_operator:
+    mov rax, r8
+    sub rax, rsi
+    cmp rax, 1
+    jne invalid_token
+    movzx eax, byte ptr [rsi]
+    cmp al, 0x2B
+    je op_add
+    cmp al, 0x2D
+    je op_sub
+    cmp al, 0x2A
+    je op_mul
+    cmp al, 0x2F
+    je op_div
+    cmp al, 0x25
+    je op_mod
+    jmp invalid_token
+
+op_add:
+    cmp r10, 2
+    jl invalid_token
+    mov rax, qword ptr [r9 + r10*8 - 8]
+    mov rcx, qword ptr [r9 + r10*8 - 16]
+    add rcx, rax
+    mov qword ptr [r9 + r10*8 - 16], rcx
+    dec r10
+    jmp token_advance
+
+op_sub:
+    cmp r10, 2
+    jl invalid_token
+    mov rax, qword ptr [r9 + r10*8 - 8]
+    mov rcx, qword ptr [r9 + r10*8 - 16]
+    sub rcx, rax
+    mov qword ptr [r9 + r10*8 - 16], rcx
+    dec r10
+    jmp token_advance
+
+op_mul:
+    cmp r10, 2
+    jl invalid_token
+    mov rax, qword ptr [r9 + r10*8 - 8]
+    mov rcx, qword ptr [r9 + r10*8 - 16]
+    imul rcx, rax
+    mov qword ptr [r9 + r10*8 - 16], rcx
+    dec r10
+    jmp token_advance
+
+op_div:
+    cmp r10, 2
+    jl invalid_token
+    mov r11, qword ptr [r9 + r10*8 - 8]
+    mov rax, qword ptr [r9 + r10*8 - 16]
+    test r11, r11
+    jz invalid_token
+    mov rdx, 0x8000000000000000
+    cmp rax, rdx
+    jne div_ok
+    cmp r11, -1
+    je invalid_token
+div_ok:
+    cqo
+    idiv r11
+    mov qword ptr [r9 + r10*8 - 16], rax
+    dec r10
+    jmp token_advance
+
+op_mod:
+    cmp r10, 2
+    jl invalid_token
+    mov r11, qword ptr [r9 + r10*8 - 8]
+    mov rax, qword ptr [r9 + r10*8 - 16]
+    test r11, r11
+    jz invalid_token
+    mov rdx, 0x8000000000000000
+    cmp rax, rdx
+    jne mod_ok
+    cmp r11, -1
+    je invalid_token
+mod_ok:
+    cqo
+    idiv r11
+    mov qword ptr [r9 + r10*8 - 16], rdx
+    dec r10
+    jmp token_advance
+
+invalid_token:
+    mov rbp, 1
+    jmp tokens_done
+
+token_advance:
+    mov rsi, r8
+    jmp skip_sep
+
+tokens_done:
+    test rbp, rbp
+    jnz emit_error
+    cmp r10, 1
+    jne emit_error
+
+    mov rax, qword ptr [r9]
+    test rax, rax
+    jns pnum_pos
+    mov byte ptr [r15 + rbx], 0x2D
+    inc rbx
+    neg rax
+pnum_pos:
+    lea r8, [rip + DIGBUF]
+    xor r11, r11
+pnum_divloop:
+    xor rdx, rdx
+    mov rcx, 10
+    div rcx
+    add dl, 0x30
+    mov byte ptr [r8 + r11], dl
+    inc r11
+    test rax, rax
+    jnz pnum_divloop
+pnum_writeloop:
+    dec r11
+    movzx eax, byte ptr [r8 + r11]
+    mov byte ptr [r15 + rbx], al
+    inc rbx
+    test r11, r11
+    jnz pnum_writeloop
+    mov byte ptr [r15 + rbx], 0x0A
+    inc rbx
+    jmp line_done
+
+emit_error:
+    mov byte ptr [r15 + rbx], 0x65
+    inc rbx
+    mov byte ptr [r15 + rbx], 0x72
+    inc rbx
+    mov byte ptr [r15 + rbx], 0x72
+    inc rbx
+    mov byte ptr [r15 + rbx], 0x6F
+    inc rbx
+    mov byte ptr [r15 + rbx], 0x72
+    inc rbx
+    mov byte ptr [r15 + rbx], 0x0A
+    inc rbx
+    jmp line_done
+
+line_done:
+    jmp main_loop
+
+main_done:
+    xor r8, r8
+write_loop:
+    cmp r8, rbx
+    jge write_done
+    mov rdi, 1
+    lea rsi, [r15 + r8]
+    mov rdx, rbx
+    sub rdx, r8
+    mov rax, 1
+    syscall
+    cmp rax, 0
+    jle write_done
+    add r8, rax
+    jmp write_loop
+write_done:
+    mov rax, 60
+    xor rdi, rdi
+    syscall
+```

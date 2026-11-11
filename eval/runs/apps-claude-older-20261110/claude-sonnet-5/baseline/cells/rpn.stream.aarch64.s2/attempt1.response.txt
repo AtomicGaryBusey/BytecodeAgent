@@ -1,0 +1,341 @@
+```asm
+.equ SYS_READ, 63
+.equ SYS_WRITE, 64
+.equ SYS_EXIT, 93
+
+.text
+.globl _start
+
+_start:
+    adrp x20, inbuf
+    add  x20, x20, :lo12:inbuf
+    mov  x23, #0
+read_loop:
+    mov  x0, #0
+    add  x1, x20, x23
+    mov  x2, #65536
+    sub  x2, x2, x23
+    cbz  x2, read_done
+    mov  x8, #SYS_READ
+    svc  #0
+    cbz  x0, read_done
+    add  x23, x23, x0
+    b    read_loop
+read_done:
+    adrp x21, outbuf
+    add  x21, x21, :lo12:outbuf
+
+    add  x28, x20, x23
+    mov  x24, x20
+
+main_line_loop:
+    cmp  x24, x28
+    b.ge all_done
+
+    mov  x25, x24
+find_nl:
+    cmp  x25, x28
+    b.ge line_end_found
+    ldrb w9, [x25]
+    cmp  w9, #10
+    b.eq line_end_found
+    add  x25, x25, #1
+    b    find_nl
+line_end_found:
+    mov  x0, x24
+    mov  x1, x25
+    bl   process_line
+    cmp  x0, #0
+    b.eq pl_ok
+    bl   append_error
+    b    after_line
+pl_ok:
+    mov  x0, x1
+    bl   append_decimal
+after_line:
+    cmp  x25, x28
+    b.ge set_pos_end
+    add  x24, x25, #1
+    b    main_line_loop
+set_pos_end:
+    mov  x24, x25
+    b    main_line_loop
+
+all_done:
+    adrp x9, outbuf
+    add  x9, x9, :lo12:outbuf
+    sub  x10, x21, x9
+    mov  x11, x9
+write_loop:
+    cbz  x10, write_done
+    mov  x0, #1
+    mov  x1, x11
+    mov  x2, x10
+    mov  x8, #SYS_WRITE
+    svc  #0
+    add  x11, x11, x0
+    sub  x10, x10, x0
+    b    write_loop
+write_done:
+    mov  x0, #0
+    mov  x8, #SYS_EXIT
+    svc  #0
+hang:
+    b    hang
+
+// process_line(x0=start, x1=end) -> x0: 0 ok (value in x1), 1 error
+process_line:
+    stp  x29, x30, [sp, #-16]!
+    mov  x29, sp
+    adrp x3, rpnstack
+    add  x3, x3, :lo12:rpnstack
+    mov  x9, #0
+    mov  x5, x1
+    mov  x2, x0
+
+pl_loop:
+pl_skip:
+    cmp  x2, x5
+    b.ge pl_check_final
+    ldrb w10, [x2]
+    cmp  w10, #0x20
+    b.eq pl_skip_adv
+    cmp  w10, #0x09
+    b.eq pl_skip_adv
+    b    pl_have_tok_start
+pl_skip_adv:
+    add  x2, x2, #1
+    b    pl_skip
+
+pl_have_tok_start:
+    mov  x4, x2
+pl_scan:
+    cmp  x2, x5
+    b.ge pl_tok_done
+    ldrb w10, [x2]
+    cmp  w10, #0x20
+    b.eq pl_tok_done
+    cmp  w10, #0x09
+    b.eq pl_tok_done
+    add  x2, x2, #1
+    b    pl_scan
+pl_tok_done:
+    mov  x0, x4
+    mov  x1, x2
+    bl   classify_token
+    cmp  x0, #0
+    b.eq pl_error
+    cmp  x0, #1
+    b.eq pl_push_literal
+
+    cmp  x9, #2
+    b.lt pl_error
+    sub  x9, x9, #1
+    ldr  x11, [x3, x9, lsl #3]
+    sub  x9, x9, #1
+    ldr  x10, [x3, x9, lsl #3]
+
+    cmp  x1, #0x2B
+    b.eq pl_add
+    cmp  x1, #0x2D
+    b.eq pl_sub
+    cmp  x1, #0x2A
+    b.eq pl_mul
+    cmp  x1, #0x2F
+    b.eq pl_div
+    b    pl_mod
+
+pl_add:
+    add  x12, x10, x11
+    b    pl_push_result
+pl_sub:
+    sub  x12, x10, x11
+    b    pl_push_result
+pl_mul:
+    mul  x12, x10, x11
+    b    pl_push_result
+pl_div:
+    cbz  x11, pl_error
+    movz x13, #0x8000, lsl #48
+    cmp  x10, x13
+    b.ne pl_div_ok
+    cmn  x11, #1
+    b.eq pl_error
+pl_div_ok:
+    sdiv x12, x10, x11
+    b    pl_push_result
+pl_mod:
+    cbz  x11, pl_error
+    movz x13, #0x8000, lsl #48
+    cmp  x10, x13
+    b.ne pl_mod_ok
+    cmn  x11, #1
+    b.eq pl_error
+pl_mod_ok:
+    sdiv x14, x10, x11
+    msub x12, x14, x11, x10
+    b    pl_push_result
+
+pl_push_result:
+    str  x12, [x3, x9, lsl #3]
+    add  x9, x9, #1
+    b    pl_loop
+
+pl_push_literal:
+    str  x1, [x3, x9, lsl #3]
+    add  x9, x9, #1
+    b    pl_loop
+
+pl_check_final:
+    cmp  x9, #1
+    b.ne pl_error
+    ldr  x1, [x3]
+    mov  x0, #0
+    ldp  x29, x30, [sp], #16
+    ret
+pl_error:
+    mov  x0, #1
+    ldp  x29, x30, [sp], #16
+    ret
+
+// classify_token(x0=start, x1=end) -> x0: 0 invalid,1 literal(x1=value),2 operator(x1=char)
+classify_token:
+    sub  x10, x1, x0
+    cbz  x10, ctk_invalid
+    cmp  x10, #1
+    b.ne ctk_multi
+    ldrb w11, [x0]
+    cmp  w11, #0x2B
+    b.eq ctk_op
+    cmp  w11, #0x2D
+    b.eq ctk_op
+    cmp  w11, #0x2A
+    b.eq ctk_op
+    cmp  w11, #0x2F
+    b.eq ctk_op
+    cmp  w11, #0x25
+    b.eq ctk_op
+    cmp  w11, #0x30
+    b.lt ctk_invalid
+    cmp  w11, #0x39
+    b.gt ctk_invalid
+    sub  x1, x11, #0x30
+    mov  x0, #1
+    ret
+ctk_op:
+    mov  x1, x11
+    mov  x0, #2
+    ret
+ctk_multi:
+    ldrb w11, [x0]
+    cmp  w11, #0x2D
+    b.eq ctk_neg
+    mov  x12, #0
+    mov  x13, x0
+    mov  x14, x10
+    b    ctk_count_check
+ctk_neg:
+    mov  x12, #1
+    add  x13, x0, #1
+    sub  x14, x10, #1
+ctk_count_check:
+    cmp  x14, #1
+    b.lt ctk_invalid
+    cmp  x14, #18
+    b.gt ctk_invalid
+    mov  x15, #0
+    mov  x16, x13
+    mov  x17, x14
+ctk_parse_loop:
+    cbz  x17, ctk_parse_done
+    ldrb w11, [x16], #1
+    cmp  w11, #0x30
+    b.lt ctk_invalid
+    cmp  w11, #0x39
+    b.gt ctk_invalid
+    sub  x11, x11, #0x30
+    mov  x10, #10
+    mul  x15, x15, x10
+    add  x15, x15, x11
+    sub  x17, x17, #1
+    b    ctk_parse_loop
+ctk_parse_done:
+    cbz  x12, ctk_pos
+    neg  x15, x15
+ctk_pos:
+    mov  x1, x15
+    mov  x0, #1
+    ret
+ctk_invalid:
+    mov  x0, #0
+    ret
+
+// append_decimal(x0=value): append decimal + newline at [x21], advance x21
+append_decimal:
+    cmp  x0, #0
+    b.ge ad_nonneg
+    mov  w10, #0x2D
+    strb w10, [x21], #1
+    neg  x0, x0
+    b    ad_conv
+ad_nonneg:
+ad_conv:
+    sub  sp, sp, #32
+    mov  x16, #0
+ad_loop:
+    cbz  x0, ad_write_digits
+    mov  x13, #10
+    udiv x14, x0, x13
+    msub x15, x14, x13, x0
+    add  w15, w15, #0x30
+    strb w15, [sp, x16]
+    add  x16, x16, #1
+    mov  x0, x14
+    b    ad_loop
+ad_write_digits:
+    cbz  x16, ad_zero_case
+ad_write_loop:
+    sub  x16, x16, #1
+    ldrb w10, [sp, x16]
+    strb w10, [x21], #1
+    cbnz x16, ad_write_loop
+    b    ad_newline
+ad_zero_case:
+    mov  w10, #0x30
+    strb w10, [x21], #1
+ad_newline:
+    mov  w10, #0x0A
+    strb w10, [x21], #1
+    add  sp, sp, #32
+    ret
+
+// append_error(): append "error\n" at [x21], advance x21
+append_error:
+    adrp x11, error_str
+    add  x11, x11, :lo12:error_str
+    mov  x12, #0
+ae_loop:
+    cmp  x12, #6
+    b.ge ae_done
+    ldrb w10, [x11, x12]
+    strb w10, [x21], #1
+    add  x12, x12, #1
+    b    ae_loop
+ae_done:
+    ret
+
+.section .rodata
+error_str:
+    .ascii "error\n"
+
+.bss
+.align 3
+inbuf:
+    .space 65536
+.align 3
+outbuf:
+    .space 450000
+.align 3
+rpnstack:
+    .space 8192
+```

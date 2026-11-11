@@ -1,0 +1,643 @@
+```asm
+// json_lint: validate that stdin is exactly one JSON document (RFC 8259),
+// AArch64, no libc, bare syscalls only.
+
+.equ BUF_CAP, 65536
+
+.equ CH_LBRACE,    0x7B
+.equ CH_RBRACE,    0x7D
+.equ CH_LBRACKET,  0x5B
+.equ CH_RBRACKET,  0x5D
+.equ CH_QUOTE,     0x22
+.equ CH_COLON,     0x3A
+.equ CH_COMMA,     0x2C
+.equ CH_BACKSLASH, 0x5C
+.equ CH_MINUS,     0x2D
+.equ CH_PLUS,      0x2B
+.equ CH_DOT,       0x2E
+.equ CH_0,         0x30
+.equ CH_1,         0x31
+.equ CH_9,         0x39
+.equ CH_e,         0x65
+.equ CH_E,         0x45
+.equ CH_t,         0x74
+.equ CH_r,         0x72
+.equ CH_u,         0x75
+.equ CH_f,         0x66
+.equ CH_a,         0x61
+.equ CH_l,         0x6C
+.equ CH_s,         0x73
+.equ CH_n,         0x6E
+.equ CH_b,         0x62
+.equ CH_A,         0x41
+.equ CH_F,         0x46
+.equ CH_SLASH,     0x2F
+.equ CH_SPACE,     0x20
+.equ CH_TAB,       0x09
+.equ CH_LF,        0x0A
+.equ CH_CR,        0x0D
+
+.text
+.globl _start
+
+_start:
+    adrp x9, input_buf
+    add x9, x9, :lo12:input_buf
+    mov x10, #0
+read_loop:
+    mov x11, #BUF_CAP
+    sub x11, x11, x10
+    cmp x11, #0
+    b.le read_done
+    add x1, x9, x10
+    mov x0, #0
+    mov x2, x11
+    mov x8, #63
+    svc #0
+    cmp x0, #0
+    b.eq read_done
+    add x10, x10, x0
+    b read_loop
+read_done:
+    mov x0, #0
+    bl skip_ws
+    bl value
+    cbz x1, print_error
+    bl skip_ws
+    cmp x0, x10
+    b.eq print_ok
+    adrp x1, error_pos
+    add x1, x1, :lo12:error_pos
+    str x0, [x1]
+    b print_error
+
+print_ok:
+    adrp x1, str_ok
+    add x1, x1, :lo12:str_ok
+    mov x0, #1
+    mov x2, #3
+    mov x8, #64
+    svc #0
+    mov x0, #0
+    mov x8, #93
+    svc #0
+
+print_error:
+    adrp x1, error_pos
+    add x1, x1, :lo12:error_pos
+    ldr x4, [x1]
+    adrp x1, str_error_at
+    add x1, x1, :lo12:str_error_at
+    mov x0, #1
+    mov x2, #9
+    mov x8, #64
+    svc #0
+    sub sp, sp, #16
+    mov x5, x4
+    mov x6, #8
+dig_loop:
+    sub x6, x6, #1
+    mov x7, #10
+    udiv x3, x5, x7
+    msub x2, x3, x7, x5
+    add w2, w2, #CH_0
+    strb w2, [sp, x6]
+    mov x5, x3
+    cmp x5, #0
+    b.ne dig_loop
+    add x1, sp, x6
+    mov x2, #8
+    sub x2, x2, x6
+    mov x0, #1
+    mov x8, #64
+    svc #0
+    add sp, sp, #16
+    adrp x1, str_newline
+    add x1, x1, :lo12:str_newline
+    mov x0, #1
+    mov x2, #1
+    mov x8, #64
+    svc #0
+    mov x0, #1
+    mov x8, #93
+    svc #0
+
+// ---- skip_ws(p) -> p2   (leaf) ----
+skip_ws:
+skip_ws_loop:
+    cmp x0, x10
+    b.ge skip_ws_done
+    ldrb w1, [x9, x0]
+    cmp w1, #CH_SPACE
+    b.eq skip_ws_adv
+    cmp w1, #CH_TAB
+    b.eq skip_ws_adv
+    cmp w1, #CH_LF
+    b.eq skip_ws_adv
+    cmp w1, #CH_CR
+    b.eq skip_ws_adv
+    b skip_ws_done
+skip_ws_adv:
+    add x0, x0, #1
+    b skip_ws_loop
+skip_ws_done:
+    ret
+
+// ---- value(p) -> (p2, ok) ----
+value:
+    stp x29, x30, [sp, #-16]!
+    cmp x0, x10
+    b.ge value_fail
+    ldrb w2, [x9, x0]
+    cmp w2, #CH_LBRACE
+    b.eq v_do_object
+    cmp w2, #CH_LBRACKET
+    b.eq v_do_array
+    cmp w2, #CH_QUOTE
+    b.eq v_do_string
+    cmp w2, #CH_t
+    b.eq v_do_true
+    cmp w2, #CH_f
+    b.eq v_do_false
+    cmp w2, #CH_n
+    b.eq v_do_null
+    cmp w2, #CH_MINUS
+    b.eq v_do_number
+    cmp w2, #CH_0
+    b.lt value_fail
+    cmp w2, #CH_9
+    b.gt value_fail
+    b v_do_number
+v_do_object:
+    bl object
+    b value_done
+v_do_array:
+    bl array
+    b value_done
+v_do_string:
+    bl pstring
+    b value_done
+v_do_true:
+    bl ptrue
+    b value_done
+v_do_false:
+    bl pfalse
+    b value_done
+v_do_null:
+    bl pnull
+    b value_done
+v_do_number:
+    bl pnumber
+    b value_done
+value_done:
+    ldp x29, x30, [sp], #16
+    ret
+value_fail:
+    adrp x8, error_pos
+    str x0, [x8, :lo12:error_pos]
+    mov x1, #0
+    ldp x29, x30, [sp], #16
+    ret
+
+// ---- object(p) -> (p2, ok)  assumes buf[p] == '{' ----
+object:
+    stp x29, x30, [sp, #-32]!
+    str x19, [sp, #16]
+    add x19, x0, #1
+    mov x0, x19
+    bl skip_ws
+    mov x19, x0
+    cmp x19, x10
+    b.ge obj_fail
+    ldrb w2, [x9, x19]
+    cmp w2, #CH_RBRACE
+    b.ne obj_members
+    add x19, x19, #1
+    b obj_success
+obj_members:
+obj_member_loop:
+    mov x0, x19
+    bl member
+    cbz x1, obj_propagate
+    mov x19, x0
+    mov x0, x19
+    bl skip_ws
+    mov x19, x0
+    cmp x19, x10
+    b.ge obj_fail
+    ldrb w2, [x9, x19]
+    cmp w2, #CH_RBRACE
+    b.eq obj_close
+    cmp w2, #CH_COMMA
+    b.ne obj_fail
+    add x19, x19, #1
+    mov x0, x19
+    bl skip_ws
+    mov x19, x0
+    b obj_member_loop
+obj_close:
+    add x19, x19, #1
+obj_success:
+    mov x0, x19
+    mov x1, #1
+    b obj_done
+obj_fail:
+    mov x0, x19
+    adrp x8, error_pos
+    str x0, [x8, :lo12:error_pos]
+    mov x1, #0
+    b obj_done
+obj_propagate:
+obj_done:
+    ldr x19, [sp, #16]
+    ldp x29, x30, [sp], #32
+    ret
+
+// ---- array(p) -> (p2, ok)  assumes buf[p] == '[' ----
+array:
+    stp x29, x30, [sp, #-32]!
+    str x19, [sp, #16]
+    add x19, x0, #1
+    mov x0, x19
+    bl skip_ws
+    mov x19, x0
+    cmp x19, x10
+    b.ge arr_fail
+    ldrb w2, [x9, x19]
+    cmp w2, #CH_RBRACKET
+    b.ne arr_values
+    add x19, x19, #1
+    b arr_success
+arr_values:
+arr_value_loop:
+    mov x0, x19
+    bl value
+    cbz x1, arr_propagate
+    mov x19, x0
+    mov x0, x19
+    bl skip_ws
+    mov x19, x0
+    cmp x19, x10
+    b.ge arr_fail
+    ldrb w2, [x9, x19]
+    cmp w2, #CH_RBRACKET
+    b.eq arr_close
+    cmp w2, #CH_COMMA
+    b.ne arr_fail
+    add x19, x19, #1
+    mov x0, x19
+    bl skip_ws
+    mov x19, x0
+    b arr_value_loop
+arr_close:
+    add x19, x19, #1
+arr_success:
+    mov x0, x19
+    mov x1, #1
+    b arr_done
+arr_fail:
+    mov x0, x19
+    adrp x8, error_pos
+    str x0, [x8, :lo12:error_pos]
+    mov x1, #0
+    b arr_done
+arr_propagate:
+arr_done:
+    ldr x19, [sp, #16]
+    ldp x29, x30, [sp], #32
+    ret
+
+// ---- member(p) -> (p2, ok)   string ws ':' ws value ----
+member:
+    stp x29, x30, [sp, #-16]!
+    bl pstring
+    cbz x1, member_done
+    bl skip_ws
+    cmp x0, x10
+    b.ge member_fail
+    ldrb w2, [x9, x0]
+    cmp w2, #CH_COLON
+    b.ne member_fail
+    add x0, x0, #1
+    bl skip_ws
+    bl value
+    b member_done
+member_fail:
+    adrp x8, error_pos
+    str x0, [x8, :lo12:error_pos]
+    mov x1, #0
+member_done:
+    ldp x29, x30, [sp], #16
+    ret
+
+// ---- pstring(p) -> (p2, ok)   (leaf) ----
+pstring:
+    mov x3, x0
+    cmp x3, x10
+    b.ge ps_fail
+    ldrb w1, [x9, x3]
+    cmp w1, #CH_QUOTE
+    b.ne ps_fail
+    add x3, x3, #1
+ps_loop:
+    cmp x3, x10
+    b.ge ps_fail
+    ldrb w1, [x9, x3]
+    cmp w1, #CH_QUOTE
+    b.eq ps_close
+    cmp w1, #CH_BACKSLASH
+    b.eq ps_escape
+    cmp w1, #CH_SPACE
+    b.lt ps_fail
+    add x3, x3, #1
+    b ps_loop
+ps_escape:
+    add x3, x3, #1
+    cmp x3, x10
+    b.ge ps_fail
+    ldrb w1, [x9, x3]
+    cmp w1, #CH_QUOTE
+    b.eq ps_esc_ok
+    cmp w1, #CH_BACKSLASH
+    b.eq ps_esc_ok
+    cmp w1, #CH_SLASH
+    b.eq ps_esc_ok
+    cmp w1, #CH_b
+    b.eq ps_esc_ok
+    cmp w1, #CH_f
+    b.eq ps_esc_ok
+    cmp w1, #CH_n
+    b.eq ps_esc_ok
+    cmp w1, #CH_r
+    b.eq ps_esc_ok
+    cmp w1, #CH_t
+    b.eq ps_esc_ok
+    cmp w1, #CH_u
+    b.eq ps_esc_u
+    b ps_fail
+ps_esc_ok:
+    add x3, x3, #1
+    b ps_loop
+ps_esc_u:
+    add x3, x3, #1
+    mov x4, #0
+ps_hex_loop:
+    cmp x4, #4
+    b.ge ps_loop
+    cmp x3, x10
+    b.ge ps_fail
+    ldrb w1, [x9, x3]
+    cmp w1, #CH_0
+    b.lt ps_fail
+    cmp w1, #CH_9
+    b.le ps_hex_next
+    cmp w1, #CH_A
+    b.lt ps_fail
+    cmp w1, #CH_F
+    b.le ps_hex_next
+    cmp w1, #CH_a
+    b.lt ps_fail
+    cmp w1, #CH_f
+    b.gt ps_fail
+ps_hex_next:
+    add x3, x3, #1
+    add x4, x4, #1
+    b ps_hex_loop
+ps_close:
+    add x3, x3, #1
+    mov x0, x3
+    mov x1, #1
+    ret
+ps_fail:
+    mov x0, x3
+    adrp x8, error_pos
+    str x0, [x8, :lo12:error_pos]
+    mov x1, #0
+    ret
+
+// ---- pnumber(p) -> (p2, ok)   (leaf) ----
+pnumber:
+    mov x3, x0
+    cmp x3, x10
+    b.ge num_fail
+    ldrb w1, [x9, x3]
+    cmp w1, #CH_MINUS
+    b.ne num_int
+    add x3, x3, #1
+num_int:
+    cmp x3, x10
+    b.ge num_fail
+    ldrb w1, [x9, x3]
+    cmp w1, #CH_0
+    b.ne num_int_nonzero
+    add x3, x3, #1
+    b num_frac_check
+num_int_nonzero:
+    cmp w1, #CH_1
+    b.lt num_fail
+    cmp w1, #CH_9
+    b.gt num_fail
+    add x3, x3, #1
+num_int_digits:
+    cmp x3, x10
+    b.ge num_frac_check
+    ldrb w1, [x9, x3]
+    cmp w1, #CH_0
+    b.lt num_frac_check
+    cmp w1, #CH_9
+    b.gt num_frac_check
+    add x3, x3, #1
+    b num_int_digits
+num_frac_check:
+    cmp x3, x10
+    b.ge num_exp_check
+    ldrb w1, [x9, x3]
+    cmp w1, #CH_DOT
+    b.ne num_exp_check
+    add x3, x3, #1
+    cmp x3, x10
+    b.ge num_fail
+    ldrb w1, [x9, x3]
+    cmp w1, #CH_0
+    b.lt num_fail
+    cmp w1, #CH_9
+    b.gt num_fail
+    add x3, x3, #1
+num_frac_digits:
+    cmp x3, x10
+    b.ge num_exp_check
+    ldrb w1, [x9, x3]
+    cmp w1, #CH_0
+    b.lt num_exp_check
+    cmp w1, #CH_9
+    b.gt num_exp_check
+    add x3, x3, #1
+    b num_frac_digits
+num_exp_check:
+    cmp x3, x10
+    b.ge num_success
+    ldrb w1, [x9, x3]
+    cmp w1, #CH_e
+    b.eq num_exp_start
+    cmp w1, #CH_E
+    b.eq num_exp_start
+    b num_success
+num_exp_start:
+    add x3, x3, #1
+    cmp x3, x10
+    b.ge num_fail
+    ldrb w1, [x9, x3]
+    cmp w1, #CH_PLUS
+    b.eq num_exp_sign
+    cmp w1, #CH_MINUS
+    b.eq num_exp_sign
+    b num_exp_digit_req
+num_exp_sign:
+    add x3, x3, #1
+num_exp_digit_req:
+    cmp x3, x10
+    b.ge num_fail
+    ldrb w1, [x9, x3]
+    cmp w1, #CH_0
+    b.lt num_fail
+    cmp w1, #CH_9
+    b.gt num_fail
+    add x3, x3, #1
+num_exp_digits:
+    cmp x3, x10
+    b.ge num_success
+    ldrb w1, [x9, x3]
+    cmp w1, #CH_0
+    b.lt num_success
+    cmp w1, #CH_9
+    b.gt num_success
+    add x3, x3, #1
+    b num_exp_digits
+num_success:
+    mov x0, x3
+    mov x1, #1
+    ret
+num_fail:
+    mov x0, x3
+    adrp x8, error_pos
+    str x0, [x8, :lo12:error_pos]
+    mov x1, #0
+    ret
+
+// ---- ptrue(p) -> (p2, ok)  assumes buf[p]=='t'  (leaf) ----
+ptrue:
+    mov x3, x0
+    add x3, x3, #1
+    cmp x3, x10
+    b.ge pt_fail
+    ldrb w1, [x9, x3]
+    cmp w1, #CH_r
+    b.ne pt_fail
+    add x3, x3, #1
+    cmp x3, x10
+    b.ge pt_fail
+    ldrb w1, [x9, x3]
+    cmp w1, #CH_u
+    b.ne pt_fail
+    add x3, x3, #1
+    cmp x3, x10
+    b.ge pt_fail
+    ldrb w1, [x9, x3]
+    cmp w1, #CH_e
+    b.ne pt_fail
+    add x3, x3, #1
+    mov x0, x3
+    mov x1, #1
+    ret
+pt_fail:
+    mov x0, x3
+    adrp x8, error_pos
+    str x0, [x8, :lo12:error_pos]
+    mov x1, #0
+    ret
+
+// ---- pfalse(p) -> (p2, ok)  assumes buf[p]=='f'  (leaf) ----
+pfalse:
+    mov x3, x0
+    add x3, x3, #1
+    cmp x3, x10
+    b.ge pf_fail
+    ldrb w1, [x9, x3]
+    cmp w1, #CH_a
+    b.ne pf_fail
+    add x3, x3, #1
+    cmp x3, x10
+    b.ge pf_fail
+    ldrb w1, [x9, x3]
+    cmp w1, #CH_l
+    b.ne pf_fail
+    add x3, x3, #1
+    cmp x3, x10
+    b.ge pf_fail
+    ldrb w1, [x9, x3]
+    cmp w1, #CH_s
+    b.ne pf_fail
+    add x3, x3, #1
+    cmp x3, x10
+    b.ge pf_fail
+    ldrb w1, [x9, x3]
+    cmp w1, #CH_e
+    b.ne pf_fail
+    add x3, x3, #1
+    mov x0, x3
+    mov x1, #1
+    ret
+pf_fail:
+    mov x0, x3
+    adrp x8, error_pos
+    str x0, [x8, :lo12:error_pos]
+    mov x1, #0
+    ret
+
+// ---- pnull(p) -> (p2, ok)  assumes buf[p]=='n'  (leaf) ----
+pnull:
+    mov x3, x0
+    add x3, x3, #1
+    cmp x3, x10
+    b.ge pn_fail
+    ldrb w1, [x9, x3]
+    cmp w1, #CH_u
+    b.ne pn_fail
+    add x3, x3, #1
+    cmp x3, x10
+    b.ge pn_fail
+    ldrb w1, [x9, x3]
+    cmp w1, #CH_l
+    b.ne pn_fail
+    add x3, x3, #1
+    cmp x3, x10
+    b.ge pn_fail
+    ldrb w1, [x9, x3]
+    cmp w1, #CH_l
+    b.ne pn_fail
+    add x3, x3, #1
+    mov x0, x3
+    mov x1, #1
+    ret
+pn_fail:
+    mov x0, x3
+    adrp x8, error_pos
+    str x0, [x8, :lo12:error_pos]
+    mov x1, #0
+    ret
+
+.section .rodata
+str_ok:
+    .ascii "ok\n"
+str_error_at:
+    .ascii "error at "
+str_newline:
+    .ascii "\n"
+
+.bss
+.align 3
+error_pos:
+    .zero 8
+input_buf:
+    .zero 65536
+```

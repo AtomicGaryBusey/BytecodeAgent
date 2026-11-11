@@ -1,0 +1,541 @@
+```
+.section .rodata
+lit_true:
+    .ascii "true"
+lit_false:
+    .ascii "false"
+lit_null:
+    .ascii "null"
+msg_ok:
+    .ascii "ok\n"
+msg_err:
+    .ascii "error at "
+msg_err_len = . - msg_err
+msg_nl:
+    .ascii "\n"
+
+.text
+.globl _start
+
+_start:
+    xor r12, r12
+read_loop:
+    mov rdx, 65536
+    sub rdx, r12
+    cmp rdx, 0
+    jle read_done
+    mov rax, 0
+    mov rdi, 0
+    lea rsi, [rip + buf]
+    add rsi, r12
+    syscall
+    cmp rax, 0
+    jle read_done
+    add r12, rax
+    jmp read_loop
+read_done:
+    mov qword ptr [rip + buf_len], r12
+    mov qword ptr [rip + pos], 0
+
+    call ws
+    call parse_value
+    test al, al
+    jz fail_out
+
+    call ws
+    mov rbx, qword ptr [rip + pos]
+    mov rcx, qword ptr [rip + buf_len]
+    cmp rbx, rcx
+    jne fail_out
+
+    mov rax, 1
+    mov rdi, 1
+    lea rsi, [rip + msg_ok]
+    mov rdx, 3
+    syscall
+    mov rdi, 0
+    mov rax, 60
+    syscall
+
+fail_out:
+    mov rax, 1
+    mov rdi, 1
+    lea rsi, [rip + msg_err]
+    mov rdx, msg_err_len
+    syscall
+
+    mov rbx, qword ptr [rip + pos]
+    lea rdi, [rip + numbuf + 31]
+    mov rcx, 0
+    test rbx, rbx
+    jnz conv_loop
+    mov byte ptr [rdi], '0'
+    dec rdi
+    inc rcx
+    jmp conv_done
+conv_loop:
+    test rbx, rbx
+    jz conv_done
+    mov rax, rbx
+    xor rdx, rdx
+    mov r8, 10
+    div r8
+    add dl, '0'
+    mov byte ptr [rdi], dl
+    dec rdi
+    mov rbx, rax
+    inc rcx
+    jmp conv_loop
+conv_done:
+    inc rdi
+    mov rsi, rdi
+    mov rdx, rcx
+    mov rdi, 1
+    mov rax, 1
+    syscall
+
+    mov rax, 1
+    mov rdi, 1
+    lea rsi, [rip + msg_nl]
+    mov rdx, 1
+    syscall
+
+    mov rdi, 1
+    mov rax, 60
+    syscall
+
+ws:
+    mov rbx, qword ptr [rip + pos]
+    mov rcx, qword ptr [rip + buf_len]
+ws_loop:
+    cmp rbx, rcx
+    jge ws_end
+    lea rdx, [rip + buf]
+    movzx eax, byte ptr [rdx + rbx]
+    cmp al, 0x20
+    je ws_adv
+    cmp al, 0x09
+    je ws_adv
+    cmp al, 0x0A
+    je ws_adv
+    cmp al, 0x0D
+    je ws_adv
+    jmp ws_end
+ws_adv:
+    inc rbx
+    jmp ws_loop
+ws_end:
+    mov qword ptr [rip + pos], rbx
+    ret
+
+parse_value:
+    mov rbx, qword ptr [rip + pos]
+    mov rcx, qword ptr [rip + buf_len]
+    cmp rbx, rcx
+    jge pv_fail
+    lea rdx, [rip + buf]
+    movzx eax, byte ptr [rdx + rbx]
+    cmp al, '{'
+    je pv_object
+    cmp al, '['
+    je pv_array
+    cmp al, '"'
+    je pv_string
+    cmp al, 't'
+    je pv_true
+    cmp al, 'f'
+    je pv_false
+    cmp al, 'n'
+    je pv_null
+    cmp al, '-'
+    je pv_number
+    cmp al, '0'
+    jb pv_fail
+    cmp al, '9'
+    ja pv_fail
+    jmp pv_number
+pv_object:
+    call parse_object
+    ret
+pv_array:
+    call parse_array
+    ret
+pv_string:
+    call parse_string
+    ret
+pv_true:
+    lea rsi, [rip + lit_true]
+    mov rdx, 4
+    call match_literal
+    ret
+pv_false:
+    lea rsi, [rip + lit_false]
+    mov rdx, 5
+    call match_literal
+    ret
+pv_null:
+    lea rsi, [rip + lit_null]
+    mov rdx, 4
+    call match_literal
+    ret
+pv_number:
+    call parse_number
+    ret
+pv_fail:
+    xor al, al
+    ret
+
+parse_object:
+    mov rbx, qword ptr [rip + pos]
+    inc rbx
+    mov qword ptr [rip + pos], rbx
+    call ws
+    mov rbx, qword ptr [rip + pos]
+    mov rcx, qword ptr [rip + buf_len]
+    cmp rbx, rcx
+    jge po_fail
+    lea rdx, [rip + buf]
+    movzx eax, byte ptr [rdx + rbx]
+    cmp al, '}'
+    jne po_member_loop
+    inc rbx
+    mov qword ptr [rip + pos], rbx
+    mov al, 1
+    ret
+po_member_loop:
+    call parse_member
+    test al, al
+    jz po_fail
+    call ws
+    mov rbx, qword ptr [rip + pos]
+    mov rcx, qword ptr [rip + buf_len]
+    cmp rbx, rcx
+    jge po_fail
+    lea rdx, [rip + buf]
+    movzx eax, byte ptr [rdx + rbx]
+    cmp al, ','
+    je po_comma
+    cmp al, '}'
+    je po_close
+    jmp po_fail
+po_comma:
+    inc rbx
+    mov qword ptr [rip + pos], rbx
+    call ws
+    jmp po_member_loop
+po_close:
+    inc rbx
+    mov qword ptr [rip + pos], rbx
+    mov al, 1
+    ret
+po_fail:
+    xor al, al
+    ret
+
+parse_member:
+    call parse_string
+    test al, al
+    jz pm_fail
+    call ws
+    mov rbx, qword ptr [rip + pos]
+    mov rcx, qword ptr [rip + buf_len]
+    cmp rbx, rcx
+    jge pm_fail
+    lea rdx, [rip + buf]
+    movzx eax, byte ptr [rdx + rbx]
+    cmp al, ':'
+    jne pm_fail
+    inc rbx
+    mov qword ptr [rip + pos], rbx
+    call ws
+    call parse_value
+    ret
+pm_fail:
+    xor al, al
+    ret
+
+parse_array:
+    mov rbx, qword ptr [rip + pos]
+    inc rbx
+    mov qword ptr [rip + pos], rbx
+    call ws
+    mov rbx, qword ptr [rip + pos]
+    mov rcx, qword ptr [rip + buf_len]
+    cmp rbx, rcx
+    jge pa_fail
+    lea rdx, [rip + buf]
+    movzx eax, byte ptr [rdx + rbx]
+    cmp al, ']'
+    jne pa_item_loop
+    inc rbx
+    mov qword ptr [rip + pos], rbx
+    mov al, 1
+    ret
+pa_item_loop:
+    call parse_value
+    test al, al
+    jz pa_fail
+    call ws
+    mov rbx, qword ptr [rip + pos]
+    mov rcx, qword ptr [rip + buf_len]
+    cmp rbx, rcx
+    jge pa_fail
+    lea rdx, [rip + buf]
+    movzx eax, byte ptr [rdx + rbx]
+    cmp al, ','
+    je pa_comma
+    cmp al, ']'
+    je pa_close
+    jmp pa_fail
+pa_comma:
+    inc rbx
+    mov qword ptr [rip + pos], rbx
+    call ws
+    jmp pa_item_loop
+pa_close:
+    inc rbx
+    mov qword ptr [rip + pos], rbx
+    mov al, 1
+    ret
+pa_fail:
+    xor al, al
+    ret
+
+parse_string:
+    mov rbx, qword ptr [rip + pos]
+    mov rcx, qword ptr [rip + buf_len]
+    lea rdx, [rip + buf]
+    cmp rbx, rcx
+    jge ps_fail
+    movzx eax, byte ptr [rdx + rbx]
+    cmp al, '"'
+    jne ps_fail
+    inc rbx
+ps_loop:
+    cmp rbx, rcx
+    jge ps_fail_store
+    movzx eax, byte ptr [rdx + rbx]
+    cmp al, '"'
+    je ps_close
+    cmp al, '\\'
+    je ps_escape
+    cmp al, 0x20
+    jb ps_fail_store
+    inc rbx
+    jmp ps_loop
+ps_close:
+    inc rbx
+    mov qword ptr [rip + pos], rbx
+    mov al, 1
+    ret
+ps_escape:
+    inc rbx
+    cmp rbx, rcx
+    jge ps_fail_store
+    movzx eax, byte ptr [rdx + rbx]
+    cmp al, '"'
+    je ps_esc_simple
+    cmp al, '\\'
+    je ps_esc_simple
+    cmp al, '/'
+    je ps_esc_simple
+    cmp al, 'b'
+    je ps_esc_simple
+    cmp al, 'f'
+    je ps_esc_simple
+    cmp al, 'n'
+    je ps_esc_simple
+    cmp al, 'r'
+    je ps_esc_simple
+    cmp al, 't'
+    je ps_esc_simple
+    cmp al, 'u'
+    je ps_esc_u
+    jmp ps_fail_store
+ps_esc_simple:
+    inc rbx
+    jmp ps_loop
+ps_esc_u:
+    inc rbx
+    mov r8, 0
+ps_u_loop:
+    cmp r8, 4
+    jge ps_loop
+    cmp rbx, rcx
+    jge ps_fail_store
+    movzx eax, byte ptr [rdx + rbx]
+    cmp al, '0'
+    jb ps_fail_store
+    cmp al, '9'
+    jbe ps_hex_ok
+    cmp al, 'A'
+    jb ps_fail_store
+    cmp al, 'F'
+    jbe ps_hex_ok
+    cmp al, 'a'
+    jb ps_fail_store
+    cmp al, 'f'
+    ja ps_fail_store
+ps_hex_ok:
+    inc rbx
+    inc r8
+    jmp ps_u_loop
+ps_fail_store:
+    mov qword ptr [rip + pos], rbx
+ps_fail:
+    xor al, al
+    ret
+
+parse_number:
+    mov rbx, qword ptr [rip + pos]
+    mov rcx, qword ptr [rip + buf_len]
+    lea rdx, [rip + buf]
+    cmp rbx, rcx
+    jge pn_fail
+    movzx eax, byte ptr [rdx + rbx]
+    cmp al, '-'
+    jne pn_int
+    inc rbx
+pn_int:
+    cmp rbx, rcx
+    jge pn_fail_store
+    movzx eax, byte ptr [rdx + rbx]
+    cmp al, '0'
+    je pn_zero
+    cmp al, '1'
+    jb pn_fail_store
+    cmp al, '9'
+    ja pn_fail_store
+    inc rbx
+    jmp pn_int_loop
+pn_zero:
+    inc rbx
+    jmp pn_frac
+pn_int_loop:
+    cmp rbx, rcx
+    jge pn_frac
+    movzx eax, byte ptr [rdx + rbx]
+    cmp al, '0'
+    jb pn_frac
+    cmp al, '9'
+    ja pn_frac
+    inc rbx
+    jmp pn_int_loop
+pn_frac:
+    cmp rbx, rcx
+    jge pn_exp
+    movzx eax, byte ptr [rdx + rbx]
+    cmp al, '.'
+    jne pn_exp
+    inc rbx
+    cmp rbx, rcx
+    jge pn_fail_store
+    movzx eax, byte ptr [rdx + rbx]
+    cmp al, '0'
+    jb pn_fail_store
+    cmp al, '9'
+    ja pn_fail_store
+    inc rbx
+pn_frac_loop:
+    cmp rbx, rcx
+    jge pn_exp
+    movzx eax, byte ptr [rdx + rbx]
+    cmp al, '0'
+    jb pn_exp
+    cmp al, '9'
+    ja pn_exp
+    inc rbx
+    jmp pn_frac_loop
+pn_exp:
+    cmp rbx, rcx
+    jge pn_success
+    movzx eax, byte ptr [rdx + rbx]
+    cmp al, 'e'
+    je pn_exp_go
+    cmp al, 'E'
+    je pn_exp_go
+    jmp pn_success
+pn_exp_go:
+    inc rbx
+    cmp rbx, rcx
+    jge pn_fail_store
+    movzx eax, byte ptr [rdx + rbx]
+    cmp al, '+'
+    je pn_exp_sign
+    cmp al, '-'
+    je pn_exp_sign
+    jmp pn_exp_digit
+pn_exp_sign:
+    inc rbx
+pn_exp_digit:
+    cmp rbx, rcx
+    jge pn_fail_store
+    movzx eax, byte ptr [rdx + rbx]
+    cmp al, '0'
+    jb pn_fail_store
+    cmp al, '9'
+    ja pn_fail_store
+    inc rbx
+pn_exp_loop:
+    cmp rbx, rcx
+    jge pn_success
+    movzx eax, byte ptr [rdx + rbx]
+    cmp al, '0'
+    jb pn_success
+    cmp al, '9'
+    ja pn_success
+    inc rbx
+    jmp pn_exp_loop
+pn_success:
+    mov qword ptr [rip + pos], rbx
+    mov al, 1
+    ret
+pn_fail_store:
+    mov qword ptr [rip + pos], rbx
+pn_fail:
+    xor al, al
+    ret
+
+match_literal:
+    mov rbx, qword ptr [rip + pos]
+    mov rcx, qword ptr [rip + buf_len]
+    lea r10, [rip + buf]
+    xor r8, r8
+ml_loop:
+    cmp r8, rdx
+    jge ml_success
+    mov r9, rbx
+    add r9, r8
+    cmp r9, rcx
+    jge ml_fail
+    movzx eax, byte ptr [r10 + r9]
+    movzx r11d, byte ptr [rsi + r8]
+    cmp al, r11b
+    jne ml_fail
+    inc r8
+    jmp ml_loop
+ml_success:
+    add rbx, rdx
+    mov qword ptr [rip + pos], rbx
+    mov al, 1
+    ret
+ml_fail:
+    add rbx, r8
+    mov qword ptr [rip + pos], rbx
+    xor al, al
+    ret
+
+.bss
+.align 8
+buf:
+    .zero 65536
+.align 8
+buf_len:
+    .zero 8
+.align 8
+pos:
+    .zero 8
+.align 8
+numbuf:
+    .zero 32
+```

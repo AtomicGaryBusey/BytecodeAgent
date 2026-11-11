@@ -1,0 +1,397 @@
+```assembly
+.globl _start
+
+.section .rodata
+error_msg:
+    .ascii "error\n"
+error_msg_len = 6
+
+int64_min_str:
+    .ascii "-9223372036854775808\n"
+
+.bss
+.align 16
+input_buffer: .space 65536
+rpn_stack: .space 8192
+output_buffer: .space 32
+
+.data
+rpn_stack_ptr: .quad 0
+
+.text
+_start:
+    xor r12, r12
+    
+read_loop:
+    mov rax, 0
+    mov rdi, 0
+    lea rsi, [rip + input_buffer]
+    add rsi, r12
+    mov rdx, 65536
+    sub rdx, r12
+    jle read_done
+    syscall
+    
+    test rax, rax
+    jle read_done
+    add r12, rax
+    cmp r12, 65536
+    jl read_loop
+    
+read_done:
+    xor r13, r13
+    
+process_lines_loop:
+    cmp r13, r12
+    jge exit_success
+    
+    mov r14, r13
+    
+find_line_end:
+    cmp r13, r12
+    jge process_current_line
+    lea rax, [rip + input_buffer]
+    movzx ecx, byte ptr [rax + r13]
+    cmp cl, 10
+    je process_current_line
+    inc r13
+    jmp find_line_end
+    
+process_current_line:
+    lea rax, [rip + rpn_stack]
+    mov [rip + rpn_stack_ptr], rax
+    
+    mov r15, r14
+    
+tokenize_loop:
+    cmp r15, r13
+    jge check_final_stack
+    
+    lea rax, [rip + input_buffer]
+    movzx ecx, byte ptr [rax + r15]
+    cmp cl, 32
+    je skip_char
+    cmp cl, 9
+    je skip_char
+    jmp parse_token
+    
+skip_char:
+    inc r15
+    jmp tokenize_loop
+    
+parse_token:
+    mov rbx, r15
+    
+find_token_end:
+    cmp r15, r13
+    jge token_found
+    lea rax, [rip + input_buffer]
+    movzx ecx, byte ptr [rax + r15]
+    cmp cl, 32
+    je token_found
+    cmp cl, 9
+    je token_found
+    inc r15
+    jmp find_token_end
+    
+token_found:
+    call parse_integer
+    jnc push_integer
+    
+    mov rax, r15
+    sub rax, rbx
+    cmp rax, 1
+    jne line_error
+    
+    lea rax, [rip + input_buffer]
+    movzx ecx, byte ptr [rax + rbx]
+    
+    cmp cl, '+'
+    je op_add
+    cmp cl, '-'
+    je op_sub
+    cmp cl, '*'
+    je op_mul
+    cmp cl, '/'
+    je op_div
+    cmp cl, '%'
+    je op_mod
+    jmp line_error
+    
+push_integer:
+    mov rcx, [rip + rpn_stack_ptr]
+    mov [rcx], rax
+    add rcx, 8
+    mov [rip + rpn_stack_ptr], rcx
+    jmp tokenize_loop
+    
+op_add:
+    call pop_two
+    jc line_error
+    add rax, rcx
+    call push_value
+    jmp tokenize_loop
+    
+op_sub:
+    call pop_two
+    jc line_error
+    sub rax, rcx
+    call push_value
+    jmp tokenize_loop
+    
+op_mul:
+    call pop_two
+    jc line_error
+    imul rax, rcx
+    call push_value
+    jmp tokenize_loop
+    
+op_div:
+    call pop_two
+    jc line_error
+    
+    test rcx, rcx
+    jz line_error
+    
+    cmp rax, 0x8000000000000000
+    jne div_ok
+    cmp rcx, -1
+    je line_error
+    
+div_ok:
+    cqo
+    idiv rcx
+    call push_value
+    jmp tokenize_loop
+    
+op_mod:
+    call pop_two
+    jc line_error
+    
+    test rcx, rcx
+    jz line_error
+    
+    cmp rax, 0x8000000000000000
+    jne mod_ok
+    cmp rcx, -1
+    je line_error
+    
+mod_ok:
+    cqo
+    idiv rcx
+    mov rax, rdx
+    call push_value
+    jmp tokenize_loop
+    
+check_final_stack:
+    lea rax, [rip + rpn_stack]
+    mov rcx, [rip + rpn_stack_ptr]
+    sub rcx, rax
+    cmp rcx, 8
+    jne line_error
+    
+    lea rax, [rip + rpn_stack]
+    mov rax, [rax]
+    call output_number
+    jmp next_line
+    
+line_error:
+    lea rsi, [rip + error_msg]
+    mov rdx, error_msg_len
+    mov rax, 1
+    mov rdi, 1
+    syscall
+    
+next_line:
+    cmp r13, r12
+    jge process_lines_loop
+    inc r13
+    jmp process_lines_loop
+    
+exit_success:
+    mov rax, 60
+    xor rdi, rdi
+    syscall
+
+parse_integer:
+    push rbx
+    push rcx
+    push rdx
+    push rsi
+    push rdi
+    
+    mov rsi, rbx
+    xor edi, edi
+    
+    lea rcx, [rip + input_buffer]
+    
+    cmp rsi, r15
+    jge parse_int_error
+    
+    movzx eax, byte ptr [rcx + rsi]
+    cmp al, '-'
+    jne check_digits
+    
+    inc edi
+    inc rsi
+    
+check_digits:
+    mov rax, r15
+    sub rax, rsi
+    jle parse_int_error
+    cmp rax, 18
+    jg parse_int_error
+    
+    xor rax, rax
+    
+parse_digit_loop:
+    cmp rsi, r15
+    jge parse_int_success
+    
+    movzx edx, byte ptr [rcx + rsi]
+    sub edx, '0'
+    cmp edx, 9
+    ja parse_int_error
+    
+    imul rax, 10
+    add rax, rdx
+    
+    inc rsi
+    jmp parse_digit_loop
+    
+parse_int_success:
+    test edi, edi
+    jz parse_int_done
+    neg rax
+    
+parse_int_done:
+    pop rdi
+    pop rsi
+    pop rdx
+    pop rcx
+    pop rbx
+    clc
+    ret
+    
+parse_int_error:
+    pop rdi
+    pop rsi
+    pop rdx
+    pop rcx
+    pop rbx
+    stc
+    ret
+
+pop_two:
+    push rdx
+    
+    lea rdx, [rip + rpn_stack]
+    mov rax, [rip + rpn_stack_ptr]
+    sub rax, rdx
+    cmp rax, 16
+    jl pop_two_error
+    
+    mov rax, [rip + rpn_stack_ptr]
+    sub rax, 8
+    mov rcx, [rax]
+    sub rax, 8
+    mov rdx, [rax]
+    mov [rip + rpn_stack_ptr], rax
+    
+    mov rax, rdx
+    
+    pop rdx
+    clc
+    ret
+    
+pop_two_error:
+    pop rdx
+    stc
+    ret
+
+push_value:
+    push rcx
+    
+    mov rcx, [rip + rpn_stack_ptr]
+    mov [rcx], rax
+    add rcx, 8
+    mov [rip + rpn_stack_ptr], rcx
+    
+    pop rcx
+    ret
+
+output_number:
+    push rbx
+    push rcx
+    push rdx
+    push rsi
+    push rdi
+    push r8
+    
+    mov rbx, rax
+    
+    lea rsi, [rip + output_buffer]
+    lea rdi, [rsi + 31]
+    
+    mov byte ptr [rdi], 10
+    dec rdi
+    
+    xor r8d, r8d
+    test rbx, rbx
+    jns convert_digits
+    
+    inc r8d
+    
+    cmp rbx, 0x8000000000000000
+    jne negate_value
+    
+    lea rsi, [rip + int64_min_str]
+    mov rdx, 21
+    mov rax, 1
+    mov rdi, 1
+    syscall
+    jmp output_done
+    
+negate_value:
+    neg rbx
+    
+convert_digits:
+    mov rcx, 10
+    
+digit_loop:
+    xor rdx, rdx
+    mov rax, rbx
+    div rcx
+    add dl, '0'
+    mov [rdi], dl
+    dec rdi
+    mov rbx, rax
+    test rbx, rbx
+    jnz digit_loop
+    
+    test r8d, r8d
+    jz write_output
+    mov byte ptr [rdi], '-'
+    dec rdi
+    
+write_output:
+    inc rdi
+    
+    lea rax, [rip + output_buffer]
+    add rax, 32
+    sub rax, rdi
+    mov rdx, rax
+    mov rsi, rdi
+    mov rax, 1
+    mov rdi, 1
+    syscall
+    
+output_done:
+    pop r8
+    pop rdi
+    pop rsi
+    pop rdx
+    pop rcx
+    pop rbx
+    ret
+```

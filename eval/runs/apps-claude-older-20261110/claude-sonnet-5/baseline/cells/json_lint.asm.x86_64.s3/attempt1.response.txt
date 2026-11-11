@@ -1,0 +1,539 @@
+```
+.section .bss
+.align 8
+buf:
+    .zero 65536
+len_var:
+    .zero 8
+cursor_var:
+    .zero 8
+maxpos_var:
+    .zero 8
+numbuf:
+    .zero 24
+
+.section .rodata
+msg_ok:
+    .ascii "ok\n"
+msg_ok_len = . - msg_ok
+msg_err_prefix:
+    .ascii "error at "
+msg_err_prefix_len = . - msg_err_prefix
+msg_newline:
+    .ascii "\n"
+
+.equ BUF_SIZE, 65536
+
+.text
+.globl _start
+
+_start:
+    xor r12, r12
+read_input_loop:
+    mov rdx, BUF_SIZE
+    sub rdx, r12
+    cmp rdx, 0
+    je after_read
+    mov rax, 0
+    mov rdi, 0
+    lea rsi, [rip + buf]
+    add rsi, r12
+    syscall
+    cmp rax, 0
+    je after_read
+    add r12, rax
+    jmp read_input_loop
+after_read:
+    mov [rip + len_var], r12
+    mov qword ptr [rip + cursor_var], 0
+    mov qword ptr [rip + maxpos_var], 0
+
+    call skip_ws
+    call parse_value
+    test eax, eax
+    jz do_fail
+    call skip_ws
+    mov rax, [rip + cursor_var]
+    cmp rax, [rip + len_var]
+    je do_ok
+    call note_fail
+    jmp do_fail
+
+do_ok:
+    lea rsi, [rip + msg_ok]
+    mov rdx, msg_ok_len
+    mov rdi, 1
+    mov rax, 1
+    syscall
+    mov rdi, 0
+    mov rax, 60
+    syscall
+
+do_fail:
+    lea rsi, [rip + msg_err_prefix]
+    mov rdx, msg_err_prefix_len
+    mov rdi, 1
+    mov rax, 1
+    syscall
+    call write_maxpos_decimal
+    lea rsi, [rip + msg_newline]
+    mov rdx, 1
+    mov rdi, 1
+    mov rax, 1
+    syscall
+    mov rdi, 1
+    mov rax, 60
+    syscall
+
+write_maxpos_decimal:
+    mov rax, [rip + maxpos_var]
+    lea rdi, [rip + numbuf + 23]
+    xor r8, r8
+    test rax, rax
+    jnz itoa_loop
+    mov byte ptr [rdi], '0'
+    mov r8, 1
+    jmp itoa_done
+itoa_loop:
+    test rax, rax
+    jz itoa_done
+    xor rdx, rdx
+    mov rcx, 10
+    div rcx
+    add dl, '0'
+    dec rdi
+    mov [rdi], dl
+    inc r8
+    jmp itoa_loop
+itoa_done:
+    mov rsi, rdi
+    mov rdx, r8
+    mov rdi, 1
+    mov rax, 1
+    syscall
+    ret
+
+peek_byte:
+    mov rcx, [rip + cursor_var]
+    cmp rcx, [rip + len_var]
+    jae peek_eof
+    lea rdi, [rip + buf]
+    movzx eax, byte ptr [rdi + rcx]
+    ret
+peek_eof:
+    mov eax, 256
+    ret
+
+advance:
+    mov rax, [rip + cursor_var]
+    inc rax
+    mov [rip + cursor_var], rax
+    ret
+
+note_fail:
+    mov rax, [rip + cursor_var]
+    mov rdx, [rip + maxpos_var]
+    cmp rax, rdx
+    jbe note_fail_done
+    mov [rip + maxpos_var], rax
+note_fail_done:
+    ret
+
+expect_byte:
+    push rdi
+    call peek_byte
+    pop rdi
+    movzx edx, dil
+    cmp eax, edx
+    jne expect_byte_fail
+    call advance
+    mov eax, 1
+    ret
+expect_byte_fail:
+    call note_fail
+    xor eax, eax
+    ret
+
+skip_ws:
+ws_loop:
+    call peek_byte
+    cmp eax, 0x20
+    je ws_adv
+    cmp eax, 0x09
+    je ws_adv
+    cmp eax, 0x0A
+    je ws_adv
+    cmp eax, 0x0D
+    je ws_adv
+    ret
+ws_adv:
+    call advance
+    jmp ws_loop
+
+parse_value:
+    call peek_byte
+    cmp eax, '{'
+    je pv_object
+    cmp eax, '['
+    je pv_array
+    cmp eax, '"'
+    je pv_string
+    cmp eax, '-'
+    je pv_number
+    cmp eax, '0'
+    jl pv_check_lit
+    cmp eax, '9'
+    jg pv_check_lit
+    jmp pv_number
+pv_check_lit:
+    cmp eax, 't'
+    je pv_true
+    cmp eax, 'f'
+    je pv_false
+    cmp eax, 'n'
+    je pv_null
+    call note_fail
+    xor eax, eax
+    ret
+pv_object:
+    call parse_object
+    ret
+pv_array:
+    call parse_array
+    ret
+pv_string:
+    call parse_string
+    ret
+pv_number:
+    call parse_number
+    ret
+pv_true:
+    call match_true
+    ret
+pv_false:
+    call match_false
+    ret
+pv_null:
+    call match_null
+    ret
+
+match_true:
+    mov dil, 't'
+    call expect_byte
+    test eax, eax
+    jz match_lit_fail
+    mov dil, 'r'
+    call expect_byte
+    test eax, eax
+    jz match_lit_fail
+    mov dil, 'u'
+    call expect_byte
+    test eax, eax
+    jz match_lit_fail
+    mov dil, 'e'
+    call expect_byte
+    ret
+match_lit_fail:
+    xor eax, eax
+    ret
+
+match_false:
+    mov dil, 'f'
+    call expect_byte
+    test eax, eax
+    jz match_lit_fail2
+    mov dil, 'a'
+    call expect_byte
+    test eax, eax
+    jz match_lit_fail2
+    mov dil, 'l'
+    call expect_byte
+    test eax, eax
+    jz match_lit_fail2
+    mov dil, 's'
+    call expect_byte
+    test eax, eax
+    jz match_lit_fail2
+    mov dil, 'e'
+    call expect_byte
+    ret
+match_lit_fail2:
+    xor eax, eax
+    ret
+
+match_null:
+    mov dil, 'n'
+    call expect_byte
+    test eax, eax
+    jz match_lit_fail3
+    mov dil, 'u'
+    call expect_byte
+    test eax, eax
+    jz match_lit_fail3
+    mov dil, 'l'
+    call expect_byte
+    test eax, eax
+    jz match_lit_fail3
+    mov dil, 'l'
+    call expect_byte
+    ret
+match_lit_fail3:
+    xor eax, eax
+    ret
+
+parse_object:
+    call advance
+    call skip_ws
+    call peek_byte
+    cmp eax, '}'
+    jne object_has_members
+    call advance
+    mov eax, 1
+    ret
+object_has_members:
+object_member_loop:
+    call parse_member
+    test eax, eax
+    jz object_done_fail
+    call skip_ws
+    call peek_byte
+    cmp eax, ','
+    jne object_expect_close
+    call advance
+    call skip_ws
+    jmp object_member_loop
+object_expect_close:
+    mov dil, '}'
+    call expect_byte
+    ret
+object_done_fail:
+    xor eax, eax
+    ret
+
+parse_member:
+    call peek_byte
+    cmp eax, '"'
+    je member_start
+    call note_fail
+    xor eax, eax
+    ret
+member_start:
+    call parse_string
+    test eax, eax
+    jz member_fail
+    call skip_ws
+    mov dil, ':'
+    call expect_byte
+    test eax, eax
+    jz member_fail
+    call skip_ws
+    call parse_value
+    ret
+member_fail:
+    xor eax, eax
+    ret
+
+parse_array:
+    call advance
+    call skip_ws
+    call peek_byte
+    cmp eax, ']'
+    jne array_has_items
+    call advance
+    mov eax, 1
+    ret
+array_has_items:
+array_item_loop:
+    call parse_value
+    test eax, eax
+    jz array_done_fail
+    call skip_ws
+    call peek_byte
+    cmp eax, ','
+    jne array_expect_close
+    call advance
+    call skip_ws
+    jmp array_item_loop
+array_expect_close:
+    mov dil, ']'
+    call expect_byte
+    ret
+array_done_fail:
+    xor eax, eax
+    ret
+
+parse_string:
+    call advance
+string_loop:
+    call peek_byte
+    cmp eax, '"'
+    je string_close
+    cmp eax, 256
+    je string_fail
+    cmp eax, 0x5C
+    je string_escape
+    cmp eax, 0x20
+    jl string_fail
+    call advance
+    jmp string_loop
+string_escape:
+    call advance
+    call peek_byte
+    cmp eax, '"'
+    je string_escape_simple
+    cmp eax, 0x5C
+    je string_escape_simple
+    cmp eax, '/'
+    je string_escape_simple
+    cmp eax, 'b'
+    je string_escape_simple
+    cmp eax, 'f'
+    je string_escape_simple
+    cmp eax, 'n'
+    je string_escape_simple
+    cmp eax, 'r'
+    je string_escape_simple
+    cmp eax, 't'
+    je string_escape_simple
+    cmp eax, 'u'
+    je string_escape_u
+    call note_fail
+    xor eax, eax
+    ret
+string_escape_simple:
+    call advance
+    jmp string_loop
+string_escape_u:
+    call advance
+    mov r10, 4
+string_u_loop:
+    call peek_byte
+    cmp eax, '0'
+    jl string_u_fail
+    cmp eax, '9'
+    jle string_u_ok
+    cmp eax, 'A'
+    jl string_u_fail
+    cmp eax, 'F'
+    jle string_u_ok
+    cmp eax, 'a'
+    jl string_u_fail
+    cmp eax, 'f'
+    jle string_u_ok
+    jmp string_u_fail
+string_u_ok:
+    call advance
+    dec r10
+    jnz string_u_loop
+    jmp string_loop
+string_u_fail:
+    call note_fail
+    xor eax, eax
+    ret
+string_fail:
+    call note_fail
+    xor eax, eax
+    ret
+string_close:
+    call advance
+    mov eax, 1
+    ret
+
+parse_number:
+    call peek_byte
+    cmp eax, '-'
+    jne num_no_sign
+    call advance
+num_no_sign:
+    call peek_byte
+    cmp eax, '0'
+    jne num_not_zero
+    call advance
+    jmp num_int_done
+num_not_zero:
+    cmp eax, '1'
+    jl num_int_fail
+    cmp eax, '9'
+    jg num_int_fail
+    call advance
+num_digit_loop:
+    call peek_byte
+    cmp eax, '0'
+    jl num_digit_loop_end
+    cmp eax, '9'
+    jg num_digit_loop_end
+    call advance
+    jmp num_digit_loop
+num_digit_loop_end:
+    jmp num_int_done
+num_int_fail:
+    call note_fail
+    xor eax, eax
+    ret
+num_int_done:
+    call peek_byte
+    cmp eax, '.'
+    jne num_no_frac
+    mov r9, [rip + cursor_var]
+    call advance
+    call peek_byte
+    cmp eax, '0'
+    jl num_frac_fail
+    cmp eax, '9'
+    jg num_frac_fail
+    call advance
+num_frac_digit_loop:
+    call peek_byte
+    cmp eax, '0'
+    jl num_frac_loop_end
+    cmp eax, '9'
+    jg num_frac_loop_end
+    call advance
+    jmp num_frac_digit_loop
+num_frac_loop_end:
+    jmp num_no_frac
+num_frac_fail:
+    call note_fail
+    mov [rip + cursor_var], r9
+num_no_frac:
+    call peek_byte
+    cmp eax, 'e'
+    je num_have_exp
+    cmp eax, 'E'
+    je num_have_exp
+    jmp num_exp_done
+num_have_exp:
+    mov r9, [rip + cursor_var]
+    call advance
+    call peek_byte
+    cmp eax, '+'
+    je num_exp_sign
+    cmp eax, '-'
+    je num_exp_sign
+    jmp num_exp_digits
+num_exp_sign:
+    call advance
+num_exp_digits:
+    call peek_byte
+    cmp eax, '0'
+    jl num_exp_fail
+    cmp eax, '9'
+    jg num_exp_fail
+    call advance
+num_exp_digit_loop:
+    call peek_byte
+    cmp eax, '0'
+    jl num_exp_loop_end
+    cmp eax, '9'
+    jg num_exp_loop_end
+    call advance
+    jmp num_exp_digit_loop
+num_exp_loop_end:
+    jmp num_exp_done
+num_exp_fail:
+    call note_fail
+    mov [rip + cursor_var], r9
+num_exp_done:
+    mov eax, 1
+    ret
+```
