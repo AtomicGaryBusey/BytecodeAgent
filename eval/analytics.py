@@ -789,6 +789,8 @@ GENERATIONS = [
     ("Anthropic Opus", ["claude-opus-4-8", "claude-opus-5-5"]),
     ("Anthropic Sonnet", ["claude-sonnet-4-5-20250929", "claude-sonnet-5", "claude-sonnet-5-5"]),
     ("Anthropic Haiku", ["claude-haiku-4-5-20251001", "claude-haiku-5-5"]),
+    ("Anthropic Fable", ["claude-fable-5-1", "claude-fable-5-2"]),
+    ("Anthropic Mythos", ["claude-mythos-5-1", "claude-mythos-5-2"]),
     ("xAI Grok", ["grok:grok-4.5", "grok:grok-4.6", "grok:grok-4.7"]),
     ("OpenAI (Codex CLI)", ["codex:gpt-5.5", "codex:gpt-6-luna", "codex:gpt-6-sol", "codex:gpt-6-astra"]),
     ("Moonshot Kimi", ["kimi:kimi-code/kimi-for-coding", "kimi:kimi-code/k3", "kimi:kimi-code/k3.1-pro"]),
@@ -1031,6 +1033,10 @@ HARNESS_FIXES = [
     ("apple-timeout", "2026-11-09", "Apple adapter: `fm serve` answers with `Connection: close`, so `http.client` "
      "dropped its socket reference and the time limit could not stop a stream (one PCC answer ran 11 minutes).",
      "The affected PCC attempt was voided and re-run (timed out at 180 s). No other verdict changed."),
+    ("claude-argv", "2026-11-10", "Claude adapter: the prompt went to `claude -p` as one argv string, which Linux "
+     "caps at 128 KiB; a hex-app repair prompt quoting Claude Mythos 5.1's 128 KB previous attempt (135 KB) failed "
+     "with E2BIG and stopped the run. A prompt over 100 KB now goes on stdin, byte for byte the same.",
+     "No verdict changed: the call never started, and the resumed cell ran from that attempt."),
 ]
 
 

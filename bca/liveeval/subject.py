@@ -40,6 +40,10 @@ CLAUDE_FLAGS = (
 
 EFFORTS = ("low", "medium", "high", "xhigh", "max")  # `claude --help`, --effort <level> (CLI 2.1.283)
 CLI_DEFAULT_EFFORT = "cli-default"  # recorded when --effort is not passed
+# Linux caps ONE argv string at MAX_ARG_STRLEN (32 pages = 131,072 bytes): a repair prompt quoting a
+# 128 KB previous attempt failed with E2BIG (2026-11-10, claude-mythos-5-1 rpn.hex.aarch64.s1).
+# A prompt above this size goes to `claude -p` on stdin instead; the text the model sees is the same.
+ARGV_PROMPT_MAX = 100_000
 
 # The child's environment is built from an allowlist, never passed through: a parent Claude Code
 # session exports CLAUDECODE, CLAUDE_CODE_* (session ids, entrypoint, messaging sockets) and
@@ -189,7 +193,13 @@ class ClaudeSubject(Subject):
             argv += ["--model", self.model]
         if self.effort:
             argv += ["--effort", self.effort]
+        if self.prompt_on_stdin(prompt):
+            return argv  # complete() writes the prompt to stdin
         return argv + ["--", prompt]
+
+    @staticmethod
+    def prompt_on_stdin(prompt: str) -> bool:
+        return len(prompt.encode()) > ARGV_PROMPT_MAX
 
     def env(self) -> dict[str, str]:
         return child_env()
@@ -219,10 +229,19 @@ class ClaudeSubject(Subject):
         workdir = tempfile.mkdtemp(prefix="subj-", dir="/tmp")  # neutral, empty, outside repo
         env = self.env()
         t0 = time.perf_counter()
+        on_stdin = self.prompt_on_stdin(prompt)
         proc = subprocess.Popen(
-            self.argv(prompt), cwd=workdir, stdin=subprocess.DEVNULL, stdout=subprocess.PIPE,
-            stderr=subprocess.PIPE, env=env, start_new_session=True,
+            self.argv(prompt), cwd=workdir, stdin=subprocess.PIPE if on_stdin else subprocess.DEVNULL,
+            stdout=subprocess.PIPE, stderr=subprocess.PIPE, env=env, start_new_session=True,
         )  # fmt: skip
+        if on_stdin:
+            def feed() -> None:  # a thread: the pipe buffer is smaller than the prompt
+                try:
+                    proc.stdin.write(prompt.encode())
+                    proc.stdin.close()
+                except (BrokenPipeError, OSError):
+                    pass
+            threading.Thread(target=feed, daemon=True).start()
         timer_fired = threading.Event()
 
         def kill() -> None:

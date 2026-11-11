@@ -16,7 +16,7 @@ open-weight models served locally) through the same tasks under the same rules.
 | **IR** (`bca.ir`) | A small portable language: QBE IL, freestanding C, or WebAssembly text | An existing compiler (QBE, clang/tcc, Cranelift via wasmtime) lowers it; the function's bytes are pulled out of the ELF object |
 | **Hex** (`bca.liveeval.hexpath`, opt-in `--paths hex`) | The machine code itself, as hex: AArch64 32-bit words or x86-64 instruction bytes, plus data bytes for whole programs | Nothing: the bytes run exactly as written (decoded only to check the instruction set and to explain failures). Astra: 15/16 round-1 functions and 15/16 app-battery programs on the first try, 16/16 within four |
 
-Raw machine code across 22 models (functions and whole programs, mistakes models make encoding by hand, and the
+Raw machine code across 25 models (functions and whole programs, mistakes models make encoding by hand, and the
 safety filters that block it): [`reports/live-model-eval-hex.md`](reports/live-model-eval-hex.md).
 Whether a plain, truthful statement of purpose in the prompt reduces those blocks (not reliably; they fire
 on the model's own output): [`reports/live-model-eval-declared.md`](reports/live-model-eval-declared.md).
@@ -49,7 +49,7 @@ ISAs, with up to four attempts and repair feedback.
   (Kimi Code), `agy:<model>` (Google Antigravity), `grok:<model>` (xAI Grok Build) and `copilot:<model>`
   (GitHub Copilot CLI through the Copilot SDK: Microsoft's MAI-Code, plus other vendors' models served by
   GitHub for harness comparisons), `foundry:<deployment>` (Azure Foundry pay-per-token, called through its
-  API directly, with a per-model spend cap), `fireworks:<model>` (Fireworks.ai serverless, the same way; written, no runs yet), and `local:<model>` (open-weight models served by Ollama on this
+  API directly, with a per-model spend cap), `fireworks:<model>` (Fireworks.ai serverless, the same way), `apple:<model>` (Apple Foundation Models through `fm serve` on the user's Mac), and `local:<model>` (open-weight models served by Ollama on this
   machine, called through its API directly).
 - **Fair comparison:** every subject runs with zero tools, the same system and task prompts, a private
   home per call, and a pinned CLI version; each call is verified against the CLI's own record of the
@@ -72,7 +72,10 @@ its plan quota is spent.
 | Model | Round 1 (48) | Round 2 (62) | Long (54) | Adversarial (60) | Pass@1 | Within 4 | Mean attempts |
 |---|---|---|---|---|---|---|---|
 | Codex GPT-6 Astra | 46 | 61 | 54 | 60 | **221/224 (99%)** | 224/224 (100%) | 1.01 |
+| Claude Mythos 5.2 | 47 | 61 | 53 | 59 | **220/224 (98%)** | 224/224 (100%) | 1.02 |
+| Claude Fable 5.2 | 47 | 62 | 50 | 60 | **219/224 (98%)** | 224/224 (100%) | 1.02 |
 | Kimi K3.1 Pro | 47 | 60 | 52 | 59 | **218/224 (97%)** | 223/224 (100%) | 1.04 |
+| Claude Mythos 5.1 | 47 | 59 | 54 | 57 | **217/224 (97%)** | 224/224 (100%) | 1.04 |
 | Claude Opus 5.5 | 45 | 60 | 53 | 57 | **215/224 (96%)** | 224/224 (100%) | 1.04 |
 | Codex GPT-6 Sol | 43 | 62 | 48 | 60 | **213/224 (95%)** | 224/224 (100%) | 1.05 |
 | Grok 4.7 build-fast | 47 | 60 | 49 | 57 | **213/224 (95%)** | 223/224 (100%) | 1.08 |
@@ -128,8 +131,10 @@ Antigravity run used), SuperGrok, GitHub Copilot Pro, Azure AI Foundry pay-as-yo
 Fireworks.ai prepaid credit for the `fireworks:` rows, and the user's Mac (on-device model; Private Cloud Compute on
 the iCloud+ daily quota) for the `apple:` rows (details in the methodology report). Full comparison, per-path results and the false-reject review:
 [`reports/live-model-eval-cross-vendor.md`](reports/live-model-eval-cross-vendor.md); per-run write-ups in
-[`reports/`](reports/). The top of the table is a statistical tie: on paired tests, seven models are level with
-Codex GPT-6 Astra (Kimi K3.1 Pro, Opus 5.5, GPT-6 Sol, Grok 4.7 build-fast, Fable 5.1, Grok 4.7, Grok 4.6). Confidence
+[`reports/`](reports/). The top of the table is a statistical tie: on paired tests, ten models are level with
+Codex GPT-6 Astra (Claude Mythos 5.2, Fable 5.2, Kimi K3.1 Pro, Mythos 5.1, Opus 5.5, GPT-6 Sol, Grok 4.7 build-fast,
+Fable 5.1, Grok 4.7, Grok 4.6). Claude Fable 5.2, Mythos 5.1 and Mythos 5.2 were added 2026-11-10 (all four
+batteries plus apps and hex; Claude Code 2.1.322, CLI default effort, the same CVP-enrolled account). Confidence
 intervals, repair rates, per-cell difficulty, ISA and path gaps, a shared error classification, prompt-variant effects, refusals, within-vendor generations, token efficiency, the quality of passing code and a harness and infrastructure audit: [`reports/live-model-eval-analytics.md`](reports/live-model-eval-analytics.md).
 To explore the cells yourself, open [`reports/dashboard.html`](reports/dashboard.html) in a browser (filters, a cell grid with each
 cell's attempt history, head-to-head tests; built by `eval/dashboard.py`).
@@ -144,12 +149,15 @@ interpreter and a JSON validator, asm and stream paths, both ISAs, 3 samples, up
 |---|---|---|---|
 | Grok 4.6 | **95/96 (99%)** | 96/96 (100%) | 1.01 |
 | Codex GPT-6 Astra | **94/96 (98%)** | 96/96 (100%) | 1.02 |
+| Claude Mythos 5.1 | **90/96 (94%)** | 96/96 (100%) | 1.06 |
 | Claude Opus 5.5 | **89/96 (93%)** | 96/96 (100%) | 1.07 |
 | Grok 4.7 | **89/96 (93%)** | 96/96 (100%) | 1.08 |
 | Grok 4.7 build-fast | **89/96 (93%)** | 96/96 (100%) | 1.08 |
 | Claude Haiku 5.5 | **88/96 (92%)** | 96/96 (100%) | 1.09 |
 | Claude Fable 5.1 | **84/96 (88%)** | 96/96 (100%) | 1.15 |
 | Claude Sonnet 5.5 | **84/96 (88%)** | 96/96 (100%) | 1.14 |
+| Claude Mythos 5.2 | **84/96 (88%)** | 96/96 (100%) | 1.12 |
+| Claude Fable 5.2 | **83/96 (86%)** | 96/96 (100%) | 1.15 |
 | Kimi K3 | **83/96 (86%)** | 96/96 (100%) | 1.15 |
 | Microsoft MAI-Code 1.1 Flash (Copilot) | **23/96 (24%)** | 64/96 (67%) | 2.61 |
 | Aleph Alpha Kolibri-1 FP8, token budget (local) | **3/96 (3%)** | 16/96 (17%) | 3.78 |

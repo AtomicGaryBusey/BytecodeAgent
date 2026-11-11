@@ -322,3 +322,32 @@ def test_claude_subject_timeout(tmp_path):
     subj = ClaudeSubject(binary=_fake_claude(tmp_path), timeout=1)
     r = subj.complete("a|b")
     assert r.timed_out and not r.ok and r.text == "ab"
+
+
+_ECHO_CLAUDE = r'''#!/usr/bin/env python3
+import json, sys
+args = sys.argv[1:]
+prompt = args[args.index("--") + 1] if "--" in args else sys.stdin.read()
+def out(m): print(json.dumps(m), flush=True)
+out({"type": "system", "subtype": "init", "model": "fake-opus"})
+out({"type": "stream_event", "event": {"type": "content_block_delta",
+     "delta": {"type": "text_delta", "text": "%d %s" % (len(prompt), "--" in args)}}})
+out({"type": "result", "subtype": "success", "is_error": False, "usage": {}, "result": ""})
+'''
+
+
+def test_claude_subject_sends_an_oversized_prompt_on_stdin(tmp_path):
+    """A repair prompt over Linux's 128 KiB single-argument cap (E2BIG on 2026-11-10) goes on stdin,
+    byte for byte; a normal prompt stays in argv."""
+    from bca.liveeval.subject import ARGV_PROMPT_MAX
+
+    exe = tmp_path / "claude"
+    exe.write_text(_ECHO_CLAUDE)
+    exe.chmod(0o755)
+    subj = ClaudeSubject(binary=str(exe), timeout=30)
+    big = "x" * 135_637
+    assert len(big) > 131_072 > ARGV_PROMPT_MAX
+    assert "--" not in subj.argv(big) and subj.argv("hi")[-2:] == ["--", "hi"]
+    r = subj.complete(big)
+    assert r.ok and r.text == f"{len(big)} False"
+    assert subj.complete("hi").text == "2 True"

@@ -8,7 +8,7 @@ import json
 NAMES = {
     "codex:gpt-6-astra": "Codex GPT-6 Astra", "codex:gpt-6-sol": "Codex GPT-6 Sol", "codex:gpt-5.5": "Codex GPT-5.5",
     "codex:gpt-daybreak-blue-latest": "Codex Daybreak Blue", "codex:gpt-6-luna": "Codex GPT-6 Luna",
-    "claude-opus-5-5": "Claude Opus 5.5", "claude-fable-5-1": "Claude Fable 5.1", "claude-sonnet-5-5": "Claude Sonnet 5.5",
+    "claude-opus-5-5": "Claude Opus 5.5", "claude-fable-5-1": "Claude Fable 5.1", "claude-fable-5-2": "Claude Fable 5.2", "claude-mythos-5-1": "Claude Mythos 5.1", "claude-mythos-5-2": "Claude Mythos 5.2", "claude-sonnet-5-5": "Claude Sonnet 5.5",
     "claude-haiku-4-5-20251001": "Claude Haiku 4.5", "claude-opus-4-8": "Claude Opus 4.8",
     "claude-sonnet-4-5-20250929": "Claude Sonnet 4.5", "claude-sonnet-5": "Claude Sonnet 5", "claude-haiku-5-5": "Claude Haiku 5.5", "copilot:mai-code-1.1-flash": "Microsoft MAI-Code 1.1 Flash (Copilot)",
     "copilot:claude-sonnet-5.5": "Claude Sonnet 5.5 via Copilot", "copilot:gpt-6-luna": "GPT-6 Luna via Copilot",

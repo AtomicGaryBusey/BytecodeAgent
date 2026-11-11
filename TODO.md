@@ -78,6 +78,14 @@ Approved by the user on 2026-10-22. After each: by-hand false-reject review, the
 - [x] Landscape update (`reports/landscape-2026-11.md`); licence (MIT; CC BY 4.0 for reports/ and eval/runs/);
   documentation review (2026-11-08).
 
+## Done (2026-11-10)
+
+- [x] **Claude Fable 5.2, Mythos 5.1, Mythos 5.2** (via `claude -p`, Claude Code 2.1.322, CLI-default effort):
+  functions 219 / 217 / 220 of 224 (all 224/224 within four), hex functions 16/16 each, apps 83 / 90 / 84 of 96
+  (all 96/96 within four), hex apps 16 / 7 / 15 of 16 (within four 16 / 15 / 16). 1,127 calls. Reviewed: no
+  false rejects, no refusals. Harness fix: a prompt over 100 KB goes to `claude -p` on stdin (E2BIG on a
+  135 KB repair prompt).
+
 ## Waiting
 
 - [ ] **Gemini 4 Argon High (Antigravity, Google AI Pro), function batteries**: stopped on quota at 122/224 cells
@@ -91,6 +99,10 @@ Approved by the user on 2026-10-22. After each: by-hand false-reject review, the
   README.md and `reports/live-model-eval-cross-vendor.md`, commit and push.
 
 ## Backlog
+
+- [ ] The non-Claude CLI adapters (codex, kimi, agy, grok, copilot) still pass the prompt in argv, so a repair
+  prompt over 128 KiB would fail with E2BIG as `claude -p` did on 2026-11-10. None has hit it; fix when one does
+  or when a battery makes it likely.
 
 **New subjects (deferred by the user)**
 

@@ -50,12 +50,15 @@ samples passed on its first attempt.
 |---|---|---|---|---|---|---|---|
 | Grok 4.6 | **95/96 (99%)** | 96/96 (100%) | 1.01 | 31/32 | 32/32 | 32/32 | 32/32 |
 | Codex GPT-6 Astra | **94/96 (98%)** | 96/96 (100%) | 1.02 | 32/32 | 32/32 | 30/32 | 32/32 |
+| Claude Mythos 5.1 | **90/96 (94%)** | 96/96 (100%) | 1.06 | 30/32 | 31/32 | 29/32 | 32/32 |
 | Claude Opus 5.5 | **89/96 (93%)** | 96/96 (100%) | 1.07 | 31/32 | 28/32 | 30/32 | 32/32 |
 | Grok 4.7 | **89/96 (93%)** | 96/96 (100%) | 1.08 | 31/32 | 29/32 | 29/32 | 32/32 |
 | Grok 4.7 build-fast | **89/96 (93%)** | 96/96 (100%) | 1.08 | 30/32 | 29/32 | 30/32 | 32/32 |
 | Claude Haiku 5.5 | **88/96 (92%)** | 96/96 (100%) | 1.09 | 28/32 | 29/32 | 31/32 | 32/32 |
 | Claude Fable 5.1 | **84/96 (88%)** | 96/96 (100%) | 1.15 | 26/32 | 27/32 | 31/32 | 31/32 |
 | Claude Sonnet 5.5 | **84/96 (88%)** | 96/96 (100%) | 1.14 | 29/32 | 28/32 | 27/32 | 32/32 |
+| Claude Mythos 5.2 | **84/96 (88%)** | 96/96 (100%) | 1.12 | 30/32 | 26/32 | 28/32 | 32/32 |
+| Claude Fable 5.2 | **83/96 (86%)** | 96/96 (100%) | 1.15 | 27/32 | 29/32 | 27/32 | 32/32 |
 | Kimi K3 | **83/96 (86%)** | 96/96 (100%) | 1.15 | 29/32 | 26/32 | 28/32 | 32/32 |
 | Microsoft MAI-Code 1.1 Flash (Copilot) | **23/96 (24%)** | 64/96 (67%) | 2.61 | 6/32 | 7/32 | 10/32 | 15/32 |
 | Aleph Alpha Kolibri-1 FP8, token budget (local) | **3/96 (3%)** | 16/96 (17%) | 3.78 | 1/32 | 1/32 | 1/32 | 2/32 |
@@ -72,12 +75,15 @@ change the picture; see the local section of the cross-vendor report).
 |---|---|---|---|---|---|---|---|---|
 | Grok 4.6 | 12/12 | 12/12 | 11/12 | 12/12 | 12/12 | 12/12 | 12/12 | 12/12 |
 | Codex GPT-6 Astra | 12/12 | 12/12 | 12/12 | 12/12 | 12/12 | 12/12 | 10/12 | 12/12 |
+| Claude Mythos 5.1 | 11/12 | 12/12 | 9/12 | 12/12 | 11/12 | 11/12 | 12/12 | 12/12 |
 | Claude Opus 5.5 | 11/12 | 11/12 | 10/12 | 11/12 | 11/12 | 12/12 | 11/12 | 12/12 |
 | Grok 4.7 | 12/12 | 12/12 | 10/12 | 11/12 | 11/12 | 12/12 | 12/12 | 9/12 |
 | Grok 4.7 build-fast | 11/12 | 12/12 | 12/12 | 12/12 | 12/12 | 10/12 | 11/12 | 9/12 |
 | Claude Haiku 5.5 | 12/12 | 12/12 | 12/12 | 11/12 | 9/12 | 12/12 | 11/12 | 9/12 |
 | Claude Fable 5.1 | 12/12 | 9/12 | 10/12 | 12/12 | 9/12 | 10/12 | 11/12 | 11/12 |
 | Claude Sonnet 5.5 | 12/12 | 11/12 | 11/12 | 12/12 | 9/12 | 11/12 | 12/12 | 6/12 |
+| Claude Mythos 5.2 | 10/12 | 11/12 | 9/12 | 11/12 | 10/12 | 12/12 | 12/12 | 9/12 |
+| Claude Fable 5.2 | 12/12 | 12/12 | 6/12 | 12/12 | 10/12 | 12/12 | 9/12 | 10/12 |
 | Kimi K3 | 12/12 | 11/12 | 11/12 | 10/12 | 7/12 | 10/12 | 12/12 | 10/12 |
 | Microsoft MAI-Code 1.1 Flash (Copilot) | 3/12 | 5/12 | 2/12 | 5/12 | 0/12 | 3/12 | 5/12 | 0/12 |
 | Aleph Alpha Kolibri-1 FP8, token budget (local) | 0/12 | 3/12 | 0/12 | 0/12 | 0/12 | 0/12 | 0/12 | 0/12 |
@@ -88,12 +94,15 @@ change the picture; see the local section of the cross-vendor report).
 |---|---|---|---|---|
 | Grok 4.6 | 24/24 | 24/24 | 24/24 | 23/24 |
 | Codex GPT-6 Astra | 24/24 | 23/24 | 24/24 | 23/24 |
+| Claude Mythos 5.1 | 24/24 | 22/24 | 22/24 | 22/24 |
 | Claude Opus 5.5 | 23/24 | 23/24 | 23/24 | 20/24 |
 | Grok 4.7 | 23/24 | 21/24 | 23/24 | 22/24 |
 | Grok 4.7 build-fast | 24/24 | 22/24 | 23/24 | 20/24 |
 | Claude Haiku 5.5 | 19/24 | 23/24 | 24/24 | 22/24 |
 | Claude Fable 5.1 | 19/24 | 23/24 | 23/24 | 19/24 |
 | Claude Sonnet 5.5 | 23/24 | 20/24 | 22/24 | 19/24 |
+| Claude Mythos 5.2 | 22/24 | 20/24 | 23/24 | 19/24 |
+| Claude Fable 5.2 | 20/24 | 19/24 | 24/24 | 20/24 |
 | Kimi K3 | 20/24 | 20/24 | 21/24 | 22/24 |
 | Microsoft MAI-Code 1.1 Flash (Copilot) | 4/24 | 8/24 | 2/24 | 9/24 |
 | Aleph Alpha Kolibri-1 FP8, token budget (local) | 0/24 | 2/24 | 0/24 | 1/24 |
@@ -104,12 +113,15 @@ change the picture; see the local section of the cross-vendor report).
 |---|---|---|---|---|---|---|---|---|---|
 | Grok 4.6 | · | · | · | · | · | · | · | 1 | · |
 | Codex GPT-6 Astra | · | · | · | · | · | · | · | 2 | · |
+| Claude Mythos 5.1 | · | · | · | · | · | · | · | 6 | · |
 | Claude Opus 5.5 | · | · | 1 | · | · | · | · | 6 | · |
 | Grok 4.7 | · | · | · | 6 | · | · | 1 | · | · |
 | Grok 4.7 build-fast | · | · | · | 6 | · | · | · | · | 1 |
 | Claude Haiku 5.5 | · | · | · | · | · | · | · | 4 | 4 |
 | Claude Fable 5.1 | · | · | · | · | · | · | · | 9 | 3 |
 | Claude Sonnet 5.5 | · | · | · | · | · | · | · | 11 | 1 |
+| Claude Mythos 5.2 | · | · | · | · | · | · | · | 12 | · |
+| Claude Fable 5.2 | · | · | · | · | · | · | · | 13 | · |
 | Kimi K3 | · | · | · | · | · | 1 | · | · | 12 |
 | Microsoft MAI-Code 1.1 Flash (Copilot) | 2 | 1 | · | · | 3 | 8 | · | 39 | 20 |
 | Aleph Alpha Kolibri-1 FP8, token budget (local) | 16 | 1 | · | · | · | 7 | · | 40 | 29 |
@@ -143,6 +155,15 @@ change the picture; see the local section of the cross-vendor report).
   supplied by the harness, so the file starts directly with the sections."; one constant used before its
   definition) and four wrong outputs on edge inputs (`rpn` on a lone `7` with no newline, twice; `json_lint` on
   empty input; `sort_lines` comparing bytes as signed). Haiku 4.5 did not run this battery.
+- **Claude Fable 5.2, Mythos 5.1 and Mythos 5.2, added 2026-11-10.** Mythos 5.1 scores 90/96 (94%) on the
+  first try (30, 31, 29 by sample), the best Claude result, one cell ahead of Opus 5.5; Mythos 5.2 84/96 (88%)
+  and Fable 5.2 83/96 (86%), level with Fable 5.1 and Sonnet 5.5. All three pass 96/96 within four. Same
+  conditions as Haiku 5.5 (`claude -p`, CVP-enrolled account, CLI-default effort, Claude Code 2.1.322), 320
+  calls for the three; no refusals, no infrastructure errors. Every one of their 31 first-attempt failures is
+  `syntax`: GNU as errors (an AArch64 `mov` of an immediate no single instruction can hold, 8 of them;
+  operand mismatches on `jmp` / `jb`; `ccmp` with an immediate over 31), data in `.text`, and on the stream
+  path a non-instruction line (`.set BUFSIZE, 69632`, `inbuf_cap = 65536`) that stops generation. Fable 5.2's
+  weak task is `hexdump` (6/12 first attempt).
 - **Three samples matter.** Per-sample first-attempt scores move by up to 5 cells for the same model (Fable
   26, 27, 31); single-sample rankings of the frontier models would not be stable.
 - **Microsoft MAI-Code 1.1 Flash is far behind:** 23/96 (24%) on the first attempt, 64/96 (67%) within four, and
@@ -202,6 +223,8 @@ change the picture; see the local section of the cross-vendor report).
   attempts again, genuinely, and Kolibri-1's totals are unchanged. Kimi K3 (samples 2 and 3) and Grok 4.7: no false
   rejects. Claude Haiku 5.5 (2026-11-07): no false rejects in its 8 failed attempts (the four pre-run rejections
   break rules the prompt states; the four wrong outputs were checked against the spec's expected output).
+  Claude Fable 5.2, Mythos 5.1 and Mythos 5.2 (2026-11-10): no false rejects in their 31 first-attempt failures,
+  each checked against GNU as's own message or the stated program-format rule.
 
 ## Raw machine code: the opt-in hex path (Codex GPT-6 Astra)
 

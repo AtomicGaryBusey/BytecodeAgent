@@ -26,7 +26,10 @@ the Azure AI Foundry API directly, the `fireworks:` rows through Fireworks.ai's 
 | Model | Round 1 (48) | Round 2 (62) | Long (54) | Adversarial (60) | Pass@1 | Within 4 | Mean attempts |
 |---|---|---|---|---|---|---|---|
 | Codex GPT-6 Astra | 46 | 61 | 54 | 60 | **221/224 (99%)** | 224/224 (100%) | 1.01 |
+| Claude Mythos 5.2 | 47 | 61 | 53 | 59 | **220/224 (98%)** | 224/224 (100%) | 1.02 |
+| Claude Fable 5.2 | 47 | 62 | 50 | 60 | **219/224 (98%)** | 224/224 (100%) | 1.02 |
 | Kimi K3.1 Pro | 47 | 60 | 52 | 59 | **218/224 (97%)** | 223/224 (100%) | 1.04 |
+| Claude Mythos 5.1 | 47 | 59 | 54 | 57 | **217/224 (97%)** | 224/224 (100%) | 1.04 |
 | Claude Opus 5.5 | 45 | 60 | 53 | 57 | **215/224 (96%)** | 224/224 (100%) | 1.04 |
 | Codex GPT-6 Sol | 43 | 62 | 48 | 60 | **213/224 (95%)** | 224/224 (100%) | 1.05 |
 | Grok 4.7 build-fast | 47 | 60 | 49 | 57 | **213/224 (95%)** | 223/224 (100%) | 1.08 |
@@ -87,7 +90,10 @@ result class, `xor eax, 0` used to zero a register, malformed JSON, unencodable 
 | Model | Stream | Structured | IR (QBE) |
 |---|---|---|---|
 | Codex GPT-6 Astra | 76/76 (100%) | 74/74 (100%) | 71/74 (96%) |
+| Claude Mythos 5.2 | 75/76 (99%) | 72/74 (97%) | 73/74 (99%) |
+| Claude Fable 5.2 | 75/76 (99%) | 71/74 (96%) | 73/74 (99%) |
 | Kimi K3.1 Pro | 74/76 (97%) | 72/74 (97%) | 72/74 (97%) |
+| Claude Mythos 5.1 | 70/76 (92%) | 74/74 (100%) | 73/74 (99%) |
 | Claude Opus 5.5 | 74/76 (97%) | 71/74 (96%) | 70/74 (95%) |
 | Codex GPT-6 Sol | 73/76 (96%) | 71/74 (96%) | 69/74 (93%) |
 | Grok 4.7 build-fast | 75/76 (99%) | 72/74 (97%) | 66/74 (89%) |
@@ -120,7 +126,7 @@ result class, `xor eax, 0` used to zero a register, malformed JSON, unencodable 
 ## Findings
 
 - **Codex GPT-6 Astra leads at 99%** (221/224; 100% on stream and structured, 224/224 within four attempts),
-  ahead of Kimi K3.1 Pro (97%), Opus 5.5 (96%), Grok 4.7 build-fast and Fable 5.1 (95%), Grok 4.7 (94%) and Kimi K3
+  ahead of Claude Mythos 5.2 and Fable 5.2 (98%), Kimi K3.1 Pro and Claude Mythos 5.1 (97%), Opus 5.5 (96%), Grok 4.7 build-fast and Fable 5.1 (95%), Grok 4.7 (94%) and Kimi K3
   (91%).
 - **Within a vendor, model choice matters as much as vendor**: Codex spans 58% (Luna) to 99% (Astra) on
   the same CLI, account and prompts.
@@ -141,6 +147,16 @@ result class, `xor eax, 0` used to zero a register, malformed JSON, unencodable 
   edges out Sonnet 5.5 (90%) and far exceeds Sonnet 5 (78%); Opus 4.8 (78%) trails Opus 5.5 (96%) by 18
   points, mostly on QBE (46/74: 23 answers omit parameter types the prompt requires). Grok descends
   4.7 / 4.6 (94%) to 4.5 (88%); Codex GPT-6 Sol (95%) and GPT-5.5 (92%) sit between Astra and Luna.
+- **Claude Fable 5.2, Mythos 5.1 and Mythos 5.2 (added 2026-11-10) are the strongest Claude rows**: Mythos
+  5.2 220/224 (98%), Fable 5.2 219/224 (98%), Mythos 5.1 217/224 (97%), all three 224/224 within four, at
+  1.02-1.04 attempts per cell. All three are statistically level with Astra and with each other (paired exact
+  McNemar, Holm-corrected; see the analytics report); Fable 5.1 to 5.2 is +11 / −4 (p = 0.12) and Mythos 5.1 to
+  5.2 +7 / −4 (p = 0.55), so neither step is significant on its own. Run through `claude -p` (Claude Code
+  2.1.322) on the Claude Max account at CLI-default effort, like every other Claude row (CVP caveat applies),
+  691 calls for the three; no refusals and no infrastructure errors. All 16 first-attempt failures were
+  reviewed by hand; none is a false reject. Mythos 5.1's stream score (70/76) is its weak spot: four of its
+  misses open with a sentence of prose ("Simple scalar loop is sufficient.") on a path that takes
+  instructions only; Mythos 5.2 once sent a broken JSON program followed by a "Correction" with a second one.
 - **Claude Haiku 5.5 jumps 39 points over Haiku 4.5** (91% vs 52%, 203/224; 222/224 within four), level
   with Kimi K3 and Sonnet 4.5 and just ahead of Sonnet 5.5 (90%). Run 2026-11-07 through `claude -p` on the
   Claude Max account (CVP caveat as for every Claude row), never through another vendor. QBE went from 1/74

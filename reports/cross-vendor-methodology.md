@@ -341,3 +341,11 @@ GNU as (and the prompt) accept; every recorded answer was replayed after each on
 
 Fable 5.1: Claude Code used to re-run a refused call on claude-opus-4-8 silently. The fallback is now
 off, a refusal is scored, and on real task prompts Fable answers as itself.
+
+Prompt transport (2026-11-10): `claude -p` used to take the prompt as one argv string, and Linux caps a single
+argument at 128 KiB (`MAX_ARG_STRLEN`). A hex-app repair prompt quoting Claude Mythos 5.1's 128 KB previous
+attempt came to 135 KB, failed to start with E2BIG and stopped the run. A prompt over 100 KB now goes to
+`claude -p` on stdin, byte for byte the same text (`ARGV_PROMPT_MAX` in `bca/liveeval/subject.py`); shorter
+prompts are passed as before. No committed verdict is affected: no earlier prompt came near the limit, and the
+failed call never reached the model. The other CLI adapters still pass the prompt in argv; none has hit the
+limit, and they are left as they are until one does.

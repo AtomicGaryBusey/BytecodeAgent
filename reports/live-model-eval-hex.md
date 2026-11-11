@@ -12,7 +12,7 @@ only for the feedback listing and for the instruction-set check (ARMv8.0-A with 
 the other paths allow). Method: [design-app-battery.md](design-app-battery.md),
 `bca/liveeval/hexpath.py`; Astra's first runs are in [live-model-eval-apps.md](live-model-eval-apps.md).
 
-Two stages, first run 2026-10-01 (Grok: 2026-10-01 22:19 to 10-02 04:20; Kimi 10-03, Sonnet 5 10-22, Haiku 5.5 11-07), CLI-default effort, up to four attempts
+Two stages, first run 2026-10-01 (Grok: 2026-10-01 22:19 to 10-02 04:20; Kimi 10-03, Sonnet 5 10-22, Haiku 5.5 11-07, Fable 5.2 / Mythos 5.1 / Mythos 5.2 11-10), CLI-default effort, up to four attempts
 with repair feedback, the same subjects and fairness contract as every other run:
 
 1. **Functions:** round 1 (8 tasks x 2 ISAs = 16 cells) for every model with plan room.
@@ -21,7 +21,7 @@ with repair feedback, the same subjects and fairness contract as every other run
 
 Tables: `.venv/bin/python eval/hex_tables.py`. Runs: `eval/runs/hex-{astra-20261001-165154,claude-20261001,
 codex-20261001,copilot-20261001,grok-20261001-221930,kimi-20261003-175502,sonnet5-20261022-143141,
-haiku55-20261107-174207}` and `eval/runs/apps-hex-{astra-20261001-174623,claude-20261001,codex-20261001,
+haiku55-20261107-174207,fable52-mythos-20261110}` and `eval/runs/apps-hex-{astra-20261001-174623,claude-20261001,codex-20261001,
 copilot-20261001,grok-20261001-221930,kimi-20261003-175502,sonnet5-20261022-143141,haiku55-20261107-174207}`
 (the `apps-hex-declared-*` runs belong to [live-model-eval-declared.md](live-model-eval-declared.md)).
 
@@ -33,6 +33,9 @@ results on the other paths (16 cells each):
 | Model | Hex first attempt | Hex within 4 | Stream | Structured | IR (QBE) |
 |---|---|---|---|---|---|
 | Claude Opus 5.5 | **16/16** | 16/16 | 15/16 | 16/16 | 14/16 |
+| Claude Fable 5.2 | **16/16** | 16/16 | 16/16 | 16/16 | 15/16 |
+| Claude Mythos 5.1 | **16/16** | 16/16 | 15/16 | 16/16 | 16/16 |
+| Claude Mythos 5.2 | **16/16** | 16/16 | 16/16 | 15/16 | 16/16 |
 | Codex Daybreak Blue | **15/16** | 16/16 | 16/16 | 16/16 | 13/16 |
 | Codex GPT-6 Astra | **15/16** | 16/16 | 16/16 | 16/16 | 14/16 |
 | Claude Fable 5.1 | **15/16** | 16/16 | 15/16 | 15/16 | 14/16 |
@@ -60,6 +63,9 @@ Per ISA, hex first attempt:
 | Model | AArch64 | x86-64 |
 |---|---|---|
 | Claude Opus 5.5 | 8/8 | 8/8 |
+| Claude Fable 5.2 | 8/8 | 8/8 |
+| Claude Mythos 5.1 | 8/8 | 8/8 |
+| Claude Mythos 5.2 | 8/8 | 8/8 |
 | Codex Daybreak Blue | 8/8 | 7/8 |
 | Codex GPT-6 Astra | 8/8 | 7/8 |
 | Claude Fable 5.1 | 7/8 | 8/8 |
@@ -89,7 +95,9 @@ results (— where that model did not run the app battery):
 
 | Model | Hex first attempt | Hex within 4 | asm first attempt | stream first attempt |
 |---|---|---|---|---|
+| Claude Fable 5.2 | **16/16** | 16/16 | 13/16 | 14/16 |
 | Codex GPT-6 Astra | **15/16** | 16/16 | 16/16 | 16/16 |
+| Claude Mythos 5.2 | **15/16** | 16/16 | 14/16 | 16/16 |
 | Claude Opus 4.8 | **15/16** | 16/16 | — | — |
 | Claude Sonnet 5.5 | **13/16** | 15/16 | 14/16 | 15/16 |
 | Claude Fable 5.1 | **12/16** | 16/16 | 13/16 | 13/16 |
@@ -98,6 +106,7 @@ results (— where that model did not run the app battery):
 | Grok 4.7 | **10/16** | 16/16 | 16/16 | 15/16 |
 | Grok 4.7 build-fast | **10/16** | 16/16 | 16/16 | 14/16 |
 | Claude Opus 5.5 | **7/16** | 12/16 | 16/16 | 15/16 |
+| Claude Mythos 5.1 | **7/16** | 15/16 | 15/16 | 15/16 |
 | Claude Sonnet 5 | **7/16** | 9/16 | — | — |
 | Codex GPT-6 Sol | **6/16** | 14/16 | — | — |
 | Codex GPT-5.5 | **3/16** | 12/16 | — | — |
@@ -115,8 +124,10 @@ apart (first attempts only, except the last column):
 
 | Model | First attempts | Passed | Refused | Genuine failures | Pass rate among answered | Refused attempts (all rounds) |
 |---|---|---|---|---|---|---|
+| Claude Fable 5.2 | 16 | 16 | 0 | 0 | 16/16 (100%) | 0 of 16 |
 | Claude Opus 5.5 | 16 | 7 | 9 | 0 | 7/7 (100%) | 22 of 34 |
 | Codex GPT-6 Astra | 16 | 15 | 0 | 1 | 15/16 (94%) | 0 of 17 |
+| Claude Mythos 5.2 | 16 | 15 | 0 | 1 | 15/16 (94%) | 0 of 17 |
 | Claude Opus 4.8 | 16 | 15 | 0 | 1 | 15/16 (94%) | 0 of 17 |
 | Claude Sonnet 5.5 | 16 | 13 | 1 | 2 | 13/15 (87%) | 3 of 23 |
 | Claude Fable 5.1 | 16 | 12 | 0 | 4 | 12/16 (75%) | 0 of 20 |
@@ -124,6 +135,7 @@ apart (first attempts only, except the last column):
 | Grok 4.6 | 16 | 11 | 0 | 5 | 11/16 (69%) | 0 of 23 |
 | Grok 4.7 | 16 | 10 | 0 | 6 | 10/16 (62%) | 0 of 22 |
 | Grok 4.7 build-fast | 16 | 10 | 0 | 6 | 10/16 (62%) | 0 of 23 |
+| Claude Mythos 5.1 | 16 | 7 | 0 | 9 | 7/16 (44%) | 0 of 34 |
 | Claude Sonnet 5 | 16 | 7 | 0 | 9 | 7/16 (44%) | 0 of 40 |
 | Codex GPT-6 Sol | 16 | 6 | 0 | 10 | 6/16 (38%) | 0 of 33 |
 | Codex GPT-5.5 | 16 | 3 | 0 | 13 | 3/16 (19%) | 0 of 37 |
@@ -142,11 +154,19 @@ let through, not as ability: every first attempt Opus 5.5 was allowed to answer 
 ## Findings
 
 - **Writing raw machine code is within reach of the frontier models.** On functions, Opus 5.5 was perfect
-  (16/16 first attempt), and Astra, Daybreak Blue and Fable 5.1 missed one cell each. Eighteen of the twenty-two
+  (16/16 first attempt), and Astra, Daybreak Blue and Fable 5.1 missed one cell each. Twenty-one of the twenty-five
   model rows pass every function cell within four attempts. Hex costs the strongest models little against
   their assembly results; it costs mid-tier models much more (Sonnet 4.5 10/16, Luna 10/16 through Codex,
   MAI-Code 6/16, Haiku 4.5 5/16). Haiku 5.5 is the exception among small models: 13/16 on functions (Haiku
   4.5: 5/16) and 11/16 on whole programs first attempt, 16/16 on both within four, with no refusals.
+- **Claude Fable 5.2, Mythos 5.1 and Mythos 5.2 (2026-11-10) are perfect on hex functions** (16/16 first
+  attempt each, with Opus 5.5). On whole programs Fable 5.2 wrote 16/16 correctly first time, the first model
+  to do so, and Mythos 5.2 15/16 (16/16 within four); neither was refused once. Mythos 5.1 wrote 7/16 first
+  attempt and 15/16 within four (`rpn` x86-64 lost): in 10 of its 32 hex-program responses it wrote Bash
+  tool-call markup as plain text (`<invoke name="Bash">`, tools are disabled for every subject), invented the
+  tool output, and then gave hex built on it. It never did this on any other path or battery, and the other
+  two models never did it at all. One of those responses ran to 128 KB, and quoting it in the repair prompt
+  exceeded Linux's per-argument limit; the harness now sends such prompts on stdin (see the methodology).
 - **AArch64 is harder to hand-encode than x86-64 for most models** (fixed 32-bit words with packed
   bit fields: shift and bitmask immediates, register fields, 19- and 26-bit branch offsets), e.g. Sonnet 4.5
   2/8 vs 8/8, Haiku 4.5 0/8 vs 5/8. Grok 4.6's AArch64 misses (5/8 vs 7/8) are all time-outs: it was still
