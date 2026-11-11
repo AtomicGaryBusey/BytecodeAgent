@@ -1,0 +1,224 @@
+.globl _start
+
+.bss
+.balign 16
+inbuf:
+    .space 65536+64
+outbuf:
+    .space 524288
+vstack:
+    .space 65536
+tmpbuf:
+    .space 32
+
+.text
+_start:
+    adrp x19, inbuf
+    add x19, x19, :lo12:inbuf
+    mov x20, x19            // end of data so far
+    mov x24, #65536
+    add x24, x24, #32       // remaining capacity
+read_loop:
+    cbz x24, read_done
+    mov x0, #0
+    mov x1, x20
+    mov x2, x24
+    mov x8, #63
+    svc #0
+    cmp x0, #0
+    b.le read_done
+    add x20, x20, x0
+    sub x24, x24, x0
+    b read_loop
+read_done:
+    adrp x21, outbuf
+    add x21, x21, :lo12:outbuf
+    adrp x22, vstack
+    add x22, x22, :lo12:vstack
+
+line_loop:
+    cmp x19, x20
+    b.hs finish
+    mov x23, #0
+tok_loop:
+    cmp x19, x20
+    b.hs end_line
+    ldrb w0, [x19]
+    cmp w0, #10
+    b.ne 1f
+    add x19, x19, #1
+    b end_line
+1:
+    cmp w0, #32
+    b.eq 2f
+    cmp w0, #9
+    b.ne 3f
+2:
+    add x19, x19, #1
+    b tok_loop
+3:
+    // token start
+    mov x9, x19
+    mov x10, x19
+4:
+    cmp x10, x20
+    b.hs 5f
+    ldrb w0, [x10]
+    cmp w0, #32
+    b.eq 5f
+    cmp w0, #9
+    b.eq 5f
+    cmp w0, #10
+    b.eq 5f
+    add x10, x10, #1
+    b 4b
+5:
+    mov x19, x10
+    sub x14, x10, x9        // length
+    ldrb w15, [x9]          // first char
+    cmp x14, #1
+    b.ne number
+    cmp w15, #'+'
+    b.eq operator
+    cmp w15, #'-'
+    b.eq operator
+    cmp w15, #'*'
+    b.eq operator
+    cmp w15, #'/'
+    b.eq operator
+    cmp w15, #'%'
+    b.eq operator
+number:
+    mov x11, x9
+    mov x12, #0
+    mov x13, #0
+    cmp w15, #'-'
+    b.ne 1f
+    mov x13, #1
+    add x11, x11, #1
+1:
+    sub x14, x10, x11
+    cmp x14, #1
+    b.lt error_skip
+    cmp x14, #18
+    b.gt error_skip
+    mov x16, #10
+2:
+    ldrb w0, [x11], #1
+    sub w0, w0, #'0'
+    cmp w0, #9
+    b.hi error_skip
+    madd x12, x12, x16, x0
+    cmp x11, x10
+    b.lo 2b
+    cbz x13, 3f
+    neg x12, x12
+3:
+    str x12, [x22, x23, lsl #3]
+    add x23, x23, #1
+    b tok_loop
+
+operator:
+    cmp x23, #2
+    b.lo error_skip
+    sub x23, x23, #1
+    ldr x0, [x22, x23, lsl #3]     // b
+    sub x3, x23, #1
+    ldr x1, [x22, x3, lsl #3]      // a
+    cmp w15, #'+'
+    b.eq op_add
+    cmp w15, #'-'
+    b.eq op_sub
+    cmp w15, #'*'
+    b.eq op_mul
+    // division or remainder
+    cbz x0, error_skip
+    mov x2, #-9223372036854775808
+    cmp x1, x2
+    b.ne 1f
+    cmn x0, #1
+    b.eq error_skip
+1:
+    sdiv x4, x1, x0
+    cmp w15, #'/'
+    b.eq 2f
+    msub x4, x4, x0, x1
+2:
+    b op_store
+op_add:
+    add x4, x1, x0
+    b op_store
+op_sub:
+    sub x4, x1, x0
+    b op_store
+op_mul:
+    mul x4, x1, x0
+op_store:
+    str x4, [x22, x3, lsl #3]
+    b tok_loop
+
+error_skip:
+    cmp x19, x20
+    b.hs error_emit
+    ldrb w0, [x19], #1
+    cmp w0, #10
+    b.ne error_skip
+error_emit:
+    movz w0, #0x7265
+    movk w0, #0x6f72, lsl #16
+    str w0, [x21], #4
+    mov w0, #0x0a72
+    strh w0, [x21], #2
+    b line_loop
+
+end_line:
+    cmp x23, #1
+    b.ne error_emit
+    ldr x0, [x22]
+    cmp x0, #0
+    b.ge 1f
+    mov w4, #'-'
+    strb w4, [x21], #1
+    neg x0, x0
+1:
+    adrp x5, tmpbuf
+    add x5, x5, :lo12:tmpbuf
+    add x5, x5, #24
+    mov x1, x5
+    mov x3, #10
+2:
+    udiv x2, x0, x3
+    msub x4, x2, x3, x0
+    add w4, w4, #'0'
+    strb w4, [x1, #-1]!
+    mov x0, x2
+    cbnz x0, 2b
+3:
+    ldrb w4, [x1], #1
+    strb w4, [x21], #1
+    cmp x1, x5
+    b.lo 3b
+    mov w4, #10
+    strb w4, [x21], #1
+    b line_loop
+
+finish:
+    adrp x19, outbuf
+    add x19, x19, :lo12:outbuf
+1:
+    cmp x19, x21
+    b.hs 2f
+    mov x0, #1
+    mov x1, x19
+    sub x2, x21, x19
+    mov x8, #64
+    svc #0
+    cmp x0, #0
+    b.le 2f
+    add x19, x19, x0
+    b 1b
+2:
+    mov x0, #0
+    mov x8, #93
+    svc #0
+    b 2b

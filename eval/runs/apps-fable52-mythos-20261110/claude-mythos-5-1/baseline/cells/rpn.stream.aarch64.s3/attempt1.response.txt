@@ -1,0 +1,268 @@
+.equ INBUF_SIZE, 65536
+.equ OUTBUF_SIZE, 65536
+.equ STACK_MAX, 4096
+
+.bss
+.balign 16
+inbuf:
+	.space INBUF_SIZE
+outbuf:
+	.space OUTBUF_SIZE
+vstack:
+	.space STACK_MAX*8
+numtmp:
+	.space 32
+
+.section .rodata
+errmsg:
+	.ascii "error\n"
+.equ errmsg_len, 6
+
+.text
+.globl _start
+_start:
+	adrp x19, inbuf
+	add x19, x19, :lo12:inbuf
+	mov x20, x19
+	adrp x21, outbuf
+	add x21, x21, :lo12:outbuf
+	mov x22, #0
+	adrp x23, vstack
+	add x23, x23, :lo12:vstack
+
+read_loop:
+	sub x2, x20, x19
+	mov x3, #INBUF_SIZE
+	subs x2, x3, x2
+	b.eq read_done
+	mov x0, #0
+	mov x1, x20
+	mov x8, #63
+	svc #0
+	cmp x0, #0
+	b.le read_done
+	add x20, x20, x0
+	b read_loop
+read_done:
+
+line_loop:
+	cmp x19, x20
+	b.hs finish
+	mov x24, #0
+tok_loop:
+	cmp x19, x20
+	b.hs end_line
+	ldrb w0, [x19]
+	cmp w0, #10
+	b.eq end_line
+	cmp w0, #32
+	b.eq skip_sep
+	cmp w0, #9
+	b.ne tok_start
+skip_sep:
+	add x19, x19, #1
+	b tok_loop
+tok_start:
+	mov x25, x19
+	mov x26, x19
+find_end:
+	cmp x26, x20
+	b.hs tok_found
+	ldrb w0, [x26]
+	cmp w0, #10
+	b.eq tok_found
+	cmp w0, #32
+	b.eq tok_found
+	cmp w0, #9
+	b.eq tok_found
+	add x26, x26, #1
+	b find_end
+tok_found:
+	mov x19, x26
+	sub x1, x26, x25
+	cmp x1, #1
+	b.ne parse_num
+	ldrb w0, [x25]
+	mov w27, w0
+	cmp w0, #43
+	b.eq do_op
+	cmp w0, #45
+	b.eq do_op
+	cmp w0, #42
+	b.eq do_op
+	cmp w0, #47
+	b.eq do_op
+	cmp w0, #37
+	b.eq do_op
+parse_num:
+	mov x2, x25
+	mov x3, #0
+	ldrb w0, [x2]
+	cmp w0, #45
+	b.ne 1f
+	mov x3, #1
+	add x2, x2, #1
+1:
+	sub x1, x26, x2
+	sub x4, x1, #1
+	cmp x4, #17
+	b.hi line_error
+	mov x5, #0
+	mov x6, #10
+2:
+	ldrb w0, [x2], #1
+	sub w0, w0, #48
+	cmp w0, #9
+	b.hi line_error
+	mul x5, x5, x6
+	add x5, x5, x0
+	cmp x2, x26
+	b.lo 2b
+	cbz x3, 3f
+	neg x5, x5
+3:
+	cmp x24, #STACK_MAX
+	b.hs line_error
+	str x5, [x23, x24, lsl #3]
+	add x24, x24, #1
+	b tok_loop
+
+do_op:
+	cmp x24, #2
+	b.lo line_error
+	sub x24, x24, #1
+	ldr x1, [x23, x24, lsl #3]
+	sub x4, x24, #1
+	ldr x0, [x23, x4, lsl #3]
+	cmp w27, #43
+	b.eq op_add
+	cmp w27, #45
+	b.eq op_sub
+	cmp w27, #42
+	b.eq op_mul
+	cbz x1, line_error
+	cmn x1, #1
+	b.ne 1f
+	movz x5, #0x8000, lsl #48
+	cmp x0, x5
+	b.eq line_error
+1:
+	sdiv x2, x0, x1
+	cmp w27, #47
+	b.eq 2f
+	msub x2, x2, x1, x0
+2:
+	mov x0, x2
+	b op_store
+op_add:
+	add x0, x0, x1
+	b op_store
+op_sub:
+	sub x0, x0, x1
+	b op_store
+op_mul:
+	mul x0, x0, x1
+op_store:
+	str x0, [x23, x4, lsl #3]
+	b tok_loop
+
+end_line:
+	cmp x19, x20
+	b.hs 1f
+	add x19, x19, #1
+1:
+	cmp x24, #1
+	b.ne print_error
+	ldr x0, [x23]
+	bl print_num
+	b line_loop
+
+line_error:
+2:
+	cmp x19, x20
+	b.hs print_error
+	ldrb w0, [x19], #1
+	cmp w0, #10
+	b.ne 2b
+print_error:
+	bl ensure_space
+	adrp x0, errmsg
+	add x0, x0, :lo12:errmsg
+	add x1, x21, x22
+	ldr w2, [x0]
+	str w2, [x1]
+	ldrh w2, [x0, #4]
+	strh w2, [x1, #4]
+	add x22, x22, #errmsg_len
+	b line_loop
+
+finish:
+	bl flush_out
+	mov x0, #0
+	mov x8, #94
+	svc #0
+	b finish
+
+ensure_space:
+	add x0, x22, #32
+	mov x1, #OUTBUF_SIZE
+	cmp x0, x1
+	b.hi flush_out
+	ret
+
+flush_out:
+	cbz x22, 2f
+	mov x16, #0
+1:
+	mov x0, #1
+	add x1, x21, x16
+	sub x2, x22, x16
+	mov x8, #64
+	svc #0
+	cmp x0, #0
+	b.le 2f
+	add x16, x16, x0
+	cmp x16, x22
+	b.lo 1b
+2:
+	mov x22, #0
+	ret
+
+print_num:
+	stp x29, x30, [sp, #-16]!
+	mov x17, x0
+	bl ensure_space
+	mov x9, x17
+	adrp x10, numtmp
+	add x10, x10, :lo12:numtmp
+	add x10, x10, #32
+	mov x11, x10
+	mov x12, x9
+	cmp x9, #0
+	b.ge 1f
+	neg x12, x9
+1:
+	mov x13, #10
+2:
+	udiv x14, x12, x13
+	msub x15, x14, x13, x12
+	add w15, w15, #48
+	strb w15, [x11, #-1]!
+	mov x12, x14
+	cbnz x12, 2b
+	tbz x9, #63, 3f
+	mov w15, #45
+	strb w15, [x11, #-1]!
+3:
+	add x1, x21, x22
+4:
+	ldrb w15, [x11], #1
+	strb w15, [x1], #1
+	add x22, x22, #1
+	cmp x11, x10
+	b.lo 4b
+	mov w15, #10
+	strb w15, [x1]
+	add x22, x22, #1
+	ldp x29, x30, [sp], #16
+	ret

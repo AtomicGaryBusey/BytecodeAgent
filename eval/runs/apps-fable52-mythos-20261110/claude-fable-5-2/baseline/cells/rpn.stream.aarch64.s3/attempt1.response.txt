@@ -1,0 +1,231 @@
+.globl _start
+
+.equ INCAP, 70000
+.equ OUTCAP, 524288
+.equ STKCAP, 65536
+
+.bss
+.balign 16
+inbuf:  .space INCAP
+.balign 16
+outbuf: .space OUTCAP
+.balign 16
+vstack: .space STKCAP
+
+.section .rodata
+errmsg: .ascii "error\n"
+
+.text
+_start:
+    adrp x19, inbuf
+    add x19, x19, :lo12:inbuf
+    mov x20, #0                 // total read
+    movz x27, #(INCAP & 0xffff)
+    movk x27, #(INCAP >> 16), lsl #16
+read_loop:
+    sub x2, x27, x20
+    cbz x2, read_done
+    mov x0, #0
+    add x1, x19, x20
+    mov x8, #63
+    svc #0
+    cmp x0, #0
+    b.le read_done
+    add x20, x20, x0
+    b read_loop
+read_done:
+    add x20, x19, x20           // end pointer
+    adrp x21, outbuf
+    add x21, x21, :lo12:outbuf
+    adrp x22, vstack
+    add x22, x22, :lo12:vstack
+    mov x28, #10
+
+line_loop:
+    cmp x19, x20
+    b.hs finish
+    mov x23, #0
+token_loop:
+    cmp x19, x20
+    b.hs end_line
+    ldrb w0, [x19]
+    cmp w0, #10
+    b.eq end_line_nl
+    cmp w0, #32
+    b.eq skip_sep
+    cmp w0, #9
+    b.eq skip_sep
+    // token start
+    mov x25, x19
+    mov x26, x19
+scan_tok:
+    cmp x26, x20
+    b.hs scan_done
+    ldrb w0, [x26]
+    cmp w0, #32
+    b.eq scan_done
+    cmp w0, #9
+    b.eq scan_done
+    cmp w0, #10
+    b.eq scan_done
+    add x26, x26, #1
+    b scan_tok
+scan_done:
+    sub x4, x26, x25            // token length
+    mov x1, x25
+    mov x5, #0                  // neg flag
+    ldrb w0, [x1]
+    cmp w0, #'-'
+    b.ne 1f
+    cmp x4, #1
+    b.eq do_op
+    mov x5, #1
+    add x1, x1, #1
+1:
+    ldrb w0, [x1]
+    sub w3, w0, #'0'
+    cmp w3, #9
+    b.hi notnum
+    sub x6, x26, x1
+    cmp x6, #18
+    b.hi line_error
+    mov x2, #0
+num_loop:
+    ldrb w0, [x1], #1
+    sub w3, w0, #'0'
+    cmp w3, #9
+    b.hi line_error
+    madd x2, x2, x28, x3
+    cmp x1, x26
+    b.lo num_loop
+    cbz x5, 2f
+    neg x2, x2
+2:
+    str x2, [x22, x23, lsl #3]
+    add x23, x23, #1
+    mov x19, x26
+    b token_loop
+
+notnum:
+    cbnz x5, line_error
+    cmp x4, #1
+    b.ne line_error
+do_op:
+    // w0 = operator char
+    cmp x23, #2
+    b.lo line_error
+    sub x6, x23, #1
+    ldr x2, [x22, x6, lsl #3]   // b
+    sub x7, x23, #2
+    ldr x1, [x22, x7, lsl #3]   // a
+    cmp w0, #'+'
+    b.eq op_add
+    cmp w0, #'-'
+    b.eq op_sub
+    cmp w0, #'*'
+    b.eq op_mul
+    cmp w0, #'/'
+    b.eq op_div
+    cmp w0, #'%'
+    b.eq op_div
+    b line_error
+op_add:
+    add x3, x1, x2
+    b op_done
+op_sub:
+    sub x3, x1, x2
+    b op_done
+op_mul:
+    mul x3, x1, x2
+    b op_done
+op_div:
+    cbz x2, line_error
+    cmn x2, #1
+    b.ne 3f
+    mov x9, #0x8000000000000000
+    cmp x1, x9
+    b.eq line_error
+3:
+    sdiv x3, x1, x2
+    cmp w0, #'/'
+    b.eq op_done
+    msub x3, x3, x2, x1
+op_done:
+    str x3, [x22, x7, lsl #3]
+    mov x23, x6
+    mov x19, x26
+    b token_loop
+
+skip_sep:
+    add x19, x19, #1
+    b token_loop
+
+line_error:
+    // skip rest of line
+4:
+    cmp x19, x20
+    b.hs emit_error
+    ldrb w0, [x19], #1
+    cmp w0, #10
+    b.ne 4b
+emit_error:
+    adrp x1, errmsg
+    add x1, x1, :lo12:errmsg
+    mov x2, #6
+5:
+    ldrb w0, [x1], #1
+    strb w0, [x21], #1
+    subs x2, x2, #1
+    b.ne 5b
+    b line_loop
+
+end_line_nl:
+    add x19, x19, #1
+end_line:
+    cmp x23, #1
+    b.ne emit_error
+    ldr x1, [x22]
+    tbz x1, #63, 6f
+    mov w0, #'-'
+    strb w0, [x21], #1
+    neg x1, x1
+6:
+    sub sp, sp, #32
+    add x2, sp, #32
+    mov x5, x2
+7:
+    udiv x3, x1, x28
+    msub x4, x3, x28, x1
+    add w4, w4, #'0'
+    strb w4, [x2, #-1]!
+    mov x1, x3
+    cbnz x1, 7b
+8:
+    ldrb w0, [x2], #1
+    strb w0, [x21], #1
+    cmp x2, x5
+    b.lo 8b
+    add sp, sp, #32
+    mov w0, #10
+    strb w0, [x21], #1
+    b line_loop
+
+finish:
+    adrp x19, outbuf
+    add x19, x19, :lo12:outbuf
+9:
+    subs x2, x21, x19
+    b.ls done
+    mov x0, #1
+    mov x1, x19
+    mov x8, #64
+    svc #0
+    cmp x0, #0
+    b.le done
+    add x19, x19, x0
+    b 9b
+done:
+    mov x0, #0
+    mov x8, #93
+    svc #0
+    b done

@@ -1,0 +1,328 @@
+.globl _start
+
+.section .rodata
+s_true:  .asciz "true"
+s_false: .asciz "false"
+s_null:  .asciz "null"
+msg_ok:  .ascii "ok\n"
+msg_err: .ascii "error at "
+
+.bss
+.balign 16
+buf:  .space 69632
+nest: .space 4096
+
+.text
+// x19 buf, x20 len, x21 pos, x22 nest base, x23 depth
+_start:
+    adrp x19, buf
+    add x19, x19, :lo12:buf
+    mov x20, #0
+    movz x24, #0x1, lsl #16
+    movk x24, #0x1000
+rd:
+    sub x2, x24, x20
+    cbz x2, rd_done
+    mov x0, #0
+    add x1, x19, x20
+    mov x8, #63
+    svc #0
+    cmp x0, #0
+    b.le rd_done
+    add x20, x20, x0
+    b rd
+rd_done:
+    mov x21, #0
+    mov x23, #0
+    adrp x22, nest
+    add x22, x22, :lo12:nest
+    bl skipws
+
+parse_value:
+    cmp w0, #'{'
+    b.eq obj
+    cmp w0, #'['
+    b.eq arr
+    cmp w0, #'"'
+    b.eq strv
+    cmp w0, #'-'
+    b.eq numv
+    sub w1, w0, #'0'
+    cmp w1, #9
+    b.ls numv
+    cmp w0, #'t'
+    b.eq lit_t
+    cmp w0, #'f'
+    b.eq lit_f
+    cmp w0, #'n'
+    b.eq lit_n
+    b error
+
+lit_t:
+    adr x1, s_true
+    b lit
+lit_f:
+    adr x1, s_false
+    b lit
+lit_n:
+    adr x1, s_null
+lit:
+    ldrb w2, [x1], #1
+    cbz w2, value_done
+    bl peek
+    cmp w0, w2
+    b.ne error
+    add x21, x21, #1
+    b lit
+
+strv:
+    bl string
+    b value_done
+numv:
+    bl number
+    b value_done
+
+obj:
+    add x21, x21, #1
+    bl skipws
+    cmp w0, #'}'
+    b.eq close1
+    mov w1, #1
+    strb w1, [x22, x23]
+    add x23, x23, #1
+member:
+    cmp w0, #'"'
+    b.ne error
+    bl string
+    bl skipws
+    cmp w0, #':'
+    b.ne error
+    add x21, x21, #1
+    bl skipws
+    b parse_value
+
+arr:
+    add x21, x21, #1
+    bl skipws
+    cmp w0, #']'
+    b.eq close1
+    strb wzr, [x22, x23]
+    add x23, x23, #1
+    b parse_value
+
+close1:
+    add x21, x21, #1
+
+value_done:
+    bl skipws
+    cbz x23, top
+    sub x1, x23, #1
+    ldrb w1, [x22, x1]
+    cmp w0, #','
+    b.ne 1f
+    add x21, x21, #1
+    bl skipws
+    cbnz w1, member
+    b parse_value
+1:
+    cbz w1, 2f
+    cmp w0, #'}'
+    b.ne error
+    b 3f
+2:
+    cmp w0, #']'
+    b.ne error
+3:
+    add x21, x21, #1
+    sub x23, x23, #1
+    b value_done
+
+top:
+    cmn w0, #1
+    b.ne error
+    mov x0, #1
+    adr x1, msg_ok
+    mov x2, #3
+    mov x8, #64
+    svc #0
+    mov x0, #0
+    mov x8, #93
+    svc #0
+
+error:
+    mov x0, #1
+    adr x1, msg_err
+    mov x2, #9
+    mov x8, #64
+    svc #0
+    sub sp, sp, #32
+    add x1, sp, #31
+    mov w2, #10
+    strb w2, [x1]
+    mov x3, #10
+    mov x4, x21
+1:
+    udiv x5, x4, x3
+    msub x6, x5, x3, x4
+    add w6, w6, #'0'
+    strb w6, [x1, #-1]!
+    mov x4, x5
+    cbnz x4, 1b
+    add x2, sp, #32
+    sub x2, x2, x1
+    mov x0, #1
+    mov x8, #64
+    svc #0
+    mov x0, #1
+    mov x8, #93
+    svc #0
+
+// peek: w0 = byte at pos or -1 at EOF
+peek:
+    cmp x21, x20
+    b.hs 1f
+    ldrb w0, [x19, x21]
+    ret
+1:
+    mov w0, #-1
+    ret
+
+// skipws: skips whitespace, returns w0 = next char or -1
+skipws:
+    mov x27, x30
+1:
+    bl peek
+    cmp w0, #0x20
+    b.eq 2f
+    cmp w0, #0x09
+    b.eq 2f
+    cmp w0, #0x0A
+    b.eq 2f
+    cmp w0, #0x0D
+    b.eq 2f
+    ret x27
+2:
+    add x21, x21, #1
+    b 1b
+
+// string: pos at opening quote
+string:
+    mov x26, x30
+    add x21, x21, #1
+str_loop:
+    bl peek
+    cmp w0, #0x20
+    b.lt error
+    add x21, x21, #1
+    cmp w0, #'"'
+    b.eq str_done
+    cmp w0, #'\\'
+    b.ne str_loop
+    bl peek
+    cmp w0, #'"'
+    b.eq str_esc
+    cmp w0, #'\\'
+    b.eq str_esc
+    cmp w0, #'/'
+    b.eq str_esc
+    cmp w0, #'b'
+    b.eq str_esc
+    cmp w0, #'f'
+    b.eq str_esc
+    cmp w0, #'n'
+    b.eq str_esc
+    cmp w0, #'r'
+    b.eq str_esc
+    cmp w0, #'t'
+    b.eq str_esc
+    cmp w0, #'u'
+    b.ne error
+    add x21, x21, #1
+    mov w3, #4
+str_hex:
+    bl peek
+    sub w1, w0, #'0'
+    cmp w1, #9
+    b.ls 1f
+    orr w1, w0, #0x20
+    cmn w0, #1
+    b.eq error
+    sub w1, w1, #'a'
+    cmp w1, #5
+    b.hi error
+1:
+    add x21, x21, #1
+    subs w3, w3, #1
+    b.ne str_hex
+    b str_loop
+str_esc:
+    add x21, x21, #1
+    b str_loop
+str_done:
+    ret x26
+
+// number: pos at '-' or digit
+number:
+    mov x26, x30
+    bl peek
+    cmp w0, #'-'
+    b.ne 1f
+    add x21, x21, #1
+    bl peek
+1:
+    cmp w0, #'0'
+    b.ne 2f
+    add x21, x21, #1
+    b num_frac
+2:
+    sub w1, w0, #'1'
+    cmp w1, #8
+    b.hi error
+    add x21, x21, #1
+    bl digits
+num_frac:
+    bl peek
+    cmp w0, #'.'
+    b.ne num_exp
+    add x21, x21, #1
+    bl peek
+    sub w1, w0, #'0'
+    cmp w1, #9
+    b.hi error
+    bl digits
+    bl peek
+num_exp:
+    cmp w0, #'e'
+    b.eq 1f
+    cmp w0, #'E'
+    b.ne num_done
+1:
+    add x21, x21, #1
+    bl peek
+    cmp w0, #'+'
+    b.eq 2f
+    cmp w0, #'-'
+    b.ne 3f
+2:
+    add x21, x21, #1
+    bl peek
+3:
+    sub w1, w0, #'0'
+    cmp w1, #9
+    b.hi error
+    bl digits
+num_done:
+    ret x26
+
+// digits: consume zero or more digits
+digits:
+    mov x25, x30
+1:
+    bl peek
+    sub w1, w0, #'0'
+    cmp w1, #9
+    b.hi 2f
+    add x21, x21, #1
+    b 1b
+2:
+    ret x25

@@ -1,0 +1,490 @@
+Write the complete program `rpn`: a static Linux executable for x86-64 (AMD64), written directly as machine code. There is no assembler, no linker, no C library, no C runtime and no helper code: you write every instruction, every table and string, and make the system calls yourself.
+
+Entry state (as the Linux kernel sets it up): execution starts at the first byte of your code, address 0x400000. rsp is 16-byte aligned and points at argc = 0, followed by the NULL terminators of an empty argv, an empty envp and an empty auxiliary vector: the program gets no arguments. Every other general-purpose register is zero, and the direction flag is clear. There is no return address: the program ends only through the exit system call.
+
+System calls: the `syscall` instruction, with the system call number in rax and the arguments in rdi, rsi, rdx; the result comes back in rax. The kernel overwrites rcx and r11; every other register is preserved. Exactly these four are available:
+- read = 0: read(fd = 0, buf, count) reads up to count bytes of standard input into buf; returns the number of bytes read, 0 at end of input.
+- write = 1: write(fd, buf, count) with fd 1 (standard output) or 2 (standard error); returns count.
+- exit = 60: exit(status) ends the program; the exit status is the low 8 bits of status.
+- exit_group = 231: the same as exit.
+Any other system call number, another file descriptor, `int 0x80` or `sysenter` stops the program with an error, and so does a buffer that is not entirely inside the program's memory.
+
+Memory: the code, data and zero-initialised areas below, plus a stack of 1 MiB below the entry sp. There is no heap (no brk, no mmap, no malloc). Code is not writable. Any access outside these areas stops the program. Each test run may execute at most 50,000,000 instructions.
+
+Output format: the whole program as raw machine code and data bytes, which you encode yourself: there is no assembler, no linker and no encoder, and your bytes are loaded exactly as you write them. The memory layout is fixed:
+- code (read and execute): your instruction lines, from address 0x400000; the entry point is the first instruction; at most 1 MiB.
+- data (read and write): the data bytes you give, from address 0x500000, at most 1 MiB; your strings and tables go here, at offsets you choose and keep track of (the byte you write at position k of the data section is at address 0x500000 + k).
+- a zero-initialised work area (read and write) of 1 MiB from address 0x600000.
+- the stack (above).
+Write a line `.text` followed by the instruction lines, then optionally a line `.data` followed by the data lines. These two markers are the only directives: no labels, no symbols, no other directive, so every address and offset is a number you compute.
+Instructions: one per line as its bytes in memory order, each byte as two hex digits separated by spaces, e.g. `48 01 f0` is `add rax, rsi` and `0f 05` is `syscall`. The lines are placed one after another starting at 0x400000. Every relative branch or call displacement (jmp, jcc, call rel8/rel32) and every rip-relative disp32 is the signed distance from the end of that instruction (the address of the next one) to the target, little-endian, which you compute. Because the addresses below are fixed and below 2^31, absolute forms also work (e.g. `be 00 00 50 00` is `mov esi, 0x500000`, and a `[disp32 + reg]` memory operand with no base register addresses a table directly).
+Data: bytes in memory order as pairs of hex digits, separated by spaces or not, any number per line (e.g. `68 65 6c 6c 6f 0a` or `68656c6c6f0a` is "hello\n").
+You may end any line with a comment starting with `//` or `;` (e.g. `d4000001 // svc #0`); comments and blank lines are ignored.
+Instruction set: x86-64 with SSE up to SSE4.2 (including SSSE3, SSE4.1 and crc32), POPCNT, LZCNT, BMI1/BMI2 (andn, bextr, blsi, blsr, tzcnt, bzhi, mulx, pdep, pext, rorx, sarx, shlx, shrx), MOVBE, AES-NI and PCLMULQDQ. Not supported (rejected): AVX, AVX2, AVX-512, FMA, F16C and every other VEX/EVEX vector instruction, ADX (adcx/adox; use adc) and SHA.
+Output ONLY the program text: no Markdown fences, no prose before or after it.
+
+Specification: Task `rpn`: evaluate one Reverse Polish Notation expression per input line and print one result line per input
+line.
+
+Lines: a line is a (possibly empty) sequence of bytes terminated by a newline 0x0A; if the input does not end
+with a newline, the bytes after the last newline form one more, final line. Empty input has no lines (prints
+nothing), and the empty remainder after a final newline is not a line.
+
+Tokens: the separators are space 0x20 and tab 0x09 only; a token is a maximal run of other bytes. Any number of
+separators may appear before, between and after tokens. A token is exactly one of:
+- an integer literal: an optional `-` followed by 1 to 18 decimal digits `0`-`9` (leading zeros allowed, `-0`
+  is 0). A literal with 19 or more digits is invalid;
+- an operator: exactly one of `+` `-` `*` `/` `%` (a lone `-` is the subtraction operator);
+- anything else (for example `1a`, `+5`, `--3`, `1.5`, `x`, or a token containing 0x0D or any other byte) is
+  invalid.
+
+Evaluation uses a stack of signed 64-bit integers, empty at the start of each line. Process tokens left to right:
+a literal is pushed; an operator pops b (top) then a, and pushes `a op b`. `+`, `-`, `*` wrap modulo 2^64 (two's
+complement). `/` is division truncated toward zero; `%` is the remainder with the sign of a (a == (a/b)*b +
+a%b), as in C. A line is an ERROR if: it contains an invalid token; an operator finds fewer than two values on
+the stack; `/` or `%` has b == 0; `/` or `%` has a == -9223372036854775808 and b == -1; or, after the last token,
+the stack does not hold exactly one value (this includes a line with no tokens, e.g. an empty line).
+
+Output per line: if it is not an error, the single remaining value in decimal (a `-` sign if negative, no `+`,
+no leading zeros; -9223372036854775808 must print correctly) followed by a newline; if it is an error, exactly
+`error\n`. After an error the rest of that line is ignored and evaluation continues with the next line.
+
+Example: input `3 4 +\n-7 2 /\n1 +\n\n5 1 2 + 4 * + 3 -` prints `7\n-3\nerror\nerror\n14\n`.
+
+Limits: the input is at most 65536 bytes; a line is at most 1000 bytes. Exit status 0.
+
+Input and output (applies to this whole task):
+- The input is the complete contents of standard input (file descriptor 0). Read it with `read` until `read`
+  returns 0 (end of input). A `read` may return FEWER bytes than requested, at any position (in the middle of a
+  line, a token or a group of bytes), so keep calling it; only a return value of 0 means end of input.
+- Write the output to standard output (file descriptor 1). Only the bytes this task describes may appear on
+  standard output (standard error is ignored). Every output byte must be written before the program exits.
+- Finish with `exit` (or `exit_group`) and the exit status this task gives. The program must not run off the end
+  of its code or crash.
+
+Your previous attempt was:
+<previous>
+<invoke name="Bash">
+<invoke name="command">mkdir -p /tmp/rpnw && cd /tmp/rpnw && cat > asm.py <<'EOF'
+import struct,sys
+src = r'''
+  be 00 00 60 00  ; mov esi,0x600000
+rd_loop:
+  31 c0
+  31 ff
+  ba 00 00 62 00
+  29 f2
+  74 @rd_done
+  0f 05
+  48 85 c0
+  7e @rd_done
+  48 01 c6
+  eb @rd_loop
+rd_done:
+  41 bc 00 00 60 00
+  49 89 f5
+  41 be 00 00 62 00
+line_start:
+  4d 39 ec
+  0f 83 @@finish
+  41 bf 00 00 6b 00
+tok_loop:
+  4d 39 ec
+  0f 83 @@line_end
+  41 0f b6 04 24
+  3c 20
+  74 @skip
+  3c 09
+  74 @skip
+  3c 0a
+  0f 84 @@line_end
+  4c 89 e3
+find_end:
+  49 ff c4
+  4d 39 ec
+  73 @tok_found
+  41 0f b6 04 24
+  3c 20
+  74 @tok_found
+  3c 09
+  74 @tok_found
+  3c 0a
+  75 @find_end
+tok_found:
+  4c 89 e1
+  48 29 d9
+  0f b6 03
+  48 83 f9 01
+  75 @number
+  89 c3
+  3c 2b
+  74 @binop
+  3c 2d
+  74 @binop
+  3c 2a
+  74 @binop
+  3c 2f
+  74 @binop
+  3c 25
+  74 @binop
+number:
+  31 d2
+  3c 2d
+  75 @nd
+  48 ff c3
+  48 ff c9
+  0f 84 @@error
+  ba 01 00 00 00
+nd:
+  48 83 f9 12
+  0f 87 @@error
+  31 c0
+dl:
+  0f b6 33
+  83 ee 30
+  83 fe 09
+  0f 87 @@error
+  48 8d 04 80
+  48 8d 04 46
+  48 ff c3
+  4c 39 e3
+  72 @dl
+  85 d2
+  74 @push
+  48 f7 d8
+push:
+  49 89 07
+  49 83 c7 08
+  eb @tok_loop
+skip:
+  49 ff c4
+  eb @tok_loop
+binop:
+  41 81 ff 10 00 6b 00
+  0f 82 @@error
+  49 83 ef 10
+  49 8b 07
+  49 8b 4f 08
+  80 fb 2b
+  75 @b1
+  48 01 c8
+  eb @push
+b1:
+  80 fb 2d
+  75 @b2
+  48 29 c8
+  eb @push
+b2:
+  80 fb 2a
+  75 @b3
+  48 0f af c1
+  eb @push
+b3:
+  48 85 c9
+  74 @error
+  48 83 f9 ff
+  75 @b4
+  48 be 00 00 00 00 00 00 00 80
+  48 39 f0
+  74 @error
+b4:
+  48 99
+  48 f7 f9
+  80 fb 2f
+  74 @push
+  48 89 d0
+  eb @push
+line_end:
+  41 81 ff 08 00 6b 00
+  75 @error
+  49 8b 47 f8
+  48 85 c0
+  79 @pos
+  41 c6 06 2d
+  49 ff c6
+  48 f7 d8
+pos:
+  bf 20 00 6c 00
+  b9 0a 00 00 00
+cv:
+  31 d2
+  48 f7 f1
+  80 c2 30
+  48 ff cf
+  88 17
+  48 85 c0
+  75 @cv
+cp:
+  8a 07
+  41 88 06
+  49 ff c6
+  48 ff c7
+  81 ff 20 00 6c 00
+  72 @cp
+  41 c6 06 0a
+  49 ff c6
+next_line:
+  4d 39 ec
+  0f 83 @@line_start
+  49 ff c4
+  e9 @@line_start
+error:
+  41 c7 06 65 72 72 6f
+  66 41 c7 46 04 72 0a
+  49 83 c6 06
+el:
+  4d 39 ec
+  0f 83 @@line_start
+  41 80 3c 24 0a
+  74 @next_line
+  49 ff c4
+  eb @el
+finish:
+  be 00 00 62 00
+wl:
+  4c 89 f2
+  48 29 f2
+  74 @ex
+  b8 01 00 00 00
+  bf 01 00 00 00
+  0f 05
+  48 85 c0
+  7e @ex
+  48 01 c6
+  eb @wl
+ex:
+  b8 3c 00 00 00
+  31 ff
+  0f 05
+'''
+lines=[]
+for l in src.split('\n'):
+    l=l.split(';')[0].strip()
+    if not l: continue
+    lines.append(l)
+# pass1: sizes
+def size(l):
+    n=0
+    for t in l.split():
+        if t.startswith('@@'): n+=4
+        elif t.startswith('@'): n+=1
+        else: n+=1
+    return n
+labels={}
+addr=0x400000
+for l in lines:
+    if l.endswith(':'): labels[l[:-1]]=addr
+    else: addr+=size(l)
+out=[]
+addr=0x400000
+for l in lines:
+    if l.endswith(':'): continue
+    bs=bytearray(); end=addr+size(l)
+    for t in l.split():
+        if t.startswith('@@'):
+            d=labels[t[2:]]-end; bs+=struct.pack('<i',d)
+        elif t.startswith('@'):
+            d=labels[t[1:]]-end; assert -128<=d<128,(l,d); bs+=struct.pack('<b',d)
+        else: bs.append(int(t,16))
+    out.append((addr,bs)); addr=end
+code=b''.join(b for _,b in out)
+open('out.txt','w').write('.text\n'+'\n'.join(' '.join('%02x'%c for c in b) for _,b in out)+'\n')
+# build ELF
+ph=[]
+def phdr(off,vaddr,fsz,msz,flags):
+    return struct.pack('<IIQQQQQQ',1,flags,off,vaddr,vaddr,fsz,msz,0x1000)
+n=3
+eh=struct.pack('<4sBBBBB7xHHIQQQIHHHHHH',b'\x7fELF',2,1,1,0,0,2,0x3e,1,0x400000,64,0,0,64,56,n,0,0,0)
+hdr_size=64+56*n
+pad=0x1000-hdr_size
+phs=phdr(0,0x400000-0x1000,hdr_size,hdr_size,4)+phdr(0x1000,0x400000,len(code),len(code),5)+phdr(0,0x600000,0,0x100000,6)
+open('rpn','wb').write(eh+phs+b'\0'*pad+code)
+EOF
+python3 asm.py && chmod +x rpn && printf '3 4 +\n-7 2 /\n1 +\n\n5 1 2 + 4 * + 3 -' | ./rpn; echo "rc=$?"; printf '' | ./rpn; echo "rc=$?"; printf -- '-9223372036854775808 1 -\n9223372036854775807 1 +\n-9223372036854775808 -1 /\n-7 2 %%\n7 -2 %%\n1a\n+5\n--3\n-0\n0000012\n1234567890123456789\n123456789012345678\n5 0 /\n1 2\n   \n-\n3 4 -\n' | ./rpn</invoke>
+</invoke>
+
+
+<invoke name="Bash">
+<invoke name="command">cd /tmp/rpnw && ls -la; python3 asm.py; echo $?; ls</invoke>
+</invoke>
+
+
+<invoke name="Bash">
+<invoke name="command">cd /tmp/rpnw && python3 asm.py 2>&1; echo "status=$?"; ls -la</invoke>
+</invoke>
+
+
+<invoke name="Bash">
+<invoke name="command">cd /tmp/rpnw 2>&1; pwd; ls -la /tmp/rpnw 2>&1 | head; which python3</invoke>
+</invoke>
+<invoke name="Bash">
+<invoke name="command">echo hello</invoke>
+</invoke>.text
+be 00 00 60 00
+31 c0
+31 ff
+ba 00 00 62 00
+29 f2
+74 0c
+0f 05
+48 85 c0
+7e 05
+48 01 c6
+eb e7
+41 bc 00 00 60 00
+49 89 f5
+41 be 00 00 62 00
+4d 39 ec
+0f 83 ae 01 00 00
+41 bf 00 00 6b 00
+eb 03
+49 ff c4
+4d 39 ec
+0f 83 10 01 00 00
+41 0f b6 04 24
+3c 20
+74 eb
+3c 09
+74 e7
+3c 0a
+0f 84 fb 00 00 00
+4c 89 e3
+49 ff c4
+4d 39 ec
+73 11
+41 0f b6 04 24
+3c 20
+74 08
+3c 09
+74 04
+3c 0a
+75 e7
+4c 89 e1
+48 29 d9
+0f b6 03
+48 83 f9 01
+75 16
+89 c3
+3c 2b
+74 62
+3c 2d
+74 5e
+3c 2a
+74 5a
+3c 2f
+74 56
+3c 25
+74 52
+31 d2
+3c 2d
+75 11
+48 ff c3
+48 ff c9
+0f 84 0b 01 00 00
+ba 01 00 00 00
+48 83 f9 12
+0f 87 fc 00 00 00
+31 c0
+0f b6 33
+83 ee 30
+83 fe 09
+0f 87 eb 00 00 00
+48 8d 04 80
+48 8d 04 46
+48 ff c3
+4c 39 e3
+72 e1
+85 d2
+74 03
+48 f7 d8
+49 89 07
+49 83 c7 08
+eb 4f
+41 81 ff 10 00 6b 00
+0f 82 be 00 00 00
+49 83 ef 10
+49 8b 07
+49 8b 4f 08
+80 fb 2b
+75 05
+48 01 c8
+eb d5
+80 fb 2d
+75 05
+48 29 c8
+eb cb
+80 fb 2a
+75 06
+48 0f af c1
+eb c0
+48 85 c9
+0f 84 8b 00 00 00
+48 83 f9 ff
+75 13
+48 be 00 00 00 00 00 00 00 80
+48 39 f0
+0f 84 72 00 00 00
+48 99
+48 f7 f9
+80 fb 2f
+74 94
+48 89 d0
+eb 8f
+41 81 ff 08 00 6b 00
+75 5a
+49 8b 47 f8
+48 85 c0
+79 0a
+41 c6 06 2d
+49 ff c6
+48 f7 d8
+bf 20 00 6c 00
+b9 0a 00 00 00
+31 d2
+48 f7 f1
+80 c2 30
+48 ff cf
+88 17
+48 85 c0
+75 ee
+8a 07
+41 88 06
+49 ff c6
+48 ff c7
+81 ff 20 00 6c 00
+72 ed
+41 c6 06 0a
+49 ff c6
+4d 39 ec
+0f 83 78 fe ff ff
+49 ff c4
+e9 70 fe ff ff
+41 c7 06 65 72 72 6f
+66 41 c7 46 04 72 0a
+49 83 c6 06
+4d 39 ec
+0f 83 55 fe ff ff
+41 80 3c 24 0a
+74 cd
+49 ff c4
+eb eb
+be 00 00 62 00
+4c 89 f2
+48 29 f2
+74 16
+b8 01 00 00 00
+bf 01 00 00 00
+0f 05
+48 85 c0
+7e 05
+48 01 c6
+eb e2
+b8 3c 00 00 00
+31 ff
+0f 05
+</previous>
+It failed:
+<failure>
+The machine code is malformed: line 1: '<invoke' is not a byte (two hex digits, e.g. 48 01 f0)
+</failure>
+Write a corrected, complete version. Same output format; output only the program text.

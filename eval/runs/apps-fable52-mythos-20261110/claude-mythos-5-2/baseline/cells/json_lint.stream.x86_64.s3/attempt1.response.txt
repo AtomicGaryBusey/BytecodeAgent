@@ -1,0 +1,331 @@
+.globl _start
+
+.section .rodata
+msg_ok: .ascii "ok\n"
+msg_err: .ascii "error at "
+lit_true: .asciz "true"
+lit_false: .asciz "false"
+lit_null: .asciz "null"
+
+.bss
+.equ BUFSZ, 131072
+buf: .space BUFSZ
+nest: .space 4096
+outbuf: .space 32
+
+.text
+_start:
+    xor ebx, ebx
+1:
+    xor eax, eax
+    xor edi, edi
+    lea rsi, [rip + buf]
+    add rsi, rbx
+    mov edx, BUFSZ
+    sub edx, ebx
+    jz 2f
+    syscall
+    test rax, rax
+    jle 2f
+    add rbx, rax
+    jmp 1b
+2:
+    lea rsi, [rip + buf]
+    lea r12, [rsi + rbx]
+    xor r13d, r13d
+    lea r14, [rip + nest]
+    call skipws
+
+parse_value:
+    call peek
+    cmp eax, '{'
+    je pv_obj
+    cmp eax, '['
+    je pv_arr
+    cmp eax, '"'
+    je pv_str
+    cmp eax, '-'
+    je pv_num
+    lea ecx, [rax - '0']
+    cmp ecx, 9
+    jbe pv_num
+    lea rdx, [rip + lit_true]
+    cmp eax, 't'
+    je pv_lit
+    lea rdx, [rip + lit_false]
+    cmp eax, 'f'
+    je pv_lit
+    lea rdx, [rip + lit_null]
+    cmp eax, 'n'
+    je pv_lit
+    jmp error
+
+pv_obj:
+    inc rsi
+    mov byte ptr [r14 + r13], 1
+    inc r13
+    call skipws
+    call peek
+    cmp eax, '}'
+    jne obj_member
+    inc rsi
+    dec r13
+    jmp value_done
+
+pv_arr:
+    inc rsi
+    mov byte ptr [r14 + r13], 0
+    inc r13
+    call skipws
+    call peek
+    cmp eax, ']'
+    jne parse_value
+    inc rsi
+    dec r13
+    jmp value_done
+
+pv_str:
+    call string
+    jmp value_done
+
+pv_lit:
+    movzx ecx, byte ptr [rdx]
+    test ecx, ecx
+    jz value_done
+    call peek
+    cmp eax, ecx
+    jne error
+    inc rsi
+    inc rdx
+    jmp pv_lit
+
+pv_num:
+    cmp eax, '-'
+    jne 1f
+    inc rsi
+1:
+    call peek
+    cmp eax, '0'
+    je 3f
+    lea ecx, [rax - '1']
+    cmp ecx, 8
+    ja error
+    inc rsi
+2:
+    call peek
+    lea ecx, [rax - '0']
+    cmp ecx, 9
+    ja 4f
+    inc rsi
+    jmp 2b
+3:
+    inc rsi
+    call peek
+4:
+    cmp eax, '.'
+    jne 6f
+    inc rsi
+    call peek
+    lea ecx, [rax - '0']
+    cmp ecx, 9
+    ja error
+5:
+    inc rsi
+    call peek
+    lea ecx, [rax - '0']
+    cmp ecx, 9
+    jbe 5b
+6:
+    cmp eax, 'e'
+    je 7f
+    cmp eax, 'E'
+    jne value_done
+7:
+    inc rsi
+    call peek
+    cmp eax, '+'
+    je 8f
+    cmp eax, '-'
+    jne 9f
+8:
+    inc rsi
+    call peek
+9:
+    lea ecx, [rax - '0']
+    cmp ecx, 9
+    ja error
+1:
+    inc rsi
+    call peek
+    lea ecx, [rax - '0']
+    cmp ecx, 9
+    jbe 1b
+    jmp value_done
+
+obj_member:
+    call skipws
+    call peek
+    cmp eax, '"'
+    jne error
+    call string
+    call skipws
+    call peek
+    cmp eax, ':'
+    jne error
+    inc rsi
+    call skipws
+    jmp parse_value
+
+value_done:
+    call skipws
+    test r13, r13
+    jnz 1f
+    cmp rsi, r12
+    jne error
+    jmp success
+1:
+    call peek
+    cmp byte ptr [r14 + r13 - 1], 0
+    jne 2f
+    # array
+    cmp eax, ','
+    jne 3f
+    inc rsi
+    call skipws
+    jmp parse_value
+3:
+    cmp eax, ']'
+    jne error
+    inc rsi
+    dec r13
+    jmp value_done
+2:
+    # object
+    cmp eax, ','
+    jne 4f
+    inc rsi
+    jmp obj_member
+4:
+    cmp eax, '}'
+    jne error
+    inc rsi
+    dec r13
+    jmp value_done
+
+# string: rsi at opening quote
+string:
+    inc rsi
+str_loop:
+    call peek
+    cmp eax, 0x20
+    jl error
+    cmp eax, '"'
+    je str_end
+    inc rsi
+    cmp eax, 0x5C
+    jne str_loop
+    call peek
+    cmp eax, '"'
+    je str_esc_ok
+    cmp eax, 0x5C
+    je str_esc_ok
+    cmp eax, '/'
+    je str_esc_ok
+    cmp eax, 'b'
+    je str_esc_ok
+    cmp eax, 'f'
+    je str_esc_ok
+    cmp eax, 'n'
+    je str_esc_ok
+    cmp eax, 'r'
+    je str_esc_ok
+    cmp eax, 't'
+    je str_esc_ok
+    cmp eax, 'u'
+    jne error
+    inc rsi
+    mov edx, 4
+1:
+    call peek
+    lea ecx, [rax - '0']
+    cmp ecx, 9
+    jbe 2f
+    or eax, 0x20
+    sub eax, 'a'
+    cmp eax, 5
+    ja error
+2:
+    inc rsi
+    dec edx
+    jnz 1b
+    jmp str_loop
+str_esc_ok:
+    inc rsi
+    jmp str_loop
+str_end:
+    inc rsi
+    ret
+
+# peek: eax = byte at rsi, or -1 at end
+peek:
+    mov eax, -1
+    cmp rsi, r12
+    jae 1f
+    movzx eax, byte ptr [rsi]
+1:
+    ret
+
+skipws:
+    call peek
+    cmp eax, 0x20
+    je 1f
+    cmp eax, 0x09
+    je 1f
+    cmp eax, 0x0A
+    je 1f
+    cmp eax, 0x0D
+    je 1f
+    ret
+1:
+    inc rsi
+    jmp skipws
+
+success:
+    mov eax, 1
+    mov edi, 1
+    lea rsi, [rip + msg_ok]
+    mov edx, 3
+    syscall
+    mov eax, 60
+    xor edi, edi
+    syscall
+
+error:
+    lea rax, [rip + buf]
+    sub rsi, rax
+    mov rax, rsi
+    lea rbx, [rip + outbuf + 31]
+    mov byte ptr [rbx], 10
+    mov ecx, 10
+1:
+    xor edx, edx
+    div rcx
+    add dl, '0'
+    dec rbx
+    mov byte ptr [rbx], dl
+    test rax, rax
+    jnz 1b
+    mov eax, 1
+    mov edi, 1
+    lea rsi, [rip + msg_err]
+    mov edx, 9
+    syscall
+    mov eax, 1
+    mov edi, 1
+    mov rsi, rbx
+    lea rdx, [rip + outbuf + 32]
+    sub rdx, rbx
+    syscall
+    mov eax, 60
+    mov edi, 1
+    syscall

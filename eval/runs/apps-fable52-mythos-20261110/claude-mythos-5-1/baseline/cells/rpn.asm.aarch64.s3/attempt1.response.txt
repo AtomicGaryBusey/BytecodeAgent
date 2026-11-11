@@ -1,0 +1,283 @@
+.text
+.globl _start
+
+.equ INBUF_SIZE, 65600
+.equ OUT_FLUSH_THRESH, 65472
+
+_start:
+    adrp x19, inbuf
+    add x19, x19, :lo12:inbuf
+    mov x26, x19
+    mov x20, #INBUF_SIZE
+    add x20, x26, x20
+read_loop:
+    sub x2, x20, x19
+    cbz x2, read_done
+    mov x0, #0
+    mov x1, x19
+    mov x8, #63
+    svc #0
+    cmp x0, #0
+    ble read_done
+    add x19, x19, x0
+    b read_loop
+read_done:
+    mov x20, x19
+    mov x19, x26
+    adrp x21, outbuf
+    add x21, x21, :lo12:outbuf
+    mov x22, #0
+    adrp x23, rstack
+    add x23, x23, :lo12:rstack
+
+main_loop:
+    cmp x19, x20
+    b.hs finish
+    mov x24, #0
+tok_loop:
+skip_sep:
+    cmp x19, x20
+    b.hs line_end
+    ldrb w0, [x19]
+    cmp w0, #0x20
+    b.eq skip_inc
+    cmp w0, #0x09
+    b.ne skip_done
+skip_inc:
+    add x19, x19, #1
+    b skip_sep
+skip_done:
+    cmp w0, #0x0A
+    b.eq line_end
+    mov x25, x19
+find_end:
+    add x19, x19, #1
+    cmp x19, x20
+    b.hs found_end
+    ldrb w0, [x19]
+    cmp w0, #0x20
+    b.eq found_end
+    cmp w0, #0x09
+    b.eq found_end
+    cmp w0, #0x0A
+    b.ne find_end
+found_end:
+    sub x1, x19, x25
+    ldrb w0, [x25]
+    cmp x1, #1
+    b.ne parse_num
+    cmp w0, #'+'
+    b.eq op_add
+    cmp w0, #'-'
+    b.eq op_sub
+    cmp w0, #'*'
+    b.eq op_mul
+    cmp w0, #'/'
+    b.eq op_div
+    cmp w0, #'%'
+    b.eq op_mod
+parse_num:
+    mov x2, #0
+    cmp w0, #'-'
+    b.ne pn_digits
+    mov x2, #1
+    add x25, x25, #1
+    sub x1, x1, #1
+pn_digits:
+    cmp x1, #1
+    b.lo line_error
+    cmp x1, #18
+    b.hi line_error
+    mov x3, #0
+    mov x4, #10
+pn_loop:
+    ldrb w0, [x25], #1
+    sub w0, w0, #'0'
+    cmp w0, #9
+    b.hi line_error
+    madd x3, x3, x4, x0
+    subs x1, x1, #1
+    b.ne pn_loop
+    cbz x2, pn_push
+    neg x3, x3
+pn_push:
+    str x3, [x23, x24, lsl #3]
+    add x24, x24, #1
+    b tok_loop
+
+op_add:
+    mov w5, #0
+    b binop
+op_sub:
+    mov w5, #1
+    b binop
+op_mul:
+    mov w5, #2
+    b binop
+op_div:
+    mov w5, #3
+    b binop
+op_mod:
+    mov w5, #4
+binop:
+    cmp x24, #2
+    b.lo line_error
+    sub x24, x24, #2
+    ldr x0, [x23, x24, lsl #3]
+    add x2, x24, #1
+    ldr x1, [x23, x2, lsl #3]
+    cbz w5, do_add
+    cmp w5, #1
+    b.eq do_sub
+    cmp w5, #2
+    b.eq do_mul
+    cbz x1, line_error
+    cmn x1, #1
+    b.ne do_divmod
+    movz x3, #0x8000, lsl #48
+    cmp x0, x3
+    b.eq line_error
+do_divmod:
+    sdiv x3, x0, x1
+    cmp w5, #3
+    b.eq push_x3
+    msub x3, x3, x1, x0
+    b push_x3
+do_add:
+    add x3, x0, x1
+    b push_x3
+do_sub:
+    sub x3, x0, x1
+    b push_x3
+do_mul:
+    mul x3, x0, x1
+push_x3:
+    str x3, [x23, x24, lsl #3]
+    add x24, x24, #1
+    b tok_loop
+
+line_error:
+le_skip:
+    cmp x19, x20
+    b.hs le_emit
+    ldrb w0, [x19]
+    cmp w0, #0x0A
+    b.eq le_emit
+    add x19, x19, #1
+    b le_skip
+le_emit:
+    bl ensure_space
+    adrp x0, errmsg
+    add x0, x0, :lo12:errmsg
+    add x1, x21, x22
+    mov x3, #6
+le_copy:
+    ldrb w2, [x0], #1
+    strb w2, [x1], #1
+    subs x3, x3, #1
+    b.ne le_copy
+    add x22, x22, #6
+    b consume_nl
+
+line_end:
+    cmp x24, #1
+    b.ne le_emit
+    ldr x0, [x23]
+    bl emit_number
+consume_nl:
+    cmp x19, x20
+    b.hs main_loop
+    add x19, x19, #1
+    b main_loop
+
+finish:
+    bl flush_out
+    mov x0, #0
+    mov x8, #94
+    svc #0
+    b finish
+
+// ensure at least 64 bytes free in output buffer
+ensure_space:
+    mov x9, #OUT_FLUSH_THRESH
+    cmp x22, x9
+    b.lo 1f
+    stp x29, x30, [sp, #-16]!
+    bl flush_out
+    ldp x29, x30, [sp], #16
+1:
+    ret
+
+flush_out:
+    mov x9, x21
+    mov x10, x22
+fo_loop:
+    cbz x10, fo_done
+    mov x0, #1
+    mov x1, x9
+    mov x2, x10
+    mov x8, #64
+    svc #0
+    cmp x0, #0
+    ble fo_done
+    add x9, x9, x0
+    sub x10, x10, x0
+    b fo_loop
+fo_done:
+    mov x22, #0
+    ret
+
+// x0 = signed value; appends decimal + newline to output buffer
+emit_number:
+    stp x29, x30, [sp, #-48]!
+    mov x27, x0
+    bl ensure_space
+    add x11, sp, #48
+    mov x12, x11
+    mov x10, x27
+    mov x13, #0
+    tbz x27, #63, en_pos
+    neg x10, x27
+    mov x13, #1
+en_pos:
+    mov x14, #10
+en_loop:
+    udiv x15, x10, x14
+    msub x16, x15, x14, x10
+    add w16, w16, #'0'
+    strb w16, [x12, #-1]!
+    mov x10, x15
+    cbnz x10, en_loop
+    cbz x13, en_copy
+    mov w16, #'-'
+    strb w16, [x12, #-1]!
+en_copy:
+    add x1, x21, x22
+en_cl:
+    cmp x12, x11
+    b.hs en_nl
+    ldrb w16, [x12], #1
+    strb w16, [x1], #1
+    add x22, x22, #1
+    b en_cl
+en_nl:
+    mov w16, #0x0A
+    strb w16, [x1]
+    add x22, x22, #1
+    ldp x29, x30, [sp], #48
+    ret
+
+.section .rodata
+errmsg:
+    .ascii "error\n"
+
+.bss
+.balign 16
+inbuf:
+    .space 65600
+.balign 16
+outbuf:
+    .space 65536
+.balign 16
+rstack:
+    .space 264000

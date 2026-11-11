@@ -1,0 +1,300 @@
+.globl _start
+.equ BUFSZ, 131072
+
+.section .rodata
+s_true: .asciz "true"
+s_false: .asciz "false"
+s_null: .asciz "null"
+s_ok: .ascii "ok\n"
+s_err: .ascii "error at "
+
+.bss
+buf: .zero 131072
+stk: .zero 70000
+obuf: .zero 48
+
+.text
+_start:
+    lea r14, [rip + buf]
+    mov r15, r14
+read_loop:
+    lea rdx, [r14 + BUFSZ]
+    sub rdx, r15
+    jz read_done
+    xor eax, eax
+    xor edi, edi
+    mov rsi, r15
+    syscall
+    test rax, rax
+    jle read_done
+    add r15, rax
+    jmp read_loop
+read_done:
+    mov rsi, r14
+    mov r12, r15
+    lea rbx, [rip + stk]
+    xor r13d, r13d
+
+parse_value:
+    call skipws
+    cmp eax, '{'
+    je obj_start
+    cmp eax, '['
+    je arr_start
+    cmp eax, '"'
+    jne 1f
+    call string
+    jmp after_value
+1:
+    lea rdx, [rip + s_true]
+    cmp eax, 't'
+    je literal
+    lea rdx, [rip + s_false]
+    cmp eax, 'f'
+    je literal
+    lea rdx, [rip + s_null]
+    cmp eax, 'n'
+    je literal
+    cmp eax, '-'
+    jne 2f
+    inc rsi
+    call peek
+2:
+    cmp eax, '0'
+    jne 3f
+    inc rsi
+    jmp frac
+3:
+    lea ecx, [rax - '1']
+    cmp ecx, 8
+    ja error
+    inc rsi
+    call digits
+frac:
+    call peek
+    cmp eax, '.'
+    jne exp
+    inc rsi
+    call need_digits
+exp:
+    call peek
+    or eax, 0x20
+    cmp eax, 'e'
+    jne after_value
+    inc rsi
+    call peek
+    cmp eax, '+'
+    je 4f
+    cmp eax, '-'
+    jne 5f
+4:
+    inc rsi
+5:
+    call need_digits
+    jmp after_value
+
+literal:
+    mov cl, byte ptr [rdx]
+    test cl, cl
+    jz after_value
+    call peek
+    cmp eax, -1
+    je error
+    cmp al, cl
+    jne error
+    inc rsi
+    inc rdx
+    jmp literal
+
+obj_start:
+    inc rsi
+    mov byte ptr [rbx + r13], 1
+    inc r13
+    call skipws
+    cmp eax, '}'
+    je close
+obj_member:
+    cmp eax, '"'
+    jne error
+    call string
+    call skipws
+    cmp eax, ':'
+    jne error
+    inc rsi
+    jmp parse_value
+
+arr_start:
+    inc rsi
+    mov byte ptr [rbx + r13], 0
+    inc r13
+    call skipws
+    cmp eax, ']'
+    je close
+    jmp parse_value
+
+close:
+    inc rsi
+    dec r13
+after_value:
+    test r13, r13
+    jz top_done
+    call skipws
+    cmp byte ptr [rbx + r13 - 1], 0
+    jne in_obj
+    cmp eax, ']'
+    je close
+    cmp eax, ','
+    jne error
+    inc rsi
+    jmp parse_value
+in_obj:
+    cmp eax, '}'
+    je close
+    cmp eax, ','
+    jne error
+    inc rsi
+    call skipws
+    jmp obj_member
+
+top_done:
+    call skipws
+    cmp eax, -1
+    jne error
+    mov eax, 1
+    mov edi, 1
+    lea rsi, [rip + s_ok]
+    mov edx, 3
+    syscall
+    mov eax, 60
+    xor edi, edi
+    syscall
+
+error:
+    mov rax, rsi
+    sub rax, r14
+    lea rdi, [rip + obuf + 47]
+    mov byte ptr [rdi], 10
+    mov ecx, 10
+1:
+    xor edx, edx
+    div rcx
+    add dl, '0'
+    dec rdi
+    mov byte ptr [rdi], dl
+    test rax, rax
+    jnz 1b
+    lea r8, [rip + s_err]
+    mov ecx, 9
+2:
+    dec rdi
+    mov al, byte ptr [r8 + rcx - 1]
+    mov byte ptr [rdi], al
+    dec ecx
+    jnz 2b
+    mov rsi, rdi
+    lea rdx, [rip + obuf + 48]
+    sub rdx, rsi
+    mov eax, 1
+    mov edi, 1
+    syscall
+    mov eax, 60
+    mov edi, 1
+    syscall
+
+# ---- helpers ----
+peek:
+    mov eax, -1
+    cmp rsi, r12
+    jae 1f
+    movzx eax, byte ptr [rsi]
+1:
+    ret
+
+skipws:
+    mov eax, -1
+    cmp rsi, r12
+    jae 2f
+    movzx eax, byte ptr [rsi]
+    cmp eax, 0x20
+    je 1f
+    cmp eax, 9
+    je 1f
+    cmp eax, 10
+    je 1f
+    cmp eax, 13
+    jne 2f
+1:
+    inc rsi
+    jmp skipws
+2:
+    ret
+
+need_digits:
+    call peek
+    sub eax, '0'
+    cmp eax, 9
+    ja error
+    inc rsi
+digits:
+    call peek
+    sub eax, '0'
+    cmp eax, 9
+    ja 1f
+    inc rsi
+    jmp digits
+1:
+    ret
+
+string:
+    inc rsi
+str_loop:
+    call peek
+    cmp eax, 0x20
+    jl error
+    inc rsi
+    cmp eax, '"'
+    je str_done
+    cmp eax, 0x5C
+    jne str_loop
+    call peek
+    cmp eax, 'u'
+    je str_u
+    cmp eax, '"'
+    je 1f
+    cmp eax, 0x5C
+    je 1f
+    cmp eax, '/'
+    je 1f
+    cmp eax, 'b'
+    je 1f
+    cmp eax, 'f'
+    je 1f
+    cmp eax, 'n'
+    je 1f
+    cmp eax, 'r'
+    je 1f
+    cmp eax, 't'
+    jne error
+1:
+    inc rsi
+    jmp str_loop
+str_u:
+    inc rsi
+    mov edx, 4
+2:
+    call peek
+    lea ecx, [rax - '0']
+    cmp ecx, 9
+    jbe 3f
+    mov ecx, eax
+    or ecx, 0x20
+    sub ecx, 'a'
+    cmp ecx, 5
+    ja error
+3:
+    inc rsi
+    dec edx
+    jnz 2b
+    jmp str_loop
+str_done:
+    ret

@@ -1,0 +1,306 @@
+.globl _start
+
+.equ BUFSZ, 65552
+
+.section .rodata
+lit_true:  .asciz "true"
+lit_false: .asciz "false"
+lit_null:  .asciz "null"
+ok_msg:    .ascii "ok\n"
+err_pre:   .ascii "error at "
+
+.bss
+.align 16
+buf:    .space 65600
+outbuf: .space 48
+
+.text
+_start:
+    lea r14, [rip + buf]
+    xor r15d, r15d
+read_loop:
+    mov edx, BUFSZ
+    sub rdx, r15
+    jle read_done
+    xor eax, eax
+    xor edi, edi
+    lea rsi, [r14 + r15]
+    syscall
+    test rax, rax
+    jle read_done
+    add r15, rax
+    jmp read_loop
+read_done:
+    mov byte ptr [r14 + r15], 0
+    mov rsi, r14
+    mov r13, rsp
+
+value:
+    call skipws
+    cmp al, '{'
+    je obj_start
+    cmp al, '['
+    je arr_start
+    cmp al, '"'
+    jne 1f
+    call string
+    jmp value_done
+1:
+    cmp al, '-'
+    je number
+    lea edx, [rax - '0']
+    cmp edx, 9
+    jbe number
+    lea rdi, [rip + lit_true]
+    cmp al, 't'
+    je literal
+    lea rdi, [rip + lit_false]
+    cmp al, 'f'
+    je literal
+    lea rdi, [rip + lit_null]
+    cmp al, 'n'
+    je literal
+    jmp error
+
+literal:
+    mov cl, byte ptr [rdi]
+    test cl, cl
+    jz value_done
+    cmp cl, byte ptr [rsi]
+    jne error
+    inc rsi
+    inc rdi
+    jmp literal
+
+arr_start:
+    inc rsi
+    call skipws
+    cmp al, ']'
+    jne 1f
+    inc rsi
+    jmp value_done
+1:
+    push 0
+    jmp value
+
+obj_start:
+    inc rsi
+    call skipws
+    cmp al, '}'
+    jne 1f
+    inc rsi
+    jmp value_done
+1:
+    push 1
+obj_member:
+    call skipws
+    cmp al, '"'
+    jne error
+    call string
+    call skipws
+    cmp al, ':'
+    jne error
+    inc rsi
+    jmp value
+
+value_done:
+    cmp rsp, r13
+    je top_done
+    call skipws
+    cmp qword ptr [rsp], 0
+    jne in_obj
+    cmp al, ','
+    jne 1f
+    inc rsi
+    jmp value
+1:
+    cmp al, ']'
+    jne error
+    inc rsi
+    add rsp, 8
+    jmp value_done
+in_obj:
+    cmp al, ','
+    jne 1f
+    inc rsi
+    jmp obj_member
+1:
+    cmp al, '}'
+    jne error
+    inc rsi
+    add rsp, 8
+    jmp value_done
+
+top_done:
+    call skipws
+    lea rax, [r14 + r15]
+    cmp rsi, rax
+    jne error
+    mov eax, 1
+    mov edi, 1
+    lea rsi, [rip + ok_msg]
+    mov edx, 3
+    syscall
+    mov eax, 60
+    xor edi, edi
+    syscall
+
+# number: al = current char at [rsi]
+number:
+    cmp al, '-'
+    jne 1f
+    inc rsi
+    movzx eax, byte ptr [rsi]
+1:
+    cmp al, '0'
+    jne 2f
+    inc rsi
+    jmp num_frac
+2:
+    lea edx, [rax - '1']
+    cmp edx, 8
+    ja error
+3:
+    inc rsi
+    movzx eax, byte ptr [rsi]
+    lea edx, [rax - '0']
+    cmp edx, 9
+    jbe 3b
+num_frac:
+    movzx eax, byte ptr [rsi]
+    cmp al, '.'
+    jne num_exp
+    inc rsi
+    movzx eax, byte ptr [rsi]
+    lea edx, [rax - '0']
+    cmp edx, 9
+    ja error
+4:
+    inc rsi
+    movzx eax, byte ptr [rsi]
+    lea edx, [rax - '0']
+    cmp edx, 9
+    jbe 4b
+num_exp:
+    movzx eax, byte ptr [rsi]
+    or al, 0x20
+    cmp al, 'e'
+    jne value_done
+    inc rsi
+    movzx eax, byte ptr [rsi]
+    cmp al, '+'
+    je 5f
+    cmp al, '-'
+    jne 6f
+5:
+    inc rsi
+    movzx eax, byte ptr [rsi]
+6:
+    lea edx, [rax - '0']
+    cmp edx, 9
+    ja error
+7:
+    inc rsi
+    movzx eax, byte ptr [rsi]
+    lea edx, [rax - '0']
+    cmp edx, 9
+    jbe 7b
+    jmp value_done
+
+# skip whitespace; returns current byte in eax
+skipws:
+    movzx eax, byte ptr [rsi]
+    cmp al, 0x20
+    je 1f
+    cmp al, 9
+    je 1f
+    cmp al, 10
+    je 1f
+    cmp al, 13
+    jne 2f
+1:
+    inc rsi
+    jmp skipws
+2:
+    ret
+
+# string: rsi at opening quote
+string:
+    inc rsi
+1:
+    movzx eax, byte ptr [rsi]
+    cmp al, 0x20
+    jb error
+    inc rsi
+    cmp al, '"'
+    je 9f
+    cmp al, 0x5C
+    jne 1b
+    movzx eax, byte ptr [rsi]
+    cmp al, 'u'
+    je 3f
+    cmp al, '"'
+    je 2f
+    cmp al, 0x5C
+    je 2f
+    cmp al, '/'
+    je 2f
+    cmp al, 'b'
+    je 2f
+    cmp al, 'f'
+    je 2f
+    cmp al, 'n'
+    je 2f
+    cmp al, 'r'
+    je 2f
+    cmp al, 't'
+    jne error
+2:
+    inc rsi
+    jmp 1b
+3:
+    inc rsi
+    mov ecx, 4
+4:
+    movzx eax, byte ptr [rsi]
+    lea edx, [rax - '0']
+    cmp edx, 9
+    jbe 5f
+    or al, 0x20
+    lea edx, [rax - 'a']
+    cmp edx, 5
+    ja error
+5:
+    inc rsi
+    dec ecx
+    jnz 4b
+    jmp 1b
+9:
+    ret
+
+error:
+    mov rax, rsi
+    sub rax, r14
+    lea rdi, [rip + outbuf + 40]
+    mov byte ptr [rdi], 10
+    mov ecx, 10
+1:
+    xor edx, edx
+    div rcx
+    add dl, '0'
+    dec rdi
+    mov byte ptr [rdi], dl
+    test rax, rax
+    jnz 1b
+    mov rax, qword ptr [rip + err_pre]
+    mov qword ptr [rdi - 9], rax
+    mov byte ptr [rdi - 1], ' '
+    lea rsi, [rdi - 9]
+    lea rdx, [rip + outbuf + 41]
+    sub rdx, rsi
+    mov eax, 1
+    mov edi, 1
+    syscall
+    mov eax, 60
+    mov edi, 1
+    syscall

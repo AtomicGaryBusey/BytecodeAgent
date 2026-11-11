@@ -1,0 +1,320 @@
+.globl _start
+
+.section .rodata
+msg_ok:   .ascii "ok\n"
+msg_err:  .ascii "error at "
+s_true:   .asciz "true"
+s_false:  .asciz "false"
+s_null:   .asciz "null"
+
+.bss
+.balign 16
+buf:    .space 65600
+nstack: .space 2048
+
+.text
+// w0 = current byte or 256 at EOF
+peek:
+    mov w0, #256
+    cmp x19, x20
+    b.hs 1f
+    ldrb w0, [x19]
+1:  ret
+
+// skip whitespace; w0 = current byte or 256 at EOF
+skipws:
+    cmp x19, x20
+    b.hs 2f
+    ldrb w0, [x19]
+    cmp w0, #32
+    b.eq 1f
+    cmp w0, #9
+    b.eq 1f
+    cmp w0, #10
+    b.eq 1f
+    cmp w0, #13
+    b.eq 1f
+    ret
+1:  add x19, x19, #1
+    b skipws
+2:  mov w0, #256
+    ret
+
+_start:
+    adrp x23, buf
+    add x23, x23, :lo12:buf
+    adrp x22, nstack
+    add x22, x22, :lo12:nstack
+    mov x19, x23
+    mov x20, x23
+    mov x24, #65536
+    add x24, x24, #16
+    add x24, x24, x23          // buffer limit
+rd_loop:
+    sub x2, x24, x20
+    cbz x2, rd_done
+    mov x0, #0
+    mov x1, x20
+    mov x8, #63
+    svc #0
+    cmp x0, #0
+    b.le rd_done
+    add x20, x20, x0
+    b rd_loop
+rd_done:
+    mov x21, #0                // depth
+
+parse_value:
+    bl skipws
+    cmp w0, #'{'
+    b.eq v_object
+    cmp w0, #'['
+    b.eq v_array
+    cmp w0, #'"'
+    b.eq v_string
+    cmp w0, #'-'
+    b.eq number
+    sub w1, w0, #'0'
+    cmp w1, #9
+    b.ls number
+    adrp x25, s_true
+    add x25, x25, :lo12:s_true
+    cmp w0, #'t'
+    b.eq literal
+    adrp x25, s_false
+    add x25, x25, :lo12:s_false
+    cmp w0, #'f'
+    b.eq literal
+    adrp x25, s_null
+    add x25, x25, :lo12:s_null
+    cmp w0, #'n'
+    b.eq literal
+    b error
+
+literal:
+    ldrb w26, [x25], #1
+    cbz w26, after_value
+    bl peek
+    cmp w0, w26
+    b.ne error
+    add x19, x19, #1
+    b literal
+
+v_object:
+    mov w1, #1
+    strb w1, [x22, x21]
+    add x21, x21, #1
+    add x19, x19, #1
+    bl skipws
+    cmp w0, #'}'
+    b.ne member
+    add x19, x19, #1
+    sub x21, x21, #1
+    b after_value
+
+v_array:
+    strb wzr, [x22, x21]
+    add x21, x21, #1
+    add x19, x19, #1
+    bl skipws
+    cmp w0, #']'
+    b.ne parse_value
+    add x19, x19, #1
+    sub x21, x21, #1
+    b after_value
+
+// w0 = current char (after ws); expects string, ws, ':', then value
+member:
+    cmp w0, #'"'
+    b.ne error
+    mov w27, #1                // key mode
+    b string
+member_after_key:
+    bl skipws
+    cmp w0, #':'
+    b.ne error
+    add x19, x19, #1
+    b parse_value
+
+v_string:
+    mov w27, #0
+string:
+    add x19, x19, #1           // opening quote
+str_loop:
+    bl peek
+    cmp w0, #256
+    b.eq error
+    cmp w0, #0x20
+    b.lo error
+    cmp w0, #'"'
+    b.eq str_end
+    cmp w0, #'\\'
+    b.eq str_esc
+    add x19, x19, #1
+    b str_loop
+str_end:
+    add x19, x19, #1
+    cbnz w27, member_after_key
+    b after_value
+str_esc:
+    add x19, x19, #1
+    bl peek
+    cmp w0, #'"'
+    b.eq str_adv
+    cmp w0, #'\\'
+    b.eq str_adv
+    cmp w0, #'/'
+    b.eq str_adv
+    cmp w0, #'b'
+    b.eq str_adv
+    cmp w0, #'f'
+    b.eq str_adv
+    cmp w0, #'n'
+    b.eq str_adv
+    cmp w0, #'r'
+    b.eq str_adv
+    cmp w0, #'t'
+    b.eq str_adv
+    cmp w0, #'u'
+    b.ne error
+    add x19, x19, #1
+    mov w26, #4
+hex_loop:
+    bl peek
+    sub w1, w0, #'0'
+    cmp w1, #9
+    b.ls hex_ok
+    orr w1, w0, #0x20
+    sub w1, w1, #'a'
+    cmp w1, #5
+    b.hi error
+hex_ok:
+    add x19, x19, #1
+    subs w26, w26, #1
+    b.ne hex_loop
+    b str_loop
+str_adv:
+    add x19, x19, #1
+    b str_loop
+
+number:
+    cmp w0, #'-'
+    b.ne 1f
+    add x19, x19, #1
+    bl peek
+1:  cmp w0, #'0'
+    b.ne 2f
+    add x19, x19, #1
+    bl peek
+    b num_frac
+2:  sub w1, w0, #'1'
+    cmp w1, #8
+    b.hi error
+3:  add x19, x19, #1
+    bl peek
+    sub w1, w0, #'0'
+    cmp w1, #9
+    b.ls 3b
+num_frac:
+    cmp w0, #'.'
+    b.ne num_exp
+    add x19, x19, #1
+    bl peek
+    sub w1, w0, #'0'
+    cmp w1, #9
+    b.hi error
+4:  add x19, x19, #1
+    bl peek
+    sub w1, w0, #'0'
+    cmp w1, #9
+    b.ls 4b
+num_exp:
+    orr w1, w0, #0x20
+    cmp w1, #'e'
+    b.ne after_value
+    add x19, x19, #1
+    bl peek
+    cmp w0, #'+'
+    b.eq 5f
+    cmp w0, #'-'
+    b.ne 6f
+5:  add x19, x19, #1
+    bl peek
+6:  sub w1, w0, #'0'
+    cmp w1, #9
+    b.hi error
+7:  add x19, x19, #1
+    bl peek
+    sub w1, w0, #'0'
+    cmp w1, #9
+    b.ls 7b
+    b after_value
+
+after_value:
+    bl skipws
+    cbnz x21, 1f
+    cmp w0, #256
+    b.ne error
+    b success
+1:  sub x1, x21, #1
+    ldrb w2, [x22, x1]
+    cbnz w2, av_obj
+    cmp w0, #','
+    b.ne 2f
+    add x19, x19, #1
+    b parse_value
+2:  cmp w0, #']'
+    b.ne error
+    add x19, x19, #1
+    sub x21, x21, #1
+    b after_value
+av_obj:
+    cmp w0, #','
+    b.ne 3f
+    add x19, x19, #1
+    bl skipws
+    b member
+3:  cmp w0, #'}'
+    b.ne error
+    add x19, x19, #1
+    sub x21, x21, #1
+    b after_value
+
+success:
+    mov x0, #1
+    adrp x1, msg_ok
+    add x1, x1, :lo12:msg_ok
+    mov x2, #3
+    mov x8, #64
+    svc #0
+    mov x0, #0
+    mov x8, #93
+    svc #0
+
+error:
+    mov x0, #1
+    adrp x1, msg_err
+    add x1, x1, :lo12:msg_err
+    mov x2, #9
+    mov x8, #64
+    svc #0
+    sub sp, sp, #32
+    sub x3, x19, x23           // offset
+    add x1, sp, #31
+    mov w4, #10
+    strb w4, [x1]
+    mov x5, #10
+1:  udiv x6, x3, x5
+    msub x7, x6, x5, x3
+    add w7, w7, #'0'
+    strb w7, [x1, #-1]!
+    mov x3, x6
+    cbnz x3, 1b
+    add x2, sp, #32
+    sub x2, x2, x1
+    mov x0, #1
+    mov x8, #64
+    svc #0
+    mov x0, #1
+    mov x8, #93
+    svc #0

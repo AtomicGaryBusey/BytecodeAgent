@@ -1,0 +1,240 @@
+.globl _start
+
+.bss
+.balign 16
+inbuf:  .space 65552
+outbuf: .space 458752
+stk:    .space 8192
+numbuf: .space 32
+
+.text
+_start:
+    adrp x19, inbuf
+    add x19, x19, :lo12:inbuf
+    mov x20, x19                // end pointer
+    mov x27, #0x10000
+    add x27, x19, x27           // capacity end
+read_loop:
+    sub x2, x27, x20
+    cbz x2, read_done
+    mov x0, #0
+    mov x1, x20
+    mov x8, #63
+    svc #0
+    cmp x0, #0
+    b.le read_done
+    add x20, x20, x0
+    b read_loop
+read_done:
+    adrp x21, outbuf
+    add x21, x21, :lo12:outbuf
+    adrp x22, stk
+    add x22, x22, :lo12:stk
+
+line_loop:
+    cmp x19, x20
+    b.hs finish
+    mov x23, #0
+tok_loop:
+    cmp x19, x20
+    b.hs end_line
+    ldrb w0, [x19]
+    cmp w0, #10
+    b.eq end_line_nl
+    cmp w0, #32
+    b.eq skip_sep
+    cmp w0, #9
+    b.eq skip_sep
+    // token start
+    mov x25, x19
+    mov x26, x19
+scan:
+    cmp x26, x20
+    b.hs scan_done
+    ldrb w1, [x26]
+    cmp w1, #32
+    b.eq scan_done
+    cmp w1, #9
+    b.eq scan_done
+    cmp w1, #10
+    b.eq scan_done
+    add x26, x26, #1
+    b scan
+scan_done:
+    mov x19, x26
+    sub x2, x26, x25
+    cmp x2, #1
+    b.ne number
+    cmp w0, #'+'
+    b.eq op_add
+    cmp w0, #'-'
+    b.eq op_sub
+    cmp w0, #'*'
+    b.eq op_mul
+    cmp w0, #'/'
+    b.eq op_div
+    cmp w0, #'%'
+    b.eq op_mod
+number:
+    mov x4, x25
+    mov x5, #0                  // neg flag
+    cmp w0, #'-'
+    b.ne 1f
+    mov x5, #1
+    add x4, x4, #1
+1:
+    sub x6, x26, x4
+    cbz x6, err_skip
+    cmp x6, #18
+    b.hi err_skip
+    mov x7, #0
+    mov x9, #10
+2:
+    ldrb w1, [x4], #1
+    sub w1, w1, #'0'
+    cmp w1, #9
+    b.hi err_skip
+    mul x7, x7, x9
+    add x7, x7, x1
+    cmp x4, x26
+    b.lo 2b
+    cbz x5, 3f
+    neg x7, x7
+3:
+    str x7, [x22, x23, lsl #3]
+    add x23, x23, #1
+    b tok_loop
+
+skip_sep:
+    add x19, x19, #1
+    b tok_loop
+
+op_add:
+    cmp x23, #2
+    b.lo err_skip
+    bl pop2
+    add x1, x1, x2
+    b op_store
+op_sub:
+    cmp x23, #2
+    b.lo err_skip
+    bl pop2
+    sub x1, x1, x2
+    b op_store
+op_mul:
+    cmp x23, #2
+    b.lo err_skip
+    bl pop2
+    mul x1, x1, x2
+    b op_store
+op_div:
+    cmp x23, #2
+    b.lo err_skip
+    bl pop2
+    cbz x2, err_skip
+    mov x3, #0x8000000000000000
+    cmp x1, x3
+    b.ne 1f
+    cmn x2, #1
+    b.eq err_skip
+1:
+    sdiv x1, x1, x2
+    b op_store
+op_mod:
+    cmp x23, #2
+    b.lo err_skip
+    bl pop2
+    cbz x2, err_skip
+    mov x3, #0x8000000000000000
+    cmp x1, x3
+    b.ne 1f
+    cmn x2, #1
+    b.eq err_skip
+1:
+    sdiv x3, x1, x2
+    msub x1, x3, x2, x1
+op_store:
+    sub x3, x23, #1
+    str x1, [x22, x3, lsl #3]
+    b tok_loop
+
+// pops b into x2, a into x1; leaves count decremented by one
+pop2:
+    sub x23, x23, #1
+    ldr x2, [x22, x23, lsl #3]
+    sub x3, x23, #1
+    ldr x1, [x22, x3, lsl #3]
+    ret
+
+err_skip:
+    cmp x19, x20
+    b.hs emit_err
+    ldrb w0, [x19], #1
+    cmp w0, #10
+    b.ne err_skip
+emit_err:
+    mov w0, #'e'
+    strb w0, [x21], #1
+    mov w0, #'r'
+    strb w0, [x21], #1
+    strb w0, [x21], #1
+    mov w0, #'o'
+    strb w0, [x21], #1
+    mov w0, #'r'
+    strb w0, [x21], #1
+    mov w0, #10
+    strb w0, [x21], #1
+    b line_loop
+
+end_line_nl:
+    add x19, x19, #1
+end_line:
+    cmp x23, #1
+    b.ne emit_err
+    ldr x0, [x22]
+    cmp x0, #0
+    b.ge 1f
+    mov w1, #'-'
+    strb w1, [x21], #1
+    neg x0, x0
+1:
+    adrp x1, numbuf
+    add x1, x1, :lo12:numbuf
+    add x1, x1, #32
+    mov x5, x1
+    mov x3, #10
+2:
+    udiv x2, x0, x3
+    msub x4, x2, x3, x0
+    add w4, w4, #'0'
+    strb w4, [x1, #-1]!
+    mov x0, x2
+    cbnz x0, 2b
+3:
+    ldrb w4, [x1], #1
+    strb w4, [x21], #1
+    cmp x1, x5
+    b.lo 3b
+    mov w4, #10
+    strb w4, [x21], #1
+    b line_loop
+
+finish:
+    adrp x19, outbuf
+    add x19, x19, :lo12:outbuf
+wr_loop:
+    sub x2, x21, x19
+    cbz x2, do_exit
+    mov x0, #1
+    mov x1, x19
+    mov x8, #64
+    svc #0
+    cmp x0, #0
+    b.le do_exit
+    add x19, x19, x0
+    b wr_loop
+do_exit:
+    mov x0, #0
+    mov x8, #93
+    svc #0
+    b do_exit

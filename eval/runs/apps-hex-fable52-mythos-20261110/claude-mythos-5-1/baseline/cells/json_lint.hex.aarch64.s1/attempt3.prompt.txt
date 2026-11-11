@@ -1,0 +1,584 @@
+Write the complete program `json_lint`: a static Linux executable for AArch64 (ARMv8-A, little-endian), written directly as machine code. There is no assembler, no linker, no C library, no C runtime and no helper code: you write every instruction, every table and string, and make the system calls yourself.
+
+Entry state (as the Linux kernel sets it up): execution starts at the first instruction of your code, address 0x400000. sp is 16-byte aligned and points at argc = 0, followed by the NULL terminators of an empty argv, an empty envp and an empty auxiliary vector: the program gets no arguments. Every other general-purpose register (x0-x30) is zero; x30 is not a return address; the program ends only through the exit system call.
+
+System calls: the `svc #0` instruction, with the system call number in x8 and the arguments in x0, x1, x2; the result comes back in x0. Every other register is preserved. Exactly these four are available:
+- read = 63: read(fd = 0, buf, count) reads up to count bytes of standard input into buf; returns the number of bytes read, 0 at end of input.
+- write = 64: write(fd, buf, count) with fd 1 (standard output) or 2 (standard error); returns count.
+- exit = 93: exit(status) ends the program; the exit status is the low 8 bits of status.
+- exit_group = 94: the same as exit.
+Any other system call number or file descriptor stops the program with an error, and so does a buffer that is not entirely inside the program's memory.
+
+Memory: the code, data and zero-initialised areas below, plus a stack of 1 MiB below the entry sp. There is no heap (no brk, no mmap, no malloc). Code is not writable. Any access outside these areas stops the program. Each test run may execute at most 50,000,000 instructions.
+
+Output format: the whole program as raw machine code and data bytes, which you encode yourself: there is no assembler, no linker and no encoder, and your bytes are loaded exactly as you write them. The memory layout is fixed:
+- code (read and execute): your instruction lines, from address 0x400000; the entry point is the first instruction; at most 1 MiB.
+- data (read and write): the data bytes you give, from address 0x500000, at most 1 MiB; your strings and tables go here, at offsets you choose and keep track of (the byte you write at position k of the data section is at address 0x500000 + k).
+- a zero-initialised work area (read and write) of 1 MiB from address 0x600000.
+- the stack (above).
+Write a line `.text` followed by the instruction lines, then optionally a line `.data` followed by the data lines. These two markers are the only directives: no labels, no symbols, no other directive, so every address and offset is a number you compute.
+Instructions: one per line as its 32-bit instruction word in hexadecimal, exactly 8 hex digits (an optional 0x prefix is allowed), e.g. `8b010000` is `add x0, x0, x1` and `d4000001` is `svc #0`. The words are stored little-endian one after another: the first instruction line is at 0x400000, the next at 0x400004, and so on. Every branch and PC-relative field (b, b.cond, bl, cbz, cbnz, tbz, tbnz, adr, adrp) holds an offset from the address of that instruction itself, encoded as the architecture specifies (b/bl/b.cond/cbz/tbz: byte offset / 4; adr: byte offset; adrp: (target page - this instruction's page) / 4096, pages being addresses with the low 12 bits cleared), which you compute. Because the addresses below are fixed, you can also build an address with movz/movk (e.g. `d2a00a01` is `movz x1, #0x50, lsl #16`, i.e. x1 = 0x500000).
+Data: bytes in memory order as pairs of hex digits, separated by spaces or not, any number per line (e.g. `68 65 6c 6c 6f 0a` or `68656c6c6f0a` is "hello\n").
+You may end any line with a comment starting with `//` or `;` (e.g. `d4000001 // svc #0`); comments and blank lines are ignored.
+Instruction set: ARMv8.0-A with floating point and Advanced SIMD (NEON). Not supported (rejected): CRC32, LSE atomics, dot product, half-precision, crypto (AES/SHA/PMULL) and SVE.
+Output ONLY the program text: no Markdown fences, no prose before or after it.
+
+Specification: Task `json_lint`: check that standard input is exactly one valid JSON document (RFC 8259 grammar) and report
+the byte offset of the first error.
+
+Grammar (byte-level):
+- document = ws value ws, and nothing else. ws = any number of the bytes space 0x20, tab 0x09, newline 0x0A,
+  carriage return 0x0D (only these four).
+- value = object | array | string | number | `true` | `false` | `null` (lowercase only).
+- object = `{` ws `}`, or `{` ws member (ws `,` ws member)* ws `}`, where member = string ws `:` ws value.
+  array = `[` ws `]`, or `[` ws value (ws `,` ws value)* ws `]`. No trailing commas.
+- string = `"` chars `"`. A char is any byte 0x20-0xFF except `"` (0x22) and `\` (0x5C) (bytes >= 0x80 are
+  accepted as they are; no UTF-8 validation), or an escape: `\` followed by one of `"` `\` `/` `b` `f` `n` `r`
+  `t`, or `\u` followed by exactly 4 hex digits (`0-9a-fA-F`; any code unit, surrogates are not checked).
+  Bytes 0x00-0x1F inside a string are errors.
+- number = `-`? int frac? exp?, where int = `0` | a digit `1`-`9` followed by any digits; frac = `.` and one or
+  more digits; exp = `e` or `E`, an optional `+` or `-`, and one or more digits. (So `01`, `+1`, `.5`, `1.`,
+  `1e`, `-` are not valid numbers.)
+
+Output: if the input is valid, print `ok\n` and exit with status 0. Otherwise print `error at N\n` (N in
+decimal, no padding) and exit with status 1, where N is the 0-based offset of the first byte at which the input
+stops being the beginning of some valid document: the first byte that no valid document could have at that
+position given all the bytes before it. If every byte of the input is such a valid beginning but the document is
+incomplete (this includes empty and whitespace-only input), N is the length of the input.
+
+Examples: `[1, 2]` ok; empty input `error at 0`; `[1,]` `error at 3`; `{"a" 1}` `error at 5`; `01` `error at 1`;
+`tru` `error at 3`; `trux` `error at 3`; `[1] x` `error at 4`; `"a<TAB>b"` (a raw tab byte) `error at 2`;
+`-` `error at 1`; `1.e5` `error at 2`.
+
+Limits: the input is at most 65536 bytes; arrays and objects are nested at most 1000 deep. These limits
+describe the inputs you will be given; you do not need to detect or report inputs that exceed them.
+
+Input and output (applies to this whole task):
+- The input is the complete contents of standard input (file descriptor 0). Read it with `read` until `read`
+  returns 0 (end of input). A `read` may return FEWER bytes than requested, at any position (in the middle of a
+  line, a token or a group of bytes), so keep calling it; only a return value of 0 means end of input.
+- Write the output to standard output (file descriptor 1). Only the bytes this task describes may appear on
+  standard output (standard error is ignored). Every output byte must be written before the program exits.
+- Finish with `exit` (or `exit_group`) and the exit status this task gives. The program must not run off the end
+  of its code or crash.
+
+Your previous attempt was:
+<previous>
+.text
+D2A00C13
+D2800015
+D2800000
+8B150261
+D2A00022
+D28007E8
+D4000001
+F100001F
+5400006D
+8B0002B5
+17FFFFF8
+D2800014
+94000027
+94000032
+94000025
+EB15029F
+54000121
+D2800020
+D2A00A01
+D2800062
+D2800808
+D4000001
+D2800000
+D2800BA8
+D4000001
+D2A00D03
+91010063
+AA0303E7
+52800144
+52800145
+381FFC65
+9AC40A86
+9B0450C5
+1100C0A5
+381FFC65
+AA0603F4
+B5FFFF74
+D2800020
+D2A00A01
+91000C21
+D2800122
+D2800808
+D4000001
+D2800020
+AA0303E1
+CB0300E2
+D2800808
+D4000001
+D2800020
+D2800BA8
+D4000001
+38746A60
+7100801F
+540000E0
+7100241F
+540000A0
+7100281F
+54000060
+7100341F
+54000061
+91000694
+17FFFFF6
+D65F03C0
+38746A60
+7101EC1F
+54001360
+71016C1F
+540010C0
+7100881F
+540003A0
+7101D01F
+54000160
+7101981F
+54000180
+7101B81F
+540001A0
+7100B41F
+540008A0
+5100C001
+7100243F
+54000849
+17FFFFC8
+D2A00A01
+91003021
+14000006
+D2A00A01
+91004421
+14000003
+D2A00A01
+91005C21
+38401422
+340000C2
+38746A60
+6B02001F
+54FFF761
+91000694
+17FFFFFA
+D65F03C0
+91000694
+38746A60
+7100881F
+540000E0
+7101701F
+540000E0
+7100801F
+54FFF603
+91000694
+17FFFFF8
+91000694
+D65F03C0
+91000694
+38746A60
+7101D41F
+54000260
+7100881F
+540001E0
+7101701F
+540001A0
+7100BC1F
+54000160
+7101881F
+54000120
+7101981F
+540000E0
+7101B81F
+540000A0
+7101C81F
+54000060
+7101D01F
+54FFF301
+91000694
+17FFFFE0
+91000694
+52800083
+38746A60
+5100C001
+7100243F
+540000A9
+321B0001
+51018421
+7100143F
+54FFF188
+91000694
+71000463
+54FFFEC1
+17FFFFD2
+38746A60
+7100B41F
+54000061
+91000694
+38746A60
+7100C01F
+54000160
+5100C401
+7100203F
+54FFEFC8
+91000694
+38746A60
+5100C001
+7100243F
+540000A8
+91000694
+17FFFFFB
+91000694
+38746A60
+7100B81F
+540001A1
+91000694
+38746A60
+5100C001
+7100243F
+54FFEDC8
+91000694
+38746A60
+5100C001
+7100243F
+54000068
+91000694
+17FFFFFB
+321B0001
+7101943F
+54000261
+91000694
+38746A60
+7100AC1F
+54000060
+7100B41F
+54000061
+91000694
+38746A60
+5100C001
+7100243F
+54FFEB28
+91000694
+38746A60
+5100C001
+7100243F
+54000068
+91000694
+17FFFFFB
+D65F03C0
+F81F0FFE
+91000694
+97FFFF68
+38746A60
+7101741F
+54000100
+97FFFF70
+97FFFF63
+38746A60
+7100B01F
+540000C0
+7101741F
+54FFE881
+91000694
+F84107FE
+D65F03C0
+91000694
+97FFFF59
+17FFFFF4
+F81F0FFE
+91000694
+97FFFF55
+38746A60
+7101F41F
+54000240
+38746A60
+7100881F
+54FFE6A1
+97FFFF7D
+97FFFF4D
+38746A60
+7100E81F
+54FFE601
+91000694
+97FFFF48
+97FFFF53
+97FFFF46
+38746A60
+7100B01F
+540000C0
+7101F41F
+54FFE4E1
+91000694
+F84107FE
+D65F03C0
+91000694
+97FFFF3C
+17FFFFEA
+.data
+6F 6B 0A
+65 72 72 6F 72 20 61 74 20
+74 72 75 65 00
+66 61 6C 73 65 00
+6E 75 6C 6C 00
+</previous>
+It failed:
+<failure>
+Test `unclosed_object` failed (stdin delivered whole; test run 26 of 80; the runs before it passed).
+stdin (22 bytes): "{\"a\": [1, {\"b\": null}]"
+exit status: expected 1, got 1
+stdout differs from byte 10 on (line 1, column 11 of the expected output); expected 12 bytes in total, got 12
+  expected from byte 10: "2\n"
+  actual from byte 10:   "Z\n"
+
+Your machine code, as written, decodes as (address, your line, the hex, the disassembly; the entry point is the first line):
+  0x400000 line    2: d2a00c13                 mov x19, #0x600000
+  0x400004 line    3: d2800015                 mov x21, #0
+  0x400008 line    4: d2800000                 mov x0, #0
+  0x40000c line    5: 8b150261                 add x1, x19, x21
+  0x400010 line    6: d2a00022                 mov x2, #0x10000
+  0x400014 line    7: d28007e8                 mov x8, #0x3f
+  0x400018 line    8: d4000001                 svc #0
+  0x40001c line    9: f100001f                 cmp x0, #0
+  0x400020 line   10: 5400006d                 b.le #0x40002c
+  0x400024 line   11: 8b0002b5                 add x21, x21, x0
+  0x400028 line   12: 17fffff8                 b #0x400008
+  0x40002c line   13: d2800014                 mov x20, #0
+  0x400030 line   14: 94000027                 bl #0x4000cc
+  0x400034 line   15: 94000032                 bl #0x4000fc
+  0x400038 line   16: 94000025                 bl #0x4000cc
+  0x40003c line   17: eb15029f                 cmp x20, x21
+  0x400040 line   18: 54000121                 b.ne #0x400064
+  0x400044 line   19: d2800020                 mov x0, #1
+  0x400048 line   20: d2a00a01                 mov x1, #0x500000
+  0x40004c line   21: d2800062                 mov x2, #3
+  0x400050 line   22: d2800808                 mov x8, #0x40
+  0x400054 line   23: d4000001                 svc #0
+  0x400058 line   24: d2800000                 mov x0, #0
+  0x40005c line   25: d2800ba8                 mov x8, #0x5d
+  0x400060 line   26: d4000001                 svc #0
+  0x400064 line   27: d2a00d03                 mov x3, #0x680000
+  0x400068 line   28: 91010063                 add x3, x3, #0x40
+  0x40006c line   29: aa0303e7                 mov x7, x3
+  0x400070 line   30: 52800144                 mov w4, #0xa
+  0x400074 line   31: 52800145                 mov w5, #0xa
+  0x400078 line   32: 381ffc65                 strb w5, [x3, #-1]!
+  0x40007c line   33: 9ac40a86                 udiv x6, x20, x4
+  0x400080 line   34: 9b0450c5                 madd x5, x6, x4, x20
+  0x400084 line   35: 1100c0a5                 add w5, w5, #0x30
+  0x400088 line   36: 381ffc65                 strb w5, [x3, #-1]!
+  0x40008c line   37: aa0603f4                 mov x20, x6
+  0x400090 line   38: b5ffff74                 cbnz x20, #0x40007c
+  0x400094 line   39: d2800020                 mov x0, #1
+  0x400098 line   40: d2a00a01                 mov x1, #0x500000
+  0x40009c line   41: 91000c21                 add x1, x1, #3
+  0x4000a0 line   42: d2800122                 mov x2, #9
+  0x4000a4 line   43: d2800808                 mov x8, #0x40
+  0x4000a8 line   44: d4000001                 svc #0
+  0x4000ac line   45: d2800020                 mov x0, #1
+  0x4000b0 line   46: aa0303e1                 mov x1, x3
+  0x4000b4 line   47: cb0300e2                 sub x2, x7, x3
+  0x4000b8 line   48: d2800808                 mov x8, #0x40
+  0x4000bc line   49: d4000001                 svc #0
+  0x4000c0 line   50: d2800020                 mov x0, #1
+  0x4000c4 line   51: d2800ba8                 mov x8, #0x5d
+  0x4000c8 line   52: d4000001                 svc #0
+  0x4000cc line   53: 38746a60                 ldrb w0, [x19, x20]
+  0x4000d0 line   54: 7100801f                 cmp w0, #0x20
+  0x4000d4 line   55: 540000e0                 b.eq #0x4000f0
+  0x4000d8 line   56: 7100241f                 cmp w0, #9
+  0x4000dc line   57: 540000a0                 b.eq #0x4000f0
+  0x4000e0 line   58: 7100281f                 cmp w0, #0xa
+  0x4000e4 line   59: 54000060                 b.eq #0x4000f0
+  0x4000e8 line   60: 7100341f                 cmp w0, #0xd
+  0x4000ec line   61: 54000061                 b.ne #0x4000f8
+  0x4000f0 line   62: 91000694                 add x20, x20, #1
+  0x4000f4 line   63: 17fffff6                 b #0x4000cc
+  0x4000f8 line   64: d65f03c0                 ret
+  0x4000fc line   65: 38746a60                 ldrb w0, [x19, x20]
+  0x400100 line   66: 7101ec1f                 cmp w0, #0x7b
+  0x400104 line   67: 54001360                 b.eq #0x400370
+  0x400108 line   68: 71016c1f                 cmp w0, #0x5b
+  0x40010c line   69: 540010c0                 b.eq #0x400324
+  0x400110 line   70: 7100881f                 cmp w0, #0x22
+  0x400114 line   71: 540003a0                 b.eq #0x400188
+  0x400118 line   72: 7101d01f                 cmp w0, #0x74
+  0x40011c line   73: 54000160                 b.eq #0x400148
+  0x400120 line   74: 7101981f                 cmp w0, #0x66
+  0x400124 line   75: 54000180                 b.eq #0x400154
+  0x400128 line   76: 7101b81f                 cmp w0, #0x6e
+  0x40012c line   77: 540001a0                 b.eq #0x400160
+  0x400130 line   78: 7100b41f                 cmp w0, #0x2d
+  0x400134 line   79: 540008a0                 b.eq #0x400248
+  0x400138 line   80: 5100c001                 sub w1, w0, #0x30
+  0x40013c line   81: 7100243f                 cmp w1, #9
+  0x400140 line   82: 54000849                 b.ls #0x400248
+  0x400144 line   83: 17ffffc8                 b #0x400064
+  0x400148 line   84: d2a00a01                 mov x1, #0x500000
+  0x40014c line   85: 91003021                 add x1, x1, #0xc
+  0x400150 line   86: 14000006                 b #0x400168
+  0x400154 line   87: d2a00a01                 mov x1, #0x500000
+  0x400158 line   88: 91004421                 add x1, x1, #0x11
+  0x40015c line   89: 14000003                 b #0x400168
+  0x400160 line   90: d2a00a01                 mov x1, #0x500000
+  0x400164 line   91: 91005c21                 add x1, x1, #0x17
+  0x400168 line   92: 38401422                 ldrb w2, [x1], #1
+  0x40016c line   93: 340000c2                 cbz w2, #0x400184
+  0x400170 line   94: 38746a60                 ldrb w0, [x19, x20]
+  0x400174 line   95: 6b02001f                 cmp w0, w2
+  0x400178 line   96: 54fff761                 b.ne #0x400064
+  0x40017c line   97: 91000694                 add x20, x20, #1
+  0x400180 line   98: 17fffffa                 b #0x400168
+  0x400184 line   99: d65f03c0                 ret
+  0x400188 line  100: 91000694                 add x20, x20, #1
+  0x40018c line  101: 38746a60                 ldrb w0, [x19, x20]
+  0x400190 line  102: 7100881f                 cmp w0, #0x22
+  0x400194 line  103: 540000e0                 b.eq #0x4001b0
+  0x400198 line  104: 7101701f                 cmp w0, #0x5c
+  0x40019c line  105: 540000e0                 b.eq #0x4001b8
+  0x4001a0 line  106: 7100801f                 cmp w0, #0x20
+  0x4001a4 line  107: 54fff603                 b.lo #0x400064
+  0x4001a8 line  108: 91000694                 add x20, x20, #1
+  0x4001ac line  109: 17fffff8                 b #0x40018c
+  0x4001b0 line  110: 91000694                 add x20, x20, #1
+  0x4001b4 line  111: d65f03c0                 ret
+  0x4001b8 line  112: 91000694                 add x20, x20, #1
+  0x4001bc line  113: 38746a60                 ldrb w0, [x19, x20]
+  0x4001c0 line  114: 7101d41f                 cmp w0, #0x75
+  0x4001c4 line  115: 54000260                 b.eq #0x400210
+  0x4001c8 line  116: 7100881f                 cmp w0, #0x22
+  0x4001cc line  117: 540001e0                 b.eq #0x400208
+  0x4001d0 line  118: 7101701f                 cmp w0, #0x5c
+  0x4001d4 line  119: 540001a0                 b.eq #0x400208
+  0x4001d8 line  120: 7100bc1f                 cmp w0, #0x2f
+  0x4001dc line  121: 54000160                 b.eq #0x400208
+  0x4001e0 line  122: 7101881f                 cmp w0, #0x62
+  0x4001e4 line  123: 54000120                 b.eq #0x400208
+  0x4001e8 line  124: 7101981f                 cmp w0, #0x66
+  0x4001ec line  125: 540000e0                 b.eq #0x400208
+  0x4001f0 line  126: 7101b81f                 cmp w0, #0x6e
+  0x4001f4 line  127: 540000a0                 b.eq #0x400208
+  0x4001f8 line  128: 7101c81f                 cmp w0, #0x72
+  0x4001fc line  129: 54000060                 b.eq #0x400208
+  0x400200 line  130: 7101d01f                 cmp w0, #0x74
+  0x400204 line  131: 54fff301                 b.ne #0x400064
+  0x400208 line  132: 91000694                 add x20, x20, #1
+  0x40020c line  133: 17ffffe0                 b #0x40018c
+  0x400210 line  134: 91000694                 add x20, x20, #1
+  0x400214 line  135: 52800083                 mov w3, #4
+  0x400218 line  136: 38746a60                 ldrb w0, [x19, x20]
+  0x40021c line  137: 5100c001                 sub w1, w0, #0x30
+  0x400220 line  138: 7100243f                 cmp w1, #9
+  0x400224 line  139: 540000a9                 b.ls #0x400238
+  0x400228 line  140: 321b0001                 orr w1, w0, #0x20
+  0x40022c line  141: 51018421                 sub w1, w1, #0x61
+  0x400230 line  142: 7100143f                 cmp w1, #5
+  0x400234 line  143: 54fff188                 b.hi #0x400064
+  0x400238 line  144: 91000694                 add x20, x20, #1
+  0x40023c line  145: 71000463                 subs w3, w3, #1
+  0x400240 line  146: 54fffec1                 b.ne #0x400218
+  0x400244 line  147: 17ffffd2                 b #0x40018c
+  0x400248 line  148: 38746a60                 ldrb w0, [x19, x20]
+  0x40024c line  149: 7100b41f                 cmp w0, #0x2d
+  0x400250 line  150: 54000061                 b.ne #0x40025c
+  0x400254 line  151: 91000694                 add x20, x20, #1
+  0x400258 line  152: 38746a60                 ldrb w0, [x19, x20]
+  0x40025c line  153: 7100c01f                 cmp w0, #0x30
+  0x400260 line  154: 54000160                 b.eq #0x40028c
+  0x400264 line  155: 5100c401                 sub w1, w0, #0x31
+  0x400268 line  156: 7100203f                 cmp w1, #8
+  0x40026c line  157: 54ffefc8                 b.hi #0x400064
+  0x400270 line  158: 91000694                 add x20, x20, #1
+  0x400274 line  159: 38746a60                 ldrb w0, [x19, x20]
+  0x400278 line  160: 5100c001                 sub w1, w0, #0x30
+  0x40027c line  161: 7100243f                 cmp w1, #9
+  0x400280 line  162: 540000a8                 b.hi #0x400294
+  0x400284 line  163: 91000694                 add x20, x20, #1
+  0x400288 line  164: 17fffffb                 b #0x400274
+  0x40028c line  165: 91000694                 add x20, x20, #1
+  0x400290 line  166: 38746a60                 ldrb w0, [x19, x20]
+  0x400294 line  167: 7100b81f                 cmp w0, #0x2e
+  0x400298 line  168: 540001a1                 b.ne #0x4002cc
+  0x40029c line  169: 91000694                 add x20, x20, #1
+  0x4002a0 line  170: 38746a60                 ldrb w0, [x19, x20]
+  0x4002a4 line  171: 5100c001                 sub w1, w0, #0x30
+  0x4002a8 line  172: 7100243f                 cmp w1, #9
+  0x4002ac line  173: 54ffedc8                 b.hi #0x400064
+  0x4002b0 line  174: 91000694                 add x20, x20, #1
+  0x4002b4 line  175: 38746a60                 ldrb w0, [x19, x20]
+  0x4002b8 line  176: 5100c001                 sub w1, w0, #0x30
+  0x4002bc line  177: 7100243f                 cmp w1, #9
+  0x4002c0 line  178: 54000068                 b.hi #0x4002cc
+  0x4002c4 line  179: 91000694                 add x20, x20, #1
+  0x4002c8 line  180: 17fffffb                 b #0x4002b4
+  0x4002cc line  181: 321b0001                 orr w1, w0, #0x20
+  0x4002d0 line  182: 7101943f                 cmp w1, #0x65
+  0x4002d4 line  183: 54000261                 b.ne #0x400320
+  0x4002d8 line  184: 91000694                 add x20, x20, #1
+  0x4002dc line  185: 38746a60                 ldrb w0, [x19, x20]
+  0x4002e0 line  186: 7100ac1f                 cmp w0, #0x2b
+  0x4002e4 line  187: 54000060                 b.eq #0x4002f0
+  0x4002e8 line  188: 7100b41f                 cmp w0, #0x2d
+  0x4002ec line  189: 54000061                 b.ne #0x4002f8
+  0x4002f0 line  190: 91000694                 add x20, x20, #1
+  0x4002f4 line  191: 38746a60                 ldrb w0, [x19, x20]
+  0x4002f8 line  192: 5100c001                 sub w1, w0, #0x30
+  0x4002fc line  193: 7100243f                 cmp w1, #9
+  0x400300 line  194: 54ffeb28                 b.hi #0x400064
+  0x400304 line  195: 91000694                 add x20, x20, #1
+  0x400308 line  196: 38746a60                 ldrb w0, [x19, x20]
+  0x40030c line  197: 5100c001                 sub w1, w0, #0x30
+  0x400310 line  198: 7100243f                 cmp w1, #9
+  0x400314 line  199: 54000068                 b.hi #0x400320
+  0x400318 line  200: 91000694                 add x20, x20, #1
+  0x40031c line  201: 17fffffb                 b #0x400308
+  0x400320 line  202: d65f03c0                 ret
+  0x400324 line  203: f81f0ffe                 str x30, [sp, #-0x10]!
+  0x400328 line  204: 91000694                 add x20, x20, #1
+  0x40032c line  205: 97ffff68                 bl #0x4000cc
+  0x400330 line  206: 38746a60                 ldrb w0, [x19, x20]
+  0x400334 line  207: 7101741f                 cmp w0, #0x5d
+  0x400338 line  208: 54000100                 b.eq #0x400358
+  0x40033c line  209: 97ffff70                 bl #0x4000fc
+  0x400340 line  210: 97ffff63                 bl #0x4000cc
+  0x400344 line  211: 38746a60                 ldrb w0, [x19, x20]
+  0x400348 line  212: 7100b01f                 cmp w0, #0x2c
+  0x40034c line  213: 540000c0                 b.eq #0x400364
+  0x400350 line  214: 7101741f                 cmp w0, #0x5d
+  0x400354 line  215: 54ffe881                 b.ne #0x400064
+  0x400358 line  216: 91000694                 add x20, x20, #1
+  0x40035c line  217: f84107fe                 ldr x30, [sp], #0x10
+  0x400360 line  218: d65f03c0                 ret
+  0x400364 line  219: 91000694                 add x20, x20, #1
+  0x400368 line  220: 97ffff59                 bl #0x4000cc
+  0x40036c line  221: 17fffff4                 b #0x40033c
+  0x400370 line  222: f81f0ffe                 str x30, [sp, #-0x10]!
+  0x400374 line  223: 91000694                 add x20, x20, #1
+  0x400378 line  224: 97ffff55                 bl #0x4000cc
+  0x40037c line  225: 38746a60                 ldrb w0, [x19, x20]
+  0x400380 line  226: 7101f41f                 cmp w0, #0x7d
+  0x400384 line  227: 54000240                 b.eq #0x4003cc
+  0x400388 line  228: 38746a60                 ldrb w0, [x19, x20]
+  0x40038c line  229: 7100881f                 cmp w0, #0x22
+  0x400390 line  230: 54ffe6a1                 b.ne #0x400064
+  0x400394 line  231: 97ffff7d                 bl #0x400188
+  0x400398 line  232: 97ffff4d                 bl #0x4000cc
+  0x40039c line  233: 38746a60                 ldrb w0, [x19, x20]
+  0x4003a0 line  234: 7100e81f                 cmp w0, #0x3a
+  0x4003a4 line  235: 54ffe601                 b.ne #0x400064
+  0x4003a8 line  236: 91000694                 add x20, x20, #1
+  0x4003ac line  237: 97ffff48                 bl #0x4000cc
+  0x4003b0 line  238: 97ffff53                 bl #0x4000fc
+  0x4003b4 line  239: 97ffff46                 bl #0x4000cc
+  0x4003b8 line  240: 38746a60                 ldrb w0, [x19, x20]
+  0x4003bc line  241: 7100b01f                 cmp w0, #0x2c
+  0x4003c0 line  242: 540000c0                 b.eq #0x4003d8
+  0x4003c4 line  243: 7101f41f                 cmp w0, #0x7d
+  0x4003c8 line  244: 54ffe4e1                 b.ne #0x400064
+  0x4003cc line  245: 91000694                 add x20, x20, #1
+  0x4003d0 line  246: f84107fe                 ldr x30, [sp], #0x10
+  0x4003d4 line  247: d65f03c0                 ret
+  0x4003d8 line  248: 91000694                 add x20, x20, #1
+  0x4003dc line  249: 97ffff3c                 bl #0x4000cc
+  0x4003e0 line  250: 17ffffea                 b #0x400388
+</failure>
+Write a corrected, complete version. Same output format; output only the program text.

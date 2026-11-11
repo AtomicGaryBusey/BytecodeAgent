@@ -1,0 +1,271 @@
+.equ SYS_READ, 63
+.equ SYS_WRITE, 64
+.equ SYS_EXIT, 93
+.equ INBUF_SIZE, 69632
+.equ OUTBUF_SIZE, 65536
+.equ STACK_BYTES, 262144
+
+.section .rodata
+errmsg: .ascii "error\n"
+
+.bss
+.balign 16
+inbuf: .space INBUF_SIZE
+.balign 16
+outbuf: .space OUTBUF_SIZE
+.balign 16
+vstack: .space STACK_BYTES
+.balign 16
+numtmp: .space 32
+
+.text
+.globl _start
+_start:
+    adrp x19, inbuf
+    add x19, x19, :lo12:inbuf
+    mov x20, x19
+read_loop:
+    mov x2, #65536
+    add x2, x2, #4096
+    add x2, x2, x19
+    sub x2, x2, x20
+    cbz x2, read_done
+    mov x0, #0
+    mov x1, x20
+    mov x8, #SYS_READ
+    svc #0
+    cmp x0, #0
+    b.le read_done
+    add x20, x20, x0
+    b read_loop
+read_done:
+    adrp x21, vstack
+    add x21, x21, :lo12:vstack
+    adrp x23, outbuf
+    add x23, x23, :lo12:outbuf
+    mov x24, #0
+
+line_loop:
+    cmp x19, x20
+    b.hs finish
+    mov x22, #0
+tok_loop:
+    cmp x19, x20
+    b.hs line_end
+    ldrb w0, [x19]
+    cmp w0, #0x20
+    b.eq skip_sep
+    cmp w0, #0x09
+    b.eq skip_sep
+    cmp w0, #0x0a
+    b.eq line_end
+    mov x25, x19
+find_end:
+    add x19, x19, #1
+    cmp x19, x20
+    b.hs tok_found
+    ldrb w0, [x19]
+    cmp w0, #0x20
+    b.eq tok_found
+    cmp w0, #0x09
+    b.eq tok_found
+    cmp w0, #0x0a
+    b.eq tok_found
+    b find_end
+skip_sep:
+    add x19, x19, #1
+    b tok_loop
+
+tok_found:
+    sub x1, x19, x25
+    ldrb w0, [x25]
+    cmp x1, #1
+    b.ne parse_num
+    cmp w0, #0x2b
+    b.eq is_op
+    cmp w0, #0x2d
+    b.eq is_op
+    cmp w0, #0x2a
+    b.eq is_op
+    cmp w0, #0x2f
+    b.eq is_op
+    cmp w0, #0x25
+    b.eq is_op
+parse_num:
+    mov x2, x25
+    mov x3, #0
+    cmp w0, #0x2d
+    b.ne 1f
+    mov x3, #1
+    add x2, x2, #1
+1:
+    sub x1, x19, x2
+    cmp x1, #1
+    b.lo line_error
+    cmp x1, #18
+    b.hi line_error
+    mov x4, #0
+    mov x5, #10
+2:
+    ldrb w0, [x2], #1
+    sub w0, w0, #0x30
+    cmp w0, #9
+    b.hi line_error
+    madd x4, x4, x5, x0
+    cmp x2, x19
+    b.lo 2b
+    cbz x3, 3f
+    neg x4, x4
+3:
+    str x4, [x21, x22, lsl #3]
+    add x22, x22, #1
+    b tok_loop
+
+is_op:
+    mov w26, w0
+    cmp x22, #2
+    b.lo line_error
+    sub x22, x22, #1
+    ldr x1, [x21, x22, lsl #3]
+    sub x27, x22, #1
+    ldr x0, [x21, x27, lsl #3]
+    cmp w26, #0x2b
+    b.ne 1f
+    add x0, x0, x1
+    b op_store
+1:
+    cmp w26, #0x2d
+    b.ne 1f
+    sub x0, x0, x1
+    b op_store
+1:
+    cmp w26, #0x2a
+    b.ne 1f
+    mul x0, x0, x1
+    b op_store
+1:
+    cbz x1, line_error
+    cmn x1, #1
+    b.ne 2f
+    mov x2, #1
+    lsl x2, x2, #63
+    cmp x0, x2
+    b.eq line_error
+2:
+    sdiv x2, x0, x1
+    cmp w26, #0x2f
+    b.ne 3f
+    mov x0, x2
+    b op_store
+3:
+    msub x0, x2, x1, x0
+op_store:
+    str x0, [x21, x27, lsl #3]
+    b tok_loop
+
+line_end:
+    cmp x22, #1
+    b.ne line_error
+    ldr x0, [x21]
+    bl print_num
+    b skip_nl
+line_error:
+1:
+    cmp x19, x20
+    b.hs 2f
+    ldrb w0, [x19]
+    cmp w0, #0x0a
+    b.eq 2f
+    add x19, x19, #1
+    b 1b
+2:
+    bl print_error
+skip_nl:
+    cmp x19, x20
+    b.hs line_loop
+    add x19, x19, #1
+    b line_loop
+
+finish:
+    bl flush_out
+    mov x0, #0
+    mov x8, #SYS_EXIT
+    svc #0
+    b finish
+
+// x0 = value to print
+print_num:
+    stp x29, x30, [sp, #-16]!
+    mov x9, x0
+    bl ensure_space
+    mov x0, x9
+    add x1, x23, x24
+    tbz x0, #63, 1f
+    mov w2, #0x2d
+    strb w2, [x1], #1
+    neg x0, x0
+1:
+    adrp x3, numtmp
+    add x3, x3, :lo12:numtmp
+    add x3, x3, #32
+    mov x5, #10
+2:
+    udiv x4, x0, x5
+    msub x6, x4, x5, x0
+    add w6, w6, #0x30
+    strb w6, [x3, #-1]!
+    mov x0, x4
+    cbnz x0, 2b
+    adrp x4, numtmp
+    add x4, x4, :lo12:numtmp
+    add x4, x4, #32
+3:
+    ldrb w6, [x3], #1
+    strb w6, [x1], #1
+    cmp x3, x4
+    b.lo 3b
+    mov w6, #0x0a
+    strb w6, [x1], #1
+    sub x24, x1, x23
+    ldp x29, x30, [sp], #16
+    ret
+
+print_error:
+    stp x29, x30, [sp, #-16]!
+    bl ensure_space
+    add x1, x23, x24
+    adrp x2, errmsg
+    add x2, x2, :lo12:errmsg
+    mov x3, #6
+1:
+    ldrb w4, [x2], #1
+    strb w4, [x1], #1
+    subs x3, x3, #1
+    b.ne 1b
+    add x24, x24, #6
+    ldp x29, x30, [sp], #16
+    ret
+
+ensure_space:
+    mov x0, #65536
+    sub x0, x0, #32
+    cmp x24, x0
+    b.hi flush_out
+    ret
+
+flush_out:
+    mov x1, x23
+    mov x2, x24
+1:
+    cbz x2, 2f
+    mov x0, #1
+    mov x8, #SYS_WRITE
+    svc #0
+    cmp x0, #0
+    b.le 2f
+    add x1, x1, x0
+    sub x2, x2, x0
+    b 1b
+2:
+    mov x24, #0
+    ret

@@ -1,0 +1,211 @@
+.equ INBUF_SIZE, 65536
+.equ MAXLINES, 32800
+.equ OUTBUF_SIZE, 131072
+
+.bss
+.balign 16
+inbuf:
+    .space INBUF_SIZE
+.balign 16
+lines_a:
+    .space MAXLINES*8
+.balign 16
+lines_b:
+    .space MAXLINES*8
+.balign 16
+outbuf:
+    .space OUTBUF_SIZE
+
+.text
+.globl _start
+_start:
+    # ---- read all of stdin into inbuf ----
+    xor r12d, r12d              # total bytes read
+read_loop:
+    mov edx, INBUF_SIZE
+    sub edx, r12d
+    jz read_done
+    lea rsi, [rip + inbuf]
+    add rsi, r12
+    xor edi, edi
+    xor eax, eax
+    syscall
+    test rax, rax
+    jle read_done
+    add r12, rax
+    jmp read_loop
+read_done:
+
+    # ---- parse lines into lines_a: entry = (len << 32) | offset ----
+    lea rbx, [rip + inbuf]
+    xor ecx, ecx                # i
+    xor edx, edx                # start of current line
+    xor r13d, r13d              # number of lines
+    lea r14, [rip + lines_a]
+parse_loop:
+    cmp rcx, r12
+    jae parse_end
+    cmp byte ptr [rbx + rcx], 10
+    jne parse_next
+    cmp r13, MAXLINES
+    jae parse_skip
+    mov rax, rcx
+    sub rax, rdx
+    shl rax, 32
+    or rax, rdx
+    mov qword ptr [r14 + r13*8], rax
+    inc r13
+parse_skip:
+    lea rdx, [rcx + 1]
+parse_next:
+    inc rcx
+    jmp parse_loop
+parse_end:
+    cmp rdx, r12
+    jae parse_fin
+    cmp r13, MAXLINES
+    jae parse_fin
+    mov rax, r12
+    sub rax, rdx
+    shl rax, 32
+    or rax, rdx
+    mov qword ptr [r14 + r13*8], rax
+    inc r13
+parse_fin:
+
+    # ---- bottom-up merge sort: src = r14, dst = r15, n = r13, width = rbp ----
+    lea r15, [rip + lines_b]
+    mov ebp, 1
+sort_outer:
+    cmp rbp, r13
+    jae sort_done
+    xor r8d, r8d                # i (left)
+sort_inner:
+    cmp r8, r13
+    jae sort_pass_done
+    lea r9, [r8 + rbp]
+    cmp r9, r13
+    cmova r9, r13               # mid
+    lea r10, [r9 + rbp]
+    cmp r10, r13
+    cmova r10, r13              # right
+    mov r11, r8                 # output index
+    mov rbx, r8                 # a index
+    mov r12, r9                 # b index
+merge_loop:
+    cmp rbx, r9
+    jae merge_rest_b
+    cmp r12, r10
+    jae merge_rest_a
+    mov rdi, qword ptr [r14 + rbx*8]
+    mov rsi, qword ptr [r14 + r12*8]
+    call cmp_le
+    test eax, eax
+    jz take_b
+    mov rax, qword ptr [r14 + rbx*8]
+    mov qword ptr [r15 + r11*8], rax
+    inc rbx
+    inc r11
+    jmp merge_loop
+take_b:
+    mov rax, qword ptr [r14 + r12*8]
+    mov qword ptr [r15 + r11*8], rax
+    inc r12
+    inc r11
+    jmp merge_loop
+merge_rest_a:
+    cmp rbx, r9
+    jae merge_done
+    mov rax, qword ptr [r14 + rbx*8]
+    mov qword ptr [r15 + r11*8], rax
+    inc rbx
+    inc r11
+    jmp merge_rest_a
+merge_rest_b:
+    cmp r12, r10
+    jae merge_done
+    mov rax, qword ptr [r14 + r12*8]
+    mov qword ptr [r15 + r11*8], rax
+    inc r12
+    inc r11
+    jmp merge_rest_b
+merge_done:
+    mov r8, r10
+    jmp sort_inner
+sort_pass_done:
+    xchg r14, r15
+    add rbp, rbp
+    jmp sort_outer
+sort_done:
+
+    # ---- build output in outbuf ----
+    lea rdi, [rip + outbuf]
+    lea rbx, [rip + inbuf]
+    xor r8d, r8d
+out_loop:
+    cmp r8, r13
+    jae out_done
+    mov rax, qword ptr [r14 + r8*8]
+    mov esi, eax
+    add rsi, rbx
+    mov rcx, rax
+    shr rcx, 32
+    rep movsb
+    mov byte ptr [rdi], 10
+    inc rdi
+    inc r8
+    jmp out_loop
+out_done:
+    lea rsi, [rip + outbuf]
+    mov rdx, rdi
+    sub rdx, rsi
+write_loop:
+    test rdx, rdx
+    jz do_exit
+    mov eax, 1
+    mov edi, 1
+    syscall
+    test rax, rax
+    jle do_exit
+    add rsi, rax
+    sub rdx, rax
+    jmp write_loop
+do_exit:
+    mov eax, 231
+    xor edi, edi
+    syscall
+    jmp do_exit
+
+# cmp_le: rdi = entry a, rsi = entry b; returns eax = 1 if a <= b else 0
+# clobbers rax, rcx, rdx, rdi, rsi
+cmp_le:
+    lea rcx, [rip + inbuf]
+    mov eax, edi
+    add rax, rcx                # ptr a
+    mov edx, esi
+    add rdx, rcx                # ptr b
+    shr rdi, 32                 # len a
+    shr rsi, 32                 # len b
+    mov rcx, rdi
+    cmp rcx, rsi
+    cmova rcx, rsi              # min len
+    push rdi
+    push rsi
+    mov rsi, rax
+    mov rdi, rdx
+    test rcx, rcx
+    jz 1f
+    repe cmpsb
+    je 1f
+    setb al                     # CF=1 -> a byte < b byte
+    movzx eax, al
+    pop rsi
+    pop rdi
+    ret
+1:
+    pop rsi
+    pop rdi
+    xor eax, eax
+    cmp rdi, rsi
+    setbe al
+    ret
