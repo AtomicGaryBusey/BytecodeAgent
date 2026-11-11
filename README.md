@@ -4,8 +4,9 @@ Can a language model write **machine code** directly, without a human-facing too
 This project builds non-standard ways for a model to emit x86-64 and AArch64 code (including raw machine
 code with no tool at all), a
 differential harness that proves the result correct, and a live evaluation that puts models from
-many vendors (through six vendors' coding CLIs, GitHub Copilot, the Azure AI Foundry and Fireworks.ai APIs, Apple's Foundation Models on a Mac, and
-open-weight models served locally) through the same tasks under the same rules.
+many vendors (through five vendors' coding CLIs, the GitHub Copilot CLI, the Azure AI Foundry and Fireworks.ai
+APIs, Apple's Foundation Models on a Mac, and open-weight models served locally) through the same tasks under
+the same rules.
 
 ## The emission paths
 
@@ -14,7 +15,7 @@ open-weight models served locally) through the same tasks under the same rules.
 | **Stream** (`bca.stream`) | Assembly text, token by token | `StreamAssembler` encodes each instruction the moment its line is complete (keystone), cross-checked against GNU as, so generation can stop at the first bad line |
 | **Structured** (`bca.structured`) | One JSON object per instruction (e.g. a tool call) | A deterministic encoder: AArch64 bit by bit, x86-64 via iced-x86; no assembly text at all |
 | **IR** (`bca.ir`) | A small portable language: QBE IL, freestanding C, or WebAssembly text | An existing compiler (QBE, clang/tcc, Cranelift via wasmtime) lowers it; the function's bytes are pulled out of the ELF object |
-| **Hex** (`bca.liveeval.hexpath`, opt-in `--paths hex`) | The machine code itself, as hex: AArch64 32-bit words or x86-64 instruction bytes, plus data bytes for whole programs | Nothing: the bytes run exactly as written (decoded only to check the instruction set and to explain failures). Astra: 15/16 round-1 functions and 15/16 app-battery programs on the first try, 16/16 within four |
+| **Hex** (`bca.liveeval.hexpath`, opt-in `--paths hex`) | The machine code itself, as hex: AArch64 32-bit words or x86-64 instruction bytes, plus data bytes for whole programs | Nothing: the bytes run exactly as written (decoded only to check the instruction set and to explain failures). Opus 5.5, Fable 5.2 and both Mythos models: 16/16 round-1 functions on the first try; Fable 5.2: 16/16 whole programs on the first try |
 
 Raw machine code across 25 models (functions and whole programs, mistakes models make encoding by hand, and the
 safety filters that block it): [`reports/live-model-eval-hex.md`](reports/live-model-eval-hex.md).
@@ -38,13 +39,14 @@ feeds back to the model for repair.
 
 ## Live evaluation (`bca.liveeval`)
 
-Real models, called through their vendors' own coding CLIs, write code through all three paths on both
-ISAs, with up to four attempts and repair feedback.
+Real models, called through their vendors' own coding CLIs (or their APIs directly, where noted), write code
+through the stream, structured and IR paths on both ISAs (the hex path is opt-in), with up to four attempts
+and repair feedback.
 
 - **Batteries:** `round1` (8 tasks), `round2` (11: recursion, SIMD, memory), `long` (9 programs of
   ~60-250 instructions: a bytecode VM, Base64, XXH64, PackBits, multi-precision multiply, ...) and
   `adversarial` (10 bait tasks, with prompt variants such as `misleading_hint` and `terse`).
-  224 cells per model at baseline.
+  224 cells per model at baseline. Separately, `apps` (8 whole programs, 3 samples: 96 cells; below).
 - **Subjects:** Claude models via `claude -p`; `codex:<model>` (OpenAI Codex CLI), `kimi:<model>`
   (Kimi Code), `agy:<model>` (Google Antigravity), `grok:<model>` (xAI Grok Build) and `copilot:<model>`
   (GitHub Copilot CLI through the Copilot SDK: Microsoft's MAI-Code, plus other vendors' models served by
@@ -52,7 +54,7 @@ ISAs, with up to four attempts and repair feedback.
   API directly, with a per-model spend cap), `fireworks:<model>` (Fireworks.ai serverless, the same way), `apple:<model>` (Apple Foundation Models through `fm serve` on the user's Mac), and `local:<model>` (open-weight models served by Ollama on this
   machine, called through its API directly).
 - **Fair comparison:** every subject runs with zero tools, the same system and task prompts, a private
-  home per call, and a pinned CLI version; each call is verified against the CLI's own record of the
+  home per call, and an audited CLI version (recorded per call); each call is verified against the CLI's own record of the
   request, and anything unexpected aborts the run instead of being scored. Method and known limits:
   [`reports/cross-vendor-methodology.md`](reports/cross-vendor-methodology.md).
 
@@ -110,6 +112,9 @@ its plan quota is spent.
 
 
 † Partial, quota-paced (Google AI Plus): rounds 1 + 2 and long complete, adversarial 59/60 (one cell, `stats_f.ir.aarch64`, left; its resume loop was stopped on 2026-10-24 and the cell is run by hand). Like for like on the complete batteries, rounds 1 + 2 + long: **154/164 (94%)**, level with Grok 4.6 (154), just behind Grok 4.7 (155), Grok 4.7 build-fast (156), Claude Opus 5.5 and Fable 5.1 (158 each), Kimi K3.1 Pro (159) and Codex GPT-6 Astra (161), and ahead of Codex GPT-6 Sol (153). Its first-attempt failures were reviewed by hand: no harness false rejects (hex literals in QBE, `%x =l %y` without `copy`, malformed JSON, an invented `subl` opcode, a 400 s timeout spent thinking: 62,910 of 65,532 output tokens, and two 180 s timeouts on adversarial `stats_f`).
+
+Gemini 4 Argon High (Antigravity, on Google AI Pro) is in progress and not in the table: 122 of 224 cells,
+paused on the plan's quota until it resets; a retry loop resumes it.
 
 † The Apple rows cover round 1 only: on-device, the stream and IR paths (32 cells; the structured cells were deferred to PCC because their ~5.5K-token schema prompts push the on-device inference service over the Mac's 3 GB memory cap); PCC, all 48 round-1 cells (completed 2026-11-09 after the daily PCC quota paused it at 37), at the model's default setting (no `reasoning_effort`).
 
@@ -186,20 +191,26 @@ failed on cursor logic, a hang, and mis-computed branch offsets). Run it with `.
 
 ## Setup
 
-Python 3.12 with `keystone-engine`, `unicorn`, `iced-x86`, `capstone`, `wasmtime` and `pytest`, plus
+Python 3.12 with `keystone-engine`, `unicorn`, `iced-x86`, `capstone`, `wasmtime`, `fastjsonschema` and `pytest`, plus
 these tools on `PATH`: `qbe`, `clang` and/or `tcc`, `x86_64-linux-gnu-as` and `aarch64-linux-gnu-as`
 (the GNU as cross-check), and `wasmtime`. Developed on an NVIDIA DGX Spark (aarch64, Ubuntu 24.04).
 
 ```sh
-python3 -m venv .venv && .venv/bin/pip install keystone-engine unicorn iced-x86 capstone wasmtime pytest
-.venv/bin/python -m pytest -q          # ~2000 tests, no network or model calls
+python3 -m venv .venv && .venv/bin/pip install keystone-engine unicorn iced-x86 capstone wasmtime fastjsonschema pytest
+.venv/bin/python -m pytest -q          # ~2,200 tests, no network or model calls
 ```
 
 The live eval additionally needs each vendor's CLI installed and logged in (`claude`, `codex`, `kimi`,
-`agy`, `grok`); the adapters refuse to run on CLI versions they were not audited against. The Copilot
+`agy`, `grok`). The Codex, Kimi, Antigravity, Grok and Copilot adapters refuse to run on CLI versions they
+were not audited against; the Claude adapter records the `claude` version on every call. The Copilot
 subject needs Node.js, `@github/copilot` 1.0.107 and `@github/copilot-sdk` 1.0.29 (installed under
 `~/.local/opt/copilot/`, or set `BCA_COPILOT_CLI` / `BCA_COPILOT_SDK`) and a logged-in `gh` (its headless
 runtime authenticates through the GitHub CLI).
+
+The direct-API subjects need no CLI: `foundry:` takes a Microsoft Entra ID token from a signed-in Azure CLI
+(`az login`; no key is stored), `fireworks:` reads `FIREWORKS_API_KEY` or `~/.config/bca/fireworks.key`, and
+`apple:` talks to Apple's `fm serve` at `BCA_APPLE_ENDPOINT`. The pay-per-token routes stop each model at a
+spend cap (`BCA_FOUNDRY_CAP_USD`, default $25).
 
 `python -m bca.liveeval models [--latest]` checks the six CLI vendors (Claude, Codex, Kimi, Antigravity, Grok,
 Copilot) at once without calling a model: each
@@ -210,12 +221,14 @@ sign-in state, the account's current model list, and which of those models no ru
 
 ```
 bca/isa.py, emu.py, difftest.py   ISA table, Unicorn runner, differential tests
+bca/image.py, process.py          whole programs: GNU as + a tiny static linker, and a Linux process under Unicorn
+bca/apps/                         the app battery's tasks, references and test generators
 bca/stream.py                     streaming assembler with the GNU as oracle
 bca/structured/                   JSON instruction encoders, schemas, tool definitions
 bca/ir/                           QBE / C / WAT lowering and a minimal ELF extractor
-bca/liveeval/                     live-model eval: tasks, prompts, pipelines, runner, vendor adapters
+bca/liveeval/                     live-model eval: tasks, prompts, pipelines, runner, vendor adapters (CLI and direct API)
 eval/runs/                        recorded runs (prompts, responses, raw streams, verdicts)
-eval/*.py                         table generators (xv_, app_, hex_, declared_, assist_tables), analytics, dashboard
+eval/*.py                         table generators (xv_, app_, hex_, declared_, assist_tables), analytics, code quality, dashboard
 tests/                            the test suite (pytest)
 reports/                          eval write-ups, methodology, literature survey and its 2026-11 landscape update
 research_notes/                   the source notes behind the 2026-09 survey
