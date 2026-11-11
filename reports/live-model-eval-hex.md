@@ -12,7 +12,7 @@ only for the feedback listing and for the instruction-set check (ARMv8.0-A with 
 the other paths allow). Method: [design-app-battery.md](design-app-battery.md),
 `bca/liveeval/hexpath.py`; Astra's first runs are in [live-model-eval-apps.md](live-model-eval-apps.md).
 
-Two stages, first run 2026-10-01 (Grok: 2026-10-01 22:19 to 10-02 04:20; Kimi 10-03, Sonnet 5 10-22, Haiku 5.5 11-07, Fable 5.2 / Mythos 5.1 / Mythos 5.2 11-10), CLI-default effort, up to four attempts
+Two stages, first run 2026-10-01 (Grok: 2026-10-01 22:19 to 10-02 04:20; Kimi 10-03, Sonnet 5 10-22, Haiku 5.5 11-07, Fable 5.2 / Mythos 5.1 / Mythos 5.2 11-10, Kimi K3.1 Pro and three Fireworks models 11-10/11), CLI-default effort, up to four attempts
 with repair feedback, the same subjects and fairness contract as every other run:
 
 1. **Functions:** round 1 (8 tasks x 2 ISAs = 16 cells) for every model with plan room.
@@ -21,7 +21,8 @@ with repair feedback, the same subjects and fairness contract as every other run
 
 Tables: `.venv/bin/python eval/hex_tables.py`. Runs: `eval/runs/hex-{astra-20261001-165154,claude-20261001,
 codex-20261001,copilot-20261001,grok-20261001-221930,kimi-20261003-175502,sonnet5-20261022-143141,
-haiku55-20261107-174207,fable52-mythos-20261110}` and `eval/runs/apps-hex-{astra-20261001-174623,claude-20261001,codex-20261001,
+haiku55-20261107-174207,fable52-mythos-20261110,kimi-k31pro-20261110,fireworks-20261110,
+fireworks-minimax-20261110}` and `eval/runs/apps-hex-{astra-20261001-174623,claude-20261001,codex-20261001,
 copilot-20261001,grok-20261001-221930,kimi-20261003-175502,sonnet5-20261022-143141,haiku55-20261107-174207}`
 (the `apps-hex-declared-*` runs belong to [live-model-eval-declared.md](live-model-eval-declared.md)).
 
@@ -36,6 +37,7 @@ results on the other paths (16 cells each):
 | Claude Fable 5.2 | **16/16** | 16/16 | 16/16 | 16/16 | 15/16 |
 | Claude Mythos 5.1 | **16/16** | 16/16 | 15/16 | 16/16 | 16/16 |
 | Claude Mythos 5.2 | **16/16** | 16/16 | 16/16 | 15/16 | 16/16 |
+| DeepSeek V4.1 Flash (Fireworks) | **16/16** | 16/16 | 16/16 | 11/16 | 14/16 |
 | Codex Daybreak Blue | **15/16** | 16/16 | 16/16 | 16/16 | 13/16 |
 | Codex GPT-6 Astra | **15/16** | 16/16 | 16/16 | 16/16 | 14/16 |
 | Claude Fable 5.1 | **15/16** | 16/16 | 15/16 | 15/16 | 14/16 |
@@ -50,12 +52,15 @@ results on the other paths (16 cells each):
 | Claude Sonnet 5 | **13/16** | 16/16 | 16/16 | 10/16 | 14/16 |
 | GPT-6 Luna via Copilot | **12/16** | 16/16 | 16/16 | 15/16 | 11/16 |
 | Grok 4.6 | **12/16** | 16/16 | 15/16 | 16/16 | 14/16 |
+| Kimi K3.1 Pro | **11/16** | 16/16 | 16/16 | 15/16 | 16/16 |
 | Grok 4.5 | **10/16** | 16/16 | 16/16 | 16/16 | 15/16 |
 | Claude Sonnet 4.5 | **10/16** | 16/16 | 16/16 | 16/16 | 16/16 |
 | Codex GPT-6 Luna | **10/16** | 15/16 | 15/16 | 12/16 | 6/16 |
+| MiniMax M3 (Fireworks) | **8/16** | 10/16 | 15/16 | 12/16 | 4/16 |
 | Microsoft MAI-Code 1.1 Flash (Copilot) | **6/16** | 11/16 | 16/16 | 10/16 | 0/16 |
 | Kimi K2.8 (for-coding) | **5/16** | 15/16 | 15/16 | 13/16 | 9/16 |
 | Claude Haiku 4.5 | **5/16** | 8/16 | 16/16 | 14/16 | 0/16 |
+| NVIDIA Nemotron 3 Ultra NVFP4 (Fireworks) | **3/16** | 8/16 | 14/16 | 6/16 | 0/16 |
 | Claude Sonnet 5.5 via Copilot | **1/16** | 16/16 | 16/16 | 15/16 | 14/16 |
 
 Per ISA, hex first attempt:
@@ -66,6 +71,7 @@ Per ISA, hex first attempt:
 | Claude Fable 5.2 | 8/8 | 8/8 |
 | Claude Mythos 5.1 | 8/8 | 8/8 |
 | Claude Mythos 5.2 | 8/8 | 8/8 |
+| DeepSeek V4.1 Flash (Fireworks) | 8/8 | 8/8 |
 | Codex Daybreak Blue | 8/8 | 7/8 |
 | Codex GPT-6 Astra | 8/8 | 7/8 |
 | Claude Fable 5.1 | 7/8 | 8/8 |
@@ -80,12 +86,15 @@ Per ISA, hex first attempt:
 | Claude Sonnet 5 | 7/8 | 6/8 |
 | GPT-6 Luna via Copilot | 6/8 | 6/8 |
 | Grok 4.6 | 5/8 | 7/8 |
+| Kimi K3.1 Pro | 3/8 | 8/8 |
 | Grok 4.5 | 5/8 | 5/8 |
 | Claude Sonnet 4.5 | 2/8 | 8/8 |
 | Codex GPT-6 Luna | 5/8 | 5/8 |
+| MiniMax M3 (Fireworks) | 2/8 | 6/8 |
 | Microsoft MAI-Code 1.1 Flash (Copilot) | 2/8 | 4/8 |
 | Kimi K2.8 (for-coding) | 0/8 | 5/8 |
 | Claude Haiku 4.5 | 0/8 | 5/8 |
+| NVIDIA Nemotron 3 Ultra NVFP4 (Fireworks) | 0/8 | 3/8 |
 | Claude Sonnet 5.5 via Copilot | 1/8 | 0/8 |
 
 ## Whole programs (app battery, sample 1)
@@ -96,26 +105,28 @@ results (— where that model did not run the app battery):
 | Model | Hex first attempt | Hex within 4 | asm first attempt | stream first attempt |
 |---|---|---|---|---|
 | Claude Fable 5.2 | **16/16** | 16/16 | 13/16 | 14/16 |
+| Claude Opus 4.8 | **15/16** | 16/16 | 15/16 | 13/16 |
 | Codex GPT-6 Astra | **15/16** | 16/16 | 16/16 | 16/16 |
 | Claude Mythos 5.2 | **15/16** | 16/16 | 14/16 | 16/16 |
-| Claude Opus 4.8 | **15/16** | 16/16 | — | — |
 | Claude Sonnet 5.5 | **13/16** | 15/16 | 14/16 | 15/16 |
 | Claude Fable 5.1 | **12/16** | 16/16 | 13/16 | 13/16 |
 | Claude Haiku 5.5 | **11/16** | 16/16 | 14/16 | 14/16 |
 | Grok 4.6 | **11/16** | 16/16 | 16/16 | 15/16 |
 | Grok 4.7 | **10/16** | 16/16 | 16/16 | 15/16 |
 | Grok 4.7 build-fast | **10/16** | 16/16 | 16/16 | 14/16 |
+| Claude Sonnet 5 | **7/16** | 9/16 | 12/16 | 11/16 |
 | Claude Opus 5.5 | **7/16** | 12/16 | 16/16 | 15/16 |
 | Claude Mythos 5.1 | **7/16** | 15/16 | 15/16 | 15/16 |
-| Claude Sonnet 5 | **7/16** | 9/16 | — | — |
-| Codex GPT-6 Sol | **6/16** | 14/16 | — | — |
+| Codex GPT-6 Sol | **6/16** | 14/16 | 13/16 | 15/16 |
+| DeepSeek V4.1 Flash (Fireworks) | **4/16** | 11/16 | 12/16 | 11/16 |
+| Kimi K3.1 Pro | **4/16** | 15/16 | 15/16 | 14/16 |
 | Codex GPT-5.5 | **3/16** | 12/16 | — | — |
 | Codex Daybreak Blue | **2/16** | 11/16 | — | — |
 | GPT-6 Luna via Copilot | **2/16** | 5/16 | — | — |
 | Kimi K3 | **2/16** | 15/16 | 15/16 | 14/16 |
 | Kimi K2.8 (for-coding) | **2/16** | 7/16 | — | — |
 | Grok 4.5 | **1/16** | 15/16 | — | — |
-| Claude Sonnet 4.5 | **0/16** | 4/16 | — | — |
+| Claude Sonnet 4.5 | **0/16** | 4/16 | 8/16 | 10/16 |
 | Codex GPT-6 Luna | **0/16** | 0/16 | — | — |
 | Claude Sonnet 5.5 via Copilot | **0/16** | 4/16 | — | — |
 
@@ -126,18 +137,20 @@ apart (first attempts only, except the last column):
 |---|---|---|---|---|---|---|
 | Claude Fable 5.2 | 16 | 16 | 0 | 0 | 16/16 (100%) | 0 of 16 |
 | Claude Opus 5.5 | 16 | 7 | 9 | 0 | 7/7 (100%) | 22 of 34 |
+| Claude Opus 4.8 | 16 | 15 | 0 | 1 | 15/16 (94%) | 0 of 17 |
 | Codex GPT-6 Astra | 16 | 15 | 0 | 1 | 15/16 (94%) | 0 of 17 |
 | Claude Mythos 5.2 | 16 | 15 | 0 | 1 | 15/16 (94%) | 0 of 17 |
-| Claude Opus 4.8 | 16 | 15 | 0 | 1 | 15/16 (94%) | 0 of 17 |
 | Claude Sonnet 5.5 | 16 | 13 | 1 | 2 | 13/15 (87%) | 3 of 23 |
 | Claude Fable 5.1 | 16 | 12 | 0 | 4 | 12/16 (75%) | 0 of 20 |
 | Claude Haiku 5.5 | 16 | 11 | 0 | 5 | 11/16 (69%) | 0 of 25 |
 | Grok 4.6 | 16 | 11 | 0 | 5 | 11/16 (69%) | 0 of 23 |
 | Grok 4.7 | 16 | 10 | 0 | 6 | 10/16 (62%) | 0 of 22 |
 | Grok 4.7 build-fast | 16 | 10 | 0 | 6 | 10/16 (62%) | 0 of 23 |
-| Claude Mythos 5.1 | 16 | 7 | 0 | 9 | 7/16 (44%) | 0 of 34 |
 | Claude Sonnet 5 | 16 | 7 | 0 | 9 | 7/16 (44%) | 0 of 40 |
+| Claude Mythos 5.1 | 16 | 7 | 0 | 9 | 7/16 (44%) | 0 of 34 |
 | Codex GPT-6 Sol | 16 | 6 | 0 | 10 | 6/16 (38%) | 0 of 33 |
+| DeepSeek V4.1 Flash (Fireworks) | 16 | 4 | 0 | 12 | 4/16 (25%) | 0 of 43 |
+| Kimi K3.1 Pro | 16 | 4 | 0 | 12 | 4/16 (25%) | 0 of 34 |
 | Codex GPT-5.5 | 16 | 3 | 0 | 13 | 3/16 (19%) | 0 of 37 |
 | Codex Daybreak Blue | 16 | 2 | 0 | 14 | 2/16 (12%) | 0 of 42 |
 | GPT-6 Luna via Copilot | 16 | 2 | 0 | 14 | 2/16 (12%) | 0 of 52 |
@@ -154,7 +167,7 @@ let through, not as ability: every first attempt Opus 5.5 was allowed to answer 
 ## Findings
 
 - **Writing raw machine code is within reach of the frontier models.** On functions, Opus 5.5 was perfect
-  (16/16 first attempt), and Astra, Daybreak Blue and Fable 5.1 missed one cell each. Twenty-one of the twenty-five
+  (16/16 first attempt), and Astra, Daybreak Blue and Fable 5.1 missed one cell each. Twenty-three of the twenty-nine
   model rows pass every function cell within four attempts. Hex costs the strongest models little against
   their assembly results; it costs mid-tier models much more (Sonnet 4.5 10/16, Luna 10/16 through Codex,
   MAI-Code 6/16, Haiku 4.5 5/16). Haiku 5.5 is the exception among small models: 13/16 on functions (Haiku
@@ -167,6 +180,12 @@ let through, not as ability: every first attempt Opus 5.5 was allowed to answer 
   tool output, and then gave hex built on it. It never did this on any other path or battery, and the other
   two models never did it at all. One of those responses ran to 128 KB, and quoting it in the repair prompt
   exceeded Linux's per-argument limit; the harness now sends such prompts on stdin (see the methodology).
+- **Kimi K3.1 Pro and three Fireworks models (2026-11-10/11).** DeepSeek V4.1 Flash wrote all 16 hex functions
+  correctly on the first attempt (more than its 11/16 structured or 14/16 QBE), but only 4/16 whole programs
+  (11/16 within four). Kimi K3.1 Pro: 11/16 functions first attempt and 16/16 within four; 4/16 programs first
+  attempt (9 of its 12 misses out-of-bounds accesses), 15/16 within four. MiniMax M3 (8/16, 10/16 within four)
+  and Nemotron 3 Ultra (3/16, 8/16) stayed below the 12/16 gate, so they ran no hex programs. No refusals. DeepSeek's
+  16 hex programs cost about $2.40.
 - **AArch64 is harder to hand-encode than x86-64 for most models** (fixed 32-bit words with packed
   bit fields: shift and bitmask immediates, register fields, 19- and 26-bit branch offsets), e.g. Sonnet 4.5
   2/8 vs 8/8, Haiku 4.5 0/8 vs 5/8. Grok 4.6's AArch64 misses (5/8 vs 7/8) are all time-outs: it was still

@@ -16,7 +16,7 @@ for f in sorted(glob.glob("eval/runs/apps-*/*/baseline/results.jsonl") + glob.gl
         if r.get("path") not in ("asm", "stream"):  # the opt-in hex path is reported on its own
             continue
         subj = r.get("subject") or ""
-        if subj.startswith(("codex_", "kimi_", "agy_", "grok_", "copilot_")):
+        if subj.startswith(("codex_", "kimi_", "agy_", "grok_", "copilot_", "foundry_", "fireworks_", "apple_")):
             label = subj.replace("_", ":", 1).replace("kimi-code_", "kimi-code/")
         elif subj.startswith("local_"):
             think = (r.get("local") or {}).get("think")  # @think / @nothink runs are separate rows
@@ -26,7 +26,7 @@ for f in sorted(glob.glob("eval/runs/apps-*/*/baseline/results.jsonl") + glob.gl
         else:
             label = subj
         recs[(label, r["cell"])] = r
-names = {"codex:gpt-6-astra": "Codex GPT-6 Astra", "grok:grok-4.7-build-fast": "Grok 4.7 build-fast", "grok:grok-4.7": "Grok 4.7", "grok:grok-4.6": "Grok 4.6",
+names = {"claude-opus-4-8": "Claude Opus 4.8", "claude-sonnet-5": "Claude Sonnet 5", "claude-sonnet-4-5-20250929": "Claude Sonnet 4.5", "claude-haiku-4-5-20251001": "Claude Haiku 4.5", "codex:gpt-6-sol": "Codex GPT-6 Sol", "codex:gpt-6-luna": "Codex GPT-6 Luna", "codex:gpt-5.5": "Codex GPT-5.5", "codex:gpt-daybreak-blue-latest": "Codex Daybreak Blue", "kimi:kimi-code/k3.1-pro": "Kimi K3.1 Pro", "kimi:kimi-code/kimi-for-coding": "Kimi K2.8 (for-coding)", "grok:grok-4.5": "Grok 4.5", "fireworks:deepseek-v4p1-flash": "DeepSeek V4.1 Flash (Fireworks)", "fireworks:nemotron-3-ultra-nvfp4": "NVIDIA Nemotron 3 Ultra NVFP4 (Fireworks)", "fireworks:minimax-m3": "MiniMax M3 (Fireworks)", "fireworks:glm-5p3": "Z.ai GLM-5.3 (Fireworks)", "fireworks:qwen3p8-max": "Qwen 3.8 Max (Fireworks)", "foundry:mai-thinking-1": "Microsoft MAI-Thinking-1 (Azure Foundry)", "foundry:deepseek-v4-pro": "DeepSeek-V4-Pro high (Azure Foundry)", "copilot:gpt-6-luna": "GPT-6 Luna via Copilot", "copilot:claude-sonnet-5.5": "Claude Sonnet 5.5 via Copilot", "agy:gemini-3.8-flash-high": "Gemini 3.8 Flash High (Antigravity)", "codex:gpt-6-astra": "Codex GPT-6 Astra", "grok:grok-4.7-build-fast": "Grok 4.7 build-fast", "grok:grok-4.7": "Grok 4.7", "grok:grok-4.6": "Grok 4.6",
          "claude-opus-5-5": "Claude Opus 5.5", "claude-haiku-5-5": "Claude Haiku 5.5", "claude-fable-5-1": "Claude Fable 5.1", "claude-fable-5-2": "Claude Fable 5.2", "claude-mythos-5-1": "Claude Mythos 5.1", "claude-mythos-5-2": "Claude Mythos 5.2",
          "claude-sonnet-5-5": "Claude Sonnet 5.5", "copilot:mai-code-1.1-flash": "Microsoft MAI-Code 1.1 Flash (Copilot)",
          "kimi:kimi-code/k3": "Kimi K3", "local:vllm:Aleph-Alpha/Kolibri-1": "Aleph Alpha Kolibri-1 FP8, token budget (local)",

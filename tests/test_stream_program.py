@@ -399,7 +399,7 @@ REFUSED = [
     ".eqv X, 1", "X == 1", ".comm buf, 4", ".lcomm buf, 4", ".pushsection .data", ".previous",
     ".cfi_startproc", ".rodata", ".section .text.startup", ".section .data,\"awx\"",
     ".att_syntax", ".byte 1", ".octa 1", ".float 1.0", ".data\n.byte 256", ".data\n.short a",
-    ".bss\n.byte 1", ".bss\n.zero 4, 1", ".data\nnop", ".p2align 13", ".balign 3",
+    ".bss\n.byte 1", ".bss\n.zero 4, 1", ".data\nnop", ".p2align 25", ".balign 3",
     ".data\n.ascii \"\\q\"", ".data\n.ascii \"\\x414\"", ".data\n.ascii \"x", "mov eax, \"a\"",
     ".data\nx: .byte 1\n.text\ncall x", ".data\nx: .quad y - x", ".align 4, 0, 1, 2",
 ]
@@ -641,3 +641,49 @@ def test_one_quote_character_literal_and_end_run_alike(isa):
     for image in (obj.link(), link_program(assemble_program(src, isa), isa)):
         r = run_program(image, b"")
         assert (r.status, r.fault) == (7, None)
+
+
+ALIGN_64K = {
+    # exit 0 if `b` lands on a 64 KiB boundary, 1 if not
+    "x86_64": """
+_start: lea rdi, [rip + b]
+    and edi, 0xffff
+    jz 1f
+    mov edi, 1
+1:  mov eax, 60
+    syscall
+.data
+d:  .byte 7
+    .balign 65536
+.bss
+    .zero 3
+    .balign 65536
+b:  .zero 8
+""",
+    "aarch64": """
+_start: adr x0, b
+    and x0, x0, #0xffff
+    cbz x0, 1f
+    mov x0, #1
+1:  mov x8, #93
+    svc #0
+.data
+d:  .byte 7
+    .p2align 16
+.bss
+    .zero 3
+    .align 16
+b:  .zero 8
+""",
+}
+
+
+@pytest.mark.parametrize("isa", ["x86_64", "aarch64"])
+def test_alignment_above_a_page_is_accepted_as_gnu_as_and_the_linker_accept_it(isa):
+    """AArch64 `.align 16` (64 KiB) was refused in the stream path while GNU as and the harness linker accept it
+    (2026-11-11: four first attempts in the 2026-11-10 Fireworks app runs). The cross-check window is aligned to
+    the largest alignment it holds, so GNU as agrees on the padding."""
+    obj = ok(isa, ALIGN_64K[isa])
+    assert len(obj.sections[".data"]) == 65536
+    assert run_program(obj.link(), b"").status == 0
+    assert "at most 16 MiB" in first_error("aarch64", "_start: nop\n.bss\n.align 25\n") or isa == "x86_64"

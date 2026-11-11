@@ -19,6 +19,7 @@ sys.path.insert(0, os.path.dirname(__file__))
 _stdout = sys.stdout
 sys.stdout = open(os.devnull, "w")  # xv_tables prints its tables on import; reuse its names and ADJ only
 import xv_tables  # noqa: E402
+import api_prices  # noqa: E402
 
 sys.stdout.close()
 sys.stdout = _stdout
@@ -908,6 +909,59 @@ def efficiency(by_fn, by_apps):
     print("token is not the same unit for every model. Compare within a vendor with more confidence than across.\n")
 
 
+BASIS = {"real": "charged", "cli": "CLI's API-equivalent", "credits": "Copilot AI credits",
+         "list": "list-price estimate", "free": "free", "none": "—"}
+
+
+def cost_section(by_fn, by_apps):
+    """What each model's runs cost, or would cost at API prices (eval/api_prices.py)."""
+    print("### Cost: charged, and the API-equivalent for flat-rate plans\n")
+    print("Dollars for the same runs, on whatever basis each route allows (`eval/api_prices.py`). *Charged* is")
+    print("real spend (Fireworks, Azure Foundry). The flat-rate plans charge nothing per call, so their figure is")
+    print("an API-equivalent: the CLI's own (Claude Code, Grok Build), Copilot's AI credits at $0.01, or our")
+    print(f"estimate from the call's tokens at third-party list prices checked {api_prices.CHECKED} (Codex, Kimi")
+    print("Code, Antigravity; cache writes priced as input). *Per solved cell* = the battery's total over the cells")
+    print("passed within four, scaled up for attempts without a figure and left blank below 75% coverage.")
+    print("Tokenisers and price lists differ, so compare across vendors loosely.\n")
+    for title, data, full in (("Function batteries", by_fn, FULL_FN), ("App battery", by_apps, FULL_APPS)):
+        rows = []
+        for m, cells in data.items():
+            if is_local(m):
+                continue
+            atts = [a for r in cells.values() for a in attempts_of(r)]
+            if not atts:
+                continue
+            costs = [api_prices.attempt_cost(m, a) for a in atts]
+            basis = collections.Counter(b for _, b in costs).most_common(1)[0][0]
+            got = [c for c, _ in costs if c is not None]
+            cov = len(got) / len(atts)
+            f4 = sum(bool(r["pass_final"]) for r in cells.values())
+            p1 = sum(bool(r["pass_at_1"]) for r in cells.values())
+            total = sum(got) / cov if got and cov >= 0.75 else None
+            per = total / f4 if total is not None and f4 else None
+            rows.append((len(cells) != full, -(per if per is not None else -1e9), m, len(cells), p1, basis, total,
+                         per, cov))
+        rows.sort(key=lambda r: (r[0], -r[1] if r[7] is not None else 1e9))
+        print(f"#### {title}\n")
+        print("| Model | First attempt | Basis | Total for the battery | Per solved cell | Coverage |")
+        print("|---|---|---|---|---|---|")
+        for partial, _, m, n, p1, basis, total, per, cov in rows:
+            tag = " †" if partial else ""
+            if basis == "none":
+                tot = per_s = "—"
+            else:
+                tot = f"${total:,.2f}" if total is not None else "—"
+                per_s = f"${per:,.3f}" if per is not None else "—"
+            print(f"| {name(m)}{tag} | {pct(p1, n)} | {BASIS[basis]} | {tot} | {per_s} | {100 * cov:.0f}% |")
+        print()
+    print("No price: Kolibri-1 and the Ollama models (local GPU), and "
+          + "; ".join(f"{name(k)} ({v})" for k, v in api_prices.NO_LIST_PRICE.items()) + ".")
+    print("List prices used (USD per 1M tokens: input / cached input / output):\n")
+    for k, ((i, c, o), note) in api_prices.LIST_PRICES.items():
+        print(f"- {name(k)}: ${i:g} / ${c:g} / ${o:g} ({note})")
+    print()
+
+
 def spearman(x, y):
     def ranks(v):
         order = sorted(range(len(v)), key=lambda i: v[i])
@@ -1037,6 +1091,17 @@ HARNESS_FIXES = [
      "caps at 128 KiB; a hex-app repair prompt quoting Claude Mythos 5.1's 128 KB previous attempt (135 KB) failed "
      "with E2BIG and stopped the run. A prompt over 100 KB now goes on stdin, byte for byte the same.",
      "No verdict changed: the call never started, and the resumed cell ran from that attempt."),
+    ("api-incomplete-read", "2026-11-10", "Foundry/Fireworks adapter: a stream the server cut mid-chunk raises "
+     "`http.client.IncompleteRead`, an `HTTPException` the adapter did not catch (it caught `OSError` only); it "
+     "stopped a MiniMax M3 app run. It is now a transient infrastructure error, retried and never scored.",
+     "No verdict changed: the broken call recorded no attempt, and the run resumed from where it stopped."),
+    ("stream-align", "2026-11-11", "Stream path (apps): alignment directives were capped at the page (2**12), so "
+     "AArch64 `.align 16` (64 KiB) was refused although GNU as and the harness linker accept it (the 2026-10-22 fix "
+     "raised only the linker's limit). The cap is now the linker's 16 MiB, and the GNU as cross-check window is "
+     "aligned to the largest alignment it holds.",
+     "Four first attempts in the 2026-11-10 Fireworks app runs (DeepSeek V4.1 Flash `base64.stream.aarch64.s3`; "
+     "Nemotron 3 Ultra `bf.stream.aarch64.s2`/`.s3`, `rev_lines.stream.aarch64.s3`) superseded and re-run from "
+     "scratch: Nemotron's `rev_lines` cell now passes on attempt 1, the other three again fail it genuinely."),
 ]
 
 
@@ -1126,6 +1191,7 @@ def main():
     refusals_section(load_all())
     generations(by_fn)
     efficiency(by_fn, by_apps)
+    cost_section(by_fn, by_apps)
     code_quality()
     audit()
 

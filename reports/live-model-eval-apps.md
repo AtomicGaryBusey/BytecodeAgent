@@ -55,12 +55,20 @@ samples passed on its first attempt.
 | Grok 4.7 | **89/96 (93%)** | 96/96 (100%) | 1.08 | 31/32 | 29/32 | 29/32 | 32/32 |
 | Grok 4.7 build-fast | **89/96 (93%)** | 96/96 (100%) | 1.08 | 30/32 | 29/32 | 30/32 | 32/32 |
 | Claude Haiku 5.5 | **88/96 (92%)** | 96/96 (100%) | 1.09 | 28/32 | 29/32 | 31/32 | 32/32 |
+| Claude Opus 4.8 | **88/96 (92%)** | 96/96 (100%) | 1.08 | 28/32 | 30/32 | 30/32 | 32/32 |
+| Kimi K3.1 Pro | **85/96 (89%)** | 96/96 (100%) | 1.11 | 29/32 | 25/32 | 31/32 | 32/32 |
 | Claude Fable 5.1 | **84/96 (88%)** | 96/96 (100%) | 1.15 | 26/32 | 27/32 | 31/32 | 31/32 |
 | Claude Sonnet 5.5 | **84/96 (88%)** | 96/96 (100%) | 1.14 | 29/32 | 28/32 | 27/32 | 32/32 |
 | Claude Mythos 5.2 | **84/96 (88%)** | 96/96 (100%) | 1.12 | 30/32 | 26/32 | 28/32 | 32/32 |
 | Claude Fable 5.2 | **83/96 (86%)** | 96/96 (100%) | 1.15 | 27/32 | 29/32 | 27/32 | 32/32 |
 | Kimi K3 | **83/96 (86%)** | 96/96 (100%) | 1.15 | 29/32 | 26/32 | 28/32 | 32/32 |
+| Codex GPT-6 Sol | **78/96 (81%)** | 95/96 (99%) | 1.21 | 28/32 | 24/32 | 26/32 | 32/32 |
+| Claude Sonnet 5 | **76/96 (79%)** | 95/96 (99%) | 1.27 | 23/32 | 27/32 | 26/32 | 31/32 |
+| DeepSeek V4.1 Flash (Fireworks) | **65/96 (68%)** | 93/96 (97%) | 1.44 | 23/32 | 24/32 | 18/32 | 30/32 |
+| Claude Sonnet 4.5 | **54/96 (56%)** | 93/96 (97%) | 1.64 | 18/32 | 16/32 | 20/32 | 28/32 |
+| MiniMax M3 (Fireworks) | **29/96 (30%)** | 62/96 (65%) | 2.59 | 10/32 | 7/32 | 12/32 | 17/32 |
 | Microsoft MAI-Code 1.1 Flash (Copilot) | **23/96 (24%)** | 64/96 (67%) | 2.61 | 6/32 | 7/32 | 10/32 | 15/32 |
+| NVIDIA Nemotron 3 Ultra NVFP4 (Fireworks) | **14/96 (15%)** | 59/96 (61%) | 3.04 | 4/32 | 6/32 | 4/32 | 10/32 |
 | Aleph Alpha Kolibri-1 FP8, token budget (local) | **3/96 (3%)** | 16/96 (17%) | 3.78 | 1/32 | 1/32 | 1/32 | 2/32 |
 
 Kimi K3 ran sample 1 on 2026-10-03 and samples 2 and 3 on 2026-10-22, after Kimi Allegretto's 7-day window had stopped it; Grok 4.7 and Grok 4.6 ran on 2026-10-22. Their failures were reviewed by hand: one harness false reject (Grok 4.6, see Harness integrity), otherwise genuine. Of the local open-weight models only
@@ -80,12 +88,20 @@ change the picture; see the local section of the cross-vendor report).
 | Grok 4.7 | 12/12 | 12/12 | 10/12 | 11/12 | 11/12 | 12/12 | 12/12 | 9/12 |
 | Grok 4.7 build-fast | 11/12 | 12/12 | 12/12 | 12/12 | 12/12 | 10/12 | 11/12 | 9/12 |
 | Claude Haiku 5.5 | 12/12 | 12/12 | 12/12 | 11/12 | 9/12 | 12/12 | 11/12 | 9/12 |
+| Claude Opus 4.8 | 11/12 | 12/12 | 10/12 | 10/12 | 12/12 | 12/12 | 12/12 | 9/12 |
+| Kimi K3.1 Pro | 11/12 | 12/12 | 11/12 | 9/12 | 11/12 | 11/12 | 10/12 | 10/12 |
 | Claude Fable 5.1 | 12/12 | 9/12 | 10/12 | 12/12 | 9/12 | 10/12 | 11/12 | 11/12 |
 | Claude Sonnet 5.5 | 12/12 | 11/12 | 11/12 | 12/12 | 9/12 | 11/12 | 12/12 | 6/12 |
 | Claude Mythos 5.2 | 10/12 | 11/12 | 9/12 | 11/12 | 10/12 | 12/12 | 12/12 | 9/12 |
 | Claude Fable 5.2 | 12/12 | 12/12 | 6/12 | 12/12 | 10/12 | 12/12 | 9/12 | 10/12 |
 | Kimi K3 | 12/12 | 11/12 | 11/12 | 10/12 | 7/12 | 10/12 | 12/12 | 10/12 |
+| Codex GPT-6 Sol | 12/12 | 11/12 | 10/12 | 7/12 | 11/12 | 10/12 | 10/12 | 7/12 |
+| Claude Sonnet 5 | 11/12 | 8/12 | 9/12 | 8/12 | 8/12 | 11/12 | 10/12 | 11/12 |
+| DeepSeek V4.1 Flash (Fireworks) | 10/12 | 11/12 | 9/12 | 8/12 | 8/12 | 9/12 | 7/12 | 3/12 |
+| Claude Sonnet 4.5 | 11/12 | 3/12 | 5/12 | 5/12 | 4/12 | 11/12 | 11/12 | 4/12 |
+| MiniMax M3 (Fireworks) | 5/12 | 10/12 | 2/12 | 2/12 | 0/12 | 5/12 | 5/12 | 0/12 |
 | Microsoft MAI-Code 1.1 Flash (Copilot) | 3/12 | 5/12 | 2/12 | 5/12 | 0/12 | 3/12 | 5/12 | 0/12 |
+| NVIDIA Nemotron 3 Ultra NVFP4 (Fireworks) | 3/12 | 6/12 | 1/12 | 1/12 | 0/12 | 2/12 | 1/12 | 0/12 |
 | Aleph Alpha Kolibri-1 FP8, token budget (local) | 0/12 | 3/12 | 0/12 | 0/12 | 0/12 | 0/12 | 0/12 | 0/12 |
 
 ### Per path and ISA (first-attempt passes, 24 cells each)
@@ -99,12 +115,20 @@ change the picture; see the local section of the cross-vendor report).
 | Grok 4.7 | 23/24 | 21/24 | 23/24 | 22/24 |
 | Grok 4.7 build-fast | 24/24 | 22/24 | 23/24 | 20/24 |
 | Claude Haiku 5.5 | 19/24 | 23/24 | 24/24 | 22/24 |
+| Claude Opus 4.8 | 21/24 | 24/24 | 19/24 | 24/24 |
+| Kimi K3.1 Pro | 19/24 | 23/24 | 21/24 | 22/24 |
 | Claude Fable 5.1 | 19/24 | 23/24 | 23/24 | 19/24 |
 | Claude Sonnet 5.5 | 23/24 | 20/24 | 22/24 | 19/24 |
 | Claude Mythos 5.2 | 22/24 | 20/24 | 23/24 | 19/24 |
 | Claude Fable 5.2 | 20/24 | 19/24 | 24/24 | 20/24 |
 | Kimi K3 | 20/24 | 20/24 | 21/24 | 22/24 |
+| Codex GPT-6 Sol | 18/24 | 17/24 | 22/24 | 21/24 |
+| Claude Sonnet 5 | 15/24 | 22/24 | 18/24 | 21/24 |
+| DeepSeek V4.1 Flash (Fireworks) | 15/24 | 18/24 | 17/24 | 15/24 |
+| Claude Sonnet 4.5 | 9/24 | 16/24 | 14/24 | 15/24 |
+| MiniMax M3 (Fireworks) | 6/24 | 9/24 | 5/24 | 9/24 |
 | Microsoft MAI-Code 1.1 Flash (Copilot) | 4/24 | 8/24 | 2/24 | 9/24 |
+| NVIDIA Nemotron 3 Ultra NVFP4 (Fireworks) | 1/24 | 6/24 | 4/24 | 3/24 |
 | Aleph Alpha Kolibri-1 FP8, token budget (local) | 0/24 | 2/24 | 0/24 | 1/24 |
 
 ### First-attempt failure categories
@@ -164,6 +188,21 @@ change the picture; see the local section of the cross-vendor report).
   operand mismatches on `jmp` / `jb`; `ccmp` with an immediate over 31), data in `.text`, and on the stream
   path a non-instruction line (`.set BUFSIZE, 69632`, `inbuf_cap = 65536`) that stops generation. Fable 5.2's
   weak task is `hexdump` (6/12 first attempt).
+- **App results for eight more models, added 2026-11-10/11 (approved "parity" pick-up runs).** Same protocol and
+  limits as every other row:
+  - **Claude Opus 4.8 88/96 (92%)**, level with Opus 5.5 (93%), although it trails Opus 5.5 by 18 points on the
+    function batteries: that gap is mostly QBE, which the app battery does not use.
+  - **Kimi K3.1 Pro 85/96 (89%)**, two cells ahead of Kimi K3. Run on Kimi Code 2.3.1; resumed after a home
+    network outage (Kimi's CLI could not refresh its login; nothing was scored meanwhile).
+  - **Codex GPT-6 Sol 78/96 (81%)**, 16 cells behind Astra although the two are tied on functions: 11 of its 18
+    first-attempt failures are wrong output, 4 an AArch64 `mov` of an unencodable immediate.
+  - **Claude Sonnet 5 76/96 (79%) and Sonnet 4.5 54/96 (56%)**, the widest generation gap on this battery
+    (Sonnet 4.5: 17 assembler rejects, 15 wrong outputs, 10 out-of-bounds accesses on the first attempt), with
+    Sonnet 5.5 at 84/96. Sonnet 4.5 is now deprecated, so this record is complete just in time.
+  - **Fireworks: DeepSeek V4.1 Flash 65/96 (68%), MiniMax M3 29/96 (30%), Nemotron 3 Ultra 14/96 (15%)**, at
+    each model's default reasoning. MiniMax M3's largest loss is the 900 s limit (33 first attempts still
+    reasoning); Nemotron's is assembler rejects (59). Within four attempts: 93, 62 and 59 of 96.
+  Every first-attempt failure was reviewed by hand; one harness false reject was found and fixed (below).
 - **Three samples matter.** Per-sample first-attempt scores move by up to 5 cells for the same model (Fable
   26, 27, 31); single-sample rankings of the frontier models would not be stable.
 - **Microsoft MAI-Code 1.1 Flash is far behind:** 23/96 (24%) on the first attempt, 64/96 (67%) within four, and
@@ -215,6 +254,14 @@ change the picture; see the local section of the cross-vendor report).
     `.bss` (64 KiB on AArch64), which GNU ld accepts. With only that line changed to a 4 KiB alignment the
     recorded answer passes all 42 test runs, so this was a harness false reject. Fixed: the linker now accepts
     section alignments up to 16 MiB, on both paths (`tests/test_process.py`). The re-run passed on attempt 1.
+  - DeepSeek V4.1 Flash `base64.stream.aarch64.s3` and Nemotron 3 Ultra `bf.stream.aarch64.s2`, `.s3` and
+    `rev_lines.stream.aarch64.s3` (2026-11-11): the stream path still capped alignment at a page, so AArch64
+    `.align 16` (64 KiB) stopped generation on attempt 1 although GNU as and the linker accept it; the 10-22 fix
+    had raised only the linker's limit. Fixed: the stream path's cap is now the linker's 16 MiB, and its GNU as
+    cross-check window is aligned to the largest alignment it holds (`tests/test_stream_program.py`). The answers
+    were cut off at that line, so the cells were re-run from scratch: Nemotron's `rev_lines` cell now passes on
+    attempt 1, the other three fail attempt 1 genuinely and pass within four. Every recorded app answer with an
+    alignment above a page (17, on either path) was checked: no other verdict depends on the cap.
 - **Every failure was reviewed by hand** for every model (the Copilot adapter's own transient errors, such
   as a broken stream or a network timeout, void the attempt and are retried, never scored). Kolibri-1: no false rejects. Its
   `sort_lines.asm.aarch64.s3` attempt 1 hit the same alignment limit (`.align 16`). The verdict stands, since the
@@ -224,7 +271,13 @@ change the picture; see the local section of the cross-vendor report).
   rejects. Claude Haiku 5.5 (2026-11-07): no false rejects in its 8 failed attempts (the four pre-run rejections
   break rules the prompt states; the four wrong outputs were checked against the spec's expected output).
   Claude Fable 5.2, Mythos 5.1 and Mythos 5.2 (2026-11-10): no false rejects in their 31 first-attempt failures,
-  each checked against GNU as's own message or the stated program-format rule.
+  each checked against GNU as's own message or the stated program-format rule. The 2026-11-10/11 pick-up runs
+  (Claude Opus 4.8, Sonnet 5, Sonnet 4.5; Codex GPT-6 Sol; Kimi K3.1 Pro; DeepSeek V4.1 Flash, MiniMax M3,
+  Nemotron 3 Ultra): one false reject (the stream alignment cap above); every other pre-run rejection is GNU as's
+  own error or a rule the prompt states (`rip` combined with another register, data directives in `.bss`,
+  constants used before their definition, prose inside the code), and the runtime failures (wrong output, an
+  exit status of 0 for an invalid document, runaway output past the 1 MiB limit, a write into the program's own
+  code) were checked against the tests' expected output. No refusals.
 
 ## Raw machine code: the opt-in hex path (Codex GPT-6 Astra)
 

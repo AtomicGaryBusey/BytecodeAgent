@@ -17,7 +17,7 @@ the same rules.
 | **IR** (`bca.ir`) | A small portable language: QBE IL, freestanding C, or WebAssembly text | An existing compiler (QBE, clang/tcc, Cranelift via wasmtime) lowers it; the function's bytes are pulled out of the ELF object |
 | **Hex** (`bca.liveeval.hexpath`, opt-in `--paths hex`) | The machine code itself, as hex: AArch64 32-bit words or x86-64 instruction bytes, plus data bytes for whole programs | Nothing: the bytes run exactly as written (decoded only to check the instruction set and to explain failures). Opus 5.5, Fable 5.2 and both Mythos models: 16/16 round-1 functions on the first try; Fable 5.2: 16/16 whole programs on the first try |
 
-Raw machine code across 25 models (functions and whole programs, mistakes models make encoding by hand, and the
+Raw machine code across 29 models (functions and whole programs, mistakes models make encoding by hand, and the
 safety filters that block it): [`reports/live-model-eval-hex.md`](reports/live-model-eval-hex.md).
 Whether a plain, truthful statement of purpose in the prompt reduces those blocks (not reliably; they fire
 on the model's own output): [`reports/live-model-eval-declared.md`](reports/live-model-eval-declared.md).
@@ -159,15 +159,25 @@ interpreter and a JSON validator, asm and stream paths, both ISAs, 3 samples, up
 | Grok 4.7 | **89/96 (93%)** | 96/96 (100%) | 1.08 |
 | Grok 4.7 build-fast | **89/96 (93%)** | 96/96 (100%) | 1.08 |
 | Claude Haiku 5.5 | **88/96 (92%)** | 96/96 (100%) | 1.09 |
+| Claude Opus 4.8 | **88/96 (92%)** | 96/96 (100%) | 1.08 |
+| Kimi K3.1 Pro | **85/96 (89%)** | 96/96 (100%) | 1.11 |
 | Claude Fable 5.1 | **84/96 (88%)** | 96/96 (100%) | 1.15 |
 | Claude Sonnet 5.5 | **84/96 (88%)** | 96/96 (100%) | 1.14 |
 | Claude Mythos 5.2 | **84/96 (88%)** | 96/96 (100%) | 1.12 |
 | Claude Fable 5.2 | **83/96 (86%)** | 96/96 (100%) | 1.15 |
 | Kimi K3 | **83/96 (86%)** | 96/96 (100%) | 1.15 |
+| Codex GPT-6 Sol | **78/96 (81%)** | 95/96 (99%) | 1.21 |
+| Claude Sonnet 5 | **76/96 (79%)** | 95/96 (99%) | 1.27 |
+| DeepSeek V4.1 Flash (Fireworks) | **65/96 (68%)** | 93/96 (97%) | 1.44 |
+| Claude Sonnet 4.5 | **54/96 (56%)** | 93/96 (97%) | 1.64 |
+| MiniMax M3 (Fireworks) | **29/96 (30%)** | 62/96 (65%) | 2.59 |
 | Microsoft MAI-Code 1.1 Flash (Copilot) | **23/96 (24%)** | 64/96 (67%) | 2.61 |
+| NVIDIA Nemotron 3 Ultra NVFP4 (Fireworks) | **14/96 (15%)** | 59/96 (61%) | 3.04 |
 | Aleph Alpha Kolibri-1 FP8, token budget (local) | **3/96 (3%)** | 16/96 (17%) | 3.78 |
 
-Grok 4.6 and Astra are one cell apart, which is within noise. Of the local models only Kolibri-1 runs the app battery (token-budget mode); the Ollama-served Qwen models do not, by decision. The frontier models' most common first-attempt error is an AArch64
+Grok 4.6 and Astra are one cell apart, which is within noise. Opus 4.8, Sonnet 5 and 4.5, GPT-6 Sol, Kimi K3.1 Pro
+and three Fireworks models were added on 2026-11-10/11; Opus 4.8 (92%) is level with Opus 5.5 here although QBE
+holds it to 78% on functions, and GPT-6 Sol (81%) trails Astra by 16 cells although the two are tied on functions. Of the local models only Kolibri-1 runs the app battery (token-budget mode); the Ollama-served Qwen models do not, by decision. The frontier models' most common first-attempt error is an AArch64
 `mov` of an immediate no single instruction can encode. Report, including the sandbox-escape fix and the
 asm/stream acceptance parity work: [`reports/live-model-eval-apps.md`](reports/live-model-eval-apps.md).
 

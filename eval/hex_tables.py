@@ -5,7 +5,7 @@ import collections
 import glob
 import json
 
-NAMES = {
+NAMES = {"kimi:kimi-code/k3.1-pro": "Kimi K3.1 Pro", "fireworks:deepseek-v4p1-flash": "DeepSeek V4.1 Flash (Fireworks)", "fireworks:nemotron-3-ultra-nvfp4": "NVIDIA Nemotron 3 Ultra NVFP4 (Fireworks)", "fireworks:minimax-m3": "MiniMax M3 (Fireworks)", "fireworks:glm-5p3": "Z.ai GLM-5.3 (Fireworks)", "fireworks:qwen3p8-max": "Qwen 3.8 Max (Fireworks)", "foundry:mai-thinking-1": "Microsoft MAI-Thinking-1 (Azure Foundry)", "foundry:deepseek-v4-pro": "DeepSeek-V4-Pro high (Azure Foundry)", 
     "codex:gpt-6-astra": "Codex GPT-6 Astra", "codex:gpt-6-sol": "Codex GPT-6 Sol", "codex:gpt-5.5": "Codex GPT-5.5",
     "codex:gpt-daybreak-blue-latest": "Codex Daybreak Blue", "codex:gpt-6-luna": "Codex GPT-6 Luna",
     "claude-opus-5-5": "Claude Opus 5.5", "claude-fable-5-1": "Claude Fable 5.1", "claude-fable-5-2": "Claude Fable 5.2", "claude-mythos-5-1": "Claude Mythos 5.1", "claude-mythos-5-2": "Claude Mythos 5.2", "claude-sonnet-5-5": "Claude Sonnet 5.5",
@@ -20,7 +20,7 @@ NAMES = {
 
 def label_of(r: dict) -> str:
     subj = r.get("subject") or ""
-    if subj.startswith(("codex_", "kimi_", "agy_", "grok_", "copilot_")):
+    if subj.startswith(("codex_", "kimi_", "agy_", "grok_", "copilot_", "foundry_", "fireworks_", "apple_")):
         return subj.replace("_", ":", 1).replace("kimi-code_", "kimi-code/")
     return subj if subj.startswith("claude-") else (r.get("model") or subj)
 

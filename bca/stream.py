@@ -108,7 +108,7 @@ function. Everything above still holds for instructions; in addition:
     on x86-64, 4 on AArch64), `.long`/`.int`/`.4byte`, `.quad`/`.8byte` (and `.xword`/`.dword`
     on AArch64), `.ascii`, `.asciz`/`.string`, `.zero`, `.space`/`.skip` (optional fill byte);
     alignment `.align` (bytes on x86-64, a power of two on AArch64, as in GNU as), `.balign`,
-    `.p2align` (optional fill and maximum skip; at most page alignment) in every section
+    `.p2align` (optional fill and maximum skip; at most 16 MiB, the linker's limit) in every section
     (.text pads with NOPs); .bss takes only zero fill and alignment. `.globl`/`.global` mark
     symbols global; `.type`, `.size`, `.file` and `.intel_syntax noprefix` are accepted
     without effect. Constants: `.equ name, expr`, `.set`, `.equiv`, `name = expr`, where expr
@@ -187,6 +187,11 @@ MAX_DATA = 4 << 20  # program mode: bytes of .rodata + .data
 MAX_BSS = 1 << 24  # program mode: bytes of .bss (bca.image.link_program's default limit)
 TEXT_BASE = 0x400000  # program mode: where bca.image.link_program places .text
 _PAGE = 0x1000
+# The largest alignment a directive may ask for: bca.image.MAX_ALIGN (16 MiB), what the harness linker accepts.
+# It was the page (2**12) until 2026-11-11, which refused AArch64 `.align 16` (64 KiB) although GNU as and the
+# linker accept it (four first attempts in the 2026-11-10 Fireworks app runs). The GNU as cross-check window is
+# aligned to the largest alignment it holds, so the padding GNU as computes is exact.
+_MAX_ALIGN_LOG = 24
 _MAX_MESSAGE = 600  # characters of any diagnostic quoted from a tool
 _MAX_SHOWN = 120  # characters of statement text quoted in a message
 _MAX_DEPTH = 32  # nesting of parentheses / unary operators in one expression
@@ -385,6 +390,7 @@ class _Check:
     externs: frozenset = frozenset()
     relocs: tuple = ()
     expect: bytes | None = None  # program mode: the bytes a constant's `.quad` must produce
+    align: int = 0  # program mode: the alignment an alignment directive asks for (sizes the GNU as window)
 
 
 @dataclass
@@ -1309,11 +1315,11 @@ class StreamAssembler:
                            "maximum skip")  # fmt: skip
         n = self._const(ops[0], head)
         if name == ".p2align" or (name == ".align" and not self._x86):
-            if not 0 <= n <= 12:
-                raise AsmError(f"{head} {n}: the power of two must be 0..12 (at most page alignment)")
+            if not 0 <= n <= _MAX_ALIGN_LOG:
+                raise AsmError(f"{head} {n}: the power of two must be 0..{_MAX_ALIGN_LOG} (at most 16 MiB)")
             n = 1 << n
-        elif not 1 <= n <= _PAGE or n & (n - 1):
-            raise AsmError(f"{head} {n}: the alignment must be a power of two from 1 to {_PAGE} bytes"
+        elif not 1 <= n <= 1 << _MAX_ALIGN_LOG or n & (n - 1):
+            raise AsmError(f"{head} {n}: the alignment must be a power of two from 1 to {1 << _MAX_ALIGN_LOG} bytes"
                            + (" (on AArch64 `.align` takes a power of two)" if not self._x86 else ""))
         fill, most = 0, None
         if len(ops) == 3:
@@ -1334,10 +1340,10 @@ class StreamAssembler:
         self._reserve(section, pad)
         if section == ".text":
             filler = b"\x90" * pad if self._x86 else _A64_NOP * (pad // 4)
-            check = _Check(full, addr, {}, False, section=".text")
+            check = _Check(full, addr, {}, False, section=".text", align=n)
             return ("text", _Encoded(filler, check=check), n)
         data = b"" if section == ".bss" else bytes([fill & 0xFF]) * pad
-        check = _Check(full, offset, {}, False, section=section)
+        check = _Check(full, offset, {}, False, section=section, align=n)
         return ("data", DataItem(section, offset, full, data, pad, line), check, (), n)
 
     def _reserve(self, section: str, size: int) -> None:
@@ -2115,8 +2121,8 @@ def _gas_start(tool: str, isa: Isa, checks: list[_Check]) -> dict:
     lowest address, labels defined relative to it."""
     base = min(c.addr for c in checks)
     header = _GAS_HEADER[isa.name]
-    if checks[0].section is not None:  # program mode: page-aligned base keeps .align exact
-        base &= ~(_PAGE - 1)
+    if checks[0].section is not None:  # program mode: a base aligned to the window's largest .align keeps it exact
+        base &= ~(max(_PAGE, *(c.align for c in checks)) - 1)
         header = header[:-1] + [_GAS_SECTION_HEADER[checks[0].section]]
     src = [*header, "__bca_w:"]
     owner: list[object] = [None] * len(src)

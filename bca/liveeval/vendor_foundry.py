@@ -389,6 +389,11 @@ class FoundrySubject(Subject):
         except OSError as e:
             if not fired.is_set():
                 error = f"{self.vendor} unreachable at {s['host']}: {e}"
+        except http.client.HTTPException as e:
+            # Not an OSError: a stream the server cut mid-chunk raises IncompleteRead (2026-11-10, Fireworks,
+            # MiniMax M3: it escaped and stopped the run). A transient infrastructure error, retried, never scored.
+            if not fired.is_set():
+                error = f"{self.vendor} stream broken at {s['host']}: {type(e).__name__}: {e}"
         finally:
             timer.cancel()
             conn.close()  # on an early abort this ends the generation

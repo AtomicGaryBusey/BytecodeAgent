@@ -349,3 +349,16 @@ attempt came to 135 KB, failed to start with E2BIG and stopped the run. A prompt
 prompts are passed as before. No committed verdict is affected: no earlier prompt came near the limit, and the
 failed call never reached the model. The other CLI adapters still pass the prompt in argv; none has hit the
 limit, and they are left as they are until one does.
+
+Two more fixes from the 2026-11-10/11 pick-up runs, neither changing a committed verdict except as stated:
+
+- **A stream cut mid-chunk** (Foundry and Fireworks adapter, 2026-11-10). `http.client` raises `IncompleteRead`
+  when a server drops the connection inside a chunk; it is an `HTTPException`, not an `OSError`, and escaped the
+  adapter, stopping a MiniMax M3 app run. It is now a transient infrastructure error, retried and never scored
+  (`tests/test_liveeval_vendor_fireworks.py`). The broken call recorded no attempt; the run resumed.
+- **Alignment above a page on the stream path** (2026-11-11). The stream assembler capped `.align`/`.p2align`/
+  `.balign` at 4 KiB, so AArch64 `.align 16` (64 KiB) stopped generation although GNU as and the harness linker
+  accept it; the 2026-10-22 linker fix had not reached the stream path. The cap is now the linker's 16 MiB, and the
+  GNU as cross-check window is aligned to the largest alignment it holds, so its padding stays exact
+  (`tests/test_stream_program.py`). Four first attempts in the 2026-11-10 Fireworks app runs were superseded and
+  re-run from scratch (the answers had been cut off at that line); see the app report's harness section.

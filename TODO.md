@@ -86,6 +86,13 @@ Approved by the user on 2026-10-22. After each: by-hand false-reject review, the
   false rejects, no refusals. Harness fix: a prompt over 100 KB goes to `claude -p` on stdin (E2BIG on a
   135 KB repair prompt).
 
+- [x] **App / hex parity pick-up** (approved 2026-11-10, "#1-#4 as-scoped"; DeepSeek hex programs approved 11-11):
+  apps for Claude Opus 4.8 88/96, Sonnet 5 76/96, Sonnet 4.5 54/96, Codex GPT-6 Sol 78/96, Kimi K3.1 Pro 85/96,
+  DeepSeek V4.1 Flash 65/96, MiniMax M3 29/96, Nemotron 3 Ultra 14/96; hex functions for K3.1 Pro 11/16, DeepSeek
+  16/16, MiniMax 8/16, Nemotron 3/16; hex programs for K3.1 Pro 4/16 and DeepSeek 4/16. Fireworks spend $32.03
+  (after a $50 top-up). Reviewed: one harness false reject (stream alignment cap; fixed, 4 cells re-run) and one
+  adapter fix (`IncompleteRead`); no refusals. Cost section added to the analytics (`eval/api_prices.py`).
+
 ## Waiting
 
 - [ ] **Gemini 4 Argon High (Antigravity, Google AI Pro), function batteries**: stopped on quota at 122/224 cells
@@ -106,13 +113,87 @@ Approved by the user on 2026-10-22. After each: by-hand false-reject review, the
 
 **New subjects (deferred by the user)**
 
+- [ ] **Cerebras: gpt-oss-120b and Qwen 3.8 27B** (backlogged 2026-11-11; do not start unless asked): the user has a
+  Cerebras account with $15 of credit; both models are served very fast. Needs a new `cerebras:` adapter: Cerebras'
+  API is OpenAI-style chat completions, so it can follow `vendor_fireworks.py` (a `FoundrySubject` subclass:
+  request ours byte for byte, streamed, priced into the shared spend ledger, per-model cap). Key from
+  `CEREBRAS_API_KEY` or `~/.config/bca/cerebras.key` (mode 0600, written by the user; never asked for in chat,
+  never logged). Prices (cerebras.ai/pricing, given by the user 2026-11-11; no cached-input rate listed):
+  gpt-oss-120b $0.35 in / $0.75 out per 1M (~3,000 tok/s); Qwen 3.8 27B $0.99 / $1.49 (~1,850 tok/s). Estimate
+  from comparable token use (DeepSeek V4.1 Flash for gpt-oss, Qwen 3.8 Max for the 27B; +/-50%): gpt-oss-120b
+  about $2 functions, $4 apps, <$1 hex, so ~$6-7 for everything; Qwen 3.8 27B about $7 functions and ~$15 apps.
+  Both in full (~$28) exceeds the $15 credit: fits gpt-oss-120b in full plus Qwen 3.8 27B functions (~$14,
+  tight), Qwen's apps after a top-up. Before any run: read the exact model ids from the console, check per-tier rate limits (requests and
+  tokens per minute), context window and output cap against our longest prompts and answers, then a 5-cell smoke
+  and a cost estimate against the $15. Same time limits as every model: fast serving is measured, not
+  accommodated. Why both: gpt-oss-120b then has two hosts (Fireworks above, Cerebras), a serving comparison
+  for one open-weight model; Qwen 3.8 27B on Cerebras is a hosted route to the same model family as the
+  backlogged Qwen3.8-27B from the user's DGX cluster (the Ring0-Agent model), which allows a hosted-versus-own-
+  cluster comparison if the quantisation and settings are recorded.
+- [ ] **gpt-oss-120b via Fireworks** (backlogged 2026-11-11; do not start unless asked): OpenAI's open-weight
+  model, not benchmarked anywhere; it would be the first OpenAI open-weight row. Fireworks' model API reports
+  `accounts/fireworks/models/gpt-oss-120b` READY, serverless, 131,072-token context. Price about $0.15 / $0.015 /
+  $0.60 per 1M (input / cached / output; one source quotes $0.18 / $0.018 / $0.72: confirm on fireworks.ai/pricing).
+  Needs a `MODELS` entry in `vendor_fireworks.py` (price, output cap) and a test, then a 5-cell smoke. All four
+  batteries plus hex about $3-6; model-default reasoning, as for the other Fireworks rows. Chosen over Antigravity's
+  `gpt-oss-120b-medium`, which would compete with Argon for the Google AI Pro quota and fixes the effort at
+  Medium. Not backlogged from Antigravity: the Argon and Flash low / medium effort variants (one effort per model)
+  and the Claude Opus / Sonnet 5.5 front-end duplicates.
+- [ ] **App battery for Grok 4.5** (backlogged 2026-11-11; do not start unless asked): the one Grok model without
+  app results (functions 197/224, hex functions and programs done). 96 cells, about 110-130 calls on SuperGrok,
+  Grok Build CLI 1.0.41 (audited), CLI-default effort. Fills the Grok 4.5 -> 4.6 -> 4.7 app comparison.
+- [ ] **Two Copilot routes** (backlogged 2026-11-11; do not start unless asked; the user confirmed OpenAI models
+  through Copilot are fine, since the Codex rule covers the ChatGPT plan only):
+  - `copilot:gpt-5.3-codex`: OpenAI's Codex-tuned GPT-5.3, not in Codex CLI; Copilot is the only subscription
+    route (otherwise the pay-per-token API). Its Copilot policy is "not set": enable it in GitHub's Copilot
+    settings first.
+  - `copilot:kimi-k3`: a front-end comparison with Kimi K3 through Kimi Code (204/224). It extends the finding
+    that the front end matters (GPT-6 Luna 58% Codex vs 79% Copilot; Sonnet 5.5 90% `claude -p` vs 76% Copilot)
+    to a third vendor.
+  Copilot Pro's monthly premium-request credits limit this to about one or two models a month (~250 requests per
+  model for the functions, more with model multipliers; MAI-Code ran out once at 203/224; resets on the 1st).
+  Stay on CLI 1.0.107 / SDK 1.0.29 (1.0.109 / 1.0.31 are out, not audited). Left out: `auto` (a router; the
+  answering model is unknown) and the other front-end duplicates (Claude Sonnet 5 / Haiku 5.5 / Haiku 4.5,
+  GPT-5.6 / 6.1, Grok 4.7 / 4.6 through Copilot).
+- [ ] **Two Kimi Code models** (backlogged 2026-11-11; do not start unless asked): `kimi-code/k3.1-pro-highspeed`
+  (K3.1 Pro served faster at 2x usage cost: does the faster serving cost accuracy, as Grok 4.7 build-fast did
+  not?) and `kimi-code/kimi-for-coding-highspeed` (K2.7 Code Highspeed: extends the Kimi line K2.7 -> K2.8 ->
+  K3 -> K3.1 Pro). Kimi Allegretto plan (5-hour and 7-day caps), CLI 2.3.1, each model's catalog default effort.
+  About 250 calls per model for the functions (the highspeed K3.1 Pro at double quota), ~400 with apps and hex.
+  Left out: `kimi-code/k3-256k` (K3 with a shorter context; would repeat K3). Re-run `kimi login` first to
+  refresh the catalog (as of 2026-11-07).
+- [ ] **Five untested GPT models in Codex CLI** (backlogged 2026-11-11; do not start unless asked; the ChatGPT
+  plan is reserved, so the user names models before any run): `gpt-6.1-sol`, `gpt-6.1-terra` (needs CLI >= 0.165.0),
+  `gpt-5.6-sol`, `gpt-5.6-terra`, `gpt-5.6-luna`. All five are in the Codex catalog (CLI 0.167.0, ChatGPT Pro) and
+  in the OpenAI API list. Before running: pin each model's Codex catalog default effort (`CODEX_PINNED_EFFORT`;
+  an unknown model must be given `--effort`), and expect a possible re-audit if a new catalog entry carries
+  tool-ish fields outside `CATALOG_AUDITED`. Stay on 0.167.0 (0.167.1 is out, not audited). About 250 calls per
+  model for the functions, ~400 with apps and hex; 1,250-2,000 for all five. Not candidates: `gpt-reserve` and
+  `codex-auto-review` (hidden catalog entries). `gpt-reserve` is "Luna Reserve" (web reports, 2026-11-11, not
+  official docs): a fallback Codex switches to after the plan's usage limit, on its own meter, serving a
+  Luna-class model whose identity OpenAI does not state; a separate model id from `gpt-5.6-luna`, max effort
+  `xhigh`. Not a distinct model to rank, and its unknown backing model would break the "named model answers"
+  rule. `codex-auto-review` is Codex's review helper. API-only GPT models
+  (GPT-5.4 family, gpt-5.3-codex, 5.2, 5.1, 5, -pro variants, o3, GPT-4.1, GPT-4o) would need a direct OpenAI API
+  adapter (pay-per-token); a separate decision.
+- [ ] **Six older Claude models not yet benchmarked** (backlogged 2026-11-11; do not start unless asked):
+  `claude-opus-5` (Opus 5), `claude-fable-5` (Fable 5), `claude-opus-4-7`, `claude-opus-4-6`,
+  `claude-opus-4-5-20251101` (Opus 4.5) and `claude-sonnet-4-6`. Each answered as itself through `claude -p` on
+  2026-11-11 and is listed in the account's API model playground. Full set per model (functions, apps, hex
+  functions, hex programs at >= 12/16 within four): roughly 350-500 calls, about 2,500 for all six, on the
+  Claude Max plan (no money; CVP caveat applies). It completes the Opus 4.5 -> 4.8, Opus 5 -> 5.5, Fable 5 ->
+  5.2 and Sonnet 4.5 -> 5.5 lineages. Not available: Opus 4.1 and Opus 4 (`claude -p` silently serves Opus 5.5
+  for those ids), Sonnet 4 and all Claude 3.x (retired). Mythos 5.1 / 5.2 are reachable through Claude Code
+  but are not in the API playground.
+
 - [ ] **Qwen3.8-27B**, the model behind Ring0-Agent ("close the loop"). To be served from the user's other DGX
   cluster. The time-limit blocker for a dense 27B is gone (token-budget mode, built for Kolibri). Needs from the
   user: endpoint URL and serving stack, model id, quantisation, and Ring0-Agent's sampling settings.
 - [ ] **App battery and hex path for MAI-Thinking-1 and DeepSeek-V4-Pro** (Azure Foundry): backlogged
-  2026-11-08 on cost (projected $25-40 and $15-25).
-- [ ] **App battery and hex path for the Fireworks models**: estimated 2026-11-10 at about $120-190 for apps
-  and hex functions across all five (GLM and Qwen are most of it), plus up to ~$80 for gated hex programs.
+  2026-11-08 on cost (projected $25-40 and $15-25). Not part of the 2026-11-10 parity pick-up.
+- [ ] **App battery and hex path for GLM-5.3 and Qwen 3.8 Max** (Fireworks): the expensive two of the 2026-11-10
+  estimate (most of its $120-190, plus gated hex programs). DeepSeek V4.1 Flash, MiniMax M3 and Nemotron 3 Ultra
+  ran in the parity pick-up ($32 in all).
 - [ ] **Further Foundry models** (recommended in the landscape update, not approved): Kimi-K3.1-Pro (a second
   route to a benchmarked model), mistral-medium-3-5.
 - [ ] **Apriel-1.6-15B-Thinker** (ServiceNow, MIT): optional local baseline, practical now that token-budget mode
@@ -147,8 +228,7 @@ then regenerate the tables and `eval/analytics.py`.
 
 **Worth filling (they limit published conclusions)**
 
-- [ ] **App battery for Codex GPT-6 Sol** (tied with Astra; Grok 4.7 and 4.6 were approved, Sol was not):
-  96 cells, ~105 calls, ChatGPT Pro.
+- [x] **App battery for Codex GPT-6 Sol**: done 2026-11-10 (78/96), in the parity pick-up.
 
 **Prompt variants on non-Claude models (backlogged 2026-10-22, not approved; recommendation below)**
 
@@ -186,15 +266,14 @@ then regenerate the tables and `eval/analytics.py`.
 
 **Hex-path holes**
 
-- [ ] **No hex results for Gemini 3.8 Flash High, Kimi K3.1 Pro or Kolibri-1**: hex functions (16 cells) each;
+- [ ] **No hex results for Gemini 3.8 Flash High or Kolibri-1 (Kimi K3.1 Pro done 2026-11-10)**: hex functions (16 cells) each;
   whole-program hex follows only at ≥ 12/16 within four (so Haiku 4.5 and MAI-Code missing from hex apps is by
   design; Haiku 5.5 qualified and ran). Kolibri ~5 GPU hours.
 
 **Not fillable or not worth it (note in reports, do not run)**
 
-- Codex GPT-5.5 retired 2026-10-14 (no app results possible); Claude Sonnet 4.5 was retiring from 2026-09-29
-  (check availability first). Generational app comparisons (Opus 4.8 → 5.5, Sonnet 4.5 → 5.5) stay missing;
-  Opus 4.8 and Sonnet 5 have no app runs.
+- Codex GPT-5.5 retired 2026-10-14 (no app results possible). Claude Sonnet 4.5 (deprecated), Sonnet 5 and Opus
+  4.8 got their app runs on 2026-11-10, so the Opus 4.8 → 5.5 and Sonnet 4.5 → 5 → 5.5 app comparisons now exist.
 - Trimmed Qwen runs stay partial (user decision 2026-10-01).
 - Token coverage: Qwen3.6 thinking-on 7% (times out before answering), Kimi K2.8 88% (its CLI prints only at
   call end); a re-run would behave the same.

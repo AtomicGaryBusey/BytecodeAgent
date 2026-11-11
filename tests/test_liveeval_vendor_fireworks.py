@@ -108,3 +108,31 @@ def test_output_cap_is_a_scored_timeout(fw):
     r = subj(tmp).complete("p")
     assert r.timed_out and not r.ok and call_failure_category(r) == "subject_timeout"
     assert any("output cap reached: 2000" in n for n in r.notes)
+
+
+def test_a_stream_cut_mid_chunk_is_a_transient_infrastructure_error(fw):
+    """http.client raises IncompleteRead (an HTTPException, not an OSError) when the server drops the
+    connection inside a chunk; on 2026-11-10 it escaped and stopped a MiniMax M3 run."""
+    fake, tmp = fw
+
+    class Cut:
+        def __init__(self, resp):
+            self._resp, self.status = resp, resp.status
+
+        def __iter__(self):
+            yield next(iter(self._resp))
+            raise http.client.IncompleteRead(b"")
+
+        def read(self, *a):
+            return self._resp.read(*a)
+
+    class CutConnection(http.client.HTTPConnection):
+        def getresponse(self):
+            return Cut(super().getresponse())
+
+    s = subj(tmp)
+    s.connection = CutConnection
+    r = s.complete("p" * 100)
+    assert not r.ok and not r.timed_out and not r.refusal
+    assert "stream broken" in r.error and "IncompleteRead" in r.error
+    assert infra_kind(r.error) == "transient"
