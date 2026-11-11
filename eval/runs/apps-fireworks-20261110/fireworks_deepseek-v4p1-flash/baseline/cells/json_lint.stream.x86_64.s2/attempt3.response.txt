@@ -1,0 +1,397 @@
+.globl _start
+
+.section .rodata
+lit_true:  .ascii "true"
+lit_false: .ascii "false"
+lit_null:  .ascii "null"
+msg_ok:    .ascii "ok\n"
+msg_err:   .ascii "error at "
+msg_nl:    .ascii "\n"
+
+.section .bss
+.align 16
+inbuf:  .zero 65536
+numbuf: .zero 32
+
+.text
+_start:
+    xor r12, r12
+.Lread_loop:
+    mov rdx, 65536
+    sub rdx, r12
+    jz .Lread_done
+    mov eax, 0
+    xor edi, edi
+    lea rsi, [rip + inbuf]
+    add rsi, r12
+    syscall
+    test rax, rax
+    jle .Lread_done
+    add r12, rax
+    jmp .Lread_loop
+.Lread_done:
+    lea rbx, [rip + inbuf]
+    mov r14, rbx
+    lea r13, [rbx + r12]
+    call parse_value
+    jc .Lerror
+    call skip_ws
+    cmp r14, r13
+    jne .Lerror
+    mov eax, 1
+    mov edi, 1
+    lea rsi, [rip + msg_ok]
+    mov edx, 3
+    syscall
+    mov eax, 60
+    xor edi, edi
+    syscall
+.Lerror:
+    mov rax, r14
+    sub rax, rbx
+    lea r9, [rip + numbuf + 16]
+    mov ecx, 10
+    xor r8d, r8d
+.Ldigit:
+    xor edx, edx
+    div rcx
+    add dl, 0x30
+    dec r9
+    mov byte ptr [r9], dl
+    inc r8d
+    test rax, rax
+    jnz .Ldigit
+    mov eax, 1
+    mov edi, 1
+    lea rsi, [rip + msg_err]
+    mov edx, 9
+    syscall
+    mov eax, 1
+    mov edi, 1
+    mov rsi, r9
+    mov rdx, r8
+    syscall
+    mov eax, 1
+    mov edi, 1
+    lea rsi, [rip + msg_nl]
+    mov edx, 1
+    syscall
+    mov eax, 60
+    mov edi, 1
+    syscall
+
+skip_ws:
+    cmp r14, r13
+    jae .Lws_done
+    movzx eax, byte ptr [r14]
+    cmp al, 0x20
+    je .Lws_adv
+    cmp al, 0x09
+    je .Lws_adv
+    cmp al, 0x0A
+    je .Lws_adv
+    cmp al, 0x0D
+    jne .Lws_done
+.Lws_adv:
+    inc r14
+    jmp skip_ws
+.Lws_done:
+    ret
+
+parse_value:
+    call skip_ws
+    cmp r14, r13
+    jae .Lpv_err
+    movzx eax, byte ptr [r14]
+    cmp al, 0x7B
+    je parse_object
+    cmp al, 0x5B
+    je parse_array
+    cmp al, 0x22
+    je parse_string
+    cmp al, 0x74
+    je .Lpv_true
+    cmp al, 0x66
+    je .Lpv_false
+    cmp al, 0x6E
+    je .Lpv_null
+    cmp al, 0x2D
+    je parse_number
+    cmp al, 0x30
+    jb .Lpv_err
+    cmp al, 0x39
+    jbe parse_number
+.Lpv_err:
+    stc
+    ret
+.Lpv_true:
+    lea rsi, [rip + lit_true]
+    mov ecx, 4
+    jmp match_lit
+.Lpv_false:
+    lea rsi, [rip + lit_false]
+    mov ecx, 5
+    jmp match_lit
+.Lpv_null:
+    lea rsi, [rip + lit_null]
+    mov ecx, 4
+    jmp match_lit
+
+# r14 points at the first (already matched) character of the literal,
+# rsi points at the literal, ecx is its length. Returns with r14 past it,
+# or with carry set and r14 at the first offending byte.
+match_lit:
+    mov edx, 1
+.Lml_loop:
+    cmp edx, ecx
+    jae .Lml_done
+    lea rax, [r14 + 1]
+    cmp rax, r13
+    jae .Lml_eof
+    mov r14, rax
+    mov al, byte ptr [rsi + rdx]
+    cmp byte ptr [r14], al
+    jne .Lml_err
+    inc edx
+    jmp .Lml_loop
+.Lml_done:
+    inc r14
+    clc
+    ret
+.Lml_eof:
+    mov r14, r13
+.Lml_err:
+    stc
+    ret
+
+parse_string:
+    inc r14
+.Lps_loop:
+    cmp r14, r13
+    jae .Lps_err
+    movzx eax, byte ptr [r14]
+    cmp al, 0x22
+    je .Lps_end
+    cmp al, 0x5C
+    je .Lps_esc
+    cmp al, 0x20
+    jb .Lps_err
+    inc r14
+    jmp .Lps_loop
+.Lps_end:
+    inc r14
+    clc
+    ret
+.Lps_esc:
+    inc r14
+    cmp r14, r13
+    jae .Lps_err
+    movzx eax, byte ptr [r14]
+    cmp al, 0x75
+    je .Lps_uni
+    cmp al, 0x22
+    je .Lps_esc_ok
+    cmp al, 0x5C
+    je .Lps_esc_ok
+    cmp al, 0x2F
+    je .Lps_esc_ok
+    cmp al, 0x62
+    je .Lps_esc_ok
+    cmp al, 0x66
+    je .Lps_esc_ok
+    cmp al, 0x6E
+    je .Lps_esc_ok
+    cmp al, 0x72
+    je .Lps_esc_ok
+    cmp al, 0x74
+    je .Lps_esc_ok
+    jmp .Lps_err
+.Lps_esc_ok:
+    inc r14
+    jmp .Lps_loop
+.Lps_uni:
+    inc r14
+    mov ecx, 4
+.Lps_hex:
+    cmp r14, r13
+    jae .Lps_err
+    movzx eax, byte ptr [r14]
+    mov edx, eax
+    sub edx, 0x30
+    cmp edx, 9
+    jbe .Lps_hex_ok
+    mov edx, eax
+    or edx, 0x20
+    sub edx, 0x61
+    cmp edx, 5
+    ja .Lps_err
+.Lps_hex_ok:
+    inc r14
+    dec ecx
+    jnz .Lps_hex
+    jmp .Lps_loop
+.Lps_err:
+    stc
+    ret
+
+parse_number:
+    movzx eax, byte ptr [r14]
+    cmp al, 0x2D
+    jne .Lpn_int
+    inc r14
+    cmp r14, r13
+    jae .Lpn_err
+.Lpn_int:
+    movzx eax, byte ptr [r14]
+    cmp al, 0x30
+    jne .Lpn_nz
+    inc r14
+    jmp .Lpn_frac
+.Lpn_nz:
+    cmp al, 0x31
+    jb .Lpn_err
+    cmp al, 0x39
+    ja .Lpn_err
+.Lpn_dig:
+    inc r14
+    cmp r14, r13
+    jae .Lpn_frac
+    movzx eax, byte ptr [r14]
+    cmp al, 0x30
+    jb .Lpn_frac
+    cmp al, 0x39
+    jbe .Lpn_dig
+.Lpn_frac:
+    cmp r14, r13
+    jae .Lpn_ok
+    movzx eax, byte ptr [r14]
+    cmp al, 0x2E
+    jne .Lpn_exp
+    inc r14
+    cmp r14, r13
+    jae .Lpn_err
+    movzx eax, byte ptr [r14]
+    cmp al, 0x30
+    jb .Lpn_err
+    cmp al, 0x39
+    ja .Lpn_err
+.Lpn_fdig:
+    inc r14
+    cmp r14, r13
+    jae .Lpn_ok
+    movzx eax, byte ptr [r14]
+    cmp al, 0x30
+    jb .Lpn_exp
+    cmp al, 0x39
+    jbe .Lpn_fdig
+.Lpn_exp:
+    movzx eax, byte ptr [r14]
+    cmp al, 0x65
+    je .Lpn_e
+    cmp al, 0x45
+    jne .Lpn_ok
+.Lpn_e:
+    inc r14
+    cmp r14, r13
+    jae .Lpn_err
+    movzx eax, byte ptr [r14]
+    cmp al, 0x2B
+    je .Lpn_esign
+    cmp al, 0x2D
+    jne .Lpn_edig
+.Lpn_esign:
+    inc r14
+    cmp r14, r13
+    jae .Lpn_err
+    movzx eax, byte ptr [r14]
+.Lpn_edig:
+    cmp al, 0x30
+    jb .Lpn_err
+    cmp al, 0x39
+    ja .Lpn_err
+.Lpn_edig_loop:
+    inc r14
+    cmp r14, r13
+    jae .Lpn_ok
+    movzx eax, byte ptr [r14]
+    cmp al, 0x30
+    jb .Lpn_ok
+    cmp al, 0x39
+    jbe .Lpn_edig_loop
+.Lpn_ok:
+    clc
+    ret
+.Lpn_err:
+    stc
+    ret
+
+parse_array:
+    inc r14
+    call skip_ws
+    cmp r14, r13
+    jae .Lpa_err
+    cmp byte ptr [r14], 0x5D
+    je .Lpa_close
+.Lpa_elem:
+    call parse_value
+    jc .Lpa_err
+    call skip_ws
+    cmp r14, r13
+    jae .Lpa_err
+    movzx eax, byte ptr [r14]
+    cmp al, 0x2C
+    je .Lpa_comma
+    cmp al, 0x5D
+    jne .Lpa_err
+.Lpa_close:
+    inc r14
+    clc
+    ret
+.Lpa_comma:
+    inc r14
+    jmp .Lpa_elem
+.Lpa_err:
+    stc
+    ret
+
+parse_object:
+    inc r14
+    call skip_ws
+    cmp r14, r13
+    jae .Lpo_err
+    cmp byte ptr [r14], 0x7D
+    je .Lpo_close
+.Lpo_member:
+    call skip_ws
+    cmp r14, r13
+    jae .Lpo_err
+    cmp byte ptr [r14], 0x22
+    jne .Lpo_err
+    call parse_string
+    jc .Lpo_err
+    call skip_ws
+    cmp r14, r13
+    jae .Lpo_err
+    cmp byte ptr [r14], 0x3A
+    jne .Lpo_err
+    inc r14
+    call parse_value
+    jc .Lpo_err
+    call skip_ws
+    cmp r14, r13
+    jae .Lpo_err
+    movzx eax, byte ptr [r14]
+    cmp al, 0x2C
+    je .Lpo_comma
+    cmp al, 0x7D
+    jne .Lpo_err
+.Lpo_close:
+    inc r14
+    clc
+    ret
+.Lpo_comma:
+    inc r14
+    jmp .Lpo_member
+.Lpo_err:
+    stc
+    ret

@@ -1,0 +1,287 @@
+```assembly
+// rpn.s - AArch64 assembly RPN evaluator
+// Static Linux executable, no libc.
+
+.globl _start
+.text
+
+_start:
+    // Read all of stdin into input_buf
+    adrp x19, input_buf
+    add x19, x19, :lo12:input_buf
+    mov x20, #0
+read_loop:
+    add x1, x19, x20
+    movz x2, #2, lsl #16          // 131072
+    sub x2, x2, x20
+    cbz x2, read_done
+    mov x0, #0
+    mov x8, #63                   // SYS_read
+    svc #0
+    cbz x0, read_done
+    add x20, x20, x0
+    b read_loop
+read_done:
+    mov x21, x19                  // ptr
+    add x22, x19, x20             // end
+    adrp x25, stack
+    add x25, x25, :lo12:stack     // stack base
+
+line_loop:
+    cmp x21, x22
+    b.hs all_done
+    mov x23, x21
+find_nl:
+    cmp x23, x22
+    b.hs nl_not_found
+    ldrb w0, [x23]
+    cmp w0, #10
+    b.eq nl_found
+    add x23, x23, #1
+    b find_nl
+nl_found:
+    mov x24, x23
+    add x23, x23, #1
+    b do_line
+nl_not_found:
+    mov x24, x22
+    mov x23, x22
+
+do_line:
+    mov x0, x21                   // p
+    mov x1, x24                   // line end
+    mov x2, #0                    // sp
+    mov x3, #0                    // error flag
+
+eval_loop:
+    cmp x0, x1
+    b.hs eval_done
+    ldrb w4, [x0]
+    cmp w4, #0x20
+    b.eq skip_one
+    cmp w4, #0x09
+    b.ne token_start
+skip_one:
+    add x0, x0, #1
+    b eval_loop
+
+token_start:
+    mov x5, x0
+scan_tok:
+    add x0, x0, #1
+    cmp x0, x1
+    b.hs tok_scanned
+    ldrb w4, [x0]
+    cmp w4, #0x20
+    b.eq tok_scanned
+    cmp w4, #0x09
+    b.eq tok_scanned
+    b scan_tok
+tok_scanned:
+    sub x6, x0, x5                // token length
+    mov x11, #0                   // negative flag
+    cmp x6, #1
+    b.eq single_char
+    ldrb w4, [x5]
+    cmp w4, #45                   // '-'
+    b.ne check_positive
+    mov x11, #1
+    add x7, x5, #1
+    sub x8, x6, #1
+    b check_len
+check_positive:
+    mov x7, x5
+    mov x8, x6
+check_len:
+    cmp x8, #1
+    b.lt eval_error
+    cmp x8, #18
+    b.gt eval_error
+    b parse_digits
+
+single_char:
+    ldrb w4, [x5]
+    cmp w4, #43                   // '+'
+    b.eq op_add
+    cmp w4, #45                   // '-'
+    b.eq op_sub
+    cmp w4, #42                   // '*'
+    b.eq op_mul
+    cmp w4, #47                   // '/'
+    b.eq op_div
+    cmp w4, #37                   // '%'
+    b.eq op_mod
+    sub w5, w4, #48
+    cmp w5, #9
+    b.hi eval_error
+    mov x9, x5
+    b push_val
+
+parse_digits:
+    mov x9, #0
+    mov x10, #10
+parse_loop:
+    ldrb w4, [x7], #1
+    sub w4, w4, #48
+    cmp w4, #9
+    b.hi eval_error
+    mul x9, x9, x10
+    add x9, x9, x4
+    subs x8, x8, #1
+    b.ne parse_loop
+    cbz x11, push_val
+    neg x9, x9
+push_val:
+    cmp x2, #1024
+    b.hs eval_error
+    str x9, [x25, x2, lsl #3]
+    add x2, x2, #1
+    b eval_loop
+
+op_add:
+    cmp x2, #2
+    b.lt eval_error
+    sub x2, x2, #1
+    ldr x6, [x25, x2, lsl #3]
+    sub x2, x2, #1
+    ldr x5, [x25, x2, lsl #3]
+    add x9, x5, x6
+    b push_op_result
+op_sub:
+    cmp x2, #2
+    b.lt eval_error
+    sub x2, x2, #1
+    ldr x6, [x25, x2, lsl #3]
+    sub x2, x2, #1
+    ldr x5, [x25, x2, lsl #3]
+    sub x9, x5, x6
+    b push_op_result
+op_mul:
+    cmp x2, #2
+    b.lt eval_error
+    sub x2, x2, #1
+    ldr x6, [x25, x2, lsl #3]
+    sub x2, x2, #1
+    ldr x5, [x25, x2, lsl #3]
+    mul x9, x5, x6
+    b push_op_result
+op_div:
+    cmp x2, #2
+    b.lt eval_error
+    sub x2, x2, #1
+    ldr x6, [x25, x2, lsl #3]
+    sub x2, x2, #1
+    ldr x5, [x25, x2, lsl #3]
+    cbz x6, eval_error
+    movz x4, #0x8000, lsl #48
+    cmp x5, x4
+    b.ne do_div
+    cmn x6, #1
+    b.eq eval_error
+do_div:
+    sdiv x9, x5, x6
+    b push_op_result
+op_mod:
+    cmp x2, #2
+    b.lt eval_error
+    sub x2, x2, #1
+    ldr x6, [x25, x2, lsl #3]
+    sub x2, x2, #1
+    ldr x5, [x25, x2, lsl #3]
+    cbz x6, eval_error
+    movz x4, #0x8000, lsl #48
+    cmp x5, x4
+    b.ne do_mod
+    cmn x6, #1
+    b.eq eval_error
+do_mod:
+    sdiv x4, x5, x6
+    msub x9, x4, x6, x5
+    b push_op_result
+
+push_op_result:
+    str x9, [x25, x2, lsl #3]
+    add x2, x2, #1
+    b eval_loop
+
+eval_error:
+    mov x3, #1
+    b eval_done
+
+eval_done:
+    cbnz x3, print_error
+    cmp x2, #1
+    b.ne print_error
+    ldr x0, [x25]
+    bl print_int
+    b eval_return
+
+print_error:
+    mov x0, #1
+    adrp x1, err_msg
+    add x1, x1, :lo12:err_msg
+    mov x2, #6
+    mov x8, #64                   // SYS_write
+    svc #0
+
+eval_return:
+    mov x21, x23
+    b line_loop
+
+all_done:
+    mov x0, #0
+    mov x8, #93                   // SYS_exit
+    svc #0
+
+// print signed integer in x0 followed by newline
+print_int:
+    sub sp, sp, #48
+    mov x2, sp
+    add x2, x2, #48
+    mov w3, #10
+    sub x2, x2, #1
+    strb w3, [x2]
+    cmp x0, #0
+    b.ge pi_positive
+    neg x0, x0
+    mov x9, #1
+    b pi_convert
+pi_positive:
+    mov x9, #0
+pi_convert:
+    mov x4, #10
+pi_loop:
+    udiv x5, x0, x4
+    msub x6, x5, x4, x0
+    add w6, w6, #48
+    sub x2, x2, #1
+    strb w6, [x2]
+    mov x0, x5
+    cbnz x0, pi_loop
+    cbz x9, pi_write
+    mov w6, #45
+    sub x2, x2, #1
+    strb w6, [x2]
+pi_write:
+    mov x1, x2
+    mov x0, #1
+    mov x2, sp
+    add x2, x2, #48
+    sub x2, x2, x1
+    mov x8, #64                   // SYS_write
+    svc #0
+    add sp, sp, #48
+    ret
+
+.section .rodata
+err_msg:
+    .ascii "error\n"
+
+.section .bss
+.align 3
+input_buf:
+    .zero 131072
+.align 3
+stack:
+    .zero 8192
+```

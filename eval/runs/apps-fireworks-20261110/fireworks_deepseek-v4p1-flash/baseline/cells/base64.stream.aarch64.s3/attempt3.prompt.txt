@@ -1,0 +1,235 @@
+Write the complete program `base64`: a static Linux executable for AArch64 (ARMv8-A, little-endian), written in assembly. There is no C library, no C runtime and no helper code: you write the entry point `_start`, every function, every table and string, and make the system calls yourself.
+
+Entry state (as the Linux kernel sets it up): execution starts at the label `_start`. sp is 16-byte aligned and points at argc = 0, followed by the NULL terminators of an empty argv, an empty envp and an empty auxiliary vector: the program gets no arguments. Every other general-purpose register (x0-x30) is zero; x30 is not a return address, so `_start` must never return with `ret`; the program ends only through the exit system call.
+
+System calls: the `svc #0` instruction, with the system call number in x8 and the arguments in x0, x1, x2; the result comes back in x0. Every other register is preserved. Exactly these four are available:
+- read = 63: read(fd = 0, buf, count) reads up to count bytes of standard input into buf; returns the number of bytes read, 0 at end of input.
+- write = 64: write(fd, buf, count) with fd 1 (standard output) or 2 (standard error); returns count.
+- exit = 93: exit(status) ends the program; the exit status is the low 8 bits of status.
+- exit_group = 94: the same as exit.
+Any other system call number or file descriptor stops the program with an error, and so does a buffer that is not entirely inside the program's memory.
+
+Memory: the program's own sections plus a stack of 1 MiB below the entry sp. There is no heap (no brk, no mmap, no malloc): put working storage in `.bss` (zero-initialised), at most 1 MiB in total, or on the stack. Code is not writable. Any access outside these areas stops the program. Each test run may execute at most 50,000,000 instructions.
+
+Output format: one complete assembly source file in GNU assembler (GNU as) syntax for AArch64. Examples: `ldr x2, [x0, x1, lsl #3]`, `ldrb w3, [x1], #1`, `stp x29, x30, [sp, #-16]!`. Comments start with `//`; do not use `;`.
+Allowed in the file:
+- Sections: `.text` (code), `.section .rodata` (read-only data), `.data` (initialised writable data), `.bss` (zero-initialised space: only `.zero`/`.space` and alignment). Instructions go in `.text` only.
+- Data directives: `.byte`, `.short`/`.2byte`, `.word` (4 bytes on this target), `.long`/`.int`/`.4byte`, `.quad`/`.8byte`, `.ascii`, `.asciz`/`.string`, `.zero`/`.space`, alignment with `.align`/`.balign`/`.p2align`, and `.globl`/`.global` (write `.globl _start`).
+- Labels `name:` in any section, and GNU local labels `1:` referenced as `1f` (next) / `1b` (previous).
+- Constants: `.equ name, value` (or `.set name, value`, or `name = value`), where value is a number or a difference of labels defined earlier in the same section (e.g. `msg_len = . - msg`). Define every constant before its first use.
+- Addressing data: `adrp x0, label` followed by `add x0, x0, :lo12:label` (or a load/store `ldr x1, [x0, :lo12:label]`); `adr x0, label` also works within +-1 MiB. Literal pools are NOT allowed: no `ldr x0, =label` and no `ldr x0, =constant` (build constants with mov/movz/movk).
+Not allowed: macros (`.macro`, `.rept`, `.irp`), conditional assembly (`.if`), `.include`, `.incbin`, `.fill`, `.org`, `.comm`/`.lcomm`, `.inst`, `.cfi_*` directives, section stacks (`.pushsection`) and any other section. No libc and no other library: there is nothing to link against, so every symbol you use must be defined in your file.
+Instruction set: ARMv8.0-A with floating point and Advanced SIMD (NEON). Not supported (rejected): CRC32, LSE atomics, dot product, half-precision, crypto (AES/SHA/PMULL) and SVE.
+Output ONLY the assembly source: no Markdown fences, no prose before or after it.
+
+Specification: Task `base64`: Base64-encode standard input (RFC 4648 standard alphabet, like `base64` with no options).
+
+- Alphabet: `A`-`Z` (0-25), `a`-`z` (26-51), `0`-`9` (52-61), `+` (62), `/` (63). Each group of 3 input bytes
+  becomes 4 characters (most significant bits first). A final group of 1 byte becomes 2 characters plus `==`;
+  a final group of 2 bytes becomes 3 characters plus `=`.
+- The encoded text is split into lines of exactly 76 characters; the last line may be shorter. Every line,
+  including the last, ends with one newline 0x0A. Never print an empty line: if the encoded text length is a
+  multiple of 76, the output ends right after that line's newline.
+- Empty input prints nothing (not even a newline). Input bytes are arbitrary (0x00-0xFF).
+
+Examples: `Man` prints `TWFu\n`; `Ma` prints `TWE=\n`; `M` prints `TQ==\n`; 57 input bytes print exactly one
+76-character line and a newline; 58 input bytes print that line plus a second line of 4 characters.
+
+Limits: the input is at most 49152 bytes. Exit status 0.
+
+Input and output (applies to this whole task):
+- The input is the complete contents of standard input (file descriptor 0). Read it with `read` until `read`
+  returns 0 (end of input). A `read` may return FEWER bytes than requested, at any position (in the middle of a
+  line, a token or a group of bytes), so keep calling it; only a return value of 0 means end of input.
+- Write the output to standard output (file descriptor 1). Only the bytes this task describes may appear on
+  standard output (standard error is ignored). Every output byte must be written before the program exits.
+- Finish with `exit` (or `exit_group`) and the exit status this task gives. The program must not run off the end
+  of its code or crash.
+
+Your previous attempt was:
+<previous>
+// base64 encoder for AArch64 Linux
+// Reads all of stdin, writes base64 (RFC 4648) to stdout, 76-char lines.
+
+.text
+.globl _start
+
+_start:
+    // Read all input into inbuf
+    adrp x20, inbuf
+    add x20, x20, :lo12:inbuf
+    mov x19, #0                 // total bytes read
+
+read_loop:
+    mov x0, #0                  // fd = stdin
+    add x1, x20, x19            // buf = inbuf + total
+    mov x2, #49152
+    sub x2, x2, x19             // count = 49152 - total
+    cbz x2, read_done
+    mov x8, #63                 // read
+    svc #0
+    cmp x0, #0
+    b.le read_done              // EOF or error
+    add x19, x19, x0
+    b read_loop
+
+read_done:
+    cbz x19, exit0              // empty input -> exit with no output
+
+    // Set up pointers
+    mov x9, x20                 // input pointer
+    add x10, x20, x19           // input end
+    adrp x23, alphabet
+    add x23, x23, :lo12:alphabet
+    adrp x24, outbuf
+    add x24, x24, :lo12:outbuf
+    mov x11, x24                // output pointer
+    mov x12, #0                 // column counter (0..75)
+
+enc_loop:
+    sub x13, x10, x9
+    cmp x13, #3
+    b.lo enc_tail
+
+    ldrb w3, [x9], #1
+    ldrb w4, [x9], #1
+    ldrb w5, [x9], #1
+    lsl w3, w3, #16
+    lsl w4, w4, #8
+    orr w3, w3, w4
+    orr w3, w3, w5
+
+    lsr w6, w3, #18
+    and w6, w6, #63
+    ldrb w6, [x23, x6]
+    strb w6, [x11], #1
+
+    lsr w6, w3, #12
+    and w6, w6, #63
+    ldrb w6, [x23, x6]
+    strb w6, [x11], #1
+
+    lsr w6, w3, #6
+    and w6, w6, #63
+    ldrb w6, [x23, x6]
+    strb w6, [x11], #1
+
+    and w6, w3, #63
+    ldrb w6, [x23, x6]
+    strb w6, [x11], #1
+
+    add x12, x12, #4
+    cmp x12, #76
+    b.ne enc_loop
+    mov w6, #10                 // '\n'
+    strb w6, [x11], #1
+    mov x12, #0
+    b enc_loop
+
+enc_tail:
+    cmp x13, #1
+    b.eq tail1
+    cmp x13, #2
+    b.eq tail2
+    b finish
+
+tail1:
+    ldrb w3, [x9]
+    lsl w3, w3, #16
+
+    lsr w6, w3, #18
+    and w6, w6, #63
+    ldrb w6, [x23, x6]
+    strb w6, [x11], #1
+
+    lsr w6, w3, #12
+    and w6, w6, #63
+    ldrb w6, [x23, x6]
+    strb w6, [x11], #1
+
+    mov w6, #61                 // '='
+    strb w6, [x11], #1
+    strb w6, [x11], #1
+    add x12, x12, #4
+    b tail_nl
+
+tail2:
+    ldrb w3, [x9], #1
+    ldrb w4, [x9], #1
+    lsl w3, w3, #16
+    lsl w4, w4, #8
+    orr w3, w3, w4
+
+    lsr w6, w3, #18
+    and w6, w6, #63
+    ldrb w6, [x23, x6]
+    strb w6, [x11], #1
+
+    lsr w6, w3, #12
+    and w6, w6, #63
+    ldrb w6, [x23, x6]
+    strb w6, [x11], #1
+
+    lsr w6, w3, #6
+    and w6, w6, #63
+    ldrb w6, [x23, x6]
+    strb w6, [x11], #1
+
+    mov w6, #61                 // '='
+    strb w6, [x11], #1
+    add x12, x12, #4
+
+tail_nl:
+    cmp x12, #76
+    b.ne tail_done
+    mov w6, #10                 // '\n'
+    strb w6, [x11], #1
+    mov x12, #0
+
+tail_done:
+    cbz x12, finish
+    mov w6, #10                 // '\n'
+    strb w6, [x11], #1
+
+finish:
+    sub x2, x11, x24            // output length
+    mov x1, x24
+write_loop:
+    cbz x2, exit0
+    mov x0, #1                  // fd = stdout
+    mov x8, #64                 // write
+    svc #0
+    cmp x0, #0
+    b.le exit0
+    add x1, x1, x0
+    sub x2, x2, x0
+    b write_loop
+
+exit0:
+    mov x0, #0
+    mov x8, #93                 // exit
+    svc #0
+
+.section .rodata
+.align 4
+alphabet:
+    .ascii "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/"
+
+.bss
+.align 4
+inbuf:
+    .zero 49152
+.align 4
+outbuf:
+    .zero 70000
+</previous>
+It failed:
+<failure>
+Test `three_bytes` failed (stdin delivered whole; test run 4 of 46; the runs before it passed).
+stdin (3 bytes): "Man"
+exit status: expected 0, got 0
+stdout differs from byte 4 on (line 1, column 5 of the expected output); expected 5 bytes in total, got 4
+  expected from byte 4: "\n"
+  actual from byte 4:   (end of output)
+</failure>
+Write a corrected, complete version. Same output format; output only the code.

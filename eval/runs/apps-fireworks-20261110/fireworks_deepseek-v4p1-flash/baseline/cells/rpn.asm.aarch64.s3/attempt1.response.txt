@@ -1,0 +1,381 @@
+```asm
+// rpn: Reverse Polish Notation evaluator for AArch64 Linux
+// No libc, no runtime. Direct syscalls only.
+
+    .globl _start
+    .text
+
+_start:
+    // Read all input into inbuf
+    adrp x19, inbuf
+    add x19, x19, :lo12:inbuf
+    mov x20, x19                // x20 = current end of input
+
+read_loop:
+    adrp x3, inbuf
+    add x3, x3, :lo12:inbuf
+    sub x3, x20, x3             // bytes read so far
+    movz x4, #0x1, lsl #16      // 65536
+    sub x2, x4, x3              // remaining space
+    cmp x2, #0
+    b.le read_done
+    mov x0, #0                  // fd = 0 (stdin)
+    mov x1, x20                 // buffer = current end
+    mov x8, #63                 // read
+    svc #0
+    cmp x0, #0
+    b.le read_done
+    add x20, x20, x0
+    b read_loop
+
+read_done:
+    // Initialize output buffer and value stack
+    adrp x21, outbuf
+    add x21, x21, :lo12:outbuf
+    adrp x23, valstack
+    add x23, x23, :lo12:valstack
+    mov x22, x23                // stack empty
+
+    // Set input pointer to start
+    adrp x19, inbuf
+    add x19, x19, :lo12:inbuf
+
+process_line:
+    cmp x19, x20
+    b.hs finish                 // no more input
+    mov x24, x19                // line start
+    mov x25, x19                // scan for newline
+
+find_eol:
+    cmp x25, x20
+    b.hs eol_found
+    ldrb w0, [x25]
+    cmp w0, #0x0A               // newline
+    b.eq eol_found
+    add x25, x25, #1
+    b find_eol
+
+eol_found:
+    mov x26, x24                // parse pointer
+    mov x22, x23                // reset value stack
+
+token_loop:
+    // Skip spaces and tabs
+skip_sep:
+    cmp x26, x25
+    b.hs end_of_line_tokens
+    ldrb w0, [x26]
+    cmp w0, #0x20               // space
+    b.eq skip_sep_adv
+    cmp w0, #0x09               // tab
+    b.eq skip_sep_adv
+    b token_start_found
+
+skip_sep_adv:
+    add x26, x26, #1
+    b skip_sep
+
+token_start_found:
+    mov x27, x26                // token start
+
+find_token_end:
+    cmp x27, x25
+    b.hs token_end_found
+    ldrb w0, [x27]
+    cmp w0, #0x20
+    b.eq token_end_found
+    cmp w0, #0x09
+    b.eq token_end_found
+    add x27, x27, #1
+    b find_token_end
+
+token_end_found:
+    // Check if token is an operator (length 1)
+    sub x28, x27, x26
+    cmp x28, #1
+    b.ne check_literal
+    ldrb w0, [x26]
+    cmp w0, #0x2B               // '+'
+    b.eq op_add
+    cmp w0, #0x2D               // '-'
+    b.eq op_sub
+    cmp w0, #0x2A               // '*'
+    b.eq op_mul
+    cmp w0, #0x2F               // '/'
+    b.eq op_div
+    cmp w0, #0x25               // '%'
+    b.eq op_mod
+
+check_literal:
+    // Parse integer literal: optional '-' + 1..18 digits
+    mov x28, x26                // parse pointer
+    mov x29, #0                 // negative flag (0 = positive)
+    ldrb w0, [x28]
+    cmp w0, #0x2D               // '-'
+    b.ne literal_no_sign
+    mov x29, #1
+    add x28, x28, #1
+    cmp x28, x27
+    b.hs invalid_token          // lone '-' handled as operator earlier
+
+literal_no_sign:
+    mov x0, x28
+    mov x1, #0                  // digit count
+
+digit_count_loop:
+    cmp x0, x27
+    b.hs digit_count_done
+    ldrb w2, [x0]
+    cmp w2, #0x30               // '0'
+    b.lo invalid_token
+    cmp w2, #0x39               // '9'
+    b.hi invalid_token
+    add x1, x1, #1
+    add x0, x0, #1
+    b digit_count_loop
+
+digit_count_done:
+    cmp x1, #1
+    b.lo invalid_token
+    cmp x1, #18
+    b.hi invalid_token
+
+    // Parse digits
+    mov x0, x28
+    mov x1, #0                  // result
+parse_digits_loop:
+    cmp x0, x27
+    b.hs parse_digits_done
+    ldrb w2, [x0]
+    sub w2, w2, #0x30           // convert to digit
+    mov x3, #10
+    mul x1, x1, x3
+    add x1, x1, x2
+    add x0, x0, #1
+    b parse_digits_loop
+
+parse_digits_done:
+    cmp x29, #0
+    b.eq push_value
+    neg x1, x1
+
+push_value:
+    str x1, [x22], #8
+    mov x26, x27
+    b token_loop
+
+// Operators
+op_add:
+    cmp x22, x23
+    b.eq stack_underflow
+    sub x22, x22, #8
+    ldr x1, [x22]               // b
+    cmp x22, x23
+    b.eq stack_underflow
+    sub x22, x22, #8
+    ldr x0, [x22]               // a
+    add x0, x0, x1
+    str x0, [x22], #8
+    mov x26, x27
+    b token_loop
+
+op_sub:
+    cmp x22, x23
+    b.eq stack_underflow
+    sub x22, x22, #8
+    ldr x1, [x22]               // b
+    cmp x22, x23
+    b.eq stack_underflow
+    sub x22, x22, #8
+    ldr x0, [x22]               // a
+    sub x0, x0, x1
+    str x0, [x22], #8
+    mov x26, x27
+    b token_loop
+
+op_mul:
+    cmp x22, x23
+    b.eq stack_underflow
+    sub x22, x22, #8
+    ldr x1, [x22]               // b
+    cmp x22, x23
+    b.eq stack_underflow
+    sub x22, x22, #8
+    ldr x0, [x22]               // a
+    mul x0, x0, x1
+    str x0, [x22], #8
+    mov x26, x27
+    b token_loop
+
+op_div:
+    cmp x22, x23
+    b.eq stack_underflow
+    sub x22, x22, #8
+    ldr x1, [x22]               // b
+    cmp x22, x23
+    b.eq stack_underflow
+    sub x22, x22, #8
+    ldr x0, [x22]               // a
+    cbz x1, div_zero_error
+    movz x2, #0x8000, lsl #48   // INT64_MIN
+    cmp x0, x2
+    b.ne div_ok
+    cmn x1, #1                  // check b == -1
+    b.eq div_overflow_error
+div_ok:
+    sdiv x0, x0, x1
+    str x0, [x22], #8
+    mov x26, x27
+    b token_loop
+
+op_mod:
+    cmp x22, x23
+    b.eq stack_underflow
+    sub x22, x22, #8
+    ldr x1, [x22]               // b
+    cmp x22, x23
+    b.eq stack_underflow
+    sub x22, x22, #8
+    ldr x0, [x22]               // a
+    cbz x1, mod_zero_error
+    movz x2, #0x8000, lsl #48   // INT64_MIN
+    cmp x0, x2
+    b.ne mod_ok
+    cmn x1, #1
+    b.eq mod_overflow_error
+mod_ok:
+    sdiv x2, x0, x1
+    msub x0, x2, x1, x0         // a - (a/b)*b
+    str x0, [x22], #8
+    mov x26, x27
+    b token_loop
+
+// Error handling: print "error\n" and skip rest of line
+invalid_token:
+stack_underflow:
+div_zero_error:
+div_overflow_error:
+mod_zero_error:
+mod_overflow_error:
+    adrp x0, error_str
+    add x0, x0, :lo12:error_str
+    mov x1, #6
+    bl write_output
+    mov x26, x25                // skip rest of line
+    b next_line
+
+end_of_line_tokens:
+    // Check if exactly one value remains
+    sub x0, x22, x23
+    cmp x0, #8
+    b.ne line_error
+    ldr x0, [x23]               // the single value
+    bl print_number
+    mov w0, #0x0A               // newline
+    strb w0, [x21], #1
+    b next_line
+
+line_error:
+    adrp x0, error_str
+    add x0, x0, :lo12:error_str
+    mov x1, #6
+    bl write_output
+    // fall through to next_line
+
+next_line:
+    cmp x25, x20
+    b.hs finish
+    add x19, x25, #1            // skip newline
+    b process_line
+
+finish:
+    // Write output buffer to stdout
+    adrp x0, outbuf
+    add x0, x0, :lo12:outbuf
+    sub x1, x21, x0             // length
+    cbz x1, exit_program
+    mov x2, x1                  // count
+    mov x0, #1                  // fd = 1 (stdout)
+    adrp x1, outbuf
+    add x1, x1, :lo12:outbuf
+    mov x8, #64                 // write
+    svc #0
+
+exit_program:
+    mov x0, #0
+    mov x8, #93                 // exit
+    svc #0
+
+// Helper: copy x1 bytes from x0 to output buffer at x21
+write_output:
+    mov x2, x0                  // src
+    mov x3, x1                  // count
+    cbz x3, write_done
+write_loop:
+    ldrb w0, [x2], #1
+    strb w0, [x21], #1
+    subs x3, x3, #1
+    b.ne write_loop
+write_done:
+    ret
+
+// Helper: print signed 64-bit value in x0 to output buffer at x21
+print_number:
+    tbnz x0, #63, print_negative
+    b print_unsigned
+
+print_negative:
+    mov w1, #0x2D               // '-'
+    strb w1, [x21], #1
+    neg x0, x0                  // make positive (for INT64_MIN gives 0x8000000000000000)
+
+print_unsigned:
+    sub sp, sp, #32             // temporary buffer on stack
+    mov x1, sp
+    add x2, x1, #31             // end of buffer
+    mov w3, #0                  // digit count
+    mov x4, #10                 // divisor
+    cbz x0, print_zero
+
+print_digits_loop:
+    udiv x5, x0, x4
+    msub x6, x5, x4, x0         // remainder
+    add w6, w6, #0x30           // to ASCII
+    sub x2, x2, #1
+    strb w6, [x2]
+    add w3, w3, #1
+    mov x0, x5
+    cbnz x0, print_digits_loop
+    b print_copy
+
+print_zero:
+    sub x2, x2, #1
+    mov w6, #0x30               // '0'
+    strb w6, [x2]
+    add w3, w3, #1
+
+print_copy:
+    mov x7, x3                  // count
+copy_loop:
+    cbz x7, copy_done
+    ldrb w6, [x2], #1
+    strb w6, [x21], #1
+    sub x7, x7, #1
+    b copy_loop
+copy_done:
+    add sp, sp, #32
+    ret
+
+    .section .rodata
+error_str:
+    .ascii "error\n"
+
+    .section .bss
+    .align 16
+inbuf:
+    .zero 65536 + 16
+outbuf:
+    .zero 524288
+valstack:
+    .zero 8192 * 8
+```

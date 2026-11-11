@@ -1,0 +1,344 @@
+```asm
+// rpn - evaluate one Reverse Polish Notation expression per input line.
+// AArch64 Linux, freestanding, no libc.
+
+    .globl _start
+
+    .section .rodata
+nl:
+    .ascii "\n"
+errmsg:
+    .ascii "error\n"
+
+    .bss
+    .balign 8
+valstack:
+    .zero 32768
+numbuf:
+    .zero 32
+outbuf:
+    .zero 4096
+inbuf:
+    .zero 65536
+
+    .text
+
+// ---------------------------------------------------------------------------
+// emit: append x1 bytes at x0 to the output buffer, flushing when full.
+// clobbers x0-x8
+// ---------------------------------------------------------------------------
+emit:
+    add x6, x23, x1
+    cmp x6, #4096
+    b.ls .Lemit_space
+    mov x6, x0
+    mov x7, x1
+    mov x0, #1
+    mov x1, x22
+    mov x2, x23
+    mov x8, #64
+    svc #0
+    mov x23, #0
+    mov x0, x6
+    mov x1, x7
+.Lemit_space:
+    add x3, x22, x23
+    mov x4, x1
+    cbz x4, .Lemit_done
+.Lemit_copy:
+    ldrb w5, [x0], #1
+    strb w5, [x3], #1
+    subs x4, x4, #1
+    b.ne .Lemit_copy
+.Lemit_done:
+    add x23, x23, x1
+    ret
+
+// ---------------------------------------------------------------------------
+// flush_out: write any buffered output. clobbers x0,x1,x2,x8
+// ---------------------------------------------------------------------------
+flush_out:
+    cbz x23, .Lflush_ret
+    mov x0, #1
+    mov x1, x22
+    mov x2, x23
+    mov x8, #64
+    svc #0
+    mov x23, #0
+.Lflush_ret:
+    ret
+
+// ---------------------------------------------------------------------------
+// entry point
+// ---------------------------------------------------------------------------
+_start:
+    adrp x19, inbuf
+    add x19, x19, :lo12:inbuf
+    mov x20, #0
+.Lread_loop:
+    mov x0, #0
+    add x1, x19, x20
+    mov x2, #65536
+    sub x2, x2, x20
+    mov x8, #63
+    svc #0
+    cmp x0, #0
+    b.le .Lread_done
+    add x20, x20, x0
+    b .Lread_loop
+.Lread_done:
+    add x20, x19, x20
+
+    adrp x22, outbuf
+    add x22, x22, :lo12:outbuf
+    mov x23, #0
+    adrp x10, valstack
+    add x10, x10, :lo12:valstack
+    mov x21, x19
+
+// ---------------------------------------------------------------------------
+// main line loop
+// ---------------------------------------------------------------------------
+.Lline_loop:
+    cmp x21, x20
+    b.hs .Lall_done
+    mov x24, x21
+.Lscan_nl:
+    cmp x24, x20
+    b.hs .Lscan_no_nl
+    ldrb w5, [x24]
+    cmp w5, #10
+    b.eq .Lscan_found
+    add x24, x24, #1
+    b .Lscan_nl
+.Lscan_found:
+    mov x25, x21
+    mov x26, x24
+    add x21, x24, #1
+    b .Leval_line
+.Lscan_no_nl:
+    mov x25, x21
+    mov x26, x20
+    mov x21, x20
+
+// ---------------------------------------------------------------------------
+// evaluate one line: [x25, x26)
+// ---------------------------------------------------------------------------
+.Leval_line:
+    mov x27, x25
+    mov x28, #0
+    mov x9, #0
+.Ltok_loop:
+    cmp x27, x26
+    b.hs .Ltok_done
+    ldrb w0, [x27]
+    cmp w0, #32
+    b.eq .Lskip_sep
+    cmp w0, #9
+    b.eq .Lskip_sep
+    b .Ltoken_start
+.Lskip_sep:
+    add x27, x27, #1
+    b .Ltok_loop
+
+.Ltoken_start:
+    mov x24, x27
+.Lfind_end:
+    add x27, x27, #1
+    cmp x27, x26
+    b.hs .Lend_found
+    ldrb w0, [x27]
+    cmp w0, #32
+    b.eq .Lend_found
+    cmp w0, #9
+    b.ne .Lfind_end
+.Lend_found:
+    sub x0, x27, x24
+    cmp x0, #1
+    b.ne .Lnot_single
+    ldrb w1, [x24]
+    cmp w1, #43
+    b.eq .Lop_add
+    cmp w1, #45
+    b.eq .Lop_sub
+    cmp w1, #42
+    b.eq .Lop_mul
+    cmp w1, #47
+    b.eq .Lop_div
+    cmp w1, #37
+    b.eq .Lop_mod
+    sub w2, w1, #48
+    cmp w2, #9
+    b.hi .Lbad_token
+    mov x0, x2
+    b .Lpush_value
+
+.Lnot_single:
+    ldrb w1, [x24]
+    mov w3, #0
+    cmp w1, #45
+    b.ne .Lno_sign
+    mov w3, #1
+    add x24, x24, #1
+    sub x0, x0, #1
+.Lno_sign:
+    cmp x0, #1
+    b.lt .Lbad_token
+    cmp x0, #18
+    b.gt .Lbad_token
+    mov x2, #0
+    mov x4, x24
+.Ldigit_loop:
+    ldrb w5, [x4], #1
+    sub w6, w5, #48
+    cmp w6, #9
+    b.hi .Lbad_token
+    mov x7, #10
+    mul x2, x2, x7
+    add x2, x2, x6
+    subs x0, x0, #1
+    b.ne .Ldigit_loop
+    cbz w3, .Lno_neg
+    neg x2, x2
+.Lno_neg:
+    mov x0, x2
+
+.Lpush_value:
+    cmp x28, #4096
+    b.hs .Lbad_token
+    str x0, [x10, x28, lsl #3]
+    add x28, x28, #1
+    b .Ltok_loop
+
+.Lbad_token:
+    mov x9, #1
+    mov x27, x26
+    b .Ltok_loop
+
+// ---------------------------------------------------------------------------
+// operators
+// ---------------------------------------------------------------------------
+.Lop_add:
+    cmp x28, #2
+    b.lo .Lbad_token
+    sub x28, x28, #2
+    ldr x1, [x10, x28, lsl #3]
+    add x2, x28, #1
+    ldr x2, [x10, x2, lsl #3]
+    add x0, x1, x2
+    b .Lop_store
+
+.Lop_sub:
+    cmp x28, #2
+    b.lo .Lbad_token
+    sub x28, x28, #2
+    ldr x1, [x10, x28, lsl #3]
+    add x2, x28, #1
+    ldr x2, [x10, x2, lsl #3]
+    sub x0, x1, x2
+    b .Lop_store
+
+.Lop_mul:
+    cmp x28, #2
+    b.lo .Lbad_token
+    sub x28, x28, #2
+    ldr x1, [x10, x28, lsl #3]
+    add x2, x28, #1
+    ldr x2, [x10, x2, lsl #3]
+    mul x0, x1, x2
+    b .Lop_store
+
+.Lop_div:
+    cmp x28, #2
+    b.lo .Lbad_token
+    sub x28, x28, #2
+    ldr x1, [x10, x28, lsl #3]
+    add x2, x28, #1
+    ldr x2, [x10, x2, lsl #3]
+    cbz x2, .Lbad_token
+    mov x3, #1
+    lsl x3, x3, #63
+    cmp x1, x3
+    b.ne .Ldiv_ok
+    cmn x2, #1
+    b.eq .Lbad_token
+.Ldiv_ok:
+    sdiv x0, x1, x2
+    b .Lop_store
+
+.Lop_mod:
+    cmp x28, #2
+    b.lo .Lbad_token
+    sub x28, x28, #2
+    ldr x1, [x10, x28, lsl #3]
+    add x2, x28, #1
+    ldr x2, [x10, x2, lsl #3]
+    cbz x2, .Lbad_token
+    mov x3, #1
+    lsl x3, x3, #63
+    cmp x1, x3
+    b.ne .Lmod_ok
+    cmn x2, #1
+    b.eq .Lbad_token
+.Lmod_ok:
+    sdiv x3, x1, x2
+    msub x0, x3, x2, x1
+    b .Lop_store
+
+.Lop_store:
+    str x0, [x10, x28, lsl #3]
+    add x28, x28, #1
+    b .Ltok_loop
+
+// ---------------------------------------------------------------------------
+// end of line
+// ---------------------------------------------------------------------------
+.Ltok_done:
+    cbnz x9, .Lprint_error
+    cmp x28, #1
+    b.ne .Lprint_error
+    ldr x0, [x10]
+    adrp x1, numbuf
+    add x1, x1, :lo12:numbuf
+    add x2, x1, #24
+    mov x3, x2
+    mov w4, #0
+    cmp x0, #0
+    b.ge .Lnum_pos
+    mov w4, #1
+    neg x0, x0
+.Lnum_pos:
+    mov x5, #10
+.Lnum_loop:
+    udiv x6, x0, x5
+    msub x7, x6, x5, x0
+    add w7, w7, #48
+    strb w7, [x3, #-1]!
+    mov x0, x6
+    cbnz x0, .Lnum_loop
+    cbz w4, .Lnum_done
+    mov w7, #45
+    strb w7, [x3, #-1]!
+.Lnum_done:
+    sub x1, x2, x3
+    mov x0, x3
+    bl emit
+    adrp x0, nl
+    add x0, x0, :lo12:nl
+    mov x1, #1
+    bl emit
+    b .Lline_loop
+
+.Lprint_error:
+    adrp x0, errmsg
+    add x0, x0, :lo12:errmsg
+    mov x1, #6
+    bl emit
+    b .Lline_loop
+
+.Lall_done:
+    bl flush_out
+    mov x0, #0
+    mov x8, #93
+    svc #0
+```

@@ -1,0 +1,208 @@
+```asm
+.section .text
+.globl _start
+
+_start:
+    // Read all stdin into inbuf
+    adrp x20, inbuf
+    add x20, x20, :lo12:inbuf
+    mov x19, #0          // total read
+read_loop:
+    mov x0, #0           // fd 0
+    add x1, x20, x19     // buf + total
+    movz x2, #1, lsl #16 // 65536
+    sub x2, x2, x19      // count
+    cbz x2, read_done
+    mov x8, #63          // read
+    svc #0
+    cbz x0, read_done
+    add x19, x19, x0
+    b read_loop
+read_done:
+    // x19 = total bytes read
+    // Find first '!'
+    mov x2, #0           // i = 0
+find_bang:
+    cmp x2, x19
+    bge no_bang
+    ldrb w3, [x20, x2]
+    cmp w3, #0x21        // '!'
+    beq found_bang
+    add x2, x2, #1
+    b find_bang
+found_bang:
+    mov x21, x2          // prog_len = i
+    add x22, x2, #1      // input_start = i+1
+    sub x23, x19, x22    // input_len = total - (i+1)
+    b split_done
+no_bang:
+    mov x21, x19         // prog_len = total
+    mov x22, x19         // input_start = total
+    mov x23, #0          // input_len = 0
+split_done:
+    // x21 = prog_len, x22 = input_start, x23 = input_len
+    // x20 = inbuf base
+    // input_base = inbuf + input_start
+    add x24, x20, x22    // x24 = input_base
+
+    // Validate brackets and build match table
+    mov x25, #0          // stack pointer = 0
+    mov x2, #0           // i = 0
+match_loop:
+    cmp x2, x21
+    bge match_done
+    ldrb w3, [x20, x2]   // c = prog[i]
+    cmp w3, #0x5B        // '['
+    beq match_open
+    cmp w3, #0x5D        // ']'
+    beq match_close
+    add x2, x2, #1
+    b match_loop
+match_open:
+    // push i onto stack
+    adrp x26, stack
+    add x26, x26, :lo12:stack
+    strh w2, [x26, x25, lsl #1]  // stack[sp] = i
+    add x25, x25, #1
+    add x2, x2, #1
+    b match_loop
+match_close:
+    cbz x25, unbalanced
+    sub x25, x25, #1
+    adrp x26, stack
+    add x26, x26, :lo12:stack
+    ldrh w4, [x26, x25, lsl #1]  // j = stack[sp]
+    // match[i] = j, match[j] = i
+    adrp x26, match
+    add x26, x26, :lo12:match
+    strh w4, [x26, x2, lsl #1]   // match[i] = j
+    strh w2, [x26, x4, lsl #1]   // match[j] = i
+    add x2, x2, #1
+    b match_loop
+match_done:
+    cbnz x25, unbalanced
+
+    // Setup for execution
+    adrp x27, inbuf
+    add x27, x27, :lo12:inbuf   // x27 = prog_base
+    adrp x22, tape
+    add x22, x22, :lo12:tape    // x22 = tape_base
+    adrp x23, match
+    add x23, x23, :lo12:match   // x23 = match_base
+    // x21 = prog_len
+    // x24 = input_base
+    // x25 = input_len
+    mov x19, #0          // pc = 0
+    mov x20, #0          // dp = 0
+    mov x26, #0          // input_pos = 0
+
+run_loop:
+    cmp x19, x21
+    bge run_done
+    ldrb w2, [x27, x19]   // c = prog[pc]
+    cmp w2, #0x3E         // '>'
+    beq cmd_right
+    cmp w2, #0x3C         // '<'
+    beq cmd_left
+    cmp w2, #0x2B         // '+'
+    beq cmd_inc
+    cmp w2, #0x2D         // '-'
+    beq cmd_dec
+    cmp w2, #0x2E         // '.'
+    beq cmd_out
+    cmp w2, #0x2C         // ','
+    beq cmd_in
+    cmp w2, #0x5B         // '['
+    beq cmd_open
+    cmp w2, #0x5D         // ']'
+    beq cmd_close
+    // ignore
+    add x19, x19, #1
+    b run_loop
+
+cmd_right:
+    add x20, x20, #1
+    add x19, x19, #1
+    b run_loop
+
+cmd_left:
+    sub x20, x20, #1
+    add x19, x19, #1
+    b run_loop
+
+cmd_inc:
+    ldrb w3, [x22, x20]
+    add w3, w3, #1
+    strb w3, [x22, x20]
+    add x19, x19, #1
+    b run_loop
+
+cmd_dec:
+    ldrb w3, [x22, x20]
+    sub w3, w3, #1
+    strb w3, [x22, x20]
+    add x19, x19, #1
+    b run_loop
+
+cmd_out:
+    mov x0, #1
+    add x1, x22, x20
+    mov x2, #1
+    mov x8, #64
+    svc #0
+    add x19, x19, #1
+    b run_loop
+
+cmd_in:
+    cmp x26, x25
+    bge cmd_in_zero
+    ldrb w3, [x24, x26]
+    add x26, x26, #1
+    strb w3, [x22, x20]
+    add x19, x19, #1
+    b run_loop
+cmd_in_zero:
+    strb wzr, [x22, x20]
+    add x19, x19, #1
+    b run_loop
+
+cmd_open:
+    ldrb w3, [x22, x20]
+    cbnz w3, cmd_open_skip
+    ldrh w4, [x23, x19, lsl #1]
+    add x19, x4, #1
+    b run_loop
+cmd_open_skip:
+    add x19, x19, #1
+    b run_loop
+
+cmd_close:
+    ldrb w3, [x22, x20]
+    cbz w3, cmd_close_skip
+    ldrh w4, [x23, x19, lsl #1]
+    add x19, x4, #1
+    b run_loop
+cmd_close_skip:
+    add x19, x19, #1
+    b run_loop
+
+run_done:
+    mov x0, #0
+    mov x8, #93
+    svc #0
+
+unbalanced:
+    mov x0, #1
+    mov x8, #93
+    svc #0
+
+.section .bss
+.align 4
+inbuf:      .zero 65536
+.align 4
+tape:       .zero 30000
+.align 4
+match:      .zero 65536*2
+.align 4
+stack:      .zero 1024*2
+```

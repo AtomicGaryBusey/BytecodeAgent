@@ -1,0 +1,578 @@
+Write the complete program `json_lint`: a static Linux executable for AArch64 (ARMv8-A, little-endian), written in assembly. There is no C library, no C runtime and no helper code: you write the entry point `_start`, every function, every table and string, and make the system calls yourself.
+
+Entry state (as the Linux kernel sets it up): execution starts at the label `_start`. sp is 16-byte aligned and points at argc = 0, followed by the NULL terminators of an empty argv, an empty envp and an empty auxiliary vector: the program gets no arguments. Every other general-purpose register (x0-x30) is zero; x30 is not a return address, so `_start` must never return with `ret`; the program ends only through the exit system call.
+
+System calls: the `svc #0` instruction, with the system call number in x8 and the arguments in x0, x1, x2; the result comes back in x0. Every other register is preserved. Exactly these four are available:
+- read = 63: read(fd = 0, buf, count) reads up to count bytes of standard input into buf; returns the number of bytes read, 0 at end of input.
+- write = 64: write(fd, buf, count) with fd 1 (standard output) or 2 (standard error); returns count.
+- exit = 93: exit(status) ends the program; the exit status is the low 8 bits of status.
+- exit_group = 94: the same as exit.
+Any other system call number or file descriptor stops the program with an error, and so does a buffer that is not entirely inside the program's memory.
+
+Memory: the program's own sections plus a stack of 1 MiB below the entry sp. There is no heap (no brk, no mmap, no malloc): put working storage in `.bss` (zero-initialised), at most 1 MiB in total, or on the stack. Code is not writable. Any access outside these areas stops the program. Each test run may execute at most 50,000,000 instructions.
+
+Output format: one complete assembly source file in GNU assembler (GNU as) syntax for AArch64. Examples: `ldr x2, [x0, x1, lsl #3]`, `ldrb w3, [x1], #1`, `stp x29, x30, [sp, #-16]!`. Comments start with `//`; do not use `;`.
+Allowed in the file:
+- Sections: `.text` (code), `.section .rodata` (read-only data), `.data` (initialised writable data), `.bss` (zero-initialised space: only `.zero`/`.space` and alignment). Instructions go in `.text` only.
+- Data directives: `.byte`, `.short`/`.2byte`, `.word` (4 bytes on this target), `.long`/`.int`/`.4byte`, `.quad`/`.8byte`, `.ascii`, `.asciz`/`.string`, `.zero`/`.space`, alignment with `.align`/`.balign`/`.p2align`, and `.globl`/`.global` (write `.globl _start`).
+- Labels `name:` in any section, and GNU local labels `1:` referenced as `1f` (next) / `1b` (previous).
+- Constants: `.equ name, value` (or `.set name, value`, or `name = value`), where value is a number or a difference of labels defined earlier in the same section (e.g. `msg_len = . - msg`). Define every constant before its first use.
+- Addressing data: `adrp x0, label` followed by `add x0, x0, :lo12:label` (or a load/store `ldr x1, [x0, :lo12:label]`); `adr x0, label` also works within +-1 MiB. Literal pools are NOT allowed: no `ldr x0, =label` and no `ldr x0, =constant` (build constants with mov/movz/movk).
+Not allowed: macros (`.macro`, `.rept`, `.irp`), conditional assembly (`.if`), `.include`, `.incbin`, `.fill`, `.org`, `.comm`/`.lcomm`, `.inst`, `.cfi_*` directives, section stacks (`.pushsection`) and any other section. No libc and no other library: there is nothing to link against, so every symbol you use must be defined in your file.
+Instruction set: ARMv8.0-A with floating point and Advanced SIMD (NEON). Not supported (rejected): CRC32, LSE atomics, dot product, half-precision, crypto (AES/SHA/PMULL) and SVE.
+Output ONLY the assembly source: no Markdown fences, no prose before or after it.
+
+Specification: Task `json_lint`: check that standard input is exactly one valid JSON document (RFC 8259 grammar) and report
+the byte offset of the first error.
+
+Grammar (byte-level):
+- document = ws value ws, and nothing else. ws = any number of the bytes space 0x20, tab 0x09, newline 0x0A,
+  carriage return 0x0D (only these four).
+- value = object | array | string | number | `true` | `false` | `null` (lowercase only).
+- object = `{` ws `}`, or `{` ws member (ws `,` ws member)* ws `}`, where member = string ws `:` ws value.
+  array = `[` ws `]`, or `[` ws value (ws `,` ws value)* ws `]`. No trailing commas.
+- string = `"` chars `"`. A char is any byte 0x20-0xFF except `"` (0x22) and `\` (0x5C) (bytes >= 0x80 are
+  accepted as they are; no UTF-8 validation), or an escape: `\` followed by one of `"` `\` `/` `b` `f` `n` `r`
+  `t`, or `\u` followed by exactly 4 hex digits (`0-9a-fA-F`; any code unit, surrogates are not checked).
+  Bytes 0x00-0x1F inside a string are errors.
+- number = `-`? int frac? exp?, where int = `0` | a digit `1`-`9` followed by any digits; frac = `.` and one or
+  more digits; exp = `e` or `E`, an optional `+` or `-`, and one or more digits. (So `01`, `+1`, `.5`, `1.`,
+  `1e`, `-` are not valid numbers.)
+
+Output: if the input is valid, print `ok\n` and exit with status 0. Otherwise print `error at N\n` (N in
+decimal, no padding) and exit with status 1, where N is the 0-based offset of the first byte at which the input
+stops being the beginning of some valid document: the first byte that no valid document could have at that
+position given all the bytes before it. If every byte of the input is such a valid beginning but the document is
+incomplete (this includes empty and whitespace-only input), N is the length of the input.
+
+Examples: `[1, 2]` ok; empty input `error at 0`; `[1,]` `error at 3`; `{"a" 1}` `error at 5`; `01` `error at 1`;
+`tru` `error at 3`; `trux` `error at 3`; `[1] x` `error at 4`; `"a<TAB>b"` (a raw tab byte) `error at 2`;
+`-` `error at 1`; `1.e5` `error at 2`.
+
+Limits: the input is at most 65536 bytes; arrays and objects are nested at most 1000 deep. These limits
+describe the inputs you will be given; you do not need to detect or report inputs that exceed them.
+
+Input and output (applies to this whole task):
+- The input is the complete contents of standard input (file descriptor 0). Read it with `read` until `read`
+  returns 0 (end of input). A `read` may return FEWER bytes than requested, at any position (in the middle of a
+  line, a token or a group of bytes), so keep calling it; only a return value of 0 means end of input.
+- Write the output to standard output (file descriptor 1). Only the bytes this task describes may appear on
+  standard output (standard error is ignored). Every output byte must be written before the program exits.
+- Finish with `exit` (or `exit_group`) and the exit status this task gives. The program must not run off the end
+  of its code or crash.
+
+Your previous attempt was:
+<previous>
+.globl _start
+
+.section .rodata
+ok_str:     .ascii "ok\n"
+lit_true:   .ascii "true"
+lit_false:  .ascii "false"
+lit_null:   .ascii "null"
+err_str:    .ascii "error at "
+
+.section .bss
+.align 4
+inbuf:      .zero 65536
+outbuf:     .zero 32
+
+.section .text
+_start:
+    // read all input
+    adrp x19, inbuf
+    add x19, x19, :lo12:inbuf
+    mov x20, #0          // total read
+1:
+    mov x0, #0           // fd 0
+    add x1, x19, x20
+    movz x2, #1, lsl #16 // 65536
+    sub x2, x2, x20
+    mov x8, #63          // read
+    svc #0
+    cmp x0, #0
+    b.le 2f
+    add x20, x20, x0
+    b 1b
+2:
+    mov x21, #0          // index = 0
+    bl skip_ws
+    bl parse_value
+    cbnz x0, .Lerror
+    bl skip_ws
+    cmp x21, x20
+    b.ne .Lerror
+    // success
+    mov x0, #1
+    adrp x1, ok_str
+    add x1, x1, :lo12:ok_str
+    mov x2, #3
+    mov x8, #64
+    svc #0
+    mov x0, #0
+    mov x8, #93
+    svc #0
+
+.Lerror:
+    adrp x1, outbuf
+    add x1, x1, :lo12:outbuf
+    adrp x2, err_str
+    add x2, x2, :lo12:err_str
+    mov x3, #9
+    mov x4, #0
+3:
+    ldrb w5, [x2, x4]
+    strb w5, [x1, x4]
+    add x4, x4, #1
+    cmp x4, x3
+    b.lo 3b
+    // convert x21 to decimal
+    mov x0, x21
+    mov x5, #10
+    mov x6, #0
+    cbz x0, 4f
+5:
+    udiv x7, x0, x5
+    msub x8, x7, x5, x0
+    add x8, x8, #'0'
+    strb w8, [x1, x4]
+    add x4, x4, #1
+    add x6, x6, #1
+    mov x0, x7
+    cbnz x0, 5b
+    b 6f
+4:
+    mov w8, #'0'
+    strb w8, [x1, x4]
+    add x4, x4, #1
+    mov x6, #1
+6:
+    // reverse digits from index 9 to x4-1
+    mov x7, #9
+    sub x8, x4, #1
+7:
+    cmp x7, x8
+    b.ge 8f
+    ldrb w9, [x1, x7]
+    ldrb w10, [x1, x8]
+    strb w10, [x1, x7]
+    strb w9, [x1, x8]
+    add x7, x7, #1
+    sub x8, x8, #1
+    b 7b
+8:
+    mov w9, #'\n'
+    strb w9, [x1, x4]
+    add x4, x4, #1
+    mov x0, #1
+    // x1 already outbuf
+    mov x2, x4
+    mov x8, #64
+    svc #0
+    mov x0, #1
+    mov x8, #93
+    svc #0
+
+// skip_ws: skips whitespace, returns current byte in w0 or -1 if EOF
+skip_ws:
+1:
+    cmp x21, x20
+    b.hs 2f
+    ldrb w0, [x19, x21]
+    cmp w0, #0x20
+    b.eq 3f
+    cmp w0, #0x09
+    b.eq 3f
+    cmp w0, #0x0A
+    b.eq 3f
+    cmp w0, #0x0D
+    b.eq 3f
+    ret
+3:
+    add x21, x21, #1
+    b 1b
+2:
+    mov w0, #-1
+    ret
+
+// parse_value: parses a value, returns 0 on success, 1 on error
+parse_value:
+    cmp x21, x20
+    b.hs .Lerr_val
+    ldrb w0, [x19, x21]
+    cmp w0, #'"'
+    b.eq parse_string
+    cmp w0, #'{'
+    b.eq parse_object
+    cmp w0, #'['
+    b.eq parse_array
+    cmp w0, #'t'
+    b.eq parse_true
+    cmp w0, #'f'
+    b.eq parse_false
+    cmp w0, #'n'
+    b.eq parse_null
+    cmp w0, #'-'
+    b.eq parse_number
+    cmp w0, #'0'
+    b.lo .Lerr_val
+    cmp w0, #'9'
+    b.hi .Lerr_val
+    b parse_number
+.Lerr_val:
+    mov x0, #1
+    ret
+
+// parse_string
+parse_string:
+    add x21, x21, #1
+1:
+    cmp x21, x20
+    b.hs .Lerr_str
+    ldrb w0, [x19, x21]
+    cmp w0, #'"'
+    b.eq .Lstr_end
+    cmp w0, #'\\'
+    b.eq .Lescape
+    cmp w0, #0x20
+    b.lo .Lerr_str
+    add x21, x21, #1
+    b 1b
+.Lescape:
+    add x21, x21, #1
+    cmp x21, x20
+    b.hs .Lerr_str
+    ldrb w0, [x19, x21]
+    cmp w0, #'"'
+    b.eq .Lesc_ok
+    cmp w0, #'\\'
+    b.eq .Lesc_ok
+    cmp w0, #'/'
+    b.eq .Lesc_ok
+    cmp w0, #'b'
+    b.eq .Lesc_ok
+    cmp w0, #'f'
+    b.eq .Lesc_ok
+    cmp w0, #'n'
+    b.eq .Lesc_ok
+    cmp w0, #'r'
+    b.eq .Lesc_ok
+    cmp w0, #'t'
+    b.eq .Lesc_ok
+    cmp w0, #'u'
+    b.eq .Lesc_unicode
+    b .Lerr_str
+.Lesc_ok:
+    add x21, x21, #1
+    b 1b
+.Lesc_unicode:
+    add x21, x21, #1
+    mov x9, #4
+2:
+    cmp x21, x20
+    b.hs .Lerr_str
+    ldrb w0, [x19, x21]
+    cmp w0, #'0'
+    b.lo 3f
+    cmp w0, #'9'
+    b.hi 3f
+    b 4f
+3:
+    cmp w0, #'a'
+    b.lo 5f
+    cmp w0, #'f'
+    b.hi 5f
+    b 4f
+5:
+    cmp w0, #'A'
+    b.lo .Lerr_str
+    cmp w0, #'F'
+    b.hi .Lerr_str
+4:
+    add x21, x21, #1
+    subs x9, x9, #1
+    b.ne 2b
+    b 1b
+.Lstr_end:
+    add x21, x21, #1
+    mov x0, #0
+    ret
+.Lerr_str:
+    mov x0, #1
+    ret
+
+// parse_number
+parse_number:
+    cmp x21, x20
+    b.hs .Lerr_num
+    ldrb w0, [x19, x21]
+    cmp w0, #'-'
+    b.ne .Lnum_no_minus
+    add x21, x21, #1
+    cmp x21, x20
+    b.hs .Lerr_num
+    ldrb w0, [x19, x21]
+    cmp w0, #'0'
+    b.lo .Lerr_num
+    cmp w0, #'9'
+    b.hi .Lerr_num
+.Lnum_no_minus:
+    ldrb w0, [x19, x21]
+    cmp w0, #'0'
+    b.ne .Lnum_digit1_9
+    // leading zero
+    add x21, x21, #1
+    cmp x21, x20
+    b.hs .Lnum_check_frac
+    ldrb w0, [x19, x21]
+    cmp w0, #'0'
+    b.lo .Lnum_check_frac
+    cmp w0, #'9'
+    b.hi .Lnum_check_frac
+    b .Lerr_num
+.Lnum_digit1_9:
+    cmp w0, #'1'
+    b.lo .Lerr_num
+    cmp w0, #'9'
+    b.hi .Lerr_num
+    add x21, x21, #1
+.Lnum_digits_loop:
+    cmp x21, x20
+    b.hs .Lnum_check_frac
+    ldrb w0, [x19, x21]
+    cmp w0, #'0'
+    b.lo .Lnum_check_frac
+    cmp w0, #'9'
+    b.hi .Lnum_check_frac
+    add x21, x21, #1
+    b .Lnum_digits_loop
+.Lnum_check_frac:
+    cmp x21, x20
+    b.hs .Lnum_done
+    ldrb w0, [x19, x21]
+    cmp w0, #'.'
+    b.ne .Lnum_check_exp
+    // frac
+    add x21, x21, #1
+    cmp x21, x20
+    b.hs .Lerr_num
+    ldrb w0, [x19, x21]
+    cmp w0, #'0'
+    b.lo .Lerr_num
+    cmp w0, #'9'
+    b.hi .Lerr_num
+    add x21, x21, #1
+.Lnum_frac_loop:
+    cmp x21, x20
+    b.hs .Lnum_done
+    ldrb w0, [x19, x21]
+    cmp w0, #'0'
+    b.lo .Lnum_check_exp
+    cmp w0, #'9'
+    b.hi .Lnum_check_exp
+    add x21, x21, #1
+    b .Lnum_frac_loop
+.Lnum_check_exp:
+    cmp x21, x20
+    b.hs .Lnum_done
+    ldrb w0, [x19, x21]
+    cmp w0, #'e'
+    b.eq .Lnum_exp
+    cmp w0, #'E'
+    b.ne .Lnum_done
+.Lnum_exp:
+    add x21, x21, #1
+    cmp x21, x20
+    b.hs .Lerr_num
+    ldrb w0, [x19, x21]
+    cmp w0, #'+'
+    b.eq .Lnum_exp_sign
+    cmp w0, #'-'
+    b.ne .Lnum_exp_digit
+.Lnum_exp_sign:
+    add x21, x21, #1
+.Lnum_exp_digit:
+    cmp x21, x20
+    b.hs .Lerr_num
+    ldrb w0, [x19, x21]
+    cmp w0, #'0'
+    b.lo .Lerr_num
+    cmp w0, #'9'
+    b.hi .Lerr_num
+    add x21, x21, #1
+.Lnum_exp_loop:
+    cmp x21, x20
+    b.hs .Lnum_done
+    ldrb w0, [x19, x21]
+    cmp w0, #'0'
+    b.lo .Lnum_done
+    cmp w0, #'9'
+    b.hi .Lnum_done
+    add x21, x21, #1
+    b .Lnum_exp_loop
+.Lnum_done:
+    mov x0, #0
+    ret
+.Lerr_num:
+    mov x0, #1
+    ret
+
+// parse_array
+parse_array:
+    add x21, x21, #1
+    bl skip_ws
+    cmp w0, #']'
+    b.eq .Larr_empty
+    bl parse_value
+    cbnz x0, .Lerr_arr
+.Larr_loop:
+    bl skip_ws
+    cmp w0, #','
+    b.eq .Larr_comma
+    cmp w0, #']'
+    b.eq .Larr_end
+    b .Lerr_arr
+.Larr_comma:
+    add x21, x21, #1
+    bl skip_ws
+    bl parse_value
+    cbnz x0, .Lerr_arr
+    b .Larr_loop
+.Larr_end:
+    add x21, x21, #1
+    mov x0, #0
+    ret
+.Larr_empty:
+    add x21, x21, #1
+    mov x0, #0
+    ret
+.Lerr_arr:
+    mov x0, #1
+    ret
+
+// parse_object
+parse_object:
+    add x21, x21, #1
+    bl skip_ws
+    cmp w0, #'}'
+    b.eq .Lobj_empty
+.Lobj_member:
+    cmp w0, #'"'
+    b.ne .Lerr_obj
+    bl parse_string
+    cbnz x0, .Lerr_obj
+    bl skip_ws
+    cmp w0, #':'
+    b.ne .Lerr_obj
+    add x21, x21, #1
+    bl skip_ws
+    bl parse_value
+    cbnz x0, .Lerr_obj
+.Lobj_loop:
+    bl skip_ws
+    cmp w0, #','
+    b.eq .Lobj_comma
+    cmp w0, #'}'
+    b.eq .Lobj_end
+    b .Lerr_obj
+.Lobj_comma:
+    add x21, x21, #1
+    bl skip_ws
+    cmp w0, #'"'
+    b.ne .Lerr_obj
+    bl parse_string
+    cbnz x0, .Lerr_obj
+    bl skip_ws
+    cmp w0, #':'
+    b.ne .Lerr_obj
+    add x21, x21, #1
+    bl skip_ws
+    bl parse_value
+    cbnz x0, .Lerr_obj
+    b .Lobj_loop
+.Lobj_end:
+    add x21, x21, #1
+    mov x0, #0
+    ret
+.Lobj_empty:
+    add x21, x21, #1
+    mov x0, #0
+    ret
+.Lerr_obj:
+    mov x0, #1
+    ret
+
+// parse_true
+parse_true:
+    mov x9, #4
+    adrp x10, lit_true
+    add x10, x10, :lo12:lit_true
+1:
+    cmp x21, x20
+    b.hs .Lerr_true
+    ldrb w0, [x19, x21]
+    ldrb w1, [x10], #1
+    cmp w0, w1
+    b.ne .Lerr_true
+    add x21, x21, #1
+    subs x9, x9, #1
+    b.ne 1b
+    mov x0, #0
+    ret
+.Lerr_true:
+    mov x0, #1
+    ret
+
+// parse_false
+parse_false:
+    mov x9, #5
+    adrp x10, lit_false
+    add x10, x10, :lo12:lit_false
+1:
+    cmp x21, x20
+    b.hs .Lerr_false
+    ldrb w0, [x19, x21]
+    ldrb w1, [x10], #1
+    cmp w0, w1
+    b.ne .Lerr_false
+    add x21, x21, #1
+    subs x9, x9, #1
+    b.ne 1b
+    mov x0, #0
+    ret
+.Lerr_false:
+    mov x0, #1
+    ret
+
+// parse_null
+parse_null:
+    mov x9, #4
+    adrp x10, lit_null
+    add x10, x10, :lo12:lit_null
+1:
+    cmp x21, x20
+    b.hs .Lerr_null
+    ldrb w0, [x19, x21]
+    ldrb w1, [x10], #1
+    cmp w0, w1
+    b.ne .Lerr_null
+    add x21, x21, #1
+    subs x9, x9, #1
+    b.ne 1b
+    mov x0, #0
+    ret
+.Lerr_null:
+    mov x0, #1
+    ret
+</previous>
+It failed:
+<failure>
+Test `literals` failed (stdin delivered whole; test run 4 of 80; the runs before it passed).
+stdin (19 bytes): " [true,false,null] "
+The program stopped with a fault (no_exit): did not exit within 50000000 instructions (stopped at pc=0x4004c4) at pc 0x4004c4 [the faulting instruction is `mov x0, #1` at 0x4004c4 (parse_array+0x5c) (disassembly of the assembled program)]
+exit status: expected 0, got none (the program did not exit)
+stdout differs from byte 0 on (line 1, column 1 of the expected output); expected 3 bytes in total, got 0
+  expected from byte 0: "ok\n"
+  actual from byte 0:   (end of output)
+</failure>
+Write a corrected, complete version. Same output format; output only the code.
