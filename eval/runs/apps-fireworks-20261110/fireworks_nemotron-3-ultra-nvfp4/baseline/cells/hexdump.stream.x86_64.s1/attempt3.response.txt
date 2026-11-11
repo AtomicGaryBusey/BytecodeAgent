@@ -1,0 +1,234 @@
+.section .bss
+.align 16
+buffer: .zero 65536
+
+.section .text
+.globl _start
+
+.equ SYS_READ, 0
+.equ SYS_WRITE, 1
+.equ SYS_EXIT, 60
+
+_start:
+    # Read all input into buffer
+    mov rdi, 0                  # fd = stdin
+    lea rsi, [rip + buffer]     # buffer pointer
+    mov rdx, 65536              # max bytes to read
+    xor r10, r10                # total_read = 0
+
+.read_loop:
+    mov rax, SYS_READ
+    syscall
+    test rax, rax
+    jz .read_done
+    add r10, rax                # total_read += bytes_read
+    add rsi, rax                # advance buffer pointer
+    sub rdx, rax                # remaining capacity
+    jnz .read_loop
+
+.read_done:
+    mov r12, r10                # save total_read (callee-saved)
+    lea rsi, [rip + buffer]     # reset buffer pointer
+    xor r13, r13                # offset = 0
+
+.process_loop:
+    cmp r13, r12
+    jge .process_done
+    mov rcx, r12
+    sub rcx, r13                # remaining bytes
+    cmp rcx, 16
+    jge .full_line
+    mov r15, rcx                # save n in callee-saved r15
+    mov rdx, rcx                # n = remaining (1..15)
+    jmp .print_line_common
+.full_line:
+    mov r15, 16                 # save n = 16
+    mov rdx, 16                 # n = 16
+.print_line_common:
+    # r13 = offset, rsi = data pointer, rdx = n, r15 = n (saved)
+    call print_line
+    add r13, r15                # advance offset by n (r15 preserved across call)
+    add rsi, r15                # advance data pointer
+    jmp .process_loop
+
+.process_done:
+    # Print final offset line
+    mov rdi, r12
+    call print_final_offset
+
+    # Exit
+    mov rax, SYS_EXIT
+    xor rdi, rdi
+    syscall
+
+# print_line(r13=offset, rsi=data, rdx=n)
+# Builds a line in a stack buffer and writes it to stdout.
+print_line:
+    push rbp
+    mov rbp, rsp
+    sub rsp, 80                 # line buffer (max 79 bytes)
+    push rbx
+    push r14
+    push r15
+
+    mov r14, rsi                # save data pointer
+    mov r15, rdx                # n
+    lea rbx, [rbp-80]           # line buffer pointer
+
+    # 1. offset as 8 hex digits
+    mov rdi, r13
+    mov rsi, rbx
+    call u32_to_hex8            # returns next position in rax
+    mov rbx, rax
+
+    # 2. two spaces
+    mov byte ptr [rbx], ' '
+    mov byte ptr [rbx+1], ' '
+    add rbx, 2
+
+    # 3. hex bytes (16 slots)
+    xor rcx, rcx                # i = 0
+.hex_loop:
+    cmp rcx, r15
+    jl .hex_byte_present
+    # missing byte: three spaces
+    mov byte ptr [rbx], ' '
+    mov byte ptr [rbx+1], ' '
+    mov byte ptr [rbx+2], ' '
+    add rbx, 3
+    jmp .hex_after_slot
+.hex_byte_present:
+    movzx edi, byte ptr [r14 + rcx]
+    mov rsi, rbx
+    call byte_to_hex2           # returns dest+2 in rax
+    mov rbx, rax
+    mov byte ptr [rbx], ' '
+    inc rbx
+.hex_after_slot:
+    # extra space after 8th byte (i==7)
+    cmp rcx, 7
+    jne .hex_next
+    mov byte ptr [rbx], ' '
+    inc rbx
+.hex_next:
+    inc rcx
+    cmp rcx, 16
+    jl .hex_loop
+
+    # 4. space, '|'
+    mov byte ptr [rbx], ' '
+    mov byte ptr [rbx+1], '|'
+    add rbx, 2
+
+    # 5. ASCII column
+    xor rcx, rcx
+.ascii_loop:
+    cmp rcx, r15
+    jge .ascii_done
+    movzx edi, byte ptr [r14 + rcx]
+    cmp edi, 0x20
+    jl .ascii_dot
+    cmp edi, 0x7E
+    jg .ascii_dot
+    mov byte ptr [rbx], dil
+    jmp .ascii_next
+.ascii_dot:
+    mov byte ptr [rbx], '.'
+.ascii_next:
+    inc rbx
+    inc rcx
+    jmp .ascii_loop
+.ascii_done:
+
+    # 6. '|', newline
+    mov byte ptr [rbx], '|'
+    mov byte ptr [rbx+1], 0x0A
+    add rbx, 2
+
+    # 7. write line
+    lea rsi, [rbp-80]
+    mov rdx, rbx
+    sub rdx, rsi
+    mov rdi, 1
+    mov rax, SYS_WRITE
+    syscall
+
+    # Restore caller's rsi (data pointer) from r14
+    mov rsi, r14
+
+    pop r15
+    pop r14
+    pop rbx
+    leave
+    ret
+
+# print_final_offset(rdi=total_read)
+# Prints 8 hex digits + newline.
+print_final_offset:
+    push rbp
+    mov rbp, rsp
+    sub rsp, 16                 # small buffer
+    mov rsi, rsp
+    call u32_to_hex8            # writes 8 digits, returns rsi+8
+    mov byte ptr [rax], 0x0A    # newline
+    inc rax
+    mov rdx, rax
+    sub rdx, rsp
+    mov rsi, rsp
+    mov rdi, 1
+    mov rax, SYS_WRITE
+    syscall
+    leave
+    ret
+
+# u32_to_hex8(rdi=value, rsi=dest) -> rax = dest+8
+# Writes exactly 8 lowercase hex digits (zero-padded).
+u32_to_hex8:
+    mov eax, edi                # use low 32 bits
+    mov r8, rsi
+    mov ecx, 28                 # start with highest nibble (bits 28-31)
+.hex8_loop:
+    mov edx, eax
+    shr edx, cl
+    and edx, 0xF
+    cmp edx, 10
+    jl .hex8_digit
+    add edx, 'a' - 10
+    jmp .hex8_store
+.hex8_digit:
+    add edx, '0'
+.hex8_store:
+    mov byte ptr [r8], dl
+    inc r8
+    sub ecx, 4
+    jns .hex8_loop
+    mov rax, r8
+    ret
+
+# byte_to_hex2(rdi=byte, rsi=dest) -> rax = dest+2
+# Writes two lowercase hex digits.
+byte_to_hex2:
+    movzx eax, dil
+    mov edx, eax
+    shr edx, 4
+    and eax, 0xF
+
+    cmp edx, 10
+    jl .high_digit
+    add edx, 'a' - 10
+    jmp .high_store
+.high_digit:
+    add edx, '0'
+.high_store:
+    mov byte ptr [rsi], dl
+
+    cmp eax, 10
+    jl .low_digit
+    add eax, 'a' - 10
+    jmp .low_store
+.low_digit:
+    add eax, '0'
+.low_store:
+    mov byte ptr [rsi+1], al
+    lea rax, [rsi+2]
+    ret

@@ -1,0 +1,294 @@
+.section .rodata
+.balign 64
+b64_table:
+    .ascii "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/"
+
+.section .bss
+.balign 4096
+read_buf:
+    .zero 4096
+.balign 8192
+out_buf:
+    .zero 8192
+.balign 4
+leftover_bytes:
+    .zero 2
+
+.section .text
+.balign 16
+.globl _start
+_start:
+    // Stack frame for _start (callee-saved registers x19-x28 are preserved across calls)
+    sub     sp, sp, #16
+    stp     x29, x30, [sp]
+    mov     x29, sp
+
+    // Initialize registers
+    adrp    x19, read_buf
+    add     x19, x19, :lo12:read_buf
+    adrp    x20, out_buf
+    add     x20, x20, :lo12:out_buf
+    add     x21, x20, #8192          // out_buf_end
+    mov     x22, x20                 // out_ptr
+    mov     x23, #0                  // line_count
+    mov     x24, #0                  // leftover_count
+    adrp    x25, leftover_bytes
+    add     x25, x25, :lo12:leftover_bytes
+    adrp    x26, b64_table
+    add     x26, x26, :lo12:b64_table
+
+read_loop:
+    // read(0, read_buf, 4096)
+    mov     x0, #0
+    mov     x1, x19
+    mov     x2, #4096
+    mov     x8, #63
+    svc     #0
+    cbz     x0, read_done            // EOF
+    add     x28, x19, x0             // read_buf_end
+    mov     x27, x19                 // read_ptr
+
+process_loop:
+    // Check leftover_count
+    cmp     x24, #2
+    b.eq    handle_leftover_2
+    cmp     x24, #1
+    b.eq    handle_leftover_1
+
+    // leftover_count == 0
+    sub     x9, x28, x27             // remaining bytes
+    cbz     x9, read_loop            // no more data, read again
+    cmp     x9, #3
+    b.lt    store_leftover_0         // less than 3 bytes -> store as leftover
+
+    // Process a full 3-byte group
+    ldrb    w10, [x27], #1
+    ldrb    w11, [x27], #1
+    ldrb    w12, [x27], #1
+
+    // c0 = w10 >> 2
+    ubfx    w0, w10, #2, #6
+    bl      emit_char
+    // c1 = ((w10 & 3) << 4) | (w11 >> 4)
+    and     w13, w10, #3
+    lsl     w13, w13, #4
+    ubfx    w14, w11, #4, #4
+    orr     w0, w13, w14
+    bl      emit_char
+    // c2 = ((w11 & 0xF) << 2) | (w12 >> 6)
+    and     w13, w11, #0xF
+    lsl     w13, w13, #2
+    ubfx    w14, w12, #6, #2
+    orr     w0, w13, w14
+    bl      emit_char
+    // c3 = w12 & 0x3F
+    and     w0, w12, #0x3F
+    bl      emit_char
+
+    b       process_loop
+
+store_leftover_0:
+    // Store 1 or 2 bytes as leftover
+    cbz     x9, read_loop
+    ldrb    w10, [x27], #1
+    strb    w10, [x25]
+    mov     x24, #1                  // set leftover_count to 1
+    sub     x9, x9, #1
+    cbz     x9, read_loop
+    ldrb    w10, [x27], #1
+    strb    w10, [x25, #1]
+    mov     x24, #2
+    b       read_loop
+
+handle_leftover_1:
+    // Have 1 leftover byte, need 2 more
+    sub     x9, x28, x27
+    cmp     x9, #2
+    b.lt    store_leftover_1
+
+    ldrb    w10, [x25]
+    ldrb    w11, [x27], #1
+    ldrb    w12, [x27], #1
+
+    ubfx    w0, w10, #2, #6
+    bl      emit_char
+    and     w13, w10, #3
+    lsl     w13, w13, #4
+    ubfx    w14, w11, #4, #4
+    orr     w0, w13, w14
+    bl      emit_char
+    and     w13, w11, #0xF
+    lsl     w13, w13, #2
+    ubfx    w14, w12, #6, #2
+    orr     w0, w13, w14
+    bl      emit_char
+    and     w0, w12, #0x3F
+    bl      emit_char
+
+    mov     x24, #0
+    b       process_loop
+
+store_leftover_1:
+    // Not enough bytes, store one more as second leftover
+    cbz     x9, read_loop
+    ldrb    w10, [x27], #1
+    strb    w10, [x25, #1]
+    mov     x24, #2
+    b       read_loop
+
+handle_leftover_2:
+    // Have 2 leftover bytes, need 1 more
+    sub     x9, x28, x27
+    cbz     x9, read_loop
+
+    ldrb    w10, [x25]
+    ldrb    w11, [x25, #1]
+    ldrb    w12, [x27], #1
+
+    ubfx    w0, w10, #2, #6
+    bl      emit_char
+    and     w13, w10, #3
+    lsl     w13, w13, #4
+    ubfx    w14, w11, #4, #4
+    orr     w0, w13, w14
+    bl      emit_char
+    and     w13, w11, #0xF
+    lsl     w13, w13, #2
+    ubfx    w14, w12, #6, #2
+    orr     w0, w13, w14
+    bl      emit_char
+    and     w0, w12, #0x3F
+    bl      emit_char
+
+    mov     x24, #0
+    b       process_loop
+
+read_done:
+    // EOF: process final leftovers
+    cmp     x24, #1
+    b.eq    final_1
+    cmp     x24, #2
+    b.eq    final_2
+    b       final_flush
+
+final_1:
+    // One leftover byte -> 2 chars + "=="
+    ldrb    w10, [x25]
+    ubfx    w0, w10, #2, #6
+    bl      emit_char
+    and     w13, w10, #3
+    lsl     w0, w13, #4
+    bl      emit_char
+    mov     w0, #0x3D                // '='
+    bl      emit_raw
+    mov     w0, #0x3D
+    bl      emit_raw
+    b       final_flush
+
+final_2:
+    // Two leftover bytes -> 3 chars + "="
+    ldrb    w10, [x25]
+    ldrb    w11, [x25, #1]
+    ubfx    w0, w10, #2, #6
+    bl      emit_char
+    and     w13, w10, #3
+    lsl     w13, w13, #4
+    ubfx    w14, w11, #4, #4
+    orr     w0, w13, w14
+    bl      emit_char
+    and     w13, w11, #0xF
+    lsl     w0, w13, #2
+    bl      emit_char
+    mov     w0, #0x3D                // '='
+    bl      emit_raw
+    b       final_flush
+
+final_flush:
+    // If line_count > 0, output newline
+    cmp     x23, #0
+    b.eq    1f
+    // Ensure space for newline
+    cmp     x22, x21
+    b.ne    2f
+    bl      flush_output
+2:
+    mov     w0, #0x0A
+    strb    w0, [x22], #1
+1:
+    bl      flush_output
+
+    // Exit
+    mov     x0, #0
+    mov     x8, #93
+    svc     #0
+
+// ============================================================
+// Subroutines
+// ============================================================
+
+// flush_output: write out_buf to stdout
+// Clobbers: x0, x1, x2, x8, x29, x30 (saved on stack)
+flush_output:
+    stp     x29, x30, [sp, #-16]!
+    cmp     x22, x20
+    b.eq    1f
+    mov     x0, #1
+    mov     x1, x20
+    sub     x2, x22, x20
+    mov     x8, #64
+    svc     #0
+    mov     x22, x20
+1:
+    ldp     x29, x30, [sp], #16
+    ret
+
+// emit_raw: output a single raw byte (in w0), handling line breaks and buffer flush
+// Clobbers: x0, x1, x2, x8, x9, x10, x11, x12, x13, x14, x15, x16, x17, x29, x30
+emit_raw:
+    stp     x29, x30, [sp, #-16]!
+    // If line_count == 76, emit newline first
+    cmp     x23, #76
+    b.ne    1f
+    cmp     x22, x21
+    b.ne    2f
+    bl      flush_output
+2:
+    mov     w1, #0x0A
+    strb    w1, [x22], #1
+    mov     x23, #0
+1:
+    // Ensure space for the character
+    cmp     x22, x21
+    b.ne    3f
+    bl      flush_output
+3:
+    strb    w0, [x22], #1
+    add     x23, x23, #1
+    ldp     x29, x30, [sp], #16
+    ret
+
+// emit_char: output a base64 character (index in w0), handling line breaks and buffer flush
+// Clobbers: x0, x1, x2, x8, x9, x10, x11, x12, x13, x14, x15, x16, x17, x29, x30
+emit_char:
+    stp     x29, x30, [sp, #-16]!
+    // If line_count == 76, emit newline first
+    cmp     x23, #76
+    b.ne    1f
+    cmp     x22, x21
+    b.ne    2f
+    bl      flush_output
+2:
+    mov     w1, #0x0A
+    strb    w1, [x22], #1
+    mov     x23, #0
+1:
+    // Ensure space for the character
+    cmp     x22, x21
+    b.ne    3f
+    bl      flush_output
+3:
+    ldrb    w1, [x26, w0, uxtw]
+    strb    w1, [x22], #1
+    add     x23, x23, #1
+    ldp     x29, x30, [sp], #16
+    ret

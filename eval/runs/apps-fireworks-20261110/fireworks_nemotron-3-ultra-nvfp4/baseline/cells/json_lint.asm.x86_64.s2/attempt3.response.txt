@@ -1,0 +1,555 @@
+.global _start
+
+.section .rodata
+str_ok: .ascii "ok\n"
+str_ok_len = . - str_ok
+str_err_prefix: .ascii "error at "
+str_err_prefix_len = . - str_err_prefix
+str_newline: .ascii "\n"
+str_newline_len = . - str_newline
+
+.section .bss
+.align 8
+buffer: .zero 65536
+buf_len: .zero 8
+num_buf: .zero 32
+
+.section .text
+
+_start:
+    # Initialize registers
+    lea r13, [rip + buffer]   # buffer base
+    mov r14, 0                # bytes read (buf_len)
+    mov r12, 0                # current index
+    mov r15, -1               # error_offset ( -1 means no error yet)
+
+    # Read all stdin
+read_loop:
+    mov rax, 0                # sys_read
+    mov rdi, 0                # stdin
+    lea rsi, [r13 + r14]
+    mov rdx, 65536
+    sub rdx, r14
+    syscall
+    test rax, rax
+    jz read_done
+    add r14, rax
+    cmp r14, 65536
+    jl read_loop
+
+read_done:
+    mov qword ptr [rip + buf_len], r14
+
+    # Parse document
+    call parse_document
+
+    # After parsing, check for extra non-whitespace if no error yet
+    cmp r15, -1
+    jne have_error
+    cmp r12, r14
+    je success
+    # extra bytes
+    mov r15, r12
+    jmp have_error
+
+success:
+    # Write "ok\n"
+    mov rdi, 1
+    lea rsi, [rip + str_ok]
+    mov rdx, str_ok_len
+    call write_all
+    mov rdi, 0
+    jmp exit_prog
+
+have_error:
+    # Write "error at N\n"
+    mov rdi, 1
+    lea rsi, [rip + str_err_prefix]
+    mov rdx, str_err_prefix_len
+    call write_all
+    # Write number
+    mov rax, r15
+    lea rsi, [rip + num_buf]
+    call write_uint
+    # Write newline
+    mov rdi, 1
+    lea rsi, [rip + str_newline]
+    mov rdx, str_newline_len
+    call write_all
+    mov rdi, 1
+
+exit_prog:
+    mov rax, 60               # sys_exit
+    syscall
+    # Should not return
+    ud2
+
+# write_all(fd=1, buf=rsi, len=rdx)
+# Clobbers: rax, rcx, r11, rsi, rdx
+write_all:
+    mov rax, 1                # sys_write
+    syscall
+    cmp rax, rdx
+    je write_all_done
+    # partial write (unlikely for stdout), adjust and retry
+    sub rdx, rax
+    add rsi, rax
+    jmp write_all
+write_all_done:
+    ret
+
+# write_uint(rax = value, rsi = buffer)
+# Converts rax to decimal string at buffer, writes it via write_all.
+write_uint:
+    # We'll write digits backwards at the end of num_buf (32 bytes)
+    lea rdi, [rsi + 31]
+    mov byte ptr [rdi], 0     # sentinel
+    dec rdi
+    test rax, rax
+    jnz uint_loop
+    mov byte ptr [rdi], '0'
+    dec rdi
+    jmp uint_done
+uint_loop:
+    xor rdx, rdx
+    mov rbx, 10
+    div rbx
+    add dl, '0'
+    mov byte ptr [rdi], dl
+    dec rdi
+    test rax, rax
+    jnz uint_loop
+uint_done:
+    inc rdi                   # rdi points to first digit
+    # Compute length: (rsi+31) - rdi
+    lea rax, [rsi + 31]
+    sub rax, rdi
+    mov rdx, rax
+    mov rsi, rdi
+    mov rdi, 1
+    call write_all
+    ret
+
+# set_error: if r15 == -1, set r15 = r12
+set_error:
+    cmp r15, -1
+    jne set_error_done
+    mov r15, r12
+set_error_done:
+    ret
+
+# parse_document
+parse_document:
+    call parse_ws
+    call parse_value
+    call parse_ws
+    ret
+
+# parse_ws: consume whitespace (space, tab, LF, CR)
+parse_ws:
+parse_ws_loop:
+    cmp r12, r14
+    je parse_ws_done
+    movzx eax, byte ptr [r13 + r12]
+    cmp al, 0x20
+    je parse_ws_next
+    cmp al, 0x09
+    je parse_ws_next
+    cmp al, 0x0A
+    je parse_ws_next
+    cmp al, 0x0D
+    je parse_ws_next
+    ret
+parse_ws_next:
+    inc r12
+    jmp parse_ws_loop
+parse_ws_done:
+    ret
+
+# parse_value
+parse_value:
+    cmp r12, r14
+    je value_error
+    movzx eax, byte ptr [r13 + r12]
+    cmp al, '{'
+    je parse_object
+    cmp al, '['
+    je parse_array
+    cmp al, '"'
+    je parse_string
+    cmp al, 't'
+    je parse_true
+    cmp al, 'f'
+    je parse_false
+    cmp al, 'n'
+    je parse_null
+    cmp al, '-'
+    je parse_number
+    cmp al, '0'
+    je parse_number
+    cmp al, '1'
+    jb value_error
+    cmp al, '9'
+    jbe parse_number
+value_error:
+    call set_error
+    ret
+
+# parse_object
+parse_object:
+    inc r12                   # skip '{'
+    call parse_ws
+    cmp r12, r14
+    je obj_error_incomplete
+    movzx eax, byte ptr [r13 + r12]
+    cmp al, '}'
+    je obj_empty
+obj_member_loop:
+    call parse_string         # member name (must be string)
+    call parse_ws
+    cmp r12, r14
+    je obj_error_incomplete
+    movzx eax, byte ptr [r13 + r12]
+    cmp al, ':'
+    jne obj_error
+    inc r12
+    call parse_ws
+    call parse_value
+    call parse_ws
+    cmp r12, r14
+    je obj_error_incomplete
+    movzx eax, byte ptr [r13 + r12]
+    cmp al, '}'
+    je obj_end
+    cmp al, ','
+    jne obj_error
+    inc r12
+    call parse_ws
+    jmp obj_member_loop
+obj_empty:
+    inc r12
+    ret
+obj_end:
+    inc r12
+    ret
+obj_error:
+    call set_error
+    ret
+obj_error_incomplete:
+    call set_error
+    ret
+
+# parse_array
+parse_array:
+    inc r12                   # skip '['
+    call parse_ws
+    cmp r12, r14
+    je arr_error_incomplete
+    movzx eax, byte ptr [r13 + r12]
+    cmp al, ']'
+    je arr_empty
+arr_value_loop:
+    call parse_value
+    call parse_ws
+    cmp r12, r14
+    je arr_error_incomplete
+    movzx eax, byte ptr [r13 + r12]
+    cmp al, ']'
+    je arr_end
+    cmp al, ','
+    jne arr_error
+    inc r12
+    call parse_ws
+    jmp arr_value_loop
+arr_empty:
+    inc r12
+    ret
+arr_end:
+    inc r12
+    ret
+arr_error:
+    call set_error
+    ret
+arr_error_incomplete:
+    call set_error
+    ret
+
+# parse_string
+parse_string:
+    inc r12                   # skip opening '"'
+str_loop:
+    cmp r12, r14
+    je str_error_incomplete
+    movzx eax, byte ptr [r13 + r12]
+    cmp al, '"'
+    je str_end
+    cmp al, '\\'
+    je str_escape
+    cmp al, 0x1F
+    jbe str_error_control
+    inc r12
+    jmp str_loop
+str_escape:
+    inc r12
+    cmp r12, r14
+    je str_error_incomplete
+    movzx eax, byte ptr [r13 + r12]
+    cmp al, '"'
+    je esc_ok
+    cmp al, '\\'
+    je esc_ok
+    cmp al, '/'
+    je esc_ok
+    cmp al, 'b'
+    je esc_ok
+    cmp al, 'f'
+    je esc_ok
+    cmp al, 'n'
+    je esc_ok
+    cmp al, 'r'
+    je esc_ok
+    cmp al, 't'
+    je esc_ok
+    cmp al, 'u'
+    je esc_unicode
+    call set_error
+    ret
+esc_unicode:
+    inc r12
+    mov ecx, 4
+unicode_loop:
+    cmp r12, r14
+    je str_error_incomplete
+    movzx eax, byte ptr [r13 + r12]
+    cmp al, '0'
+    jb unicode_error
+    cmp al, '9'
+    jbe unicode_ok
+    cmp al, 'A'
+    jb unicode_error
+    cmp al, 'F'
+    jbe unicode_ok
+    cmp al, 'a'
+    jb unicode_error
+    cmp al, 'f'
+    ja unicode_error
+unicode_ok:
+    inc r12
+    dec ecx
+    jnz unicode_loop
+    jmp str_loop
+unicode_error:
+    call set_error
+    ret
+esc_ok:
+    inc r12
+    jmp str_loop
+str_end:
+    inc r12
+    ret
+str_error_control:
+    call set_error
+    ret
+str_error_incomplete:
+    call set_error
+    ret
+
+# parse_number
+parse_number:
+    # optional '-'
+    cmp r12, r14
+    je num_error
+    movzx eax, byte ptr [r13 + r12]
+    cmp al, '-'
+    jne num_check_zero
+    inc r12
+    cmp r12, r14
+    je num_error
+    movzx eax, byte ptr [r13 + r12]
+num_check_zero:
+    cmp al, '0'
+    jne num_check_digit19
+    inc r12
+    jmp num_after_int
+num_check_digit19:
+    cmp al, '1'
+    jb num_error
+    cmp al, '9'
+    ja num_error
+    inc r12
+num_digit_loop:
+    cmp r12, r14
+    je num_after_int
+    movzx eax, byte ptr [r13 + r12]
+    cmp al, '0'
+    jb num_after_int
+    cmp al, '9'
+    ja num_after_int
+    inc r12
+    jmp num_digit_loop
+num_after_int:
+    cmp r12, r14
+    je num_done
+    movzx eax, byte ptr [r13 + r12]
+    cmp al, '.'
+    jne num_check_exp
+    inc r12
+    cmp r12, r14
+    je num_error
+    movzx eax, byte ptr [r13 + r12]
+    cmp al, '0'
+    jb num_error
+    cmp al, '9'
+    ja num_error
+    inc r12
+num_frac_loop:
+    cmp r12, r14
+    je num_check_exp
+    movzx eax, byte ptr [r13 + r12]
+    cmp al, '0'
+    jb num_check_exp
+    cmp al, '9'
+    ja num_check_exp
+    inc r12
+    jmp num_frac_loop
+num_check_exp:
+    cmp r12, r14
+    je num_done
+    movzx eax, byte ptr [r13 + r12]
+    cmp al, 'e'
+    je num_exp
+    cmp al, 'E'
+    je num_exp
+    jmp num_done
+num_exp:
+    inc r12
+    cmp r12, r14
+    je num_error
+    movzx eax, byte ptr [r13 + r12]
+    cmp al, '+'
+    je num_exp_sign
+    cmp al, '-'
+    je num_exp_sign
+    jmp num_exp_digits
+num_exp_sign:
+    inc r12
+    cmp r12, r14
+    je num_error
+    movzx eax, byte ptr [r13 + r12]
+num_exp_digits:
+    cmp al, '0'
+    jb num_error
+    cmp al, '9'
+    ja num_error
+    inc r12
+num_exp_loop:
+    cmp r12, r14
+    je num_done
+    movzx eax, byte ptr [r13 + r12]
+    cmp al, '0'
+    jb num_done
+    cmp al, '9'
+    ja num_done
+    inc r12
+    jmp num_exp_loop
+num_done:
+    ret
+num_error:
+    call set_error
+    ret
+
+# parse_true
+parse_true:
+    # 't','r','u','e'
+    cmp r12, r14
+    je lit_error
+    movzx eax, byte ptr [r13 + r12]
+    cmp al, 't'
+    jne lit_error
+    inc r12
+    cmp r12, r14
+    je lit_error
+    movzx eax, byte ptr [r13 + r12]
+    cmp al, 'r'
+    jne lit_error
+    inc r12
+    cmp r12, r14
+    je lit_error
+    movzx eax, byte ptr [r13 + r12]
+    cmp al, 'u'
+    jne lit_error
+    inc r12
+    cmp r12, r14
+    je lit_error
+    movzx eax, byte ptr [r13 + r12]
+    cmp al, 'e'
+    jne lit_error
+    inc r12
+    ret
+lit_error:
+    call set_error
+    ret
+
+# parse_false
+parse_false:
+    # 'f','a','l','s','e'
+    cmp r12, r14
+    je lit_error
+    movzx eax, byte ptr [r13 + r12]
+    cmp al, 'f'
+    jne lit_error
+    inc r12
+    cmp r12, r14
+    je lit_error
+    movzx eax, byte ptr [r13 + r12]
+    cmp al, 'a'
+    jne lit_error
+    inc r12
+    cmp r12, r14
+    je lit_error
+    movzx eax, byte ptr [r13 + r12]
+    cmp al, 'l'
+    jne lit_error
+    inc r12
+    cmp r12, r14
+    je lit_error
+    movzx eax, byte ptr [r13 + r12]
+    cmp al, 's'
+    jne lit_error
+    inc r12
+    cmp r12, r14
+    je lit_error
+    movzx eax, byte ptr [r13 + r12]
+    cmp al, 'e'
+    jne lit_error
+    inc r12
+    ret
+
+# parse_null
+parse_null:
+    # 'n','u','l','l'
+    cmp r12, r14
+    je lit_error
+    movzx eax, byte ptr [r13 + r12]
+    cmp al, 'n'
+    jne lit_error
+    inc r12
+    cmp r12, r14
+    je lit_error
+    movzx eax, byte ptr [r13 + r12]
+    cmp al, 'u'
+    jne lit_error
+    inc r12
+    cmp r12, r14
+    je lit_error
+    movzx eax, byte ptr [r13 + r12]
+    cmp al, 'l'
+    jne lit_error
+    inc r12
+    cmp r12, r14
+    je lit_error
+    movzx eax, byte ptr [r13 + r12]
+    cmp al, 'l'
+    jne lit_error
+    inc r12
+    ret

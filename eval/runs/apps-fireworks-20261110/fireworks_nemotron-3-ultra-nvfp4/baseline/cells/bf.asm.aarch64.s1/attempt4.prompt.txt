@@ -1,0 +1,279 @@
+Write the complete program `bf`: a static Linux executable for AArch64 (ARMv8-A, little-endian), written in assembly. There is no C library, no C runtime and no helper code: you write the entry point `_start`, every function, every table and string, and make the system calls yourself.
+
+Entry state (as the Linux kernel sets it up): execution starts at the label `_start`. sp is 16-byte aligned and points at argc = 0, followed by the NULL terminators of an empty argv, an empty envp and an empty auxiliary vector: the program gets no arguments. Every other general-purpose register (x0-x30) is zero; x30 is not a return address, so `_start` must never return with `ret`; the program ends only through the exit system call.
+
+System calls: the `svc #0` instruction, with the system call number in x8 and the arguments in x0, x1, x2; the result comes back in x0. Every other register is preserved. Exactly these four are available:
+- read = 63: read(fd = 0, buf, count) reads up to count bytes of standard input into buf; returns the number of bytes read, 0 at end of input.
+- write = 64: write(fd, buf, count) with fd 1 (standard output) or 2 (standard error); returns count.
+- exit = 93: exit(status) ends the program; the exit status is the low 8 bits of status.
+- exit_group = 94: the same as exit.
+Any other system call number or file descriptor stops the program with an error, and so does a buffer that is not entirely inside the program's memory.
+
+Memory: the program's own sections plus a stack of 1 MiB below the entry sp. There is no heap (no brk, no mmap, no malloc): put working storage in `.bss` (zero-initialised), at most 1 MiB in total, or on the stack. Code is not writable. Any access outside these areas stops the program. Each test run may execute at most 200,000,000 instructions.
+
+Output format: one complete assembly source file in GNU assembler (GNU as) syntax for AArch64. Examples: `ldr x2, [x0, x1, lsl #3]`, `ldrb w3, [x1], #1`, `stp x29, x30, [sp, #-16]!`. Comments start with `//`; do not use `;`.
+Allowed in the file:
+- Sections: `.text` (code), `.section .rodata` (read-only data), `.data` (initialised writable data), `.bss` (zero-initialised space: only `.zero`/`.space` and alignment). Instructions go in `.text` only.
+- Data directives: `.byte`, `.short`/`.2byte`, `.word` (4 bytes on this target), `.long`/`.int`/`.4byte`, `.quad`/`.8byte`, `.ascii`, `.asciz`/`.string`, `.zero`/`.space`, alignment with `.align`/`.balign`/`.p2align`, and `.globl`/`.global` (write `.globl _start`).
+- Labels `name:` in any section, and GNU local labels `1:` referenced as `1f` (next) / `1b` (previous).
+- Constants: `.equ name, value` (or `.set name, value`, or `name = value`), where value is a number or a difference of labels defined earlier in the same section (e.g. `msg_len = . - msg`). Define every constant before its first use.
+- Addressing data: `adrp x0, label` followed by `add x0, x0, :lo12:label` (or a load/store `ldr x1, [x0, :lo12:label]`); `adr x0, label` also works within +-1 MiB. Literal pools are NOT allowed: no `ldr x0, =label` and no `ldr x0, =constant` (build constants with mov/movz/movk).
+Not allowed: macros (`.macro`, `.rept`, `.irp`), conditional assembly (`.if`), `.include`, `.incbin`, `.fill`, `.org`, `.comm`/`.lcomm`, `.inst`, `.cfi_*` directives, section stacks (`.pushsection`) and any other section. No libc and no other library: there is nothing to link against, so every symbol you use must be defined in your file.
+Instruction set: ARMv8.0-A with floating point and Advanced SIMD (NEON). Not supported (rejected): CRC32, LSE atomics, dot product, half-precision, crypto (AES/SHA/PMULL) and SVE.
+Output ONLY the assembly source: no Markdown fences, no prose before or after it.
+
+Specification: Task `bf`: a Brainfuck interpreter. Standard input holds the program, then a `!` byte (0x21), then the program's
+input: the program is every byte before the FIRST `!`; the program's input is every byte after it (it may itself
+contain `!`). If there is no `!` at all, the whole of standard input is the program and its input is empty.
+
+Machine: a tape of 30000 byte cells, all 0 initially, and a data pointer at cell 0. The eight commands:
+`>` pointer + 1; `<` pointer - 1; `+` cell + 1 (255 wraps to 0); `-` cell - 1 (0 wraps to 255); `.` write the
+cell's byte to the output; `,` read the next byte of the program's input into the cell, or store 0 if the
+program's input is exhausted (every later `,` also stores 0); `[` if the cell is 0, jump to just after the
+matching `]`; `]` if the cell is not 0, jump back to just after the matching `[`. Every other byte of the program
+(letters, digits, spaces, newlines, any value) is a comment and is ignored.
+
+Brackets: before running anything, check that the program's `[` and `]` are balanced (every `]` closes an
+earlier unmatched `[`, and no `[` is left open). If they are not, print NOTHING and exit with status 1.
+Otherwise run the program to its end and exit with status 0 (the output is exactly the bytes written by `.`).
+
+Limits: the whole standard input is at most 65536 bytes; bracket nesting is at most 1000 deep; the test
+programs never move the pointer outside cells 0..29999, write at most 65536 output bytes, and execute at
+most 5000000 commands.
+
+Input and output (applies to this whole task):
+- The input is the complete contents of standard input (file descriptor 0). Read it with `read` until `read`
+  returns 0 (end of input). A `read` may return FEWER bytes than requested, at any position (in the middle of a
+  line, a token or a group of bytes), so keep calling it; only a return value of 0 means end of input.
+- Write the output to standard output (file descriptor 1). Only the bytes this task describes may appear on
+  standard output (standard error is ignored). Every output byte must be written before the program exits.
+- Finish with `exit` (or `exit_group`) and the exit status this task gives. The program must not run off the end
+  of its code or crash.
+
+Your previous attempt was:
+<previous>
+.section .text
+.globl _start
+
+_start:
+// Read all stdin into stdin_buf (max 65536 bytes)
+    adrp    x19, stdin_buf
+    add     x19, x19, :lo12:stdin_buf
+    mov     x20, #0                  // total_len
+    mov     x21, #65536              // max_len
+
+read_loop:
+    sub     x1, x21, x20             // remaining
+    cbz     x1, read_done
+    mov     x0, #0                   // fd = 0
+    add     x1, x19, x20             // buf + total_len
+    mov     x8, #63                  // read
+    svc     #0
+    cbz     x0, read_done            // EOF
+    cmp     x0, x1
+    b.hi    read_error               // error or too many
+    add     x20, x20, x0             // total_len += bytes_read
+    b       read_loop
+
+read_done:
+// Find first '!' (0x21)
+    mov     x21, x20                 // prog_len = total_len (default)
+    mov     x22, x20                 // input_start = total_len
+    mov     x23, #0                  // input_len = 0
+    mov     x0, #0                   // index
+
+scan_loop:
+    cmp     x0, x20
+    b.ge    scan_done
+    ldrb    w1, [x19, x0]
+    cmp     w1, #0x21
+    b.eq    found_bang
+    add     x0, x0, #1
+    b       scan_loop
+
+found_bang:
+    mov     x21, x0                  // prog_len = index of '!'
+    add     x22, x0, #1              // input_start = index + 1
+    sub     x23, x20, x22            // input_len = total_len - input_start
+
+scan_done:
+// Validate brackets and build jump table
+    adrp    x24, jump_table
+    add     x24, x24, :lo12:jump_table
+    adrp    x28, bracket_stack
+    add     x28, x28, :lo12:bracket_stack
+    mov     x29, #0                  // stack top (count)
+
+    mov     x0, #0                   // ip
+
+validate_loop:
+    cmp     x0, x21
+    b.ge    validate_done
+    ldrb    w1, [x19, x0]
+    cmp     w1, #'['
+    b.eq    handle_open
+    cmp     w1, #']'
+    b.eq    handle_close
+    b       validate_next
+
+handle_open:
+    cmp     x29, #1000
+    b.ge    bracket_error
+    str     w0, [x28, x29, lsl #2]
+    add     x29, x29, #1
+    b       validate_next
+
+handle_close:
+    cbz     x29, bracket_error
+    sub     x29, x29, #1
+    ldr     w2, [x28, x29, lsl #2]  // open_idx
+    str     w0, [x24, x2, lsl #2]   // jump[open] = close
+    str     w2, [x24, x0, lsl #2]   // jump[close] = open
+    b       validate_next
+
+validate_next:
+    add     x0, x0, #1
+    b       validate_loop
+
+validate_done:
+    cbnz    x29, bracket_error
+
+// Execute program
+    adrp    x25, tape
+    add     x25, x25, :lo12:tape
+    adrp    x26, output_buf
+    add     x26, x26, :lo12:output_buf
+    mov     x27, #0                  // output_len
+    mov     x1, #0                   // data pointer (dp)
+    mov     x0, #0                   // instruction pointer (ip)
+    mov     x2, #0                   // input pointer (inp)
+    mov     x3, #0                   // command counter (optional)
+
+exec_loop:
+    cmp     x0, x21
+    b.ge    exec_done
+    ldrb    w4, [x19, x0]            // current command
+
+    cmp     w4, #'>'
+    b.eq    cmd_right
+    cmp     w4, #'<'
+    b.eq    cmd_left
+    cmp     w4, #'+'
+    b.eq    cmd_inc
+    cmp     w4, #'-'
+    b.eq    cmd_dec
+    cmp     w4, #'.'
+    b.eq    cmd_out
+    cmp     w4, #','
+    b.eq    cmd_in
+    cmp     w4, #'['
+    b.eq    cmd_jz
+    cmp     w4, #']'
+    b.eq    cmd_jnz
+    b       exec_next                // ignore other
+
+cmd_right:
+    add     x1, x1, #1
+    b       exec_next
+cmd_left:
+    sub     x1, x1, #1
+    b       exec_next
+cmd_inc:
+    ldrb    w5, [x25, x1]
+    add     w5, w5, #1
+    strb    w5, [x25, x1]
+    b       exec_next
+cmd_dec:
+    ldrb    w5, [x25, x1]
+    sub     w5, w5, #1
+    strb    w5, [x25, x1]
+    b       exec_next
+cmd_out:
+    ldrb    w5, [x25, x1]
+    strb    w5, [x26, x27]
+    add     x27, x27, #1
+    b       exec_next
+cmd_in:
+    cmp     x2, x23
+    b.ge    cmd_in_eof
+    add     x5, x19, x22
+    add     x5, x5, x2
+    ldrb    w5, [x5]
+    add     x2, x2, #1
+    strb    w5, [x25, x1]
+    b       exec_next
+cmd_in_eof:
+    strb    wzr, [x25, x1]
+    b       exec_next
+cmd_jz:
+    ldrb    w5, [x25, x1]
+    cbnz    w5, exec_next
+    ldr     w5, [x24, x0, lsl #2]
+    mov     x0, x5
+    b       exec_next
+cmd_jnz:
+    ldrb    w5, [x25, x1]
+    cbz     w5, exec_next
+    ldr     w5, [x24, x0, lsl #2]
+    mov     x0, x5
+    b       exec_next
+
+exec_next:
+    add     x0, x0, #1
+    add     x3, x3, #1
+    b       exec_loop
+
+exec_done:
+// Write output buffer to stdout (fd=1)
+    mov     x0, #1
+    mov     x1, x26
+    mov     x2, x27
+    cbz     x2, write_done           // nothing to write
+
+write_loop:
+    mov     x8, #64                  // write
+    svc     #0
+    cbz     x0, write_error          // error if 0 bytes written but more expected
+    cmp     x0, x2
+    b.eq    write_done
+    sub     x2, x2, x0               // remaining
+    add     x1, x1, x0               // advance buffer
+    b       write_loop
+
+write_done:
+// Exit with status 0
+    mov     x0, #0
+    mov     x8, #93                  // exit
+    svc     #0
+
+// Error exits
+read_error:
+bracket_error:
+write_error:
+    mov     x0, #1
+    mov     x8, #93
+    svc     #0
+
+.section .bss
+.align 12
+stdin_buf:
+    .zero   65536
+jump_table:
+    .zero   65536 * 4
+bracket_stack:
+    .zero   1000 * 4
+tape:
+    .zero   30000
+output_buf:
+    .zero   65536
+</previous>
+It failed:
+<failure>
+Test `hello_world` failed (stdin delivered whole; test run 3 of 56; the runs before it passed).
+stdin (106 bytes): "++++++++[>++++[>++>+++>+++>+<<<<-]>+>+>->>+[<]<-]>>.>---.+++++++..+++.>>.<-.<.+++.------.--------.>>+.>++."
+exit status: expected 0, got 0
+stdout differs from byte 0 on (line 1, column 1 of the expected output); expected 13 bytes in total, got 0
+  expected from byte 0: "Hello World!\n"
+  actual from byte 0:   (end of output)
+</failure>
+Write a corrected, complete version. Same output format; output only the code.

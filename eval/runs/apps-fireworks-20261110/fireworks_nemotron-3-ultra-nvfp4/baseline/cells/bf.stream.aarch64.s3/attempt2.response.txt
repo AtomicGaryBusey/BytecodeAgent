@@ -1,0 +1,282 @@
+.equ SYS_READ, 63
+.equ SYS_WRITE, 64
+.equ SYS_EXIT, 93
+.equ SYS_EXIT_GROUP, 94
+
+.section .text
+.globl _start
+
+_start:
+    // Read all stdin into input_buf (max 65536 bytes)
+    adrp x19, input_buf
+    add x19, x19, :lo12:input_buf
+    mov x20, #0                  // total_read
+    mov x21, #65536              // max_read
+
+read_loop:
+    sub x2, x21, x20             // remaining space
+    cbz x2, read_done
+    mov x0, #0                   // fd = 0
+    add x1, x19, x20             // buf = input_buf + total_read
+    bl sys_read
+    cbz x0, read_done            // EOF
+    add x20, x20, x0             // total_read += nread
+    b read_loop
+
+read_done:
+    // x20 = total input length
+    // Find first '!' (0x21)
+    mov x22, #0                  // index
+    mov x23, #0                  // found flag (0 = not found)
+find_loop:
+    cmp x22, x20
+    b.ge find_done               // reached end without '!'
+    ldrb w10, [x19, x22]
+    cmp w10, #0x21
+    b.eq found_bang
+    add x22, x22, #1
+    b find_loop
+
+found_bang:
+    // x22 = index of '!'
+    mov x21, x22                 // program_len
+    add x24, x19, x22            // address of '!'
+    add x24, x24, #1             // program_input_start
+    sub x23, x20, x22            // total - index
+    sub x23, x23, #1             // program_input_len
+    b validate_brackets
+
+find_done:
+    // no '!' found
+    mov x21, x20                 // program_len = total_read
+    mov x24, xzr                 // program_input_start = 0
+    mov x23, #0                  // program_input_len = 0
+
+validate_brackets:
+    // bracket_stack in .bss
+    adrp x10, bracket_stack
+    add x10, x10, :lo12:bracket_stack
+    mov x11, #0                  // stack pointer (count)
+    // bracket_match array
+    adrp x12, bracket_match
+    add x12, x12, :lo12:bracket_match
+    mov x13, #0                  // i
+
+validate_loop:
+    cmp x13, x21
+    b.ge validate_done
+    ldrb w14, [x19, x13]
+    cmp w14, #'['
+    b.eq push_bracket
+    cmp w14, #']'
+    b.eq pop_bracket
+    add x13, x13, #1
+    b validate_loop
+
+push_bracket:
+    str w13, [x10, x11, lsl #2]
+    add x11, x11, #1
+    add x13, x13, #1
+    b validate_loop
+
+pop_bracket:
+    cbz x11, bracket_error
+    sub x11, x11, #1
+    ldr w15, [x10, x11, lsl #2]   // matching [
+    str w13, [x12, x15, lsl #2]   // bracket_match[matching [] = ]
+    str w15, [x12, x13, lsl #2]   // bracket_match[] = matching [
+    add x13, x13, #1
+    b validate_loop
+
+validate_done:
+    cbnz x11, bracket_error
+    b execute
+
+bracket_error:
+    mov x0, #1
+    bl sys_exit
+
+execute:
+    // tape base
+    adrp x14, tape
+    add x14, x14, :lo12:tape
+    mov x15, #0                  // tape_ptr
+    mov x16, #0                  // ip (instruction pointer)
+    mov x17, #0                  // input_idx
+    mov x18, #0                  // output_idx
+    // output_buf base
+    adrp x20, output_buf
+    add x20, x20, :lo12:output_buf
+    // x19 = input_buf (program + input)
+    // x21 = program_len
+    // x23 = program_input_len
+    // x24 = program_input_start
+    // x12 = bracket_match base
+    // Load command limit 5000000 into x10
+    movz x10, #0x4240            // 5000000 = 0x4C4B40, need movz/movk
+    movk x10, #0x4C, lsl #16
+    // Actually 5000000 = 0x004C4B40
+    // movz x10, #0x4B40
+    // movk x10, #0x4C, lsl #16
+    // Let's do it properly:
+    // 5000000 = 0x4C4B40
+    movz x10, #0x4B40
+    movk x10, #0x004C, lsl #16   // 0x004C << 16 = 0x4C0000, plus 0x4B40 = 0x4C4B40
+
+execute_loop:
+    cmp x16, x21
+    b.ge execute_done            // ip >= program_len -> done
+
+    // command limit check
+    cmp x10, #0
+    b.eq execute_done            // safety limit reached (should not happen per spec)
+    sub x10, x10, #1
+
+    ldrb w11, [x19, x16]         // current command
+
+    // Switch on command
+    cmp w11, #'>'
+    b.eq cmd_right
+    cmp w11, #'<'
+    b.eq cmd_left
+    cmp w11, #'+'
+    b.eq cmd_inc
+    cmp w11, #'-'
+    b.eq cmd_dec
+    cmp w11, #'.'
+    b.eq cmd_out
+    cmp w11, #','
+    b.eq cmd_in
+    cmp w11, #'['
+    b.eq cmd_jump_fwd
+    cmp w11, #']'
+    b.eq cmd_jump_back
+
+    // ignore other chars
+    add x16, x16, #1
+    b execute_loop
+
+cmd_right:
+    add x15, x15, #1
+    add x16, x16, #1
+    b execute_loop
+
+cmd_left:
+    sub x15, x15, #1
+    add x16, x16, #1
+    b execute_loop
+
+cmd_inc:
+    ldrb w11, [x14, x15]
+    add w11, w11, #1
+    strb w11, [x14, x15]
+    add x16, x16, #1
+    b execute_loop
+
+cmd_dec:
+    ldrb w11, [x14, x15]
+    sub w11, w11, #1
+    strb w11, [x14, x15]
+    add x16, x16, #1
+    b execute_loop
+
+cmd_out:
+    ldrb w11, [x14, x15]
+    strb w11, [x20, x18]
+    add x18, x18, #1
+    add x16, x16, #1
+    b execute_loop
+
+cmd_in:
+    cmp x17, x23
+    b.ge input_exhausted
+    ldrb w11, [x24, x17]
+    strb w11, [x14, x15]
+    add x17, x17, #1
+    add x16, x16, #1
+    b execute_loop
+
+input_exhausted:
+    strb wzr, [x14, x15]
+    add x16, x16, #1
+    b execute_loop
+
+cmd_jump_fwd:
+    ldrb w11, [x14, x15]
+    cbz w11, do_jump_fwd
+    add x16, x16, #1
+    b execute_loop
+
+do_jump_fwd:
+    // jump to after matching ]
+    ldr w11, [x12, x16, lsl #2]
+    add x16, x11, #1
+    b execute_loop
+
+cmd_jump_back:
+    ldrb w11, [x14, x15]
+    cbnz w11, do_jump_back
+    add x16, x16, #1
+    b execute_loop
+
+do_jump_back:
+    // jump to after matching [
+    ldr w11, [x12, x16, lsl #2]
+    add x16, x11, #1
+    b execute_loop
+
+execute_done:
+    // write output buffer to stdout
+    cbz x18, exit_success
+    mov x0, #1                   // fd = 1
+    mov x1, x20                  // buf = output_buf
+    mov x2, x18                  // count = output_idx
+    bl sys_write
+
+exit_success:
+    mov x0, #0
+    bl sys_exit
+
+// sys_read: x0=fd, x1=buf, x2=count -> x0=bytes read
+sys_read:
+    mov x8, #SYS_READ
+    svc #0
+    ret
+
+// sys_write: x0=fd, x1=buf, x2=count -> x0=bytes written
+sys_write:
+    mov x8, #SYS_WRITE
+    svc #0
+    ret
+
+// sys_exit: x0=status
+sys_exit:
+    mov x8, #SYS_EXIT
+    svc #0
+    // should not return
+    b sys_exit
+
+.section .rodata
+
+.section .data
+
+.section .bss
+.align 12
+input_buf:
+    .zero 65536
+
+.align 4
+bracket_stack:
+    .zero 4000        // 1000 * 4 bytes
+
+.align 4
+bracket_match:
+    .zero 262144      // 65536 * 4 bytes
+
+.align 4
+tape:
+    .zero 30000
+
+.align 4
+output_buf:
+    .zero 65536

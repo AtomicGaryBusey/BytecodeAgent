@@ -1,0 +1,216 @@
+.globl _start
+
+.section .rodata
+base64_table:
+    .ascii "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/"
+
+.section .bss
+.equ INPUT_BUF_SIZE, 50000
+.equ OUTPUT_BUF_SIZE, 4096
+.align 16
+input_buffer:   .zero INPUT_BUF_SIZE
+output_buffer:  .zero OUTPUT_BUF_SIZE
+.align 8
+input_len:      .zero 8
+
+.section .text
+_start:
+    # Read all input into input_buffer
+    xor eax, eax
+    mov qword ptr [input_len], rax
+    lea r12, [rip + input_buffer]   # r12 = base of input buffer
+    lea r13, [rip + output_buffer]  # r13 = base of output buffer
+    lea rbp, [rip + base64_table]   # rbp = base64 table
+
+read_loop:
+    mov rax, qword ptr [input_len]
+    lea rdi, [r12 + rax]            # current write position
+    mov rsi, INPUT_BUF_SIZE
+    sub rsi, rax                    # remaining space
+    cmp rsi, 0
+    jle read_done                   # buffer full (should not happen with max 49152)
+    mov rax, 0                      # sys_read
+    mov rdi, 0                      # stdin
+    mov rdx, rsi                    # count
+    syscall
+    test rax, rax
+    jz read_done                    # EOF
+    add qword ptr [input_len], rax
+    jmp read_loop
+
+read_done:
+    # Now encode the input buffer
+    mov rsi, qword ptr [input_len]  # rsi = total input length
+    test rsi, rsi
+    jz exit_program                 # empty input -> nothing to output
+
+    xor r8, r8                      # r8 = column count (0-75)
+    xor r9, r9                      # r9 = output buffer offset
+    lea r10, [r13 + OUTPUT_BUF_SIZE] # r10 = output buffer end
+
+    mov rdi, r12                    # rdi = input pointer
+    mov rcx, rsi                    # rcx = remaining input bytes
+
+encode_loop:
+    cmp rcx, 3
+    jl encode_final                 # less than 3 bytes left
+
+    # Load 3 bytes
+    movzx eax, byte ptr [rdi]
+    movzx ebx, byte ptr [rdi + 1]
+    movzx ecx, byte ptr [rdi + 2]
+    add rdi, 3
+    sub rcx, 3
+
+    # Encode 3 bytes (eax, ebx, ecx) to 4 base64 chars
+    # char0 = eax >> 2
+    # char1 = ((eax & 3) << 4) | (ebx >> 4)
+    # char2 = ((ebx & 15) << 2) | (ecx >> 6)
+    # char3 = ecx & 63
+    mov edx, eax
+    shr edx, 2
+    mov dl, byte ptr [rbp + rdx]
+    mov byte ptr [r13 + r9], dl
+    inc r9
+
+    mov edx, eax
+    and edx, 3
+    shl edx, 4
+    mov esi, ebx
+    shr esi, 4
+    or edx, esi
+    mov dl, byte ptr [rbp + rdx]
+    mov byte ptr [r13 + r9], dl
+    inc r9
+
+    mov edx, ebx
+    and edx, 15
+    shl edx, 2
+    mov esi, ecx
+    shr esi, 6
+    or edx, esi
+    mov dl, byte ptr [rbp + rdx]
+    mov byte ptr [r13 + r9], dl
+    inc r9
+
+    mov edx, ecx
+    and edx, 63
+    mov dl, byte ptr [rbp + rdx]
+    mov byte ptr [r13 + r9], dl
+    inc r9
+
+    add r8, 4
+    cmp r8, 76
+    jne check_output_space
+
+    # Insert newline
+    mov byte ptr [r13 + r9], 10
+    inc r9
+    xor r8, r8
+
+check_output_space:
+    # Flush if less than 5 bytes free (max we write per iteration is 5: 4 chars + newline)
+    lea rax, [r9 + 5]
+    cmp rax, OUTPUT_BUF_SIZE
+    jle encode_loop
+
+    # Flush output buffer
+    mov rax, 1                      # sys_write
+    mov rdi, 1                      # stdout
+    lea rsi, [r13]
+    mov rdx, r9
+    syscall
+    xor r9, r9
+    jmp encode_loop
+
+encode_final:
+    # rcx = remaining bytes (0, 1, or 2)
+    test rcx, rcx
+    jz flush_output
+
+    cmp rcx, 1
+    je encode_one_byte
+
+    # Two bytes left
+    movzx eax, byte ptr [rdi]
+    movzx ebx, byte ptr [rdi + 1]
+    # char0 = eax >> 2
+    # char1 = ((eax & 3) << 4) | (ebx >> 4)
+    # char2 = (ebx & 15) << 2
+    # char3 = '='
+    mov edx, eax
+    shr edx, 2
+    mov dl, byte ptr [rbp + rdx]
+    mov byte ptr [r13 + r9], dl
+    inc r9
+
+    mov edx, eax
+    and edx, 3
+    shl edx, 4
+    mov esi, ebx
+    shr esi, 4
+    or edx, esi
+    mov dl, byte ptr [rbp + rdx]
+    mov byte ptr [r13 + r9], dl
+    inc r9
+
+    mov edx, ebx
+    and edx, 15
+    shl edx, 2
+    mov dl, byte ptr [rbp + rdx]
+    mov byte ptr [r13 + r9], dl
+    inc r9
+
+    mov byte ptr [r13 + r9], 61     # '='
+    inc r9
+
+    add r8, 4
+    cmp r8, 76
+    jne flush_output
+    mov byte ptr [r13 + r9], 10
+    inc r9
+    jmp flush_output
+
+encode_one_byte:
+    movzx eax, byte ptr [rdi]
+    # char0 = eax >> 2
+    # char1 = (eax & 3) << 4
+    # char2 = '='
+    # char3 = '='
+    mov edx, eax
+    shr edx, 2
+    mov dl, byte ptr [rbp + rdx]
+    mov byte ptr [r13 + r9], dl
+    inc r9
+
+    mov edx, eax
+    and edx, 3
+    shl edx, 4
+    mov dl, byte ptr [rbp + rdx]
+    mov byte ptr [r13 + r9], dl
+    inc r9
+
+    mov byte ptr [r13 + r9], 61
+    inc r9
+    mov byte ptr [r13 + r9], 61
+    inc r9
+
+    add r8, 4
+    cmp r8, 76
+    jne flush_output
+    mov byte ptr [r13 + r9], 10
+    inc r9
+
+flush_output:
+    test r9, r9
+    jz exit_program
+    mov rax, 1
+    mov rdi, 1
+    lea rsi, [r13]
+    mov rdx, r9
+    syscall
+
+exit_program:
+    mov rax, 60
+    xor rdi, rdi
+    syscall

@@ -1,0 +1,298 @@
+Write the complete program `hexdump`: a static Linux executable for x86-64 (AMD64), written in assembly. There is no C library, no C runtime and no helper code: you write the entry point `_start`, every function, every table and string, and make the system calls yourself.
+
+Entry state (as the Linux kernel sets it up): execution starts at the label `_start`. rsp is 16-byte aligned and points at argc = 0, followed by the NULL terminators of an empty argv, an empty envp and an empty auxiliary vector: the program gets no arguments. Every other general-purpose register is zero, and the direction flag is clear. There is no return address: `_start` must never return with `ret`; the program ends only through the exit system call.
+
+System calls: the `syscall` instruction, with the system call number in rax and the arguments in rdi, rsi, rdx; the result comes back in rax. The kernel overwrites rcx and r11; every other register is preserved. Exactly these four are available:
+- read = 0: read(fd = 0, buf, count) reads up to count bytes of standard input into buf; returns the number of bytes read, 0 at end of input.
+- write = 1: write(fd, buf, count) with fd 1 (standard output) or 2 (standard error); returns count.
+- exit = 60: exit(status) ends the program; the exit status is the low 8 bits of status.
+- exit_group = 231: the same as exit.
+Any other system call number, another file descriptor, `int 0x80` or `sysenter` stops the program with an error, and so does a buffer that is not entirely inside the program's memory.
+
+Memory: the program's own sections plus a stack of 1 MiB below the entry sp. There is no heap (no brk, no mmap, no malloc): put working storage in `.bss` (zero-initialised), at most 1 MiB in total, or on the stack. Code is not writable. Any access outside these areas stops the program. Each test run may execute at most 50,000,000 instructions.
+
+Output format: one complete assembly source file in GNU assembler (GNU as) syntax, Intel flavour without register prefixes: the harness puts `.intel_syntax noprefix` in front of your text, so do not write it yourself. Examples: `mov rax, qword ptr [rbx + rcx*8]`, `movzx eax, byte ptr [rsi]`, `lea rsi, [rip + buffer]`. Comments start with `#`; do not use `;`.
+Allowed in the file:
+- Sections: `.text` (code), `.section .rodata` (read-only data), `.data` (initialised writable data), `.bss` (zero-initialised space: only `.zero`/`.space` and alignment). Instructions go in `.text` only.
+- Data directives: `.byte`, `.short`/`.2byte`, `.word` (2 bytes on this target), `.long`/`.int`/`.4byte`, `.quad`/`.8byte`, `.ascii`, `.asciz`/`.string`, `.zero`/`.space`, alignment with `.align`/`.balign`/`.p2align`, and `.globl`/`.global` (write `.globl _start`).
+- Labels `name:` in any section, and GNU local labels `1:` referenced as `1f` (next) / `1b` (previous).
+- Constants: `.equ name, value` (or `.set name, value`, or `name = value`), where value is a number or a difference of labels defined earlier in the same section (e.g. `msg_len = . - msg`). Define every constant before its first use.
+- Addressing data: rip-relative, `lea rdi, [rip + table]` or `mov al, byte ptr [rip + table + 3]`. The program is linked at fixed low addresses, so absolute forms (`mov esi, offset buffer`, `movzx eax, byte ptr [table + rcx]`) work as well.
+Not allowed: macros (`.macro`, `.rept`, `.irp`), conditional assembly (`.if`), `.include`, `.incbin`, `.fill`, `.org`, `.comm`/`.lcomm`, `.inst`, `.cfi_*` directives, section stacks (`.pushsection`) and any other section. No libc and no other library: there is nothing to link against, so every symbol you use must be defined in your file.
+Instruction set: x86-64 with SSE up to SSE4.2 (including SSSE3, SSE4.1 and crc32), POPCNT, LZCNT, BMI1/BMI2 (andn, bextr, blsi, blsr, tzcnt, bzhi, mulx, pdep, pext, rorx, sarx, shlx, shrx), MOVBE, AES-NI and PCLMULQDQ. Not supported (rejected): AVX, AVX2, AVX-512, FMA, F16C and every other VEX/EVEX vector instruction, ADX (adcx/adox; use adc) and SHA.
+Output ONLY the assembly source: no Markdown fences, no prose before or after it.
+
+Specification: Task `hexdump`: print a canonical hex+ASCII dump of standard input (like `hexdump -C`, but with NO squeezing of
+repeated lines and with the final offset line always printed).
+
+The input is shown in rows of 16 bytes; the last row may be shorter (1 to 15 bytes). For a row of n bytes that
+starts at byte offset `off`, print exactly:
+1. `off` as 8 lowercase hexadecimal digits (zero-padded), then two spaces;
+2. for each position i = 0..15: if i < n, the byte as 2 lowercase hex digits followed by one space; otherwise
+   three spaces. After position 7 (the eighth byte slot) print one extra space;
+3. one space, `|`, then the n bytes as characters: a byte 0x20-0x7E is printed as itself, every other byte
+   (0x00-0x1F and 0x7F-0xFF) is printed as `.`; then `|` and a newline. The character column is NOT padded for
+   a short row.
+
+After all rows, print the total input length as 8 lowercase hex digits and a newline. Empty input therefore
+prints only `00000000\n`. Identical rows are printed in full (never replaced by `*`).
+
+Example: input `0123456789abcdefXYZ\n` (20 bytes) prints
+`00000000  30 31 32 33 34 35 36 37  38 39 61 62 63 64 65 66  |0123456789abcdef|\n`
+`00000010  58 59 5a 0a                                       |XYZ.|\n`
+`00000014\n`
+(each full row is exactly 78 characters plus the newline).
+
+Limits: the input is at most 65536 bytes. Exit status 0.
+
+Input and output (applies to this whole task):
+- The input is the complete contents of standard input (file descriptor 0). Read it with `read` until `read`
+  returns 0 (end of input). A `read` may return FEWER bytes than requested, at any position (in the middle of a
+  line, a token or a group of bytes), so keep calling it; only a return value of 0 means end of input.
+- Write the output to standard output (file descriptor 1). Only the bytes this task describes may appear on
+  standard output (standard error is ignored). Every output byte must be written before the program exits.
+- Finish with `exit` (or `exit_group`) and the exit status this task gives. The program must not run off the end
+  of its code or crash.
+
+Your previous attempt was:
+<previous>
+.section .bss
+.align 16
+buffer: .zero 65536
+
+.section .text
+.globl _start
+
+.equ SYS_READ, 0
+.equ SYS_WRITE, 1
+.equ SYS_EXIT, 60
+
+_start:
+    # Read all input into buffer
+    mov rdi, 0                  # fd = stdin
+    lea rsi, [rip + buffer]     # buffer pointer
+    mov rdx, 65536              # max bytes to read
+    xor r10, r10                # total_read = 0
+
+.read_loop:
+    mov rax, SYS_READ
+    syscall
+    test rax, rax
+    jz .read_done
+    add r10, rax                # total_read += bytes_read
+    add rsi, rax                # advance buffer pointer
+    sub rdx, rax                # remaining capacity
+    jnz .read_loop
+
+.read_done:
+    mov r12, r10                # save total_read (callee-saved)
+    lea rsi, [rip + buffer]     # reset buffer pointer
+    xor r13, r13                # offset = 0
+
+.process_loop:
+    cmp r13, r12
+    jge .process_done
+    mov rcx, r12
+    sub rcx, r13                # remaining bytes
+    cmp rcx, 16
+    jge .full_line
+    mov rdx, rcx                # n = remaining (1..15)
+    jmp .print_line_common
+.full_line:
+    mov rdx, 16                 # n = 16
+.print_line_common:
+    # r13 = offset, rsi = data pointer, rdx = n
+    call print_line
+    add r13, rdx
+    add rsi, rdx
+    jmp .process_loop
+
+.process_done:
+    # Print final offset line
+    mov rdi, r12
+    call print_final_offset
+
+    # Exit
+    mov rax, SYS_EXIT
+    xor rdi, rdi
+    syscall
+
+# print_line(r13=offset, rsi=data, rdx=n)
+# Builds a line in a stack buffer and writes it to stdout.
+print_line:
+    push rbp
+    mov rbp, rsp
+    sub rsp, 80                 # line buffer (max 79 bytes)
+    push rbx
+    push r14
+    push r15
+
+    mov r14, rsi                # data pointer
+    mov r15, rdx                # n
+    lea rbx, [rbp-80]           # line buffer pointer
+
+    # 1. offset as 8 hex digits
+    mov rdi, r13
+    mov rsi, rbx
+    call u32_to_hex8            # returns next position in rax
+    mov rbx, rax
+
+    # 2. two spaces
+    mov byte ptr [rbx], ' '
+    mov byte ptr [rbx+1], ' '
+    add rbx, 2
+
+    # 3. hex bytes (16 slots)
+    xor rcx, rcx                # i = 0
+.hex_loop:
+    cmp rcx, r15
+    jl .hex_byte_present
+    # missing byte: three spaces
+    mov byte ptr [rbx], ' '
+    mov byte ptr [rbx+1], ' '
+    mov byte ptr [rbx+2], ' '
+    add rbx, 3
+    jmp .hex_after_slot
+.hex_byte_present:
+    movzx edi, byte ptr [r14 + rcx]
+    mov rsi, rbx
+    call byte_to_hex2           # returns dest+2 in rax
+    mov rbx, rax
+    mov byte ptr [rbx], ' '
+    inc rbx
+.hex_after_slot:
+    # extra space after 8th byte (i==7)
+    cmp rcx, 7
+    jne .hex_next
+    mov byte ptr [rbx], ' '
+    inc rbx
+.hex_next:
+    inc rcx
+    cmp rcx, 16
+    jl .hex_loop
+
+    # 4. space, '|'
+    mov byte ptr [rbx], ' '
+    mov byte ptr [rbx+1], '|'
+    add rbx, 2
+
+    # 5. ASCII column
+    xor rcx, rcx
+.ascii_loop:
+    cmp rcx, r15
+    jge .ascii_done
+    movzx edi, byte ptr [r14 + rcx]
+    cmp edi, 0x20
+    jl .ascii_dot
+    cmp edi, 0x7E
+    jg .ascii_dot
+    mov byte ptr [rbx], dil
+    jmp .ascii_next
+.ascii_dot:
+    mov byte ptr [rbx], '.'
+.ascii_next:
+    inc rbx
+    inc rcx
+    jmp .ascii_loop
+.ascii_done:
+
+    # 6. '|', newline
+    mov byte ptr [rbx], '|'
+    mov byte ptr [rbx+1], 0x0A
+    add rbx, 2
+
+    # 7. write line
+    lea rsi, [rbp-80]
+    mov rdx, rbx
+    sub rdx, rsi
+    mov rdi, 1
+    mov rax, SYS_WRITE
+    syscall
+
+    pop r15
+    pop r14
+    pop rbx
+    leave
+    ret
+
+# print_final_offset(rdi=total_read)
+# Prints 8 hex digits + newline.
+print_final_offset:
+    push rbp
+    mov rbp, rsp
+    sub rsp, 16                 # small buffer
+    mov rsi, rsp
+    call u32_to_hex8            # writes 8 digits, returns rsi+8
+    mov byte ptr [rax], 0x0A    # newline
+    inc rax
+    mov rdx, rax
+    sub rdx, rsp
+    mov rsi, rsp
+    mov rdi, 1
+    mov rax, SYS_WRITE
+    syscall
+    leave
+    ret
+
+# u32_to_hex8(rdi=value, rsi=dest) -> rax = dest+8
+# Writes exactly 8 lowercase hex digits (zero-padded).
+u32_to_hex8:
+    mov eax, edi                # use low 32 bits
+    mov r8, rsi
+    mov ecx, 28                 # start with highest nibble (bits 28-31)
+.hex8_loop:
+    mov edx, eax
+    shr edx, cl
+    and edx, 0xF
+    cmp edx, 10
+    jl .hex8_digit
+    add edx, 'a' - 10
+    jmp .hex8_store
+.hex8_digit:
+    add edx, '0'
+.hex8_store:
+    mov byte ptr [r8], dl
+    inc r8
+    sub ecx, 4
+    jns .hex8_loop
+    mov rax, r8
+    ret
+
+# byte_to_hex2(rdi=byte, rsi=dest) -> rax = dest+2
+# Writes two lowercase hex digits.
+byte_to_hex2:
+    movzx eax, dil
+    mov edx, eax
+    shr edx, 4
+    and eax, 0xF
+
+    cmp edx, 10
+    jl .high_digit
+    add edx, 'a' - 10
+    jmp .high_store
+.high_digit:
+    add edx, '0'
+.high_store:
+    mov byte ptr [rsi], dl
+
+    cmp eax, 10
+    jl .low_digit
+    add eax, 'a' - 10
+    jmp .low_store
+.low_digit:
+    add eax, '0'
+.low_store:
+    mov byte ptr [rsi+1], al
+    lea rax, [rsi+2]
+    ret
+</previous>
+It failed:
+<failure>
+Test `example` failed (stdin delivered whole; test run 3 of 42; the runs before it passed).
+stdin (20 bytes): "0123456789abcdefXYZ\n"
+exit status: expected 0, got 0
+stdout differs from byte 86 on (line 2, column 8 of the expected output); expected 155 bytes in total, got 88
+  expected from byte 86: "0  58 59 5a 0a                                       |XYZ.|\n00000014\n"
+  actual from byte 86:   "4\n"
+</failure>
+Write a corrected, complete version. Same output format; output only the code.

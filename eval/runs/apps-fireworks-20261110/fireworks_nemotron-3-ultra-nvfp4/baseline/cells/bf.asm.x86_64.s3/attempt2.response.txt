@@ -1,0 +1,218 @@
+.equ MAX_INPUT, 65536
+.equ TAPE_SIZE, 30000
+.equ MAX_PROGRAM, 65536
+.equ MAX_OUTPUT, 65536
+.equ MAX_NESTING, 1000
+
+.globl _start
+
+.section .text
+
+_start:
+    # Read all stdin into input_buffer
+    mov rdi, 0                      # fd = 0
+    lea rsi, [rip + input_buffer]   # buffer
+    mov rdx, MAX_INPUT              # max bytes
+    xor r10, r10                    # total_read = 0
+read_loop:
+    mov rax, 0                      # sys_read
+    syscall
+    test rax, rax
+    jz read_done
+    add r10, rax
+    add rsi, rax
+    sub rdx, rax
+    jnz read_loop
+read_done:
+    mov [rip + total_read], r10
+
+    # Find first '!' (0x21) to split program and input
+    mov rdi, r10                    # total_read
+    test rdi, rdi
+    jz no_program
+    lea rsi, [rip + input_buffer]
+    xor rcx, rcx                    # index
+find_loop:
+    cmp byte ptr [rsi + rcx], 0x21
+    je found_sep
+    inc rcx
+    cmp rcx, rdi
+    jne find_loop
+    # No '!' found: whole input is program
+    mov [rip + program_len], rdi
+    mov qword ptr [rip + input_len], 0
+    mov qword ptr [rip + input_start], 0
+    jmp bracket_check
+found_sep:
+    mov [rip + program_len], rcx
+    lea rdx, [rcx + 1]
+    mov [rip + input_start], rdx
+    sub rdi, rdx
+    mov [rip + input_len], rdi
+
+no_program:
+    # If total_read was 0, program_len is 0, input_len 0
+    # bracket_check will handle empty program
+
+bracket_check:
+    # Verify bracket balance and build jump table
+    mov qword ptr [rip + stack_ptr], 0
+    mov rcx, 0                      # ip = 0
+    mov rdi, [rip + program_len]
+    test rdi, rdi
+    jz interpret                    # empty program
+    lea rsi, [rip + input_buffer]
+    lea r8, [rip + jump_table]
+    lea r9, [rip + stack]
+bracket_loop:
+    movzx eax, byte ptr [rsi + rcx]
+    cmp al, '['                     # 0x5B
+    je bracket_open
+    cmp al, ']'                     # 0x5D
+    je bracket_close
+    jmp bracket_next
+bracket_open:
+    mov r10, [rip + stack_ptr]
+    cmp r10, MAX_NESTING
+    jge bracket_error
+    mov dword ptr [r9 + r10*4], ecx
+    inc r10
+    mov [rip + stack_ptr], r10
+    jmp bracket_next
+bracket_close:
+    mov r10, [rip + stack_ptr]
+    test r10, r10
+    jz bracket_error
+    dec r10
+    mov [rip + stack_ptr], r10
+    mov edx, dword ptr [r9 + r10*4]   # matching '['
+    mov dword ptr [r8 + rcx*4], edx   # jump_table[']'] = '['
+    mov dword ptr [r8 + rdx*4], ecx   # jump_table['['] = ']'
+    jmp bracket_next
+bracket_error:
+    mov rax, 60                     # exit
+    mov rdi, 1
+    syscall
+bracket_next:
+    inc rcx
+    cmp rcx, rdi
+    jne bracket_loop
+    # After loop, stack must be empty
+    mov r10, [rip + stack_ptr]
+    test r10, r10
+    jnz bracket_error
+
+interpret:
+    # Registers:
+    # r10 = data pointer (dp)
+    # r11 = instruction pointer (ip)
+    # r12 = input pointer (inp)
+    # r13 = output length (out_len)
+    # r14 = program length
+    # r15 = input data start address
+    # rsi = tape base
+    # rdi = program buffer base
+    # r8  = jump_table base
+    # r9  = output_buffer base
+    xor r10, r10
+    xor r11, r11
+    xor r12, r12
+    xor r13, r13
+    mov r14, [rip + program_len]
+    mov r15, [rip + input_start]    # input data start offset in input_buffer
+    lea rsi, [rip + tape]
+    lea rdi, [rip + input_buffer]
+    lea r8, [rip + jump_table]
+    lea r9, [rip + output_buffer]
+    # Precompute input data address: r15 = input_buffer + input_start
+    add r15, rdi
+    test r14, r14
+    jz write_output
+
+interpret_loop:
+    cmp r11, r14
+    jge write_output
+    movzx eax, byte ptr [rdi + r11]   # current command
+    cmp al, '>'       # 0x3E
+    je cmd_right
+    cmp al, '<'       # 0x3C
+    je cmd_left
+    cmp al, '+'       # 0x2B
+    je cmd_inc
+    cmp al, '-'       # 0x2D
+    je cmd_dec
+    cmp al, '.'       # 0x2E
+    je cmd_out
+    cmp al, ','       # 0x2C
+    je cmd_in
+    cmp al, '['       # 0x5B
+    je cmd_loop_start
+    cmp al, ']'       # 0x5D
+    je cmd_loop_end
+    jmp cmd_next
+
+cmd_right:
+    inc r10
+    jmp cmd_next
+cmd_left:
+    dec r10
+    jmp cmd_next
+cmd_inc:
+    inc byte ptr [rsi + r10]
+    jmp cmd_next
+cmd_dec:
+    dec byte ptr [rsi + r10]
+    jmp cmd_next
+cmd_out:
+    mov al, byte ptr [rsi + r10]
+    mov byte ptr [r9 + r13], al
+    inc r13
+    jmp cmd_next
+cmd_in:
+    cmp r12, [rip + input_len]
+    jge cmd_in_eof
+    mov al, byte ptr [r15 + r12]      # r15 = input_buffer + input_start
+    inc r12
+    mov byte ptr [rsi + r10], al
+    jmp cmd_next
+cmd_in_eof:
+    mov byte ptr [rsi + r10], 0
+    jmp cmd_next
+cmd_loop_start:
+    cmp byte ptr [rsi + r10], 0
+    jne cmd_next
+    mov edx, dword ptr [r8 + r11*4]
+    mov r11, rdx
+    jmp cmd_next
+cmd_loop_end:
+    cmp byte ptr [rsi + r10], 0
+    je cmd_next
+    mov edx, dword ptr [r8 + r11*4]
+    mov r11, rdx
+    jmp cmd_next
+cmd_next:
+    inc r11
+    jmp interpret_loop
+
+write_output:
+    mov rax, 1                      # sys_write
+    mov rdi, 1                      # fd = 1
+    lea rsi, [rip + output_buffer]
+    mov rdx, r13                    # out_len
+    syscall
+    mov rax, 60                     # exit
+    xor rdi, rdi                    # status 0
+    syscall
+
+.section .bss
+.align 4096
+input_buffer: .zero MAX_INPUT
+tape: .zero TAPE_SIZE
+jump_table: .zero MAX_PROGRAM * 4
+output_buffer: .zero MAX_OUTPUT
+stack: .zero MAX_NESTING * 4
+program_len: .zero 8
+input_len: .zero 8
+input_start: .zero 8
+total_read: .zero 8
+stack_ptr: .zero 8

@@ -1,0 +1,636 @@
+.section .rodata
+ok_msg: .ascii "ok\n"
+ok_msg_len = . - ok_msg
+error_at_msg: .ascii "error at "
+error_at_msg_len = . - error_at_msg
+newline_msg: .ascii "\n"
+
+.section .bss
+input_buffer: .zero 65536
+input_len: .zero 8
+parse_index: .zero 8
+error_pos: .zero 8
+
+.section .text
+.globl _start
+
+_start:
+    mov qword ptr [rip + error_pos], -1
+    mov rdi, 0
+    lea rsi, [rip + input_buffer]
+    mov rdx, 65536
+    xor r8, r8
+start_read_loop:
+    mov rax, 0
+    syscall
+    test rax, rax
+    jz start_read_done
+    add r8, rax
+    add rsi, rax
+    sub rdx, rax
+    jnz start_read_loop
+start_read_done:
+    mov qword ptr [rip + input_len], r8
+    call parse_document
+    test eax, eax
+    jnz start_success
+    mov rax, qword ptr [rip + error_pos]
+    call write_error
+    mov edi, 1
+    jmp start_exit
+start_success:
+    call write_ok
+    xor edi, edi
+start_exit:
+    mov rax, 60
+    syscall
+
+write_ok:
+    mov rax, 1
+    mov rdi, 1
+    lea rsi, [rip + ok_msg]
+    mov rdx, ok_msg_len
+    syscall
+    ret
+
+write_error:
+    sub rsp, 32
+    mov rax, 1
+    mov rdi, 1
+    lea rsi, [rip + error_at_msg]
+    mov rdx, error_at_msg_len
+    syscall
+    mov rax, qword ptr [rip + error_pos]
+    lea rdi, [rsp + 20]
+    mov byte ptr [rdi], 0
+    mov rcx, 10
+    test rax, rax
+    jnz write_error_convert_loop
+    dec rdi
+    mov byte ptr [rdi], '0'
+    jmp write_error_write_num
+write_error_convert_loop:
+    xor rdx, rdx
+    div rcx
+    dec rdi
+    add dl, '0'
+    mov byte ptr [rdi], dl
+    test rax, rax
+    jnz write_error_convert_loop
+write_error_write_num:
+    mov rsi, rdi
+    lea rdx, [rsp + 20]
+    sub rdx, rsi
+    mov rax, 1
+    mov rdi, 1
+    syscall
+    mov rax, 1
+    mov rdi, 1
+    lea rsi, [rip + newline_msg]
+    mov rdx, 1
+    syscall
+    add rsp, 32
+    ret
+
+parse_document:
+    call parse_ws
+    call parse_value
+    test eax, eax
+    jz parse_document_fail
+    call parse_ws
+    mov rax, qword ptr [rip + parse_index]
+    mov rcx, qword ptr [rip + input_len]
+    cmp rax, rcx
+    jne parse_document_fail
+    mov eax, 1
+    ret
+parse_document_fail:
+    xor eax, eax
+    ret
+
+parse_ws:
+    mov rax, qword ptr [rip + parse_index]
+    mov rcx, qword ptr [rip + input_len]
+parse_ws_loop:
+    cmp rax, rcx
+    jae parse_ws_done
+    lea rsi, [rip + input_buffer]
+    movzx edx, byte ptr [rsi + rax]
+    cmp dl, 0x20
+    je parse_ws_consume
+    cmp dl, 0x09
+    je parse_ws_consume
+    cmp dl, 0x0A
+    je parse_ws_consume
+    cmp dl, 0x0D
+    je parse_ws_consume
+    jmp parse_ws_done
+parse_ws_consume:
+    inc rax
+    jmp parse_ws_loop
+parse_ws_done:
+    mov qword ptr [rip + parse_index], rax
+    mov eax, 1
+    ret
+
+parse_value:
+    call parse_ws
+    mov rax, qword ptr [rip + parse_index]
+    mov rcx, qword ptr [rip + input_len]
+    cmp rax, rcx
+    jae parse_value_error
+    lea rsi, [rip + input_buffer]
+    movzx edx, byte ptr [rsi + rax]
+    cmp dl, '{'
+    je parse_value_do_object
+    cmp dl, '['
+    je parse_value_do_array
+    cmp dl, '"'
+    je parse_value_do_string
+    cmp dl, 't'
+    je parse_value_do_true
+    cmp dl, 'f'
+    je parse_value_do_false
+    cmp dl, 'n'
+    je parse_value_do_null
+    cmp dl, '-'
+    je parse_value_do_number
+    cmp dl, '0'
+    je parse_value_do_number
+    cmp dl, '1'
+    jb parse_value_error
+    cmp dl, '9'
+    jbe parse_value_do_number
+parse_value_error:
+    call set_error
+    xor eax, eax
+    ret
+parse_value_do_object:
+    call parse_object
+    ret
+parse_value_do_array:
+    call parse_array
+    ret
+parse_value_do_string:
+    call parse_string
+    ret
+parse_value_do_true:
+    call parse_true
+    ret
+parse_value_do_false:
+    call parse_false
+    ret
+parse_value_do_null:
+    call parse_null
+    ret
+parse_value_do_number:
+    call parse_number
+    ret
+
+parse_object:
+    mov rax, qword ptr [rip + parse_index]
+    inc rax
+    mov qword ptr [rip + parse_index], rax
+    call parse_ws
+    mov rax, qword ptr [rip + parse_index]
+    mov rcx, qword ptr [rip + input_len]
+    cmp rax, rcx
+    jae parse_object_error
+    lea rsi, [rip + input_buffer]
+    movzx edx, byte ptr [rsi + rax]
+    cmp dl, '}'
+    je parse_object_close
+    call parse_member
+    test eax, eax
+    jz parse_object_error
+parse_object_member_loop:
+    call parse_ws
+    mov rax, qword ptr [rip + parse_index]
+    mov rcx, qword ptr [rip + input_len]
+    cmp rax, rcx
+    jae parse_object_error
+    lea rsi, [rip + input_buffer]
+    movzx edx, byte ptr [rsi + rax]
+    cmp dl, ','
+    jne parse_object_check_close
+    inc rax
+    mov qword ptr [rip + parse_index], rax
+    call parse_ws
+    call parse_member
+    test eax, eax
+    jz parse_object_error
+    jmp parse_object_member_loop
+parse_object_check_close:
+    cmp dl, '}'
+    jne parse_object_error
+parse_object_close:
+    inc rax
+    mov qword ptr [rip + parse_index], rax
+    mov eax, 1
+    ret
+parse_object_error:
+    call set_error
+    xor eax, eax
+    ret
+
+parse_member:
+    call parse_string
+    test eax, eax
+    jz parse_member_error
+    call parse_ws
+    mov rax, qword ptr [rip + parse_index]
+    mov rcx, qword ptr [rip + input_len]
+    cmp rax, rcx
+    jae parse_member_error
+    lea rsi, [rip + input_buffer]
+    movzx edx, byte ptr [rsi + rax]
+    cmp dl, ':'
+    jne parse_member_error
+    inc rax
+    mov qword ptr [rip + parse_index], rax
+    call parse_ws
+    call parse_value
+    ret
+parse_member_error:
+    call set_error
+    xor eax, eax
+    ret
+
+parse_array:
+    mov rax, qword ptr [rip + parse_index]
+    inc rax
+    mov qword ptr [rip + parse_index], rax
+    call parse_ws
+    mov rax, qword ptr [rip + parse_index]
+    mov rcx, qword ptr [rip + input_len]
+    cmp rax, rcx
+    jae parse_array_error
+    lea rsi, [rip + input_buffer]
+    movzx edx, byte ptr [rsi + rax]
+    cmp dl, ']'
+    je parse_array_close
+    call parse_value
+    test eax, eax
+    jz parse_array_error
+parse_array_value_loop:
+    call parse_ws
+    mov rax, qword ptr [rip + parse_index]
+    mov rcx, qword ptr [rip + input_len]
+    cmp rax, rcx
+    jae parse_array_error
+    lea rsi, [rip + input_buffer]
+    movzx edx, byte ptr [rsi + rax]
+    cmp dl, ','
+    jne parse_array_check_close
+    inc rax
+    mov qword ptr [rip + parse_index], rax
+    call parse_ws
+    call parse_value
+    test eax, eax
+    jz parse_array_error
+    jmp parse_array_value_loop
+parse_array_check_close:
+    cmp dl, ']'
+    jne parse_array_error
+parse_array_close:
+    inc rax
+    mov qword ptr [rip + parse_index], rax
+    mov eax, 1
+    ret
+parse_array_error:
+    call set_error
+    xor eax, eax
+    ret
+
+parse_string:
+    mov rax, qword ptr [rip + parse_index]
+    inc rax
+    mov qword ptr [rip + parse_index], rax
+parse_string_loop:
+    mov rax, qword ptr [rip + parse_index]
+    mov rcx, qword ptr [rip + input_len]
+    cmp rax, rcx
+    jae parse_string_error
+    lea rsi, [rip + input_buffer]
+    movzx edx, byte ptr [rsi + rax]
+    cmp dl, '"'
+    je parse_string_close
+    cmp dl, '\\'
+    je parse_string_escape
+    cmp dl, 0x20
+    jb parse_string_error
+    inc rax
+    mov qword ptr [rip + parse_index], rax
+    jmp parse_string_loop
+parse_string_close:
+    inc rax
+    mov qword ptr [rip + parse_index], rax
+    mov eax, 1
+    ret
+parse_string_escape:
+    inc rax
+    mov qword ptr [rip + parse_index], rax
+    mov rax, qword ptr [rip + parse_index]
+    mov rcx, qword ptr [rip + input_len]
+    cmp rax, rcx
+    jae parse_string_error
+    lea rsi, [rip + input_buffer]
+    movzx edx, byte ptr [rsi + rax]
+    cmp dl, '"'
+    je parse_string_escape_ok
+    cmp dl, '\\'
+    je parse_string_escape_ok
+    cmp dl, '/'
+    je parse_string_escape_ok
+    cmp dl, 'b'
+    je parse_string_escape_ok
+    cmp dl, 'f'
+    je parse_string_escape_ok
+    cmp dl, 'n'
+    je parse_string_escape_ok
+    cmp dl, 'r'
+    je parse_string_escape_ok
+    cmp dl, 't'
+    je parse_string_escape_ok
+    cmp dl, 'u'
+    je parse_string_unicode
+    jmp parse_string_error
+parse_string_escape_ok:
+    inc rax
+    mov qword ptr [rip + parse_index], rax
+    jmp parse_string_loop
+parse_string_unicode:
+    inc rax
+    mov qword ptr [rip + parse_index], rax
+    mov ebx, 4
+parse_string_hex_loop:
+    mov rax, qword ptr [rip + parse_index]
+    mov rcx, qword ptr [rip + input_len]
+    cmp rax, rcx
+    jae parse_string_error
+    lea rsi, [rip + input_buffer]
+    movzx edx, byte ptr [rsi + rax]
+    call is_hex_digit
+    test eax, eax
+    jz parse_string_error
+    inc rax
+    mov qword ptr [rip + parse_index], rax
+    dec ebx
+    jnz parse_string_hex_loop
+    jmp parse_string_loop
+parse_string_error:
+    call set_error
+    xor eax, eax
+    ret
+
+is_hex_digit:
+    cmp dl, '0'
+    jb is_hex_digit_no
+    cmp dl, '9'
+    jbe is_hex_digit_yes
+    cmp dl, 'a'
+    jb is_hex_digit_no
+    cmp dl, 'f'
+    jbe is_hex_digit_yes
+    cmp dl, 'A'
+    jb is_hex_digit_no
+    cmp dl, 'F'
+    jbe is_hex_digit_yes
+is_hex_digit_no:
+    xor eax, eax
+    ret
+is_hex_digit_yes:
+    mov eax, 1
+    ret
+
+parse_true:
+    mov rax, qword ptr [rip + parse_index]
+    mov rcx, qword ptr [rip + input_len]
+    lea rdx, [rax + 4]
+    cmp rdx, rcx
+    ja parse_true_error
+    lea rsi, [rip + input_buffer]
+    movzx edx, byte ptr [rsi + rax]
+    cmp dl, 't'
+    jne parse_true_error
+    movzx edx, byte ptr [rsi + rax + 1]
+    cmp dl, 'r'
+    jne parse_true_error
+    movzx edx, byte ptr [rsi + rax + 2]
+    cmp dl, 'u'
+    jne parse_true_error
+    movzx edx, byte ptr [rsi + rax + 3]
+    cmp dl, 'e'
+    jne parse_true_error
+    add rax, 4
+    mov qword ptr [rip + parse_index], rax
+    mov eax, 1
+    ret
+parse_true_error:
+    call set_error
+    xor eax, eax
+    ret
+
+parse_false:
+    mov rax, qword ptr [rip + parse_index]
+    mov rcx, qword ptr [rip + input_len]
+    lea rdx, [rax + 5]
+    cmp rdx, rcx
+    ja parse_false_error
+    lea rsi, [rip + input_buffer]
+    movzx edx, byte ptr [rsi + rax]
+    cmp dl, 'f'
+    jne parse_false_error
+    movzx edx, byte ptr [rsi + rax + 1]
+    cmp dl, 'a'
+    jne parse_false_error
+    movzx edx, byte ptr [rsi + rax + 2]
+    cmp dl, 'l'
+    jne parse_false_error
+    movzx edx, byte ptr [rsi + rax + 3]
+    cmp dl, 's'
+    jne parse_false_error
+    movzx edx, byte ptr [rsi + rax + 4]
+    cmp dl, 'e'
+    jne parse_false_error
+    add rax, 5
+    mov qword ptr [rip + parse_index], rax
+    mov eax, 1
+    ret
+parse_false_error:
+    call set_error
+    xor eax, eax
+    ret
+
+parse_null:
+    mov rax, qword ptr [rip + parse_index]
+    mov rcx, qword ptr [rip + input_len]
+    lea rdx, [rax + 4]
+    cmp rdx, rcx
+    ja parse_null_error
+    lea rsi, [rip + input_buffer]
+    movzx edx, byte ptr [rsi + rax]
+    cmp dl, 'n'
+    jne parse_null_error
+    movzx edx, byte ptr [rsi + rax + 1]
+    cmp dl, 'u'
+    jne parse_null_error
+    movzx edx, byte ptr [rsi + rax + 2]
+    cmp dl, 'l'
+    jne parse_null_error
+    movzx edx, byte ptr [rsi + rax + 3]
+    cmp dl, 'l'
+    jne parse_null_error
+    add rax, 4
+    mov qword ptr [rip + parse_index], rax
+    mov eax, 1
+    ret
+parse_null_error:
+    call set_error
+    xor eax, eax
+    ret
+
+parse_number:
+    xor r8, r8
+    xor r9, r9
+    xor r10, r10
+    mov rax, qword ptr [rip + parse_index]
+    mov rcx, qword ptr [rip + input_len]
+    cmp rax, rcx
+    jae parse_number_fail
+    lea rsi, [rip + input_buffer]
+    movzx edx, byte ptr [rsi + rax]
+    cmp dl, '-'
+    jne parse_number_check_int
+    inc rax
+    mov qword ptr [rip + parse_index], rax
+    cmp rax, rcx
+    jae parse_number_fail
+    movzx edx, byte ptr [rsi + rax]
+parse_number_check_int:
+    cmp dl, '0'
+    je parse_number_zero_int
+    cmp dl, '1'
+    jb parse_number_fail
+    cmp dl, '9'
+    ja parse_number_fail
+    inc rax
+    mov r8, 1
+    mov qword ptr [rip + parse_index], rax
+parse_number_int_digits_loop:
+    cmp rax, rcx
+    jae parse_number_check_frac_exp
+    movzx edx, byte ptr [rsi + rax]
+    cmp dl, '0'
+    jb parse_number_check_frac_exp
+    cmp dl, '9'
+    ja parse_number_check_frac_exp
+    inc rax
+    mov qword ptr [rip + parse_index], rax
+    jmp parse_number_int_digits_loop
+parse_number_zero_int:
+    inc rax
+    mov r8, 1
+    mov qword ptr [rip + parse_index], rax
+parse_number_check_frac_exp:
+    cmp rax, rcx
+    jae parse_number_success
+    movzx edx, byte ptr [rsi + rax]
+    cmp dl, '.'
+    je parse_number_parse_frac
+    cmp dl, 'e'
+    je parse_number_parse_exp
+    cmp dl, 'E'
+    je parse_number_parse_exp
+    cmp dl, '0'
+    jb parse_number_success
+    cmp dl, '9'
+    ja parse_number_success
+    jmp parse_number_fail
+parse_number_parse_frac:
+    inc rax
+    mov qword ptr [rip + parse_index], rax
+    cmp rax, rcx
+    jae parse_number_fail
+    movzx edx, byte ptr [rsi + rax]
+    cmp dl, '0'
+    jb parse_number_fail
+    cmp dl, '9'
+    ja parse_number_fail
+    inc rax
+    mov r9, 1
+    mov qword ptr [rip + parse_index], rax
+parse_number_frac_digits_loop:
+    cmp rax, rcx
+    jae parse_number_check_exp
+    movzx edx, byte ptr [rsi + rax]
+    cmp dl, '0'
+    jb parse_number_check_exp
+    cmp dl, '9'
+    ja parse_number_check_exp
+    inc rax
+    mov qword ptr [rip + parse_index], rax
+    jmp parse_number_frac_digits_loop
+parse_number_check_exp:
+    cmp rax, rcx
+    jae parse_number_success
+    movzx edx, byte ptr [rsi + rax]
+    cmp dl, 'e'
+    je parse_number_parse_exp
+    cmp dl, 'E'
+    je parse_number_parse_exp
+    jmp parse_number_success
+parse_number_parse_exp:
+    inc rax
+    mov qword ptr [rip + parse_index], rax
+    cmp rax, rcx
+    jae parse_number_fail
+    movzx edx, byte ptr [rsi + rax]
+    cmp dl, '+'
+    je parse_number_exp_sign
+    cmp dl, '-'
+    je parse_number_exp_sign
+    jmp parse_number_exp_digits
+parse_number_exp_sign:
+    inc rax
+    mov qword ptr [rip + parse_index], rax
+    cmp rax, rcx
+    jae parse_number_fail
+    movzx edx, byte ptr [rsi + rax]
+parse_number_exp_digits:
+    cmp dl, '0'
+    jb parse_number_fail
+    cmp dl, '9'
+    ja parse_number_fail
+    inc rax
+    mov r10, 1
+    mov qword ptr [rip + parse_index], rax
+parse_number_exp_digits_loop:
+    cmp rax, rcx
+    jae parse_number_success
+    movzx edx, byte ptr [rsi + rax]
+    cmp dl, '0'
+    jb parse_number_success
+    cmp dl, '9'
+    ja parse_number_success
+    inc rax
+    mov qword ptr [rip + parse_index], rax
+    jmp parse_number_exp_digits_loop
+parse_number_success:
+    test r8, r8
+    jz parse_number_fail
+    mov eax, 1
+    ret
+parse_number_fail:
+    call set_error
+    xor eax, eax
+    ret
+
+set_error:
+    mov rax, qword ptr [rip + error_pos]
+    cmp rax, -1
+    jne set_error_done
+    mov rax, qword ptr [rip + parse_index]
+    mov qword ptr [rip + error_pos], rax
+set_error_done:
+    ret

@@ -1,0 +1,712 @@
+Write the complete program `json_lint`: a static Linux executable for x86-64 (AMD64), written in assembly. There is no C library, no C runtime and no helper code: you write the entry point `_start`, every function, every table and string, and make the system calls yourself.
+
+Entry state (as the Linux kernel sets it up): execution starts at the label `_start`. rsp is 16-byte aligned and points at argc = 0, followed by the NULL terminators of an empty argv, an empty envp and an empty auxiliary vector: the program gets no arguments. Every other general-purpose register is zero, and the direction flag is clear. There is no return address: `_start` must never return with `ret`; the program ends only through the exit system call.
+
+System calls: the `syscall` instruction, with the system call number in rax and the arguments in rdi, rsi, rdx; the result comes back in rax. The kernel overwrites rcx and r11; every other register is preserved. Exactly these four are available:
+- read = 0: read(fd = 0, buf, count) reads up to count bytes of standard input into buf; returns the number of bytes read, 0 at end of input.
+- write = 1: write(fd, buf, count) with fd 1 (standard output) or 2 (standard error); returns count.
+- exit = 60: exit(status) ends the program; the exit status is the low 8 bits of status.
+- exit_group = 231: the same as exit.
+Any other system call number, another file descriptor, `int 0x80` or `sysenter` stops the program with an error, and so does a buffer that is not entirely inside the program's memory.
+
+Memory: the program's own sections plus a stack of 1 MiB below the entry sp. There is no heap (no brk, no mmap, no malloc): put working storage in `.bss` (zero-initialised), at most 1 MiB in total, or on the stack. Code is not writable. Any access outside these areas stops the program. Each test run may execute at most 50,000,000 instructions.
+
+Output format: one complete assembly source file in GNU assembler (GNU as) syntax, Intel flavour without register prefixes: the harness puts `.intel_syntax noprefix` in front of your text, so do not write it yourself. Examples: `mov rax, qword ptr [rbx + rcx*8]`, `movzx eax, byte ptr [rsi]`, `lea rsi, [rip + buffer]`. Comments start with `#`; do not use `;`.
+Allowed in the file:
+- Sections: `.text` (code), `.section .rodata` (read-only data), `.data` (initialised writable data), `.bss` (zero-initialised space: only `.zero`/`.space` and alignment). Instructions go in `.text` only.
+- Data directives: `.byte`, `.short`/`.2byte`, `.word` (2 bytes on this target), `.long`/`.int`/`.4byte`, `.quad`/`.8byte`, `.ascii`, `.asciz`/`.string`, `.zero`/`.space`, alignment with `.align`/`.balign`/`.p2align`, and `.globl`/`.global` (write `.globl _start`).
+- Labels `name:` in any section, and GNU local labels `1:` referenced as `1f` (next) / `1b` (previous).
+- Constants: `.equ name, value` (or `.set name, value`, or `name = value`), where value is a number or a difference of labels defined earlier in the same section (e.g. `msg_len = . - msg`). Define every constant before its first use.
+- Addressing data: rip-relative, `lea rdi, [rip + table]` or `mov al, byte ptr [rip + table + 3]`. The program is linked at fixed low addresses, so absolute forms (`mov esi, offset buffer`, `movzx eax, byte ptr [table + rcx]`) work as well.
+Not allowed: macros (`.macro`, `.rept`, `.irp`), conditional assembly (`.if`), `.include`, `.incbin`, `.fill`, `.org`, `.comm`/`.lcomm`, `.inst`, `.cfi_*` directives, section stacks (`.pushsection`) and any other section. No libc and no other library: there is nothing to link against, so every symbol you use must be defined in your file.
+Instruction set: x86-64 with SSE up to SSE4.2 (including SSSE3, SSE4.1 and crc32), POPCNT, LZCNT, BMI1/BMI2 (andn, bextr, blsi, blsr, tzcnt, bzhi, mulx, pdep, pext, rorx, sarx, shlx, shrx), MOVBE, AES-NI and PCLMULQDQ. Not supported (rejected): AVX, AVX2, AVX-512, FMA, F16C and every other VEX/EVEX vector instruction, ADX (adcx/adox; use adc) and SHA.
+Output ONLY the assembly source: no Markdown fences, no prose before or after it.
+
+Specification: Task `json_lint`: check that standard input is exactly one valid JSON document (RFC 8259 grammar) and report
+the byte offset of the first error.
+
+Grammar (byte-level):
+- document = ws value ws, and nothing else. ws = any number of the bytes space 0x20, tab 0x09, newline 0x0A,
+  carriage return 0x0D (only these four).
+- value = object | array | string | number | `true` | `false` | `null` (lowercase only).
+- object = `{` ws `}`, or `{` ws member (ws `,` ws member)* ws `}`, where member = string ws `:` ws value.
+  array = `[` ws `]`, or `[` ws value (ws `,` ws value)* ws `]`. No trailing commas.
+- string = `"` chars `"`. A char is any byte 0x20-0xFF except `"` (0x22) and `\` (0x5C) (bytes >= 0x80 are
+  accepted as they are; no UTF-8 validation), or an escape: `\` followed by one of `"` `\` `/` `b` `f` `n` `r`
+  `t`, or `\u` followed by exactly 4 hex digits (`0-9a-fA-F`; any code unit, surrogates are not checked).
+  Bytes 0x00-0x1F inside a string are errors.
+- number = `-`? int frac? exp?, where int = `0` | a digit `1`-`9` followed by any digits; frac = `.` and one or
+  more digits; exp = `e` or `E`, an optional `+` or `-`, and one or more digits. (So `01`, `+1`, `.5`, `1.`,
+  `1e`, `-` are not valid numbers.)
+
+Output: if the input is valid, print `ok\n` and exit with status 0. Otherwise print `error at N\n` (N in
+decimal, no padding) and exit with status 1, where N is the 0-based offset of the first byte at which the input
+stops being the beginning of some valid document: the first byte that no valid document could have at that
+position given all the bytes before it. If every byte of the input is such a valid beginning but the document is
+incomplete (this includes empty and whitespace-only input), N is the length of the input.
+
+Examples: `[1, 2]` ok; empty input `error at 0`; `[1,]` `error at 3`; `{"a" 1}` `error at 5`; `01` `error at 1`;
+`tru` `error at 3`; `trux` `error at 3`; `[1] x` `error at 4`; `"a<TAB>b"` (a raw tab byte) `error at 2`;
+`-` `error at 1`; `1.e5` `error at 2`.
+
+Limits: the input is at most 65536 bytes; arrays and objects are nested at most 1000 deep. These limits
+describe the inputs you will be given; you do not need to detect or report inputs that exceed them.
+
+Input and output (applies to this whole task):
+- The input is the complete contents of standard input (file descriptor 0). Read it with `read` until `read`
+  returns 0 (end of input). A `read` may return FEWER bytes than requested, at any position (in the middle of a
+  line, a token or a group of bytes), so keep calling it; only a return value of 0 means end of input.
+- Write the output to standard output (file descriptor 1). Only the bytes this task describes may appear on
+  standard output (standard error is ignored). Every output byte must be written before the program exits.
+- Finish with `exit` (or `exit_group`) and the exit status this task gives. The program must not run off the end
+  of its code or crash.
+
+Your previous attempt was:
+<previous>
+.section .rodata
+ok_msg: .ascii "ok\n"
+error_at_msg: .ascii "error at "
+newline_msg: .ascii "\n"
+
+.section .bss
+input_buffer: .zero 65536
+input_len: .zero 8
+parse_index: .zero 8
+error_pos: .zero 8
+
+.section .text
+.globl _start
+
+_start:
+    mov qword [rip + error_pos], -1
+    mov rdi, 0
+    lea rsi, [rip + input_buffer]
+    mov rdx, 65536
+    xor r8, r8
+start_read_loop:
+    mov rax, 0
+    syscall
+    test rax, rax
+    jz start_read_done
+    add r8, rax
+    add rsi, rax
+    sub rdx, rax
+    jnz start_read_loop
+start_read_done:
+    mov [rip + input_len], r8
+    call parse_document
+    test eax, eax
+    jnz start_success
+    mov rax, [rip + error_pos]
+    call write_error
+    mov edi, 1
+    jmp start_exit
+start_success:
+    call write_ok
+    xor edi, edi
+start_exit:
+    mov rax, 60
+    syscall
+
+write_ok:
+    mov rax, 1
+    mov rdi, 1
+    lea rsi, [rip + ok_msg]
+    mov rdx, 3
+    syscall
+    ret
+
+write_error:
+    sub rsp, 32
+    mov rax, 1
+    mov rdi, 1
+    lea rsi, [rip + error_at_msg]
+    mov rdx, 9
+    syscall
+    mov rax, [rip + error_pos]
+    lea rdi, [rsp + 20]
+    mov byte [rdi], 0
+    mov rcx, 10
+    test rax, rax
+    jnz write_error_convert_loop
+    dec rdi
+    mov byte [rdi], '0'
+    jmp write_error_write_num
+write_error_convert_loop:
+    xor rdx, rdx
+    div rcx
+    dec rdi
+    add dl, '0'
+    mov [rdi], dl
+    test rax, rax
+    jnz write_error_convert_loop
+write_error_write_num:
+    mov rsi, rdi
+    lea rdx, [rsp + 20]
+    sub rdx, rsi
+    mov rax, 1
+    mov rdi, 1
+    syscall
+    mov rax, 1
+    mov rdi, 1
+    lea rsi, [rip + newline_msg]
+    mov rdx, 1
+    syscall
+    add rsp, 32
+    ret
+
+parse_document:
+    call parse_ws
+    call parse_value
+    test eax, eax
+    jz parse_document_fail
+    call parse_ws
+    mov rax, [rip + parse_index]
+    mov rcx, [rip + input_len]
+    cmp rax, rcx
+    jne parse_document_fail
+    mov eax, 1
+    ret
+parse_document_fail:
+    xor eax, eax
+    ret
+
+parse_ws:
+    mov rax, [rip + parse_index]
+    mov rcx, [rip + input_len]
+parse_ws_loop:
+    cmp rax, rcx
+    jae parse_ws_done
+    movzx edx, byte [rip + input_buffer + rax]
+    cmp dl, 0x20
+    je parse_ws_consume
+    cmp dl, 0x09
+    je parse_ws_consume
+    cmp dl, 0x0A
+    je parse_ws_consume
+    cmp dl, 0x0D
+    je parse_ws_consume
+    jmp parse_ws_done
+parse_ws_consume:
+    inc rax
+    jmp parse_ws_loop
+parse_ws_done:
+    mov [rip + parse_index], rax
+    mov eax, 1
+    ret
+
+parse_value:
+    call parse_ws
+    mov rax, [rip + parse_index]
+    mov rcx, [rip + input_len]
+    cmp rax, rcx
+    jae parse_value_error
+    movzx edx, byte [rip + input_buffer + rax]
+    cmp dl, '{'
+    je parse_value_do_object
+    cmp dl, '['
+    je parse_value_do_array
+    cmp dl, '"'
+    je parse_value_do_string
+    cmp dl, 't'
+    je parse_value_do_true
+    cmp dl, 'f'
+    je parse_value_do_false
+    cmp dl, 'n'
+    je parse_value_do_null
+    cmp dl, '-'
+    je parse_value_do_number
+    cmp dl, '0'
+    je parse_value_do_number
+    cmp dl, '1'
+    jb parse_value_error
+    cmp dl, '9'
+    jbe parse_value_do_number
+parse_value_error:
+    call set_error
+    xor eax, eax
+    ret
+parse_value_do_object:
+    call parse_object
+    ret
+parse_value_do_array:
+    call parse_array
+    ret
+parse_value_do_string:
+    call parse_string
+    ret
+parse_value_do_true:
+    call parse_true
+    ret
+parse_value_do_false:
+    call parse_false
+    ret
+parse_value_do_null:
+    call parse_null
+    ret
+parse_value_do_number:
+    call parse_number
+    ret
+
+parse_object:
+    mov rax, [rip + parse_index]
+    inc rax
+    mov [rip + parse_index], rax
+    call parse_ws
+    mov rax, [rip + parse_index]
+    mov rcx, [rip + input_len]
+    cmp rax, rcx
+    jae parse_object_error
+    movzx edx, byte [rip + input_buffer + rax]
+    cmp dl, '}'
+    je parse_object_close
+    call parse_member
+    test eax, eax
+    jz parse_object_error
+parse_object_member_loop:
+    call parse_ws
+    mov rax, [rip + parse_index]
+    mov rcx, [rip + input_len]
+    cmp rax, rcx
+    jae parse_object_error
+    movzx edx, byte [rip + input_buffer + rax]
+    cmp dl, ','
+    jne parse_object_check_close
+    inc rax
+    mov [rip + parse_index], rax
+    call parse_ws
+    call parse_member
+    test eax, eax
+    jz parse_object_error
+    jmp parse_object_member_loop
+parse_object_check_close:
+    cmp dl, '}'
+    jne parse_object_error
+parse_object_close:
+    inc rax
+    mov [rip + parse_index], rax
+    mov eax, 1
+    ret
+parse_object_error:
+    call set_error
+    xor eax, eax
+    ret
+
+parse_member:
+    call parse_string
+    test eax, eax
+    jz parse_member_error
+    call parse_ws
+    mov rax, [rip + parse_index]
+    mov rcx, [rip + input_len]
+    cmp rax, rcx
+    jae parse_member_error
+    movzx edx, byte [rip + input_buffer + rax]
+    cmp dl, ':'
+    jne parse_member_error
+    inc rax
+    mov [rip + parse_index], rax
+    call parse_ws
+    call parse_value
+    ret
+parse_member_error:
+    call set_error
+    xor eax, eax
+    ret
+
+parse_array:
+    mov rax, [rip + parse_index]
+    inc rax
+    mov [rip + parse_index], rax
+    call parse_ws
+    mov rax, [rip + parse_index]
+    mov rcx, [rip + input_len]
+    cmp rax, rcx
+    jae parse_array_error
+    movzx edx, byte [rip + input_buffer + rax]
+    cmp dl, ']'
+    je parse_array_close
+    call parse_value
+    test eax, eax
+    jz parse_array_error
+parse_array_value_loop:
+    call parse_ws
+    mov rax, [rip + parse_index]
+    mov rcx, [rip + input_len]
+    cmp rax, rcx
+    jae parse_array_error
+    movzx edx, byte [rip + input_buffer + rax]
+    cmp dl, ','
+    jne parse_array_check_close
+    inc rax
+    mov [rip + parse_index], rax
+    call parse_ws
+    call parse_value
+    test eax, eax
+    jz parse_array_error
+    jmp parse_array_value_loop
+parse_array_check_close:
+    cmp dl, ']'
+    jne parse_array_error
+parse_array_close:
+    inc rax
+    mov [rip + parse_index], rax
+    mov eax, 1
+    ret
+parse_array_error:
+    call set_error
+    xor eax, eax
+    ret
+
+parse_string:
+    mov rax, [rip + parse_index]
+    inc rax
+    mov [rip + parse_index], rax
+parse_string_loop:
+    mov rax, [rip + parse_index]
+    mov rcx, [rip + input_len]
+    cmp rax, rcx
+    jae parse_string_error
+    movzx edx, byte [rip + input_buffer + rax]
+    cmp dl, '"'
+    je parse_string_close
+    cmp dl, '\\'
+    je parse_string_escape
+    cmp dl, 0x20
+    jb parse_string_error
+    inc rax
+    mov [rip + parse_index], rax
+    jmp parse_string_loop
+parse_string_close:
+    inc rax
+    mov [rip + parse_index], rax
+    mov eax, 1
+    ret
+parse_string_escape:
+    inc rax
+    mov [rip + parse_index], rax
+    mov rax, [rip + parse_index]
+    mov rcx, [rip + input_len]
+    cmp rax, rcx
+    jae parse_string_error
+    movzx edx, byte [rip + input_buffer + rax]
+    cmp dl, '"'
+    je parse_string_escape_ok
+    cmp dl, '\\'
+    je parse_string_escape_ok
+    cmp dl, '/'
+    je parse_string_escape_ok
+    cmp dl, 'b'
+    je parse_string_escape_ok
+    cmp dl, 'f'
+    je parse_string_escape_ok
+    cmp dl, 'n'
+    je parse_string_escape_ok
+    cmp dl, 'r'
+    je parse_string_escape_ok
+    cmp dl, 't'
+    je parse_string_escape_ok
+    cmp dl, 'u'
+    je parse_string_unicode
+    jmp parse_string_error
+parse_string_escape_ok:
+    inc rax
+    mov [rip + parse_index], rax
+    jmp parse_string_loop
+parse_string_unicode:
+    inc rax
+    mov [rip + parse_index], rax
+    mov ebx, 4
+parse_string_hex_loop:
+    mov rax, [rip + parse_index]
+    mov rcx, [rip + input_len]
+    cmp rax, rcx
+    jae parse_string_error
+    movzx edx, byte [rip + input_buffer + rax]
+    call is_hex_digit
+    test eax, eax
+    jz parse_string_error
+    inc rax
+    mov [rip + parse_index], rax
+    dec ebx
+    jnz parse_string_hex_loop
+    jmp parse_string_loop
+parse_string_error:
+    call set_error
+    xor eax, eax
+    ret
+
+is_hex_digit:
+    cmp dl, '0'
+    jb is_hex_digit_no
+    cmp dl, '9'
+    jbe is_hex_digit_yes
+    cmp dl, 'a'
+    jb is_hex_digit_no
+    cmp dl, 'f'
+    jbe is_hex_digit_yes
+    cmp dl, 'A'
+    jb is_hex_digit_no
+    cmp dl, 'F'
+    jbe is_hex_digit_yes
+is_hex_digit_no:
+    xor eax, eax
+    ret
+is_hex_digit_yes:
+    mov eax, 1
+    ret
+
+parse_true:
+    mov rax, [rip + parse_index]
+    mov rcx, [rip + input_len]
+    lea rdx, [rax + 4]
+    cmp rdx, rcx
+    ja parse_true_error
+    movzx edx, byte [rip + input_buffer + rax]
+    cmp dl, 't'
+    jne parse_true_error
+    movzx edx, byte [rip + input_buffer + rax + 1]
+    cmp dl, 'r'
+    jne parse_true_error
+    movzx edx, byte [rip + input_buffer + rax + 2]
+    cmp dl, 'u'
+    jne parse_true_error
+    movzx edx, byte [rip + input_buffer + rax + 3]
+    cmp dl, 'e'
+    jne parse_true_error
+    add rax, 4
+    mov [rip + parse_index], rax
+    mov eax, 1
+    ret
+parse_true_error:
+    call set_error
+    xor eax, eax
+    ret
+
+parse_false:
+    mov rax, [rip + parse_index]
+    mov rcx, [rip + input_len]
+    lea rdx, [rax + 5]
+    cmp rdx, rcx
+    ja parse_false_error
+    movzx edx, byte [rip + input_buffer + rax]
+    cmp dl, 'f'
+    jne parse_false_error
+    movzx edx, byte [rip + input_buffer + rax + 1]
+    cmp dl, 'a'
+    jne parse_false_error
+    movzx edx, byte [rip + input_buffer + rax + 2]
+    cmp dl, 'l'
+    jne parse_false_error
+    movzx edx, byte [rip + input_buffer + rax + 3]
+    cmp dl, 's'
+    jne parse_false_error
+    movzx edx, byte [rip + input_buffer + rax + 4]
+    cmp dl, 'e'
+    jne parse_false_error
+    add rax, 5
+    mov [rip + parse_index], rax
+    mov eax, 1
+    ret
+parse_false_error:
+    call set_error
+    xor eax, eax
+    ret
+
+parse_null:
+    mov rax, [rip + parse_index]
+    mov rcx, [rip + input_len]
+    lea rdx, [rax + 4]
+    cmp rdx, rcx
+    ja parse_null_error
+    movzx edx, byte [rip + input_buffer + rax]
+    cmp dl, 'n'
+    jne parse_null_error
+    movzx edx, byte [rip + input_buffer + rax + 1]
+    cmp dl, 'u'
+    jne parse_null_error
+    movzx edx, byte [rip + input_buffer + rax + 2]
+    cmp dl, 'l'
+    jne parse_null_error
+    movzx edx, byte [rip + input_buffer + rax + 3]
+    cmp dl, 'l'
+    jne parse_null_error
+    add rax, 4
+    mov [rip + parse_index], rax
+    mov eax, 1
+    ret
+parse_null_error:
+    call set_error
+    xor eax, eax
+    ret
+
+parse_number:
+    xor r8, r8
+    xor r9, r9
+    xor r10, r10
+    mov rax, [rip + parse_index]
+    mov rcx, [rip + input_len]
+    cmp rax, rcx
+    jae parse_number_fail
+    movzx edx, byte [rip + input_buffer + rax]
+    cmp dl, '-'
+    jne parse_number_check_int
+    inc rax
+    mov [rip + parse_index], rax
+    cmp rax, rcx
+    jae parse_number_fail
+    movzx edx, byte [rip + input_buffer + rax]
+parse_number_check_int:
+    cmp dl, '0'
+    je parse_number_zero_int
+    cmp dl, '1'
+    jb parse_number_fail
+    cmp dl, '9'
+    ja parse_number_fail
+    inc rax
+    mov r8, 1
+    mov [rip + parse_index], rax
+parse_number_int_digits_loop:
+    cmp rax, rcx
+    jae parse_number_check_frac_exp
+    movzx edx, byte [rip + input_buffer + rax]
+    cmp dl, '0'
+    jb parse_number_check_frac_exp
+    cmp dl, '9'
+    ja parse_number_check_frac_exp
+    inc rax
+    mov [rip + parse_index], rax
+    jmp parse_number_int_digits_loop
+parse_number_zero_int:
+    inc rax
+    mov r8, 1
+    mov [rip + parse_index], rax
+parse_number_check_frac_exp:
+    cmp rax, rcx
+    jae parse_number_success
+    movzx edx, byte [rip + input_buffer + rax]
+    cmp dl, '.'
+    je parse_number_parse_frac
+    cmp dl, 'e'
+    je parse_number_parse_exp
+    cmp dl, 'E'
+    je parse_number_parse_exp
+    cmp dl, '0'
+    jb parse_number_success
+    cmp dl, '9'
+    ja parse_number_success
+    jmp parse_number_fail
+parse_number_parse_frac:
+    inc rax
+    mov [rip + parse_index], rax
+    cmp rax, rcx
+    jae parse_number_fail
+    movzx edx, byte [rip + input_buffer + rax]
+    cmp dl, '0'
+    jb parse_number_fail
+    cmp dl, '9'
+    ja parse_number_fail
+    inc rax
+    mov r9, 1
+    mov [rip + parse_index], rax
+parse_number_frac_digits_loop:
+    cmp rax, rcx
+    jae parse_number_check_exp
+    movzx edx, byte [rip + input_buffer + rax]
+    cmp dl, '0'
+    jb parse_number_check_exp
+    cmp dl, '9'
+    ja parse_number_check_exp
+    inc rax
+    mov [rip + parse_index], rax
+    jmp parse_number_frac_digits_loop
+parse_number_check_exp:
+    cmp rax, rcx
+    jae parse_number_success
+    movzx edx, byte [rip + input_buffer + rax]
+    cmp dl, 'e'
+    je parse_number_parse_exp
+    cmp dl, 'E'
+    je parse_number_parse_exp
+    jmp parse_number_success
+parse_number_parse_exp:
+    inc rax
+    mov [rip + parse_index], rax
+    cmp rax, rcx
+    jae parse_number_fail
+    movzx edx, byte [rip + input_buffer + rax]
+    cmp dl, '+'
+    je parse_number_exp_sign
+    cmp dl, '-'
+    je parse_number_exp_sign
+    jmp parse_number_exp_digits
+parse_number_exp_sign:
+    inc rax
+    mov [rip + parse_index], rax
+    cmp rax, rcx
+    jae parse_number_fail
+    movzx edx, byte [rip + input_buffer + rax]
+parse_number_exp_digits:
+    cmp dl, '0'
+    jb parse_number_fail
+    cmp dl, '9'
+    ja parse_number_fail
+    inc rax
+    mov r10, 1
+    mov [rip + parse_index], rax
+parse_number_exp_digits_loop:
+    cmp rax, rcx
+    jae parse_number_success
+    movzx edx, byte [rip + input_buffer + rax]
+    cmp dl, '0'
+    jb parse_number_success
+    cmp dl, '9'
+    ja parse_number_success
+    inc rax
+    mov [rip + parse_index], rax
+    jmp parse_number_exp_digits_loop
+parse_number_success:
+    test r8, r8
+    jz parse_number_fail
+    mov eax, 1
+    ret
+parse_number_fail:
+    call set_error
+    xor eax, eax
+    ret
+
+set_error:
+    mov rax, [rip + error_pos]
+    cmp rax, -1
+    jne set_error_done
+    mov rax, [rip + parse_index]
+    mov [rip + error_pos], rax
+set_error_done:
+    ret
+</previous>
+It failed:
+<failure>
+GNU as rejected the program:
+line 16: ambiguous operand size for `mov'
+line 63: ambiguous operand size for `mov'
+line 68: ambiguous operand size for `mov'
+line 115: `byte [rip+input_buffer+rax]' is not a valid base/index expression
+line 139: `byte [rip+input_buffer+rax]' is not a valid base/index expression
+line 195: `byte [rip+input_buffer+rax]' is not a valid base/index expression
+line 207: `byte [rip+input_buffer+rax]' is not a valid base/index expression
+line 239: `byte [rip+input_buffer+rax]' is not a valid base/index expression
+line 261: `byte [rip+input_buffer+rax]' is not a valid base/index expression
+line 273: `byte [rip+input_buffer+rax]' is not a valid base/index expression
+line 305: `byte [rip+input_buffer+rax]' is not a valid base/index expression
+line 327: `byte [rip+input_buffer+rax]' is not a valid base/index expression
+line 360: `byte [rip+input_buffer+rax]' is not a valid base/index expression
+line 400: `byte [rip+input_buffer+rax]' is not a valid base/index expression
+line 403: `byte [rip+input_buffer+rax+1]' is not a valid base/index expression
+line 406: `byte [rip+input_buffer+rax+2]' is not a valid base/index expression
+line 409: `byte [rip+input_buffer+rax+3]' is not a valid base/index expression
+line 427: `byte [rip+input_buffer+rax]' is not a valid base/index expression
+line 430: `byte [rip+input_buffer+rax+1]' is not a valid base/index expression
+line 433: `byte [rip+input_buffer+rax+2]' is not a valid base/index expression
+(+16 more errors)
+</failure>
+Write a corrected, complete version. Same output format; output only the code.

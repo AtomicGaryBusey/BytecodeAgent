@@ -1,0 +1,695 @@
+.equ SYS_READ, 63
+.equ SYS_WRITE, 64
+.equ SYS_EXIT, 93
+.equ SYS_EXIT_GROUP, 94
+.equ STDIN, 0
+.equ STDOUT, 1
+.equ STDERR, 2
+.equ BUF_SIZE, 65536
+.equ OK_LEN, 3
+.equ ERROR_PREFIX_LEN, 9
+.equ NEWLINE_LEN, 1
+
+.section .text
+.global _start
+
+_start:
+    // x19 = buffer base
+    adrp x19, buffer
+    add x19, x19, :lo12:buffer
+    // read all input
+    bl _read_all
+    // parse JSON document
+    bl _parse_document
+    cbz x0, _success
+    // error
+    bl _print_error
+    mov x0, 1
+    b _exit
+_success:
+    bl _print_ok
+    mov x0, 0
+_exit:
+    mov x8, SYS_EXIT
+    svc #0
+
+// Read all stdin into buffer. Returns total length in x20.
+_read_all:
+    stp x29, x30, [sp, #-16]!
+    mov x29, sp
+    mov x20, 0          // total_len
+1:
+    mov x2, BUF_SIZE
+    sub x2, x2, x20
+    cbz x2, 2f          // buffer full
+    mov x0, STDIN
+    add x1, x19, x20
+    mov x8, SYS_READ
+    svc #0
+    cmp x0, 0
+    b.le 2f             // EOF or error
+    add x20, x20, x0
+    b 1b
+2:
+    ldp x29, x30, [sp], #16
+    ret
+
+// Parse document: ws value ws EOF
+_parse_document:
+    stp x29, x30, [sp, #-16]!
+    mov x29, sp
+    bl _parse_ws
+    bl _parse_value
+    cbnz x0, 1f
+    bl _parse_ws
+    cmp x21, x20
+    b.eq 2f
+    // trailing non-whitespace
+    mov x22, x21
+    mov x0, 1
+1:
+    // error already set by sub-parser
+    nop
+2:
+    ldp x29, x30, [sp], #16
+    ret
+
+// Skip whitespace (space, tab, LF, CR)
+_parse_ws:
+    stp x29, x30, [sp, #-16]!
+    mov x29, sp
+1:
+    cmp x21, x20
+    b.ge 2f
+    ldrb w0, [x19, x21]
+    cmp w0, 0x20
+    b.eq 3f
+    cmp w0, 0x09
+    b.eq 3f
+    cmp w0, 0x0A
+    b.eq 3f
+    cmp w0, 0x0D
+    b.eq 3f
+    b 2f
+3:
+    add x21, x21, 1
+    b 1b
+2:
+    mov x0, 0
+    ldp x29, x30, [sp], #16
+    ret
+
+// Parse a JSON value
+_parse_value:
+    stp x29, x30, [sp, #-16]!
+    mov x29, sp
+    cmp x21, x20
+    b.ge _value_err_eof
+    ldrb w0, [x19, x21]
+    cmp w0, '{'
+    b.eq _parse_object
+    cmp w0, '['
+    b.eq _parse_array
+    cmp w0, '"'
+    b.eq _parse_string
+    cmp w0, 't'
+    b.eq _parse_true
+    cmp w0, 'f'
+    b.eq _parse_false
+    cmp w0, 'n'
+    b.eq _parse_null
+    cmp w0, '-'
+    b.eq _parse_number
+    cmp w0, '0'
+    b.eq _parse_number
+    cmp w0, '1'
+    b.lt _value_err
+    cmp w0, '9'
+    b.gt _value_err
+    b _parse_number
+_value_err_eof:
+    mov x22, x20
+    mov x0, 1
+    b _value_exit
+_value_err:
+    mov x22, x21
+    mov x0, 1
+_value_exit:
+    ldp x29, x30, [sp], #16
+    ret
+
+// Parse object: { ws } | { ws member (ws , ws member)* ws }
+_parse_object:
+    stp x29, x30, [sp, #-16]!
+    mov x29, sp
+    add x21, x21, 1      // consume '{'
+    bl _parse_ws
+    cmp x21, x20
+    b.ge _obj_err_eof
+    ldrb w0, [x19, x21]
+    cmp w0, '}'
+    b.eq _obj_close
+_obj_loop:  // parse member
+    bl _parse_string
+    cbnz x0, _obj_exit
+    bl _parse_ws
+    cmp x21, x20
+    b.ge _obj_err_eof
+    ldrb w0, [x19, x21]
+    cmp w0, ':'
+    b.ne _obj_err
+    add x21, x21, 1
+    bl _parse_ws
+    bl _parse_value
+    cbnz x0, _obj_exit
+    bl _parse_ws
+    cmp x21, x20
+    b.ge _obj_err_eof
+    ldrb w0, [x19, x21]
+    cmp w0, ','
+    b.eq _obj_comma
+    cmp w0, '}'
+    b.eq _obj_close
+    b _obj_err
+_obj_comma:
+    add x21, x21, 1
+    bl _parse_ws
+    b _obj_loop
+_obj_close:
+    add x21, x21, 1
+    mov x0, 0
+    b _obj_exit
+_obj_err_eof:
+    mov x22, x20
+    mov x0, 1
+    b _obj_exit
+_obj_err:
+    mov x22, x21
+    mov x0, 1
+_obj_exit:
+    ldp x29, x30, [sp], #16
+    ret
+
+// Parse array: [ ws ] | [ ws value (ws , ws value)* ws ]
+_parse_array:
+    stp x29, x30, [sp, #-16]!
+    mov x29, sp
+    add x21, x21, 1      // consume '['
+    bl _parse_ws
+    cmp x21, x20
+    b.ge _arr_err_eof
+    ldrb w0, [x19, x21]
+    cmp w0, ']'
+    b.eq _arr_close
+_arr_loop:
+    bl _parse_value
+    cbnz x0, _arr_exit
+    bl _parse_ws
+    cmp x21, x20
+    b.ge _arr_err_eof
+    ldrb w0, [x19, x21]
+    cmp w0, ','
+    b.eq _arr_comma
+    cmp w0, ']'
+    b.eq _arr_close
+    b _arr_err
+_arr_comma:
+    add x21, x21, 1
+    bl _parse_ws
+    b _arr_loop
+_arr_close:
+    add x21, x21, 1
+    mov x0, 0
+    b _arr_exit
+_arr_err_eof:
+    mov x22, x20
+    mov x0, 1
+    b _arr_exit
+_arr_err:
+    mov x22, x21
+    mov x0, 1
+_arr_exit:
+    ldp x29, x30, [sp], #16
+    ret
+
+// Parse string: " chars "
+_parse_string:
+    stp x29, x30, [sp, #-16]!
+    mov x29, sp
+    add x21, x21, 1      // consume opening '"'
+_str_loop:
+    cmp x21, x20
+    b.ge _str_err_eof
+    ldrb w0, [x19, x21]
+    cmp w0, '"'
+    b.eq _str_close
+    cmp w0, '\\'
+    b.eq _str_escape
+    cmp w0, 0x20
+    b.lt _str_err_ctrl
+    // any other byte (including >=0x80) is fine
+    add x21, x21, 1
+    b _str_loop
+_str_close:
+    add x21, x21, 1
+    mov x0, 0
+    b _str_exit
+_str_escape:
+    add x21, x21, 1      // consume backslash
+    cmp x21, x20
+    b.ge _str_err_eof
+    ldrb w0, [x19, x21]
+    // allowed escapes: " \ / b f n r t u
+    cmp w0, '"'
+    b.eq _str_esc_ok
+    cmp w0, '\\'
+    b.eq _str_esc_ok
+    cmp w0, '/'
+    b.eq _str_esc_ok
+    cmp w0, 'b'
+    b.eq _str_esc_ok
+    cmp w0, 'f'
+    b.eq _str_esc_ok
+    cmp w0, 'n'
+    b.eq _str_esc_ok
+    cmp w0, 'r'
+    b.eq _str_esc_ok
+    cmp w0, 't'
+    b.eq _str_esc_ok
+    cmp w0, 'u'
+    b.eq _str_unicode
+    b _str_err
+_str_esc_ok:
+    add x21, x21, 1
+    b _str_loop
+_str_unicode:
+    add x21, x21, 1      // consume 'u'
+    mov x1, 4            // 4 hex digits
+_str_unicode_loop:
+    cmp x21, x20
+    b.ge _str_err_eof
+    ldrb w0, [x19, x21]
+    bl _is_hex_digit
+    cbnz x0, _str_err
+    add x21, x21, 1
+    subs x1, x1, 1
+    b.ne _str_unicode_loop
+    b _str_loop                 // back to main string loop
+_str_err_eof:
+    mov x22, x20
+    mov x0, 1
+    b _str_exit
+_str_err_ctrl:
+    mov x22, x21
+    mov x0, 1
+    b _str_exit
+_str_err:
+    mov x22, x21
+    mov x0, 1
+_str_exit:
+    ldp x29, x30, [sp], #16
+    ret
+
+// Parse number: -? int frac? exp?
+_parse_number:
+    stp x29, x30, [sp, #-16]!
+    mov x29, sp
+    // optional minus
+    cmp x21, x20
+    b.ge _num_err_eof
+    ldrb w0, [x19, x21]
+    cmp w0, '-'
+    b.ne _num_int_start
+    add x21, x21, 1
+    cmp x21, x20
+    b.ge _num_err_eof
+    ldrb w0, [x19, x21]
+_num_int_start:
+    // integer part
+    cmp w0, '0'
+    b.eq _num_zero_int
+    cmp w0, '1'
+    b.lt _num_err
+    cmp w0, '9'
+    b.gt _num_err
+    // digit 1-9, consume and loop
+    b _num_digits_loop
+_num_zero_int:
+    add x21, x21, 1      // consume '0'
+    // after '0', next char must not be a digit
+    cmp x21, x20
+    b.ge _num_check_frac_exp
+    ldrb w0, [x19, x21]
+    cmp w0, '0'
+    b.lt _num_check_frac_exp
+    cmp w0, '9'
+    b.gt _num_check_frac_exp
+    b _num_err           // leading zero not allowed
+_num_digits_loop:
+    add x21, x21, 1
+    cmp x21, x20
+    b.ge _num_check_frac_exp
+    ldrb w0, [x19, x21]
+    cmp w0, '0'
+    b.lt _num_check_frac_exp
+    cmp w0, '9'
+    b.gt _num_check_frac_exp
+    b _num_digits_loop
+_num_check_frac_exp:
+    cmp x21, x20
+    b.ge _num_success
+    ldrb w0, [x19, x21]
+    cmp w0, '.'
+    b.eq _num_frac
+    cmp w0, 'e'
+    b.eq _num_exp
+    cmp w0, 'E'
+    b.eq _num_exp
+    b _num_success
+_num_frac:
+    add x21, x21, 1      // consume '.'
+    cmp x21, x20
+    b.ge _num_err_eof
+    ldrb w0, [x19, x21]
+    cmp w0, '0'
+    b.lt _num_err
+    cmp w0, '9'
+    b.gt _num_err
+    add x21, x21, 1      // consume first digit
+_num_frac_loop:
+    cmp x21, x20
+    b.ge _num_check_exp_after_frac
+    ldrb w0, [x19, x21]
+    cmp w0, '0'
+    b.lt _num_check_exp_after_frac
+    cmp w0, '9'
+    b.gt _num_check_exp_after_frac
+    add x21, x21, 1
+    b _num_frac_loop
+_num_check_exp_after_frac:
+    cmp x21, x20
+    b.ge _num_success
+    ldrb w0, [x19, x21]
+    cmp w0, 'e'
+    b.eq _num_exp
+    cmp w0, 'E'
+    b.eq _num_exp
+    b _num_success
+_num_exp:
+    add x21, x21, 1      // consume e/E
+    cmp x21, x20
+    b.ge _num_err_eof
+    ldrb w0, [x19, x21]
+    cmp w0, '+'
+    b.eq _num_exp_sign
+    cmp w0, '-'
+    b.eq _num_exp_sign
+    b _num_exp_digit
+_num_exp_sign:
+    add x21, x21, 1
+    cmp x21, x20
+    b.ge _num_err_eof
+    ldrb w0, [x19, x21]
+_num_exp_digit:
+    cmp w0, '0'
+    b.lt _num_err
+    cmp w0, '9'
+    b.gt _num_err
+    add x21, x21, 1
+_num_exp_loop:
+    cmp x21, x20
+    b.ge _num_success
+    ldrb w0, [x19, x21]
+    cmp w0, '0'
+    b.lt _num_success
+    cmp w0, '9'
+    b.gt _num_success
+    add x21, x21, 1
+    b _num_exp_loop
+_num_err_eof:
+    mov x22, x20
+    mov x0, 1
+    b _num_exit
+_num_err:
+    mov x22, x21
+    mov x0, 1
+    b _num_exit
+_num_success:
+    mov x0, 0
+_num_exit:
+    ldp x29, x30, [sp], #16
+    ret
+
+// Parse literal true
+_parse_true:
+    stp x29, x30, [sp, #-16]!
+    mov x29, sp
+    // 't'
+    cmp x21, x20
+    b.ge _true_err_eof
+    ldrb w0, [x19, x21]
+    cmp w0, 't'
+    b.ne _true_err
+    add x21, x21, 1
+    // 'r'
+    cmp x21, x20
+    b.ge _true_err_eof
+    ldrb w0, [x19, x21]
+    cmp w0, 'r'
+    b.ne _true_err
+    add x21, x21, 1
+    // 'u'
+    cmp x21, x20
+    b.ge _true_err_eof
+    ldrb w0, [x19, x21]
+    cmp w0, 'u'
+    b.ne _true_err
+    add x21, x21, 1
+    // 'e'
+    cmp x21, x20
+    b.ge _true_err_eof
+    ldrb w0, [x19, x21]
+    cmp w0, 'e'
+    b.ne _true_err
+    add x21, x21, 1
+    mov x0, 0
+    b _true_exit
+_true_err_eof:
+    mov x22, x20
+    mov x0, 1
+    b _true_exit
+_true_err:
+    mov x22, x21
+    mov x0, 1
+_true_exit:
+    ldp x29, x30, [sp], #16
+    ret
+
+// Parse literal false
+_parse_false:
+    stp x29, x30, [sp, #-16]!
+    mov x29, sp
+    // 'f'
+    cmp x21, x20
+    b.ge _false_err_eof
+    ldrb w0, [x19, x21]
+    cmp w0, 'f'
+    b.ne _false_err
+    add x21, x21, 1
+    // 'a'
+    cmp x21, x20
+    b.ge _false_err_eof
+    ldrb w0, [x19, x21]
+    cmp w0, 'a'
+    b.ne _false_err
+    add x21, x21, 1
+    // 'l'
+    cmp x21, x20
+    b.ge _false_err_eof
+    ldrb w0, [x19, x21]
+    cmp w0, 'l'
+    b.ne _false_err
+    add x21, x21, 1
+    // 's'
+    cmp x21, x20
+    b.ge _false_err_eof
+    ldrb w0, [x19, x21]
+    cmp w0, 's'
+    b.ne _false_err
+    add x21, x21, 1
+    // 'e'
+    cmp x21, x20
+    b.ge _false_err_eof
+    ldrb w0, [x19, x21]
+    cmp w0, 'e'
+    b.ne _false_err
+    add x21, x21, 1
+    mov x0, 0
+    b _false_exit
+_false_err_eof:
+    mov x22, x20
+    mov x0, 1
+    b _false_exit
+_false_err:
+    mov x22, x21
+    mov x0, 1
+_false_exit:
+    ldp x29, x30, [sp], #16
+    ret
+
+// Parse literal null
+_parse_null:
+    stp x29, x30, [sp, #-16]!
+    mov x29, sp
+    // 'n'
+    cmp x21, x20
+    b.ge _null_err_eof
+    ldrb w0, [x19, x21]
+    cmp w0, 'n'
+    b.ne _null_err
+    add x21, x21, 1
+    // 'u'
+    cmp x21, x20
+    b.ge _null_err_eof
+    ldrb w0, [x19, x21]
+    cmp w0, 'u'
+    b.ne _null_err
+    add x21, x21, 1
+    // 'l'
+    cmp x21, x20
+    b.ge _null_err_eof
+    ldrb w0, [x19, x21]
+    cmp w0, 'l'
+    b.ne _null_err
+    add x21, x21, 1
+    // 'l'
+    cmp x21, x20
+    b.ge _null_err_eof
+    ldrb w0, [x19, x21]
+    cmp w0, 'l'
+    b.ne _null_err
+    add x21, x21, 1
+    mov x0, 0
+    b _null_exit
+_null_err_eof:
+    mov x22, x20
+    mov x0, 1
+    b _null_exit
+_null_err:
+    mov x22, x21
+    mov x0, 1
+_null_exit:
+    ldp x29, x30, [sp], #16
+    ret
+
+// Check if w0 is a hex digit. Returns 0 in x0 if yes, 1 if no.
+_is_hex_digit:
+    cmp w0, '0'
+    b.lt 1f
+    cmp w0, '9'
+    b.le 2f
+1:
+    cmp w0, 'a'
+    b.lt 3f
+    cmp w0, 'f'
+    b.le 2f
+3:
+    cmp w0, 'A'
+    b.lt 4f
+    cmp w0, 'F'
+    b.le 2f
+4:
+    mov x0, 1
+    ret
+2:
+    mov x0, 0
+    ret
+
+// Write buffer to stdout. x1=buf, x2=len.
+_write_buf:
+    stp x29, x30, [sp, #-16]!
+    mov x29, sp
+    mov x0, STDOUT
+    mov x8, SYS_WRITE
+1:
+    svc #0
+    cmp x0, 0
+    b.le 2f
+    sub x2, x2, x0
+    cbz x2, 2f
+    add x1, x1, x0
+    b 1b
+2:
+    ldp x29, x30, [sp], #16
+    ret
+
+// Write decimal number in x0 to stdout.
+_write_decimal:
+    stp x29, x30, [sp, #-16]!
+    mov x29, sp
+    sub sp, sp, 32        // allocate 32 bytes for digits
+    add x1, sp, 31        // end of buffer
+    mov x2, 0             // digit count
+    cmp x0, 0
+    b.ne 1f
+    mov w3, '0'
+    strb w3, [x1]
+    add x2, x2, 1
+    b 3f                  // jump to write
+1:
+    mov x3, 10
+2:
+    udiv x4, x0, x3
+    msub x5, x4, x3, x0
+    add w5, w5, '0'
+    strb w5, [x1]
+    add x1, x1, -1
+    add x2, x2, 1
+    mov x0, x4
+    cbnz x0, 2b
+3:
+    add x1, x1, 1
+    // write
+    mov x0, STDOUT
+    mov x8, SYS_WRITE
+    svc #0
+    add sp, sp, 32
+    ldp x29, x30, [sp], #16
+    ret
+
+// Print "ok\n"
+_print_ok:
+    stp x29, x30, [sp, #-16]!
+    mov x29, sp
+    adrp x1, str_ok
+    add x1, x1, :lo12:str_ok
+    mov x2, OK_LEN
+    bl _write_buf
+    ldp x29, x30, [sp], #16
+    ret
+
+// Print "error at N\n" where N is in x22.
+_print_error:
+    stp x29, x30, [sp, #-16]!
+    mov x29, sp
+    adrp x1, str_error_prefix
+    add x1, x1, :lo12:str_error_prefix
+    mov x2, ERROR_PREFIX_LEN
+    bl _write_buf
+    mov x0, x22
+    bl _write_decimal
+    adrp x1, str_newline
+    add x1, x1, :lo12:str_newline
+    mov x2, NEWLINE_LEN
+    bl _write_buf
+    ldp x29, x30, [sp], #16
+    ret
+
+.section .rodata
+str_ok: .ascii "ok\n"
+str_error_prefix: .ascii "error at "
+str_newline: .ascii "\n"
+
+.section .bss
+.align 12
+buffer: .space BUF_SIZE

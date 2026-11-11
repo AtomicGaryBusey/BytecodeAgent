@@ -1,0 +1,265 @@
+Write the complete program `base64`: a static Linux executable for AArch64 (ARMv8-A, little-endian), written in assembly. There is no C library, no C runtime and no helper code: you write the entry point `_start`, every function, every table and string, and make the system calls yourself.
+
+Entry state (as the Linux kernel sets it up): execution starts at the label `_start`. sp is 16-byte aligned and points at argc = 0, followed by the NULL terminators of an empty argv, an empty envp and an empty auxiliary vector: the program gets no arguments. Every other general-purpose register (x0-x30) is zero; x30 is not a return address, so `_start` must never return with `ret`; the program ends only through the exit system call.
+
+System calls: the `svc #0` instruction, with the system call number in x8 and the arguments in x0, x1, x2; the result comes back in x0. Every other register is preserved. Exactly these four are available:
+- read = 63: read(fd = 0, buf, count) reads up to count bytes of standard input into buf; returns the number of bytes read, 0 at end of input.
+- write = 64: write(fd, buf, count) with fd 1 (standard output) or 2 (standard error); returns count.
+- exit = 93: exit(status) ends the program; the exit status is the low 8 bits of status.
+- exit_group = 94: the same as exit.
+Any other system call number or file descriptor stops the program with an error, and so does a buffer that is not entirely inside the program's memory.
+
+Memory: the program's own sections plus a stack of 1 MiB below the entry sp. There is no heap (no brk, no mmap, no malloc): put working storage in `.bss` (zero-initialised), at most 1 MiB in total, or on the stack. Code is not writable. Any access outside these areas stops the program. Each test run may execute at most 50,000,000 instructions.
+
+Output format: one complete assembly source file in GNU assembler (GNU as) syntax for AArch64. Examples: `ldr x2, [x0, x1, lsl #3]`, `ldrb w3, [x1], #1`, `stp x29, x30, [sp, #-16]!`. Comments start with `//`; do not use `;`.
+Allowed in the file:
+- Sections: `.text` (code), `.section .rodata` (read-only data), `.data` (initialised writable data), `.bss` (zero-initialised space: only `.zero`/`.space` and alignment). Instructions go in `.text` only.
+- Data directives: `.byte`, `.short`/`.2byte`, `.word` (4 bytes on this target), `.long`/`.int`/`.4byte`, `.quad`/`.8byte`, `.ascii`, `.asciz`/`.string`, `.zero`/`.space`, alignment with `.align`/`.balign`/`.p2align`, and `.globl`/`.global` (write `.globl _start`).
+- Labels `name:` in any section, and GNU local labels `1:` referenced as `1f` (next) / `1b` (previous).
+- Constants: `.equ name, value` (or `.set name, value`, or `name = value`), where value is a number or a difference of labels defined earlier in the same section (e.g. `msg_len = . - msg`). Define every constant before its first use.
+- Addressing data: `adrp x0, label` followed by `add x0, x0, :lo12:label` (or a load/store `ldr x1, [x0, :lo12:label]`); `adr x0, label` also works within +-1 MiB. Literal pools are NOT allowed: no `ldr x0, =label` and no `ldr x0, =constant` (build constants with mov/movz/movk).
+Not allowed: macros (`.macro`, `.rept`, `.irp`), conditional assembly (`.if`), `.include`, `.incbin`, `.fill`, `.org`, `.comm`/`.lcomm`, `.inst`, `.cfi_*` directives, section stacks (`.pushsection`) and any other section. No libc and no other library: there is nothing to link against, so every symbol you use must be defined in your file.
+Instruction set: ARMv8.0-A with floating point and Advanced SIMD (NEON). Not supported (rejected): CRC32, LSE atomics, dot product, half-precision, crypto (AES/SHA/PMULL) and SVE.
+Output ONLY the assembly source: no Markdown fences, no prose before or after it.
+
+Specification: Task `base64`: Base64-encode standard input (RFC 4648 standard alphabet, like `base64` with no options).
+
+- Alphabet: `A`-`Z` (0-25), `a`-`z` (26-51), `0`-`9` (52-61), `+` (62), `/` (63). Each group of 3 input bytes
+  becomes 4 characters (most significant bits first). A final group of 1 byte becomes 2 characters plus `==`;
+  a final group of 2 bytes becomes 3 characters plus `=`.
+- The encoded text is split into lines of exactly 76 characters; the last line may be shorter. Every line,
+  including the last, ends with one newline 0x0A. Never print an empty line: if the encoded text length is a
+  multiple of 76, the output ends right after that line's newline.
+- Empty input prints nothing (not even a newline). Input bytes are arbitrary (0x00-0xFF).
+
+Examples: `Man` prints `TWFu\n`; `Ma` prints `TWE=\n`; `M` prints `TQ==\n`; 57 input bytes print exactly one
+76-character line and a newline; 58 input bytes print that line plus a second line of 4 characters.
+
+Limits: the input is at most 49152 bytes. Exit status 0.
+
+Input and output (applies to this whole task):
+- The input is the complete contents of standard input (file descriptor 0). Read it with `read` until `read`
+  returns 0 (end of input). A `read` may return FEWER bytes than requested, at any position (in the middle of a
+  line, a token or a group of bytes), so keep calling it; only a return value of 0 means end of input.
+- Write the output to standard output (file descriptor 1). Only the bytes this task describes may appear on
+  standard output (standard error is ignored). Every output byte must be written before the program exits.
+- Finish with `exit` (or `exit_group`) and the exit status this task gives. The program must not run off the end
+  of its code or crash.
+
+Your previous attempt was:
+<previous>
+.equ SYS_READ, 63
+.equ SYS_WRITE, 64
+.equ SYS_EXIT, 93
+.equ STDIN, 0
+.equ STDOUT, 1
+.equ READ_SIZE, 4096
+.equ OUT_BUF_SIZE, 8192
+
+.section .rodata
+base64_table:
+    .ascii "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/"
+
+.section .bss
+.align 8
+input_buffer: .space READ_SIZE
+output_buffer: .space OUT_BUF_SIZE
+.align 8
+leftover_bytes: .space 2
+leftover_count: .zero 1
+output_pos: .zero 8
+line_pos: .zero 8
+
+.section .text
+.globl _start
+_start:
+    // Initialize state
+    mov x19, #0                  // leftover_count = 0
+    strb w19, [x30, :lo12:leftover_count]  // use x30 as temp base? Better to load addresses properly.
+    // We'll load addresses of static data using adrp/add.
+    adrp x20, input_buffer
+    add x20, x20, :lo12:input_buffer
+    adrp x21, output_buffer
+    add x21, x21, :lo12:output_buffer
+    adrp x22, base64_table
+    add x22, x22, :lo12:base64_table
+    adrp x23, leftover_bytes
+    add x23, x23, :lo12:leftover_bytes
+    adrp x24, leftover_count
+    add x24, x24, :lo12:leftover_count
+    adrp x25, output_pos
+    add x25, x25, :lo12:output_pos
+    adrp x26, line_pos
+    add x26, x26, :lo12:line_pos
+
+    // Initialize memory state
+    str xzr, [x25]               // output_pos = 0
+    str xzr, [x26]               // line_pos = 0
+    strb w19, [x24]              // leftover_count = 0
+
+read_loop:
+    // read from stdin
+    mov x8, #SYS_READ
+    mov x0, #STDIN
+    mov x1, x20                  // input_buffer
+    mov x2, #READ_SIZE
+    svc #0
+    cbz x0, end_of_input         // if read returns 0, break
+
+    // x0 = number of bytes read
+    // Process the input buffer
+    mov x1, x20                  // current input pointer
+    add x2, x1, x0               // end pointer
+
+    // Load leftover_count
+    ldrb w19, [x24]
+    cbz w19, process_full_groups // if no leftovers, jump to processing full groups
+
+    // We have 1 or 2 leftover bytes. Load them.
+    ldrb w3, [x23]               // first leftover byte
+    cmp w19, #1
+    b.eq have_one_leftover
+    // two leftovers
+    ldrb w4, [x23, #1]
+    // Need one more byte from input
+    cmp x1, x2
+    b.hs not_enough_for_three_2  // if no input bytes, store back and continue
+    ldrb w5, [x1], #1            // get third byte
+    // Form 3-byte group: w3, w4, w5
+    bl encode_three_bytes
+    b process_full_groups
+
+have_one_leftover:
+    // Need two more bytes
+    cmp x1, x2
+    b.lo not_enough_for_three_1  // if less than 2 bytes, store back and continue
+    ldrb w4, [x1], #1
+    ldrb w5, [x1], #1
+    // Form 3-byte group: w3, w4, w5
+    bl encode_three_bytes
+    b process_full_groups
+
+not_enough_for_three_1:
+    // Only one byte available (or zero). Store as new leftovers.
+    cmp x1, x2
+    b.eq store_one_leftover_and_continue
+    ldrb w4, [x1], #1
+    // Now we have two leftovers: w3 and w4
+    strb w3, [x23]
+    strb w4, [x23, #1]
+    mov w19, #2
+    strb w19, [x24]
+    b read_loop
+
+not_enough_for_three_2:
+    // Zero bytes available, keep the two leftovers
+    b read_loop
+
+store_one_leftover_and_continue:
+    // Only the original one leftover remains
+    strb w3, [x23]
+    mov w19, #1
+    strb w19, [x24]
+    b read_loop
+
+process_full_groups:
+    // Process input in groups of 3 bytes
+    sub x3, x2, x1               // remaining bytes
+    lsr x3, x3, #1               // rough, but we'll loop
+    // Better: while (x1 + 3 <= x2)
+1:
+    cmp x1, x2
+    b.hs process_remaining       // less than 3 bytes left
+    // Load 3 bytes
+    ldrb w3, [x1], #1
+    ldrb w4, [x1], #1
+    ldrb w5, [x1], #1
+    bl encode_three_bytes
+    b 1b
+
+process_remaining:
+    // 0, 1, or 2 bytes left in input. Store as leftovers.
+    cmp x1, x2
+    b.eq read_loop               // no leftovers
+    // one byte
+    ldrb w3, [x1], #1
+    cmp x1, x2
+    b.eq store_one_leftover
+    // two bytes
+    ldrb w4, [x1], #1
+    strb w3, [x23]
+    strb w4, [x23, #1]
+    mov w19, #2
+    strb w19, [x24]
+    b read_loop
+
+store_one_leftover:
+    strb w3, [x23]
+    mov w19, #1
+    strb w19, [x24]
+    b read_loop
+
+end_of_input:
+    // Process final leftovers with padding
+    ldrb w19, [x24]
+    cbz w19, flush_and_exit
+    cmp w19, #1
+    b.eq final_one_leftover
+    // two leftovers
+    ldrb w3, [x23]
+    ldrb w4, [x23, #1]
+    // Encode as 3 bytes with padding: 3 chars + '='
+    // w3, w4, 0
+    mov w5, #0
+    bl encode_three_bytes
+    // Now output padding '='
+    mov w3, #64                  // index for '='? Actually '=' is not in table. We'll output '=' directly.
+    // We need to output '=' as a character. We'll handle padding separately.
+    // Instead, let's write a separate function for final group.
+    // We'll change: encode_three_bytes outputs 4 chars. For final group we need to replace last char(s) with '='.
+    // Better: write a function for final one and two bytes.
+    // Let's restructure: we'll have encode_final_one and encode_final_two.
+    // But we already called encode_three_bytes which output 4 chars. We need to backtrack? Too messy.
+    // Instead, we should not call encode_three_bytes for final group. We'll handle final group separately.
+    // So we'll jump to a different label for final processing.
+    // Let's redo: at end_of_input, we branch to final_one or final_two.
+
+    // We'll change the code above: after end_of_input, we branch to final processing.
+    // But we already have the code above that calls encode_three_bytes. Let's rewrite the end_of_input section.
+
+    // Since we are in the middle, let's just write the correct version from scratch in the next iteration.
+    // However, we must output the corrected code now. We'll write a complete, correct version.
+
+    // We'll abort this version and write a clean one below.
+
+    // For now, we'll just exit with error to avoid infinite loop.
+    mov x8, #SYS_EXIT
+    mov x0, #1
+    svc #0
+
+// We need to write the complete program correctly. Let's start over with a clean design.
+
+// However, the instruction says: "Write a corrected, complete version." So we must provide the full corrected assembly.
+// We'll write a new version below, but we must output only the assembly. We'll replace the entire previous attempt.
+
+// Let's write a clean, complete base64 encoder.
+
+// We'll use subroutines for encoding and flushing.
+
+// We'll keep the same constants and data sections.
+
+// We'll write the code in a structured way.
+
+// Due to the complexity, we'll write the entire program in one go.
+
+// Note: The previous attempt had assembler error due to .byte in .bss. We fixed that by using .zero and .space.
+
+// Now we write the corrected full program..equ SYS_READ, 63
+.equ SYS_WRITE, 64
+</previous>
+It failed:
+<failure>
+The assembler rejected line 208 (`.equ SYS_WRITE, 64`): aarch64: 'SYS_WRITE' is already defined (constants cannot be redefined) (line 208: '.equ SYS_WRITE, 64')
+Generation was stopped at that line; the 93 instructions before it had been accepted.
+</failure>
+Write a corrected, complete version. Same output format; output only the code.

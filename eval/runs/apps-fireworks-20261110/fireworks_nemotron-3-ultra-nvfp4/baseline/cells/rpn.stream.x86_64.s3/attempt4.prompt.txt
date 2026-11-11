@@ -1,0 +1,455 @@
+Write the complete program `rpn`: a static Linux executable for x86-64 (AMD64), written in assembly. There is no C library, no C runtime and no helper code: you write the entry point `_start`, every function, every table and string, and make the system calls yourself.
+
+Entry state (as the Linux kernel sets it up): execution starts at the label `_start`. rsp is 16-byte aligned and points at argc = 0, followed by the NULL terminators of an empty argv, an empty envp and an empty auxiliary vector: the program gets no arguments. Every other general-purpose register is zero, and the direction flag is clear. There is no return address: `_start` must never return with `ret`; the program ends only through the exit system call.
+
+System calls: the `syscall` instruction, with the system call number in rax and the arguments in rdi, rsi, rdx; the result comes back in rax. The kernel overwrites rcx and r11; every other register is preserved. Exactly these four are available:
+- read = 0: read(fd = 0, buf, count) reads up to count bytes of standard input into buf; returns the number of bytes read, 0 at end of input.
+- write = 1: write(fd, buf, count) with fd 1 (standard output) or 2 (standard error); returns count.
+- exit = 60: exit(status) ends the program; the exit status is the low 8 bits of status.
+- exit_group = 231: the same as exit.
+Any other system call number, another file descriptor, `int 0x80` or `sysenter` stops the program with an error, and so does a buffer that is not entirely inside the program's memory.
+
+Memory: the program's own sections plus a stack of 1 MiB below the entry sp. There is no heap (no brk, no mmap, no malloc): put working storage in `.bss` (zero-initialised), at most 1 MiB in total, or on the stack. Code is not writable. Any access outside these areas stops the program. Each test run may execute at most 50,000,000 instructions.
+
+Output format: one complete assembly source file in GNU assembler (GNU as) syntax, Intel flavour without register prefixes: the harness puts `.intel_syntax noprefix` in front of your text, so do not write it yourself. Examples: `mov rax, qword ptr [rbx + rcx*8]`, `movzx eax, byte ptr [rsi]`, `lea rsi, [rip + buffer]`. Comments start with `#`; do not use `;`.
+Allowed in the file:
+- Sections: `.text` (code), `.section .rodata` (read-only data), `.data` (initialised writable data), `.bss` (zero-initialised space: only `.zero`/`.space` and alignment). Instructions go in `.text` only.
+- Data directives: `.byte`, `.short`/`.2byte`, `.word` (2 bytes on this target), `.long`/`.int`/`.4byte`, `.quad`/`.8byte`, `.ascii`, `.asciz`/`.string`, `.zero`/`.space`, alignment with `.align`/`.balign`/`.p2align`, and `.globl`/`.global` (write `.globl _start`).
+- Labels `name:` in any section, and GNU local labels `1:` referenced as `1f` (next) / `1b` (previous).
+- Constants: `.equ name, value` (or `.set name, value`, or `name = value`), where value is a number or a difference of labels defined earlier in the same section (e.g. `msg_len = . - msg`). Define every constant before its first use.
+- Addressing data: rip-relative, `lea rdi, [rip + table]` or `mov al, byte ptr [rip + table + 3]`. The program is linked at fixed low addresses, so absolute forms (`mov esi, offset buffer`, `movzx eax, byte ptr [table + rcx]`) work as well.
+Not allowed: macros (`.macro`, `.rept`, `.irp`), conditional assembly (`.if`), `.include`, `.incbin`, `.fill`, `.org`, `.comm`/`.lcomm`, `.inst`, `.cfi_*` directives, section stacks (`.pushsection`) and any other section. No libc and no other library: there is nothing to link against, so every symbol you use must be defined in your file.
+Instruction set: x86-64 with SSE up to SSE4.2 (including SSSE3, SSE4.1 and crc32), POPCNT, LZCNT, BMI1/BMI2 (andn, bextr, blsi, blsr, tzcnt, bzhi, mulx, pdep, pext, rorx, sarx, shlx, shrx), MOVBE, AES-NI and PCLMULQDQ. Not supported (rejected): AVX, AVX2, AVX-512, FMA, F16C and every other VEX/EVEX vector instruction, ADX (adcx/adox; use adc) and SHA.
+Output ONLY the assembly source: no Markdown fences, no prose before or after it.
+
+Specification: Task `rpn`: evaluate one Reverse Polish Notation expression per input line and print one result line per input
+line.
+
+Lines: a line is a (possibly empty) sequence of bytes terminated by a newline 0x0A; if the input does not end
+with a newline, the bytes after the last newline form one more, final line. Empty input has no lines (prints
+nothing), and the empty remainder after a final newline is not a line.
+
+Tokens: the separators are space 0x20 and tab 0x09 only; a token is a maximal run of other bytes. Any number of
+separators may appear before, between and after tokens. A token is exactly one of:
+- an integer literal: an optional `-` followed by 1 to 18 decimal digits `0`-`9` (leading zeros allowed, `-0`
+  is 0). A literal with 19 or more digits is invalid;
+- an operator: exactly one of `+` `-` `*` `/` `%` (a lone `-` is the subtraction operator);
+- anything else (for example `1a`, `+5`, `--3`, `1.5`, `x`, or a token containing 0x0D or any other byte) is
+  invalid.
+
+Evaluation uses a stack of signed 64-bit integers, empty at the start of each line. Process tokens left to right:
+a literal is pushed; an operator pops b (top) then a, and pushes `a op b`. `+`, `-`, `*` wrap modulo 2^64 (two's
+complement). `/` is division truncated toward zero; `%` is the remainder with the sign of a (a == (a/b)*b +
+a%b), as in C. A line is an ERROR if: it contains an invalid token; an operator finds fewer than two values on
+the stack; `/` or `%` has b == 0; `/` or `%` has a == -9223372036854775808 and b == -1; or, after the last token,
+the stack does not hold exactly one value (this includes a line with no tokens, e.g. an empty line).
+
+Output per line: if it is not an error, the single remaining value in decimal (a `-` sign if negative, no `+`,
+no leading zeros; -9223372036854775808 must print correctly) followed by a newline; if it is an error, exactly
+`error\n`. After an error the rest of that line is ignored and evaluation continues with the next line.
+
+Example: input `3 4 +\n-7 2 /\n1 +\n\n5 1 2 + 4 * + 3 -` prints `7\n-3\nerror\nerror\n14\n`.
+
+Limits: the input is at most 65536 bytes; a line is at most 1000 bytes. Exit status 0.
+
+Input and output (applies to this whole task):
+- The input is the complete contents of standard input (file descriptor 0). Read it with `read` until `read`
+  returns 0 (end of input). A `read` may return FEWER bytes than requested, at any position (in the middle of a
+  line, a token or a group of bytes), so keep calling it; only a return value of 0 means end of input.
+- Write the output to standard output (file descriptor 1). Only the bytes this task describes may appear on
+  standard output (standard error is ignored). Every output byte must be written before the program exits.
+- Finish with `exit` (or `exit_group`) and the exit status this task gives. The program must not run off the end
+  of its code or crash.
+
+Your previous attempt was:
+<previous>
+.globl _start
+
+.section .bss
+.align 8
+input_buffer: .zero 65536
+rpn_stack: .zero 8192
+
+.section .rodata
+error_msg: .ascii "error\n"
+error_len = . - error_msg
+min_int_str: .ascii "-9223372036854775808\n"
+min_int_len = . - min_int_str
+max_pos: .quad 9223372036854775807
+max_neg_mag: .quad 9223372036854775808
+
+.section .text
+_start:
+    # Read all input
+    lea rdi, [rip + input_buffer]
+    mov rsi, 65536
+    call read_all
+    # Process lines
+    lea rdi, [rip + input_buffer]
+    mov rsi, rax
+    call process_lines
+    # Exit
+    xor rdi, rdi
+    mov rax, 60
+    syscall
+
+# read_all: read from stdin until EOF or buffer full
+# rdi = buffer, rsi = max bytes
+# returns total bytes read in rax
+read_all:
+    mov rbx, 0          # total read
+    mov r12, rdi        # current pointer
+    mov r13, rsi        # remaining
+.read_loop:
+    test r13, r13
+    jz .read_done
+    mov rax, 0          # sys_read
+    mov rdi, 0          # stdin
+    mov rsi, r12
+    mov rdx, r13
+    syscall
+    test rax, rax
+    jz .read_done
+    add rbx, rax
+    add r12, rax
+    sub r13, rax
+    jmp .read_loop
+.read_done:
+    mov rax, rbx
+    ret
+
+# process_lines: iterate over lines in buffer
+# rdi = buffer start, rsi = length
+process_lines:
+    mov r12, rdi        # current position
+    mov r13, rsi
+    add r13, r12        # end pointer
+.line_loop:
+    cmp r12, r13
+    jae .line_done
+    # Find newline
+    mov rax, r12
+.find_nl:
+    cmp rax, r13
+    jae .no_nl
+    cmp byte ptr [rax], 10
+    je .found_nl
+    inc rax
+    jmp .find_nl
+.no_nl:
+    # Last line without newline
+    mov rdi, r12
+    mov rsi, r13
+    call eval_line
+    jmp .line_done
+.found_nl:
+    mov rdi, r12
+    mov rsi, rax
+    push r12
+    push r13
+    call eval_line
+    pop r13
+    pop r12
+    lea r12, [rax + 1]
+    jmp .line_loop
+.line_done:
+    ret
+
+# eval_line: evaluate one RPN line
+# rdi = line start, rsi = line end (exclusive)
+eval_line:
+    mov r12, rdi        # current position in line
+    mov r13, rsi        # end of line
+    lea r14, [rip + rpn_stack]  # stack base
+    mov r15, r14        # stack top (next free slot)
+.token_loop:
+    cmp r12, r13
+    jae .token_done
+.skip_spaces:
+    cmp r12, r13
+    jae .token_done
+    mov al, byte ptr [r12]
+    cmp al, ' '
+    je .skip_next
+    cmp al, '\t'
+    je .skip_next
+    jmp .token_start
+.skip_next:
+    inc r12
+    jmp .skip_spaces
+.token_start:
+    mov rdi, r12        # token start
+.find_token_end:
+    cmp r12, r13
+    jae .token_end_found
+    mov al, byte ptr [r12]
+    cmp al, ' '
+    je .token_end_found
+    cmp al, '\t'
+    je .token_end_found
+    inc r12
+    jmp .find_token_end
+.token_end_found:
+    mov rsi, r12        # token end
+    mov rcx, rsi
+    sub rcx, rdi        # token length in rcx
+    cmp rcx, 1
+    jne .parse_integer
+    mov al, byte ptr [rdi]
+    cmp al, '+'
+    je .op_add
+    cmp al, '-'
+    je .op_sub
+    cmp al, '*'
+    je .op_mul
+    cmp al, '/'
+    je .op_div
+    cmp al, '%'
+    je .op_mod
+    jmp .parse_integer
+
+.op_add:
+    # Need at least 2 elements on stack
+    mov rax, r15
+    sub rax, r14
+    cmp rax, 16
+    jb .error
+    sub r15, 8
+    mov rbx, qword ptr [r15]  # b (top)
+    sub r15, 8
+    mov rax, qword ptr [r15]  # a
+    add rax, rbx
+    mov qword ptr [r15], rax
+    add r15, 8
+    jmp .token_loop
+
+.op_sub:
+    mov rax, r15
+    sub rax, r14
+    cmp rax, 16
+    jb .error
+    sub r15, 8
+    mov rbx, qword ptr [r15]
+    sub r15, 8
+    mov rax, qword ptr [r15]
+    sub rax, rbx
+    mov qword ptr [r15], rax
+    add r15, 8
+    jmp .token_loop
+
+.op_mul:
+    mov rax, r15
+    sub rax, r14
+    cmp rax, 16
+    jb .error
+    sub r15, 8
+    mov rbx, qword ptr [r15]
+    sub r15, 8
+    mov rax, qword ptr [r15]
+    imul rax, rbx
+    mov qword ptr [r15], rax
+    add r15, 8
+    jmp .token_loop
+
+.op_div:
+    mov rax, r15
+    sub rax, r14
+    cmp rax, 16
+    jb .error
+    sub r15, 8
+    mov rbx, qword ptr [r15]
+    sub r15, 8
+    mov rax, qword ptr [r15]
+    test rbx, rbx
+    jz .error
+    # Check for INT64_MIN / -1
+    mov rcx, qword ptr [rip + max_neg_mag]
+    cmp rax, rcx
+    jne .div_ok
+    cmp rbx, -1
+    je .error
+.div_ok:
+    cqo
+    idiv rbx
+    mov qword ptr [r15], rax
+    add r15, 8
+    jmp .token_loop
+
+.op_mod:
+    mov rax, r15
+    sub rax, r14
+    cmp rax, 16
+    jb .error
+    sub r15, 8
+    mov rbx, qword ptr [r15]
+    sub r15, 8
+    mov rax, qword ptr [r15]
+    test rbx, rbx
+    jz .error
+    mov rcx, qword ptr [rip + max_neg_mag]
+    cmp rax, rcx
+    jne .mod_ok
+    cmp rbx, -1
+    je .error
+.mod_ok:
+    cqo
+    idiv rbx
+    mov qword ptr [r15], rdx
+    add r15, 8
+    jmp .token_loop
+
+.parse_integer:
+    # Parse integer literal: optional '-' followed by 1-18 digits
+    # rdi = token start, rsi = token end, rcx = length
+    mov rax, rdi
+    mov rbx, 0          # sign: 0 = positive, 1 = negative
+    mov rcx, 0          # digit count
+    mov rdx, 0          # accumulated value (unsigned magnitude)
+    mov r8, 10
+    mov r9, rsi         # token end
+.parse_sign:
+    cmp rax, r9
+    jae .parse_digits
+    mov cl, byte ptr [rax]
+    cmp cl, '-'
+    jne .parse_digits
+    mov rbx, 1
+    inc rax
+    inc rcx
+    jmp .parse_digits
+.parse_digits:
+    cmp rax, r9
+    jae .check_digits
+    mov cl, byte ptr [rax]
+    cmp cl, '0'
+    jb .check_digits
+    cmp cl, '9'
+    ja .check_digits
+    # Valid digit
+    inc rax
+    inc rcx
+    sub cl, '0'
+    movzx r10, cl
+    # Check overflow: rdx * 10 + r10
+    mov rax, rdx
+    mul r8
+    jc .int_error       # overflow in mul (result > 2^64-1)
+    add rax, r10
+    jc .int_error       # overflow in add
+    mov rdx, rax
+    # Check digit count <= 18
+    cmp rcx, 19
+    ja .int_error
+    jmp .parse_digits
+.check_digits:
+    test rcx, rcx
+    jz .int_error       # no digits
+    cmp rcx, 19
+    ja .int_error       # more than 18 digits
+    # Check value bounds
+    test rbx, rbx
+    jz .check_positive
+    # negative: max magnitude is 9223372036854775808
+    mov rax, qword ptr [rip + max_neg_mag]
+    cmp rdx, rax
+    ja .int_error
+    # Push negative value
+    neg rdx
+    jmp .push_value
+.check_positive:
+    # positive: max is 9223372036854775807
+    mov rax, qword ptr [rip + max_pos]
+    cmp rdx, rax
+    ja .int_error
+.push_value:
+    mov qword ptr [r15], rdx
+    add r15, 8
+    mov r12, rsi        # continue from token end
+    jmp .token_loop
+
+.int_error:
+    jmp .error
+
+.token_done:
+    # End of line tokens, check stack has exactly one value
+    mov rax, r15
+    sub rax, r14
+    cmp rax, 8
+    jne .error
+    # Print the value
+    mov rdi, qword ptr [r14]
+    call print_int
+    ret
+
+.error:
+    # Print "error\n"
+    mov rax, 1
+    mov rdi, 1
+    lea rsi, [rip + error_msg]
+    mov rdx, error_len
+    syscall
+    ret
+
+# print_int: print signed 64-bit integer in rdi followed by newline
+print_int:
+    test rdi, rdi
+    jns .positive
+    # Negative: check for INT64_MIN
+    mov rax, qword ptr [rip + max_neg_mag]
+    cmp rdi, rax
+    jne .neg_not_min
+    # Special case: -9223372036854775808
+    mov rax, 1
+    mov rdi, 1
+    lea rsi, [rip + min_int_str]
+    mov rdx, min_int_len
+    syscall
+    ret
+.neg_not_min:
+    # Print '-' then positive magnitude
+    push rdi
+    mov rax, 1
+    mov rdi, 1
+    lea rsi, [rip + minus_char]
+    mov rdx, 1
+    syscall
+    pop rdi
+    neg rdi
+.positive:
+    # Convert to decimal string
+    lea rsi, [rip + num_buffer_end]
+    mov byte ptr [rsi], 10  # newline
+    dec rsi
+    mov rax, rdi
+    mov rcx, 10
+.convert_loop:
+    xor rdx, rdx
+    div rcx
+    add dl, '0'
+    mov byte ptr [rsi], dl
+    dec rsi
+    test rax, rax
+    jnz .convert_loop
+    inc rsi
+    # Write the string
+    mov rdi, 1
+    mov rdx, rsi
+    sub rdx, [rip + num_buffer_end]  # wrong, need length
+    # Calculate length: num_buffer_end - rsi + 1 (for newline)
+    mov rdx, qword ptr [rip + num_buffer_end]
+    sub rdx, rsi
+    inc rdx
+    mov rax, 1
+    syscall
+    ret
+
+.section .rodata
+minus_char: .byte '-'
+num_buffer_end: .skip 0
+</previous>
+It failed:
+<failure>
+The assembler rejected line 383 (`num_buffer_end: .skip 0`): x86_64: rejected by the GNU as cross-check: warning: .space repeat count is zero, ignored (line 383: 'num_buffer_end: .skip 0')
+Generation was stopped at that line; the 280 instructions before it had been accepted.
+</failure>
+Write a corrected, complete version. Same output format; output only the code.

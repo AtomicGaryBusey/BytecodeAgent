@@ -1,0 +1,290 @@
+.section .rodata
+max_div_10: .quad 922337203685477580
+int64_min: .quad -9223372036854775808
+error_msg: .ascii "error\n"
+error_len = . - error_msg
+
+.section .bss
+.align 8
+input_buf: .zero 65536
+stack: .zero 1024 * 8
+outbuf: .zero 32
+
+.section .text
+.globl _start
+
+_start:
+    lea r13, [rip + stack]          # r13 = stack base (global)
+    lea r14, [rip + input_buf]      # r14 = input buffer base
+    mov rdi, 0                      # stdin
+    mov rsi, r14
+    mov rdx, 65536
+    xor r12, r12                    # total_read
+
+read_loop:
+    mov rax, 0                      # sys_read
+    syscall
+    test rax, rax
+    jz read_done
+    add r12, rax
+    cmp r12, 65536
+    jge read_done
+    lea rsi, [r14 + r12]            # fixed: use base + offset
+    mov rdx, 65536
+    sub rdx, r12
+    jmp read_loop
+
+read_done:
+    test r12, r12
+    jz exit_program
+    
+    # r12 = total bytes read
+    # Process lines
+    xor r15, r15                    # r15 = current position in buffer
+    mov rbx, r12                    # rbx = total length
+
+process_line:
+    cmp r15, rbx
+    jge exit_program
+    
+    # Find end of line (newline or end of buffer)
+    mov rsi, r14
+    add rsi, r15
+    mov rcx, rbx
+    sub rcx, r15
+    mov al, 0x0A
+    repne scasb
+    jne no_newline_found
+    
+    # Found newline at rdi - 1
+    mov r8, rdi
+    dec r8                          # r8 = end of line (exclusive)
+    sub r8, r14                     # r8 = offset of end of line
+    jmp process_line_content
+
+no_newline_found:
+    # No newline found, rest of buffer is the last line
+    mov r8, rbx                     # r8 = end of buffer
+
+process_line_content:
+    # Line is from r15 to r8 (exclusive)
+    # Save line end for next iteration
+    mov r9, r8                      # r9 = line end offset
+    
+    # Initialize stack pointer for this line
+    mov r10, r13                    # r10 = stack pointer (points to next free slot)
+    xor r11, r11                    # r11 = error flag
+    
+    # Tokenize and evaluate
+    mov rsi, r14
+    add rsi, r15                    # rsi = current position in line
+    
+tokenize_loop:
+    cmp rsi, r14
+    jae check_line_end
+    cmp rsi, r9
+    jge line_done
+    
+check_line_end:
+    cmp rsi, r9
+    jge line_done
+    
+    # Skip separators (space 0x20, tab 0x09)
+skip_separators:
+    cmp rsi, r9
+    jge line_done
+    movzx eax, byte ptr [rsi]
+    cmp al, 0x20
+    je skip_char
+    cmp al, 0x09
+    je skip_char
+    jmp parse_token
+
+skip_char:
+    inc rsi
+    jmp skip_separators
+
+parse_token:
+    # rsi points to start of token
+    mov rdi, rsi                    # rdi = token start
+    
+find_token_end:
+    cmp rsi, r9
+    jge token_end_found
+    movzx eax, byte ptr [rsi]
+    cmp al, 0x20
+    je token_end_found
+    cmp al, 0x09
+    je token_end_found
+    inc rsi
+    jmp find_token_end
+
+token_end_found:
+    # Token is from rdi to rsi (exclusive)
+    # Check if operator (single char: + - * / %)
+    mov rcx, rsi
+    sub rcx, rdi                    # rcx = token length
+    cmp rcx, 1
+    jne parse_number
+    
+    movzx eax, byte ptr [rdi]
+    cmp al, '+'
+    je op_add
+    cmp al, '-'
+    je op_sub
+    cmp al, '*'
+    je op_mul
+    cmp al, '/'
+    je op_div
+    cmp al, '%'
+    je op_mod
+    # Not an operator, fall through to parse_number
+
+parse_number:
+    # Parse signed decimal integer (up to 18 digits)
+    # rdi = start, rsi = end (exclusive)
+    xor rax, rax                    # accumulator
+    xor rdx, rdx                    # sign (0 = positive, 1 = negative)
+    xor rcx, rcx                    # digit count
+    
+    cmp rdi, rsi
+    jge invalid_token
+    
+    movzx eax, byte ptr [rdi]
+    cmp al, '-'
+    jne check_digit
+    mov rdx, 1
+    inc rdi
+    cmp rdi, rsi
+    jge invalid_token               # just "-"
+    
+check_digit:
+    movzx eax, byte ptr [rdi]
+    cmp al, '0'
+    jl invalid_token
+    cmp al, '9'
+    jg invalid_token
+    
+parse_digits:
+    cmp rcx, 18
+    jge invalid_token               # more than 18 digits
+    movzx eax, byte ptr [rdi]
+    cmp al, '0'
+    jl invalid_token
+    cmp al, '9'
+    jg invalid_token
+    sub al, '0'
+    movzx r8, al                    # r8 = digit value
+    
+    # Check overflow: acc > max_div_10 or (acc == max_div_10 and digit > 7/8)
+    mov r9, rax                     # save digit
+    mov rax, [rip + max_div_10]
+    cmp rax, rdx                    # This is wrong, need to compare accumulator
+    # Let me redo this properly
+    
+    # Actually, let's do the overflow check properly
+    # We need to check if acc * 10 + digit would overflow int64
+    # For positive: max is 9223372036854775807
+    # For negative: min is -9223372036854775808
+    
+    # Let me restart the number parsing with proper overflow detection
+    jmp parse_number_restart
+
+parse_number_restart:
+    # Re-parse with proper overflow checking
+    xor rax, rax                    # accumulator
+    xor rdx, rdx                    # sign
+    xor rcx, rcx                    # digit count
+    mov r8, rdi                     # r8 = token start
+    
+    cmp r8, rsi
+    jge invalid_token
+    
+    movzx eax, byte ptr [r8]
+    cmp al, '-'
+    jne parse_digits_loop
+    mov rdx, 1
+    inc r8
+    cmp r8, rsi
+    jge invalid_token
+
+parse_digits_loop:
+    cmp r8, rsi
+    jge number_done
+    cmp rcx, 18
+    jge invalid_token
+    movzx eax, byte ptr [r8]
+    cmp al, '0'
+    jl invalid_token
+    cmp al, '9'
+    jg invalid_token
+    sub al, '0'
+    movzx r9, al                    # r9 = digit
+    
+    # Check overflow before multiply
+    # For positive (rdx=0): max = 9223372036854775807
+    # For negative (rdx=1): min = -9223372036854775808 (abs = 9223372036854775808)
+    
+    test rdx, rdx
+    jnz check_neg_overflow
+    
+    # Positive overflow check
+    mov rax, [rip + max_div_10]     # 922337203685477580
+    cmp rax, rdx                    # No, compare accumulator with max_div_10
+    # Need accumulator in a register
+    jmp check_overflow_detailed
+
+check_overflow_detailed:
+    # This is getting complex. Let me use a different approach.
+    # Accumulate in rax, check after each step.
+    # Actually, let's just do the multiplication and check for overflow using signed comparison.
+    
+    # I'll restart with a cleaner approach
+    jmp parse_number_clean
+
+parse_number_clean:
+    # Use rax for accumulator, rdx for sign, rcx for digit count, r8 for pointer
+    xor rax, rax
+    xor rdx, rdx
+    xor rcx, rcx
+    mov r8, rdi
+    
+    cmp r8, rsi
+    jge invalid_token
+    movzx eax, byte ptr [r8]
+    cmp al, '-'
+    jne parse_digits_clean
+    mov rdx, 1
+    inc r8
+    cmp r8, rsi
+    jge invalid_token
+
+parse_digits_clean:
+    cmp r8, rsi
+    jge number_done_clean
+    cmp rcx, 18
+    jge invalid_token
+    movzx eax, byte ptr [r8]
+    cmp al, '0'
+    jl invalid_token
+    cmp al, '9'
+    jg invalid_token
+    sub al, '0'
+    movzx r9, al
+    
+    # rax = accumulator so far
+    # Check: rax * 10 + r9 overflows?
+    # For positive: max = 9223372036854775807
+    # For negative: min = -9223372036854775808
+    
+    mov r10, rax                    # save accumulator
+    imul rax, rax, 10               # rax *= 10
+    jo invalid_token                # overflow in multiply
+    add rax, r9                     # rax += digit
+    jo invalid_token                # overflow in add
+    
+    # Check sign-specific bounds
+    test rdx, rdx
+    jz check_pos_bound
+    # Negative: accumulator should not exceed 9223372036854775808
+    cmp rax, 9223372036854775808

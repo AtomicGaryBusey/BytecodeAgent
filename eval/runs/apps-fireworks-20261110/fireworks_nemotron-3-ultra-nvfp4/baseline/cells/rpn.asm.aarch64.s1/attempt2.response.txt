@@ -1,0 +1,421 @@
+.section .rodata
+error_msg: .ascii "error\n"
+error_len = . - error_msg
+int64_min_str: .ascii "-9223372036854775808"
+int64_min_len = . - int64_min_str
+
+.section .bss
+.align 12
+input_buffer: .space 65536
+eval_stack: .space 4096
+
+.section .text
+.globl _start
+
+.equ SYS_READ, 63
+.equ SYS_WRITE, 64
+.equ SYS_EXIT, 93
+.equ FD_STDIN, 0
+.equ FD_STDOUT, 1
+
+_start:
+    // Read all input into input_buffer
+    mov x19, xzr            // total_read = 0
+    adrp x20, input_buffer
+    add x20, x20, :lo12:input_buffer   // x20 = buffer base
+    mov x21, 65536          // buffer size
+
+read_loop:
+    cmp x19, x21
+    b.ge read_done
+
+    mov x0, FD_STDIN
+    add x1, x20, x19
+    sub x2, x21, x19
+    mov x8, SYS_READ
+    svc #0
+
+    cbz x0, read_done
+    add x19, x19, x0
+    b read_loop
+
+read_done:
+    // x19 = total bytes read, x20 = buffer start
+    mov x22, x20            // current pointer
+    add x23, x20, x19       // end pointer
+
+process_lines:
+    cmp x22, x23
+    b.ge all_done
+
+    mov x24, x22            // line_start
+find_nl:
+    cmp x22, x23
+    b.ge line_no_nl
+    ldrb w25, [x22], #1
+    cmp w25, #0x0A
+    b.ne find_nl
+
+    // line from x24 to x22-1 (excluding newline)
+    mov x0, x24
+    sub x1, x22, x24
+    sub x1, x1, #1
+    bl eval_line
+    b process_lines
+
+line_no_nl:
+    mov x0, x24
+    sub x1, x23, x24
+    bl eval_line
+    b all_done
+
+all_done:
+    mov x0, #0
+    mov x8, SYS_EXIT
+    svc #0
+
+// eval_line(x0=line_ptr, x1=line_len)
+eval_line:
+    stp x19, x20, [sp, #-16]!
+    stp x21, x22, [sp, #-16]!
+    stp x23, x24, [sp, #-16]!
+    stp x25, x26, [sp, #-16]!
+    stp x27, x28, [sp, #-16]!
+
+    mov x19, x0             // line_ptr
+    mov x20, x1             // line_len
+    adrp x21, eval_stack
+    add x21, x21, :lo12:eval_stack   // stack base
+    mov x22, x21            // stack_top (next free slot)
+
+    // Tokenization
+    mov x23, x19            // scan pointer
+    add x24, x19, x20       // line_end
+
+token_loop:
+    cmp x23, x24
+    b.ge tokens_done
+    ldrb w25, [x23]
+    cmp w25, #0x20
+    b.eq skip_sep
+    cmp w25, #0x09
+    b.eq skip_sep
+
+    // start token
+    mov x25, x23            // token_start
+find_token_end:
+    add x23, x23, #1
+    cmp x23, x24
+    b.ge token_end
+    ldrb w26, [x23]
+    cmp w26, #0x20
+    b.eq token_end
+    cmp w26, #0x09
+    b.eq token_end
+    b find_token_end
+
+token_end:
+    mov x0, x25             // token_ptr
+    sub x1, x23, x25        // token_len
+    bl process_token
+    cbnz x0, eval_error
+    b token_loop
+
+skip_sep:
+    add x23, x23, #1
+    b token_loop
+
+tokens_done:
+    // Check stack has exactly one element
+    sub x0, x22, x21
+    cmp x0, #8
+    b.ne eval_error
+    ldr x0, [x21]
+    bl print_int64
+    b eval_done
+
+eval_error:
+    mov x0, FD_STDOUT
+    adrp x1, error_msg
+    add x1, x1, :lo12:error_msg
+    mov x2, error_len
+    bl write_all
+
+eval_done:
+    ldp x27, x28, [sp], #16
+    ldp x25, x26, [sp], #16
+    ldp x23, x24, [sp], #16
+    ldp x21, x22, [sp], #16
+    ldp x19, x20, [sp], #16
+    ret
+
+// process_token(x0=token_ptr, x1=token_len) -> x0=0 success, x0=1 error
+process_token:
+    cmp x1, #1
+    b.ne try_parse_int
+    ldrb w2, [x0]
+    cmp w2, #'+'
+    b.eq op_add
+    cmp w2, #'-'
+    b.eq op_sub
+    cmp w2, #'*'
+    b.eq op_mul
+    cmp w2, #'/'
+    b.eq op_div
+    cmp w2, #'%'
+    b.eq op_mod
+
+try_parse_int:
+    bl parse_int64
+    cbnz x1, token_error
+    str x0, [x22], #8
+    mov x0, #0
+    ret
+
+op_add:
+    sub x3, x22, x21
+    cmp x3, #16
+    b.lt token_error
+    ldr x3, [x22, #-8]
+    ldr x4, [x22, #-16]
+    sub x22, x22, #16
+    add x0, x4, x3
+    str x0, [x22], #8
+    mov x0, #0
+    ret
+
+op_sub:
+    sub x3, x22, x21
+    cmp x3, #16
+    b.lt token_error
+    ldr x3, [x22, #-8]
+    ldr x4, [x22, #-16]
+    sub x22, x22, #16
+    sub x0, x4, x3
+    str x0, [x22], #8
+    mov x0, #0
+    ret
+
+op_mul:
+    sub x3, x22, x21
+    cmp x3, #16
+    b.lt token_error
+    ldr x3, [x22, #-8]
+    ldr x4, [x22, #-16]
+    sub x22, x22, #16
+    mul x0, x4, x3
+    str x0, [x22], #8
+    mov x0, #0
+    ret
+
+op_div:
+    sub x3, x22, x21
+    cmp x3, #16
+    b.lt token_error
+    ldr x3, [x22, #-8]
+    ldr x4, [x22, #-16]
+    cbz x3, token_error
+    // check a == INT64_MIN and b == -1
+    mov x5, #0x8000
+    movk x5, #0x0000, lsl #16
+    movk x5, #0x0000, lsl #32
+    movk x5, #0x0000, lsl #48
+    cmp x4, x5
+    b.ne do_div
+    cmp x3, #-1
+    b.eq token_error
+do_div:
+    sub x22, x22, #16
+    sdiv x0, x4, x3
+    str x0, [x22], #8
+    mov x0, #0
+    ret
+
+op_mod:
+    sub x3, x22, x21
+    cmp x3, #16
+    b.lt token_error
+    ldr x3, [x22, #-8]
+    ldr x4, [x22, #-16]
+    cbz x3, token_error
+    mov x5, #0x8000
+    movk x5, #0x0000, lsl #16
+    movk x5, #0x0000, lsl #32
+    movk x5, #0x0000, lsl #48
+    cmp x4, x5
+    b.ne do_mod
+    cmp x3, #-1
+    b.eq token_error
+do_mod:
+    sub x22, x22, #16
+    sdiv x5, x4, x3
+    msub x0, x5, x3, x4
+    str x0, [x22], #8
+    mov x0, #0
+    ret
+
+token_error:
+    mov x0, #1
+    ret
+
+// parse_int64(x0=ptr, x1=len) -> x0=value, x1=error (0/1)
+parse_int64:
+    stp x19, x20, [sp, #-16]!
+    stp x21, x22, [sp, #-16]!
+    stp x23, x24, [sp, #-16]!
+    stp x25, x26, [sp, #-16]!
+    stp x27, x28, [sp, #-16]!
+
+    mov x19, x0
+    mov x20, x1
+    cbz x20, parse_error
+
+    ldrb w21, [x19]
+    cmp w21, #'-'
+    b.ne parse_digits
+    sub x20, x20, #1
+    cbz x20, parse_error
+    add x19, x19, #1
+    mov x22, #1
+    b parse_digits_loop
+
+parse_digits:
+    mov x22, #0
+
+parse_digits_loop:
+    mov x23, #0
+    mov x24, #0
+    cbz x20, parse_error
+
+digit_loop:
+    ldrb w25, [x19], #1
+    sub x20, x20, #1
+    add x23, x23, #1
+    cmp x23, #19
+    b.gt parse_error
+    cmp w25, #'0'
+    b.lt parse_error
+    cmp w25, #'9'
+    b.gt parse_error
+    sub w25, w25, #'0'
+    mul x24, x24, #10
+    add x24, x24, x25
+    cbnz x20, digit_loop
+
+    cbz x22, parse_positive
+    neg x24, x24
+parse_positive:
+    mov x0, x24
+    mov x1, #0
+    b parse_done
+
+parse_error:
+    mov x0, #0
+    mov x1, #1
+
+parse_done:
+    ldp x27, x28, [sp], #16
+    ldp x25, x26, [sp], #16
+    ldp x23, x24, [sp], #16
+    ldp x21, x22, [sp], #16
+    ldp x19, x20, [sp], #16
+    ret
+
+// print_int64(x0=value)
+print_int64:
+    stp x19, x20, [sp, #-16]!
+    stp x21, x22, [sp, #-16]!
+    stp x23, x24, [sp, #-16]!
+    stp x25, x26, [sp, #-16]!
+    stp x27, x28, [sp, #-16]!
+
+    mov x19, x0
+    tbz x19, #63, print_positive
+
+    // negative
+    mov x20, #0x8000
+    movk x20, #0x0000, lsl #16
+    movk x20, #0x0000, lsl #32
+    movk x20, #0x0000, lsl #48
+    cmp x19, x20
+    b.ne print_negative_normal
+
+    // INT64_MIN
+    mov x0, FD_STDOUT
+    adrp x1, int64_min_str
+    add x1, x1, :lo12:int64_min_str
+    mov x2, int64_min_len
+    bl write_all
+    b print_newline
+
+print_negative_normal:
+    // print '-'
+    sub sp, sp, #16
+    mov w20, #'-'
+    strb w20, [sp]
+    mov x0, FD_STDOUT
+    mov x1, sp
+    mov x2, #1
+    bl write_all
+    add sp, sp, #16
+    neg x19, x19
+
+print_positive:
+    // convert to decimal
+    sub sp, sp, #32
+    mov x20, sp
+    add x21, sp, #31
+    mov x22, #10
+
+print_digit_loop:
+    udiv x23, x19, x22
+    msub x24, x23, x22, x19
+    add x24, x24, #'0'
+    strb w24, [x21], #-1
+    mov x19, x23
+    cbnz x19, print_digit_loop
+
+    add x21, x21, #1
+    sub x0, sp, x21
+    add x0, x0, #32
+    mov x2, x0
+    mov x0, FD_STDOUT
+    mov x1, x21
+    bl write_all
+    add sp, sp, #32
+
+print_newline:
+    sub sp, sp, #16
+    mov w20, #0x0A
+    strb w20, [sp]
+    mov x0, FD_STDOUT
+    mov x1, sp
+    mov x2, #1
+    bl write_all
+    add sp, sp, #16
+
+    ldp x27, x28, [sp], #16
+    ldp x25, x26, [sp], #16
+    ldp x23, x24, [sp], #16
+    ldp x21, x22, [sp], #16
+    ldp x19, x20, [sp], #16
+    ret
+
+// write_all(x0=fd, x1=buf, x2=len)
+write_all:
+    stp x19, x20, [sp, #-16]!
+    mov x19, x0
+    mov x20, x1
+write_loop:
+    mov x0, x19
+    mov x1, x20
+    mov x8, SYS_WRITE
+    svc #0
+    cbz x0, write_done
+    sub x2, x2, x0
+    cbz x2, write_done
+    add x20, x20, x0
+    b write_loop
+write_done:
+    ldp x19, x20, [sp], #16
+    ret

@@ -1,0 +1,244 @@
+.globl _start
+
+.equ MAX_INPUT, 65536
+.equ TAPE_SIZE, 30000
+.equ MAX_OUTPUT, 65536
+.equ MAX_NESTING, 1000
+.equ SYS_READ, 0
+.equ SYS_WRITE, 1
+.equ SYS_EXIT, 60
+
+.section .bss
+.align 4096
+input_buffer: .zero MAX_INPUT
+bracket_map: .zero MAX_INPUT * 4
+tape: .zero TAPE_SIZE
+output_buffer: .zero MAX_OUTPUT
+stack: .zero MAX_NESTING * 4
+
+.section .text
+_start:
+    # Read all stdin into input_buffer
+    xor r12, r12                    # total_read = 0
+    lea rsi, [rip + input_buffer]
+    mov rdx, MAX_INPUT
+1:
+    mov rax, SYS_READ
+    xor rdi, rdi                    # fd = 0
+    syscall
+    test rax, rax
+    js read_error                   # negative = error
+    jz read_done                    # zero = EOF
+    add r12, rax                    # total_read += rax
+    add rsi, rax
+    sub rdx, rax
+    jnz 1b
+read_done:
+    # r12 = total_read
+    # Find first '!' (0x21)
+    lea rdi, [rip + input_buffer]
+    mov rcx, r12
+    xor rax, rax
+    mov al, 0x21
+    repne scasb
+    jne no_bang
+    # found at position (rdi - input_buffer - 1)
+    lea rax, [rip + input_buffer]
+    lea r13, [rdi - 1]
+    sub r13, rax                    # r13 = program_length
+    jmp have_bang
+no_bang:
+    mov r13, r12                    # program_length = total_read
+have_bang:
+    # input_start = program_length + 1 if bang found, else total_read
+    # input_length = total_read - input_start
+    cmp r13, r12
+    je no_input
+    lea r14, [r13 + 1]              # input_start
+    mov r15, r12
+    sub r15, r14                    # input_length
+    jmp input_ready
+no_input:
+    mov r14, r12                    # input_start = total_read
+    xor r15, r15                    # input_length = 0
+input_ready:
+    # Bracket matching validation and mapping
+    lea rsi, [rip + input_buffer]   # program start
+    lea rdi, [rip + stack]          # stack base
+    xor rbp, rbp                    # stack depth = 0
+    xor rcx, rcx                    # ip = 0
+    lea r10, [rip + bracket_map]    # bracket_map base
+bracket_loop:
+    cmp rcx, r13
+    jge bracket_done
+    movzx eax, byte ptr [rsi + rcx]
+    cmp al, '['
+    je bracket_open
+    cmp al, ']'
+    je bracket_close
+    inc rcx
+    jmp bracket_loop
+bracket_open:
+    cmp rbp, MAX_NESTING
+    jge bracket_error
+    mov dword ptr [rdi + rbp*4], ecx
+    inc rbp
+    inc rcx
+    jmp bracket_loop
+bracket_close:
+    test rbp, rbp
+    jz bracket_error
+    dec rbp
+    mov edx, dword ptr [rdi + rbp*4]    # matching '['
+    mov dword ptr [r10 + rcx*4], edx    # ] -> [
+    mov dword ptr [r10 + rdx*4], ecx    # [ -> ]
+    inc rcx
+    jmp bracket_loop
+bracket_done:
+    test rbp, rbp
+    jnz bracket_error
+    # Brackets balanced, proceed to execution
+    jmp execute_init
+bracket_error:
+    mov rax, SYS_EXIT
+    mov rdi, 1
+    syscall
+read_error:
+    mov rax, SYS_EXIT
+    mov rdi, 1
+    syscall
+
+execute_init:
+    # Registers for execution:
+    # rbx = data pointer (dp)
+    # rbp = instruction pointer (ip)
+    # r8 = input pointer (input_ptr)
+    # r9 = output pointer (output_ptr)
+    # r10 = bracket_map base (already set)
+    # r11 = temporary
+    # r12 = output buffer base
+    # r13 = program_length (preserved)
+    # r14 = input_start (preserved)
+    # r15 = input_length (preserved)
+    # rsi = program start (input_buffer)
+    xor rbx, rbx                    # dp = 0
+    xor rbp, rbp                    # ip = 0
+    xor r8, r8                      # input_ptr = 0
+    xor r9, r9                      # output_ptr = 0
+    lea rsi, [rip + input_buffer]   # program start
+    lea r11, [rip + tape]           # tape base
+    lea r12, [rip + output_buffer]  # output buffer base
+
+execute_loop:
+    cmp rbp, r13
+    jge execute_done                # ip >= program_length -> done
+    movzx eax, byte ptr [rsi + rbp] # current instruction
+    # Switch on instruction
+    cmp al, '>'
+    je exec_right
+    cmp al, '<'
+    je exec_left
+    cmp al, '+'
+    je exec_inc
+    cmp al, '-'
+    je exec_dec
+    cmp al, '.'
+    je exec_out
+    cmp al, ','
+    je exec_in
+    cmp al, '['
+    je exec_jz
+    cmp al, ']'
+    je exec_jnz
+    # Ignore other characters
+    inc rbp
+    jmp execute_loop
+
+exec_right:
+    inc rbx
+    inc rbp
+    jmp execute_loop
+
+exec_left:
+    dec rbx
+    inc rbp
+    jmp execute_loop
+
+exec_inc:
+    add byte ptr [r11 + rbx], 1
+    inc rbp
+    jmp execute_loop
+
+exec_dec:
+    sub byte ptr [r11 + rbx], 1
+    inc rbp
+    jmp execute_loop
+
+exec_out:
+    # Write current cell to output buffer
+    movzx eax, byte ptr [r11 + rbx]
+    mov byte ptr [r12 + r9], al
+    inc r9
+    cmp r9, MAX_OUTPUT
+    jne exec_out_cont
+    # Flush output buffer
+    mov rax, SYS_WRITE
+    mov rdi, 1
+    lea rsi, [rip + output_buffer]
+    mov rdx, MAX_OUTPUT
+    syscall
+    xor r9, r9
+exec_out_cont:
+    inc rbp
+    jmp execute_loop
+
+exec_in:
+    cmp r8, r15
+    jge exec_in_eof
+    # Read from program input
+    lea rdi, [rip + input_buffer]
+    add rdi, r14
+    add rdi, r8
+    movzx eax, byte ptr [rdi]
+    mov byte ptr [r11 + rbx], al
+    inc r8
+    jmp exec_in_done
+exec_in_eof:
+    mov byte ptr [r11 + rbx], 0
+exec_in_done:
+    inc rbp
+    jmp execute_loop
+
+exec_jz:
+    # If cell == 0, jump to after matching ]
+    cmp byte ptr [r11 + rbx], 0
+    jne exec_jz_cont
+    mov edx, dword ptr [r10 + rbp*4]
+    mov rbp, rdx                  # jump to matching ']' (the inc below will make it after)
+exec_jz_cont:
+    inc rbp
+    jmp execute_loop
+
+exec_jnz:
+    # If cell != 0, jump back to after matching [
+    cmp byte ptr [r11 + rbx], 0
+    je exec_jnz_cont
+    mov edx, dword ptr [r10 + rbp*4]
+    mov rbp, rdx                  # jump to matching '[' (the inc below will make it after)
+exec_jnz_cont:
+    inc rbp
+    jmp execute_loop
+
+execute_done:
+    # Flush any remaining output
+    test r9, r9
+    jz exit_success
+    mov rax, SYS_WRITE
+    mov rdi, 1
+    lea rsi, [rip + output_buffer]
+    mov rdx, r9
+    syscall
+exit_success:
+    mov rax, SYS_EXIT
+    xor rdi, rdi
+    syscall

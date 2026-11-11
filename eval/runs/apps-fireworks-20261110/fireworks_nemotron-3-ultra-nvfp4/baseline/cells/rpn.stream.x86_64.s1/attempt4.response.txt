@@ -1,0 +1,372 @@
+.section .rodata
+max_pos: .quad 9223372036854775807
+max_neg_abs: .quad 9223372036854775808
+int64_min: .quad -9223372036854775808
+error_msg: .ascii "error\n"
+error_len = . - error_msg
+newline: .byte 0x0A
+
+.section .bss
+.align 8
+input_buf: .zero 65536
+stack: .zero 1024 * 8
+outbuf: .zero 32
+
+.section .text
+.globl _start
+
+_start:
+    lea r13, [rip + stack]          # r13 = stack base (global)
+    lea r14, [rip + input_buf]      # r14 = input buffer base
+    mov rdi, 0                      # stdin
+    mov rsi, r14
+    mov rdx, 65536
+    xor r12, r12                    # total_read
+
+read_loop:
+    mov rax, 0                      # sys_read
+    syscall
+    test rax, rax
+    jz read_done
+    add r12, rax
+    cmp r12, 65536
+    jge read_done
+    lea rsi, [r14 + r12]
+    mov rdx, 65536
+    sub rdx, r12
+    jmp read_loop
+
+read_done:
+    test r12, r12
+    jz exit_program
+    
+    # r12 = total bytes read
+    xor r15, r15                    # r15 = current position in buffer
+    mov rbx, r12                    # rbx = total length
+
+process_line:
+    cmp r15, rbx
+    jge exit_program
+    
+    # Find end of line (newline or end of buffer)
+    mov rsi, r14
+    add rsi, r15
+    mov rcx, rbx
+    sub rcx, r15
+    mov al, 0x0A
+    repne scasb
+    jne no_newline_found
+    
+    # Found newline at rdi - 1
+    mov r8, rdi
+    dec r8                          # r8 = end of line (exclusive)
+    sub r8, r14                     # r8 = offset of end of line
+    jmp process_line_content
+
+no_newline_found:
+    # No newline found, rest of buffer is the last line
+    mov r8, rbx                     # r8 = end of buffer
+
+process_line_content:
+    # Line is from r15 to r8 (exclusive)
+    mov r9, r8                      # r9 = line end offset
+    
+    # Initialize stack pointer for this line
+    mov r10, r13                    # r10 = stack pointer (points to next free slot)
+    xor r11, r11                    # r11 = error flag (0 = ok, 1 = error)
+    
+    mov rsi, r14
+    add rsi, r15                    # rsi = current position in line
+
+tokenize_loop:
+    cmp rsi, r9
+    jge line_done
+    
+    # Skip separators (space 0x20, tab 0x09)
+skip_separators:
+    cmp rsi, r9
+    jge line_done
+    movzx eax, byte ptr [rsi]
+    cmp al, 0x20
+    je skip_char
+    cmp al, 0x09
+    je skip_char
+    jmp parse_token
+
+skip_char:
+    inc rsi
+    jmp skip_separators
+
+parse_token:
+    # rsi points to start of token
+    mov rdi, rsi                    # rdi = token start
+    
+find_token_end:
+    cmp rsi, r9
+    jge token_end_found
+    movzx eax, byte ptr [rsi]
+    cmp al, 0x20
+    je token_end_found
+    cmp al, 0x09
+    je token_end_found
+    inc rsi
+    jmp find_token_end
+
+token_end_found:
+    # Token is from rdi to rsi (exclusive)
+    mov rcx, rsi
+    sub rcx, rdi                    # rcx = token length
+    cmp rcx, 1
+    jne parse_number
+    
+    movzx eax, byte ptr [rdi]
+    cmp al, '+'
+    je op_add
+    cmp al, '-'
+    je op_sub
+    cmp al, '*'
+    je op_mul
+    cmp al, '/'
+    je op_div
+    cmp al, '%'
+    je op_mod
+    # Not an operator, fall through to parse_number
+
+parse_number:
+    # Parse signed decimal integer
+    # rdi = start, rsi = end (exclusive)
+    xor rax, rax                    # accumulator (unsigned)
+    xor rdx, rdx                    # sign (0 = positive, 1 = negative)
+    xor rcx, rcx                    # digit count
+    mov r8, rdi                     # r8 = current char pointer
+    
+    cmp r8, rsi
+    jge invalid_token
+    
+    movzx eax, byte ptr [r8]
+    cmp al, '-'
+    jne parse_digits
+    mov rdx, 1
+    inc r8
+    cmp r8, rsi
+    jge invalid_token               # just "-"
+    
+parse_digits:
+    cmp r8, rsi
+    jge check_number_done
+    cmp rcx, 18
+    jge invalid_token               # more than 18 digits
+    movzx eax, byte ptr [r8]
+    cmp al, '0'
+    jl invalid_token
+    cmp al, '9'
+    jg invalid_token
+    sub al, '0'
+    movzx r9, al                    # r9 = digit value
+    
+    # rax = accumulator, multiply by 10 and add digit
+    imul rax, rax, 10
+    add rax, r9
+    inc rcx
+    inc r8
+    jmp parse_digits
+
+check_number_done:
+    cmp rcx, 0
+    je invalid_token                # no digits
+    
+    # Check bounds
+    test rdx, rdx
+    jz check_positive
+    
+    # Negative: check val <= 9223372036854775808
+    mov rdx, [rip + max_neg_abs]
+    cmp rax, rdx
+    ja invalid_token
+    # Negate for two's complement (works for 9223372036854775808)
+    neg rax
+    jmp push_value
+
+check_positive:
+    # Positive: check val <= 9223372036854775807
+    mov rdx, [rip + max_pos]
+    cmp rax, rdx
+    ja invalid_token
+
+push_value:
+    # Push rax onto stack
+    mov qword ptr [r10], rax
+    add r10, 8
+    jmp tokenize_loop
+
+# Operator implementations
+op_add:
+    test r11, r11
+    jnz tokenize_loop
+    sub r10, 16
+    js stack_underflow
+    mov rax, qword ptr [r10]
+    add rax, qword ptr [r10 + 8]
+    mov qword ptr [r10], rax
+    add r10, 8
+    jmp tokenize_loop
+
+op_sub:
+    test r11, r11
+    jnz tokenize_loop
+    sub r10, 16
+    js stack_underflow
+    mov rax, qword ptr [r10]
+    sub rax, qword ptr [r10 + 8]
+    mov qword ptr [r10], rax
+    add r10, 8
+    jmp tokenize_loop
+
+op_mul:
+    test r11, r11
+    jnz tokenize_loop
+    sub r10, 16
+    js stack_underflow
+    mov rax, qword ptr [r10]
+    imul rax, qword ptr [r10 + 8]
+    mov qword ptr [r10], rax
+    add r10, 8
+    jmp tokenize_loop
+
+op_div:
+    test r11, r11
+    jnz tokenize_loop
+    sub r10, 16
+    js stack_underflow
+    mov rbx, qword ptr [r10 + 8]    # b (divisor)
+    test rbx, rbx
+    jz div_by_zero
+    mov rax, qword ptr [r10]        # a (dividend)
+    # Check for INT64_MIN / -1
+    cmp rax, qword ptr [rip + int64_min]
+    jne do_div
+    cmp rbx, -1
+    je div_overflow
+do_div:
+    cqo
+    idiv rbx
+    mov qword ptr [r10], rax        # quotient
+    add r10, 8
+    jmp tokenize_loop
+
+op_mod:
+    test r11, r11
+    jnz tokenize_loop
+    sub r10, 16
+    js stack_underflow
+    mov rbx, qword ptr [r10 + 8]    # b (divisor)
+    test rbx, rbx
+    jz div_by_zero
+    mov rax, qword ptr [r10]        # a (dividend)
+    # Check for INT64_MIN % -1
+    cmp rax, qword ptr [rip + int64_min]
+    jne do_mod
+    cmp rbx, -1
+    je div_overflow
+do_mod:
+    cqo
+    idiv rbx
+    mov qword ptr [r10], rdx        # remainder
+    add r10, 8
+    jmp tokenize_loop
+
+div_by_zero:
+    mov r11, 1
+    jmp tokenize_loop
+
+div_overflow:
+    mov r11, 1
+    jmp tokenize_loop
+
+stack_underflow:
+    mov r11, 1
+    jmp tokenize_loop
+
+invalid_token:
+    mov r11, 1
+    jmp tokenize_loop
+
+line_done:
+    # Check for error or stack depth != 1
+    test r11, r11
+    jnz print_error
+    
+    # Stack should have exactly one element: r10 == r13 + 8
+    lea rax, [r13 + 8]
+    cmp r10, rax
+    jne print_error
+    
+    # Print the result
+    mov rax, qword ptr [r13]
+    call print_int64
+    jmp advance_line
+
+print_error:
+    mov rax, 1                      # sys_write
+    mov rdi, 1                      # stdout
+    lea rsi, [rip + error_msg]
+    mov rdx, error_len
+    syscall
+
+advance_line:
+    # Move to next line (skip newline if present)
+    cmp r8, rbx
+    jge exit_program
+    mov r15, r8
+    inc r15                         # skip newline
+    jmp process_line
+
+print_int64:
+    # rax = signed 64-bit integer to print
+    # Uses outbuf in .bss
+    lea rdi, [rip + outbuf + 31]    # point to end of buffer
+    mov byte ptr [rdi], 0x0A        # newline
+    dec rdi
+    
+    test rax, rax
+    jns print_positive
+    
+    # Negative number
+    neg rax
+    mov rcx, 1                      # sign flag
+    jmp print_digits_loop
+    
+print_positive:
+    xor rcx, rcx                    # sign flag
+    
+print_digits_loop:
+    mov rbx, 10
+    xor rdx, rdx
+    div rbx                         # rax = quotient, rdx = remainder
+    add dl, '0'
+    mov byte ptr [rdi], dl
+    dec rdi
+    test rax, rax
+    jnz print_digits_loop
+    
+    test rcx, rcx
+    jz print_write
+    mov byte ptr [rdi], '-'
+    dec rdi
+    
+print_write:
+    inc rdi                         # rdi = start of string
+    lea rsi, [rip + outbuf + 31]
+    mov rdx, rsi
+    sub rdx, rdi                    # length
+    mov rax, 1                      # sys_write
+    mov rsi, rdi
+    mov rdi, 1                      # stdout
+    syscall
+    ret
+
+exit_program:
+    mov rax, 60                     # sys_exit
+    xor rdi, rdi                    # status 0
+    syscall
+```

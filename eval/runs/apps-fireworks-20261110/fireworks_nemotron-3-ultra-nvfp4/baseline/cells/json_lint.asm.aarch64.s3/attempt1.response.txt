@@ -1,0 +1,849 @@
+.section .rodata
+ok_msg: .asciz "ok\n"
+err_prefix: .asciz "error at "
+err_suffix: .asciz "\n"
+
+.section .bss
+.align 12
+input_buf: .space 65536
+ctx_stack: .space 4000          // 1000 * 4 bytes
+num_buf: .space 12              // for decimal conversion
+
+.section .text
+.globl _start
+
+// Syscall numbers
+.equ SYS_READ, 63
+.equ SYS_WRITE, 64
+.equ SYS_EXIT, 93
+
+// Context stack entry: 32-bit, low byte = type (0=object,1=array), next byte = state
+// For object: state 0=expect key or '}', 1=expect ':', 2=expect value, 3=expect ',' or '}'
+// For array: state 0=expect value or ']', 1=expect ',' or ']'
+
+// Registers:
+// x19 = input_buf base
+// x20 = current offset (index)
+// x21 = input length
+// x22 = context stack pointer (index 0..999)
+// x23 = error offset (set on error)
+// x24-x28 = temporaries
+// x29 = frame pointer (unused)
+// x30 = link register
+
+_start:
+    // Initialize
+    adrp x19, input_buf
+    add x19, x19, :lo12:input_buf
+    mov x20, #0
+    mov x21, #0
+    mov x22, #0
+
+    // Read all input
+    bl read_all
+    cbnz x0, read_error   // x0 != 0 means error (but read_all returns 0 on success, -1 on error?)
+
+    // Parse document
+    bl parse_document
+    cbnz x0, parse_error  // x0 != 0 means error
+
+    // Success
+    adrp x0, ok_msg
+    add x0, x0, :lo12:ok_msg
+    mov x1, #3            // length of "ok\n"
+    mov x2, #1            // stdout
+    mov x8, #SYS_WRITE
+    svc #0
+    mov x0, #0
+    b exit_prog
+
+read_error:
+    // read error (should not happen per spec)
+    mov x0, #1
+    b exit_prog
+
+parse_error:
+    // x23 holds error offset
+    // Output "error at N\n"
+    adrp x0, err_prefix
+    add x0, x0, :lo12:err_prefix
+    mov x1, #9            // length of "error at "
+    mov x2, #1
+    mov x8, #SYS_WRITE
+    svc #0
+
+    // Convert error offset to decimal
+    mov x0, x23
+    adrp x1, num_buf
+    add x1, x1, :lo12:num_buf
+    bl utoa
+    // x0 = length of number string
+    mov x2, x0
+    adrp x0, num_buf
+    add x0, x0, :lo12:num_buf
+    mov x1, x0
+    mov x2, x0   // wait, x2 is length, x1 is buffer
+    mov x8, #SYS_WRITE
+    svc #0
+
+    // Output newline
+    adrp x0, err_suffix
+    add x0, x0, :lo12:err_suffix
+    mov x1, #1
+    mov x2, #1
+    mov x8, #SYS_WRITE
+    svc #0
+
+    mov x0, #1
+    b exit_prog
+
+exit_prog:
+    mov x8, #SYS_EXIT
+    svc #0
+
+// read_all: read stdin until EOF into input_buf
+// Returns 0 on success, -1 on error (in x0)
+// Uses x19=buf, x20=offset, x21=total
+read_all:
+    stp x29, x30, [sp, #-16]!
+    mov x29, sp
+1:
+    // read(fd=0, buf=input_buf+x20, count=65536-x20)
+    mov x0, #0
+    add x1, x19, x20
+    mov x2, #65536
+    sub x2, x2, x20
+    mov x8, #SYS_READ
+    svc #0
+    // x0 = bytes read
+    cbz x0, 2f          // EOF
+    // check for error (negative)
+    tbz x0, #63, 3f     // if sign bit not set, ok
+    // error
+    mov x0, #-1
+    b 4f
+3:
+    add x20, x20, x0
+    add x21, x21, x0
+    cmp x21, #65536
+    b.lt 1b
+2:
+    mov x0, #0
+4:
+    ldp x29, x30, [sp], #16
+    ret
+
+// parse_document: parse ws value ws and ensure end
+// Returns 0 on success, -1 on error (sets x23)
+parse_document:
+    stp x29, x30, [sp, #-16]!
+    mov x29, sp
+    bl parse_ws
+    cbnz x0, parse_doc_err
+    cmp x20, x21
+    b.eq parse_doc_err_eof
+    bl parse_value
+    cbnz x0, parse_doc_err
+    bl parse_ws
+    cbnz x0, parse_doc_err
+    cmp x20, x21
+    b.ne parse_doc_err_trailing
+    cmp x22, #0
+    b.ne parse_doc_err_unclosed
+    mov x0, #0
+    b parse_doc_ret
+parse_doc_err_eof:
+    mov x23, x20
+    b parse_doc_err
+parse_doc_err_trailing:
+    mov x23, x20
+    b parse_doc_err
+parse_doc_err_unclosed:
+    mov x23, x20
+    b parse_doc_err
+parse_doc_err:
+    mov x0, #-1
+parse_doc_ret:
+    ldp x29, x30, [sp], #16
+    ret
+
+// parse_ws: skip whitespace (space, tab, newline, carriage return)
+// Returns 0 always (no error)
+parse_ws:
+    stp x29, x30, [sp, #-16]!
+    mov x29, sp
+1:
+    cmp x20, x21
+    b.ge 2f
+    ldrb w3, [x19, x20]
+    // check if whitespace: 0x20, 0x09, 0x0A, 0x0D
+    cmp w3, #0x20
+    b.eq 3f
+    cmp w3, #0x09
+    b.eq 3f
+    cmp w3, #0x0A
+    b.eq 3f
+    cmp w3, #0x0D
+    b.eq 3f
+    b 2f
+3:
+    add x20, x20, #1
+    b 1b
+2:
+    mov x0, #0
+    ldp x29, x30, [sp], #16
+    ret
+
+// parse_value: dispatch based on current byte
+// Returns 0 on success, -1 on error
+parse_value:
+    stp x29, x30, [sp, #-16]!
+    mov x29, sp
+    bl parse_ws
+    cbnz x0, parse_val_ret
+    cmp x20, x21
+    b.ge parse_val_eof
+    ldrb w3, [x19, x20]
+    // switch
+    cmp w3, #'{'        // 0x7B
+    b.eq parse_object
+    cmp w3, #'['        // 0x5B
+    b.eq parse_array
+    cmp w3, #'"'        // 0x22
+    b.eq parse_string
+    cmp w3, #'t'        // true
+    b.eq parse_true
+    cmp w3, #'f'        // false
+    b.eq parse_false
+    cmp w3, #'n'        // null
+    b.eq parse_null
+    cmp w3, #'-'        // number
+    b.eq parse_number
+    cmp w3, #'0'
+    b.lt parse_val_err
+    cmp w3, #'9'
+    b.gt parse_val_err
+    // digit 1-9
+    b parse_number
+parse_val_eof:
+    mov x23, x20
+    b parse_val_err
+parse_val_err:
+    mov x23, x20
+    mov x0, #-1
+    b parse_val_ret
+parse_val_ret:
+    ldp x29, x30, [sp], #16
+    ret
+
+// parse_object: assumes current byte is '{'
+// Returns 0 on success, -1 on error
+parse_object:
+    // consume '{'
+    add x20, x20, #1
+    // push context: type=0 (object), state=0
+    bl push_ctx_obj
+    cbnz x0, parse_obj_ret
+    bl parse_ws
+    cbnz x0, parse_obj_ret
+    cmp x20, x21
+    b.ge parse_obj_eof
+    ldrb w3, [x19, x20]
+    cmp w3, #'}'        // empty object
+    b.ne parse_obj_member
+    // consume '}'
+    add x20, x20, #1
+    bl pop_ctx
+    b parse_obj_ret
+parse_obj_member:
+    // expect string (key)
+    bl parse_string
+    cbnz x0, parse_obj_ret
+    bl parse_ws
+    cbnz x0, parse_obj_ret
+    cmp x20, x21
+    b.ge parse_obj_eof
+    ldrb w3, [x19, x20]
+    cmp w3, #':'
+    b.ne parse_obj_err_colon
+    add x20, x20, #1
+    // update context state to 2 (expect value)
+    bl set_ctx_state_2
+    cbnz x0, parse_obj_ret
+    bl parse_value
+    cbnz x0, parse_obj_ret
+    // after value, state becomes 3 (expect ',' or '}')
+    bl set_ctx_state_3
+    cbnz x0, parse_obj_ret
+parse_obj_loop:
+    bl parse_ws
+    cbnz x0, parse_obj_ret
+    cmp x20, x21
+    b.ge parse_obj_eof
+    ldrb w3, [x19, x20]
+    cmp w3, #','
+    b.eq parse_obj_comma
+    cmp w3, #'}'
+    b.eq parse_obj_close
+    b parse_obj_err_comma
+parse_obj_comma:
+    add x20, x20, #1
+    bl parse_ws
+    cbnz x0, parse_obj_ret
+    // expect next member (string)
+    bl parse_string
+    cbnz x0, parse_obj_ret
+    bl parse_ws
+    cbnz x0, parse_obj_ret
+    cmp x20, x21
+    b.ge parse_obj_eof
+    ldrb w3, [x19, x20]
+    cmp w3, #':'
+    b.ne parse_obj_err_colon
+    add x20, x20, #1
+    bl set_ctx_state_2
+    cbnz x0, parse_obj_ret
+    bl parse_value
+    cbnz x0, parse_obj_ret
+    bl set_ctx_state_3
+    cbnz x0, parse_obj_ret
+    b parse_obj_loop
+parse_obj_close:
+    add x20, x20, #1
+    bl pop_ctx
+    b parse_obj_ret
+parse_obj_eof:
+    mov x23, x20
+    b parse_obj_err
+parse_obj_err_colon:
+    mov x23, x20
+    b parse_obj_err
+parse_obj_err_comma:
+    mov x23, x20
+    b parse_obj_err
+parse_obj_err:
+    mov x0, #-1
+parse_obj_ret:
+    ldp x29, x30, [sp], #16
+    ret
+
+// parse_array: assumes current byte is '['
+parse_array:
+    add x20, x20, #1
+    bl push_ctx_arr
+    cbnz x0, parse_arr_ret
+    bl parse_ws
+    cbnz x0, parse_arr_ret
+    cmp x20, x21
+    b.ge parse_arr_eof
+    ldrb w3, [x19, x20]
+    cmp w3, #']'        // empty array
+    b.ne parse_arr_value
+    add x20, x20, #1
+    bl pop_ctx
+    b parse_arr_ret
+parse_arr_value:
+    bl parse_value
+    cbnz x0, parse_arr_ret
+    bl set_arr_state_1
+    cbnz x0, parse_arr_ret
+parse_arr_loop:
+    bl parse_ws
+    cbnz x0, parse_arr_ret
+    cmp x20, x21
+    b.ge parse_arr_eof
+    ldrb w3, [x19, x20]
+    cmp w3, #','
+    b.eq parse_arr_comma
+    cmp w3, #']'
+    b.eq parse_arr_close
+    b parse_arr_err_comma
+parse_arr_comma:
+    add x20, x20, #1
+    bl parse_ws
+    cbnz x0, parse_arr_ret
+    bl parse_value
+    cbnz x0, parse_arr_ret
+    bl set_arr_state_1
+    cbnz x0, parse_arr_ret
+    b parse_arr_loop
+parse_arr_close:
+    add x20, x20, #1
+    bl pop_ctx
+    b parse_arr_ret
+parse_arr_eof:
+    mov x23, x20
+    b parse_arr_err
+parse_arr_err_comma:
+    mov x23, x20
+    b parse_arr_err
+parse_arr_err:
+    mov x0, #-1
+parse_arr_ret:
+    ldp x29, x30, [sp], #16
+    ret
+
+// parse_string: assumes current byte is '"'
+parse_string:
+    add x20, x20, #1    // consume opening quote
+1:
+    cmp x20, x21
+    b.ge parse_str_eof
+    ldrb w3, [x19, x20]
+    cmp w3, #'"'        // closing quote
+    b.eq parse_str_close
+    cmp w3, #'\\'       // escape
+    b.eq parse_str_escape
+    cmp w3, #0x20
+    b.lt parse_str_err_ctrl
+    // any byte >= 0x20 except '"' and '\\' is allowed (including >=0x80)
+    add x20, x20, #1
+    b 1b
+parse_str_close:
+    add x20, x20, #1
+    mov x0, #0
+    b parse_str_ret
+parse_str_escape:
+    add x20, x20, #1    // consume backslash
+    cmp x20, x21
+    b.ge parse_str_eof
+    ldrb w3, [x19, x20]
+    // allowed escapes: " \ / b f n r t u
+    cmp w3, #'"'
+    b.eq parse_str_esc_ok
+    cmp w3, #'\\'
+    b.eq parse_str_esc_ok
+    cmp w3, #'/'
+    b.eq parse_str_esc_ok
+    cmp w3, #'b'
+    b.eq parse_str_esc_ok
+    cmp w3, #'f'
+    b.eq parse_str_esc_ok
+    cmp w3, #'n'
+    b.eq parse_str_esc_ok
+    cmp w3, #'r'
+    b.eq parse_str_esc_ok
+    cmp w3, #'t'
+    b.eq parse_str_esc_ok
+    cmp w3, #'u'
+    b.eq parse_str_unicode
+    b parse_str_err_esc
+parse_str_unicode:
+    add x20, x20, #1
+    // need 4 hex digits
+    mov x4, #4
+1:
+    cmp x20, x21
+    b.ge parse_str_eof
+    ldrb w3, [x19, x20]
+    // check hex digit
+    cmp w3, #'0'
+    b.lt parse_str_err_hex
+    cmp w3, #'9'
+    b.le parse_str_hex_ok
+    cmp w3, #'a'
+    b.lt parse_str_err_hex
+    cmp w3, #'f'
+    b.le parse_str_hex_ok
+    cmp w3, #'A'
+    b.lt parse_str_err_hex
+    cmp w3, #'F'
+    b.gt parse_str_err_hex
+parse_str_hex_ok:
+    add x20, x20, #1
+    subs x4, x4, #1
+    b.ne 1b
+    b 1b  // back to main string loop
+parse_str_esc_ok:
+    add x20, x20, #1
+    b 1b
+parse_str_eof:
+    mov x23, x20
+    b parse_str_err
+parse_str_err_ctrl:
+    mov x23, x20
+    b parse_str_err
+parse_str_err_esc:
+    mov x23, x20
+    b parse_str_err
+parse_str_err_hex:
+    mov x23, x20
+    b parse_str_err
+parse_str_err:
+    mov x0, #-1
+parse_str_ret:
+    ldp x29, x30, [sp], #16
+    ret
+
+// parse_true: expects "true"
+parse_true:
+    // check 4 bytes: 't','r','u','e'
+    cmp x20, x21
+    b.ge parse_lit_eof
+    add x4, x19, x20
+    ldrb w3, [x4], #1
+    cmp w3, #'t'
+    b.ne parse_lit_err
+    cmp x4, x19, x21?  // better: check bounds for each byte
+    // We'll do a loop or inline checks.
+    // Since we know max input 65536, we can check length first.
+    // Ensure at least 4 bytes remaining
+    mov x5, x20
+    add x5, x5, #4
+    cmp x5, x21
+    b.gt parse_lit_eof
+    ldrb w3, [x19, x20]
+    cmp w3, #'t'
+    b.ne parse_lit_err
+    ldrb w3, [x19, x20, #1]
+    cmp w3, #'r'
+    b.ne parse_lit_err
+    ldrb w3, [x19, x20, #2]
+    cmp w3, #'u'
+    b.ne parse_lit_err
+    ldrb w3, [x19, x20, #3]
+    cmp w3, #'e'
+    b.ne parse_lit_err
+    add x20, x20, #4
+    mov x0, #0
+    b parse_lit_ret
+parse_lit_eof:
+    mov x23, x21
+    b parse_lit_err
+parse_lit_err:
+    mov x23, x20
+    mov x0, #-1
+parse_lit_ret:
+    ldp x29, x30, [sp], #16
+    ret
+
+// parse_false: expects "false" (5 bytes)
+parse_false:
+    mov x5, x20
+    add x5, x5, #5
+    cmp x5, x21
+    b.gt parse_lit_eof
+    ldrb w3, [x19, x20]
+    cmp w3, #'f'
+    b.ne parse_lit_err
+    ldrb w3, [x19, x20, #1]
+    cmp w3, #'a'
+    b.ne parse_lit_err
+    ldrb w3, [x19, x20, #2]
+    cmp w3, #'l'
+    b.ne parse_lit_err
+    ldrb w3, [x19, x20, #3]
+    cmp w3, #'s'
+    b.ne parse_lit_err
+    ldrb w3, [x19, x20, #4]
+    cmp w3, #'e'
+    b.ne parse_lit_err
+    add x20, x20, #5
+    mov x0, #0
+    b parse_lit_ret
+
+// parse_null: expects "null" (4 bytes)
+parse_null:
+    mov x5, x20
+    add x5, x5, #4
+    cmp x5, x21
+    b.gt parse_lit_eof
+    ldrb w3, [x19, x20]
+    cmp w3, #'n'
+    b.ne parse_lit_err
+    ldrb w3, [x19, x20, #1]
+    cmp w3, #'u'
+    b.ne parse_lit_err
+    ldrb w3, [x19, x20, #2]
+    cmp w3, #'l'
+    b.ne parse_lit_err
+    ldrb w3, [x19, x20, #3]
+    cmp w3, #'l'
+    b.ne parse_lit_err
+    add x20, x20, #4
+    mov x0, #0
+    b parse_lit_ret
+
+// parse_number: parse according to grammar
+// Returns 0 on success, -1 on error
+parse_number:
+    stp x29, x30, [sp, #-16]!
+    mov x29, sp
+    // optional '-'
+    cmp x20, x21
+    b.ge parse_num_err
+    ldrb w3, [x19, x20]
+    cmp w3, #'-'
+    b.ne parse_num_int
+    add x20, x20, #1
+    cmp x20, x21
+    b.ge parse_num_err
+    ldrb w3, [x19, x20]
+parse_num_int:
+    // integer part: '0' or '1'-'9' followed by digits
+    cmp w3, #'0'
+    b.eq parse_num_zero
+    cmp w3, #'1'
+    b.lt parse_num_err
+    cmp w3, #'9'
+    b.gt parse_num_err
+    // digit 1-9, then more digits
+    add x20, x20, #1
+1:
+    cmp x20, x21
+    b.ge parse_num_frac_exp
+    ldrb w3, [x19, x20]
+    cmp w3, #'0'
+    b.lt parse_num_frac_exp
+    cmp w3, #'9'
+    b.gt parse_num_frac_exp
+    add x20, x20, #1
+    b 1b
+parse_num_zero:
+    add x20, x20, #1
+    // after zero, cannot have more digits (unless fraction or exponent)
+    b parse_num_frac_exp
+parse_num_frac_exp:
+    // check for fraction or exponent
+    cmp x20, x21
+    b.ge parse_num_done
+    ldrb w3, [x19, x20]
+    cmp w3, #'.'
+    b.eq parse_num_frac
+    cmp w3, #'e'
+    b.eq parse_num_exp
+    cmp w3, #'E'
+    b.eq parse_num_exp
+    b parse_num_done
+parse_num_frac:
+    add x20, x20, #1
+    cmp x20, x21
+    b.ge parse_num_err
+    ldrb w3, [x19, x20]
+    cmp w3, #'0'
+    b.lt parse_num_err
+    cmp w3, #'9'
+    b.gt parse_num_err
+    // at least one digit
+    add x20, x20, #1
+1:
+    cmp x20, x21
+    b.ge parse_num_exp_chk
+    ldrb w3, [x19, x20]
+    cmp w3, #'0'
+    b.lt parse_num_exp_chk
+    cmp w3, #'9'
+    b.gt parse_num_exp_chk
+    add x20, x20, #1
+    b 1b
+parse_num_exp_chk:
+    cmp x20, x21
+    b.ge parse_num_done
+    ldrb w3, [x19, x20]
+    cmp w3, #'e'
+    b.eq parse_num_exp
+    cmp w3, #'E'
+    b.eq parse_num_exp
+    b parse_num_done
+parse_num_exp:
+    add x20, x20, #1
+    cmp x20, x21
+    b.ge parse_num_err
+    ldrb w3, [x19, x20]
+    cmp w3, #'+'
+    b.eq parse_num_exp_sign
+    cmp w3, #'-'
+    b.eq parse_num_exp_sign
+    // no sign, check digit
+    b parse_num_exp_digit
+parse_num_exp_sign:
+    add x20, x20, #1
+    cmp x20, x21
+    b.ge parse_num_err
+    ldrb w3, [x19, x20]
+parse_num_exp_digit:
+    cmp w3, #'0'
+    b.lt parse_num_err
+    cmp w3, #'9'
+    b.gt parse_num_err
+    add x20, x20, #1
+1:
+    cmp x20, x21
+    b.ge parse_num_done
+    ldrb w3, [x19, x20]
+    cmp w3, #'0'
+    b.lt parse_num_done
+    cmp w3, #'9'
+    b.gt parse_num_done
+    add x20, x20, #1
+    b 1b
+parse_num_done:
+    mov x0, #0
+    b parse_num_ret
+parse_num_err:
+    mov x23, x20
+    mov x0, #-1
+parse_num_ret:
+    ldp x29, x30, [sp], #16
+    ret
+
+// Context stack functions
+// push_ctx_obj: push object context (type=0, state=0)
+push_ctx_obj:
+    stp x29, x30, [sp, #-16]!
+    mov x29, sp
+    cmp x22, #1000
+    b.ge push_ctx_err
+    // store at ctx_stack + x22*4
+    adrp x3, ctx_stack
+    add x3, x3, :lo12:ctx_stack
+    add x3, x3, x22, lsl #2
+    mov w4, #0          // type=0, state=0
+    str w4, [x3]
+    add x22, x22, #1
+    mov x0, #0
+    b push_ctx_ret
+push_ctx_err:
+    mov x23, x20
+    mov x0, #-1
+push_ctx_ret:
+    ldp x29, x30, [sp], #16
+    ret
+
+// push_ctx_arr: push array context (type=1, state=0)
+push_ctx_arr:
+    stp x29, x30, [sp, #-16]!
+    mov x29, sp
+    cmp x22, #1000
+    b.ge push_ctx_err
+    adrp x3, ctx_stack
+    add x3, x3, :lo12:ctx_stack
+    add x3, x3, x22, lsl #2
+    mov w4, #0x100      // type=1 (in high byte), state=0
+    str w4, [x3]
+    add x22, x22, #1
+    mov x0, #0
+    b push_ctx_ret
+
+// pop_ctx: pop context, check type matches? Not needed, just pop.
+pop_ctx:
+    stp x29, x30, [sp, #-16]!
+    mov x29, sp
+    cmp x22, #0
+    b.eq pop_ctx_err
+    sub x22, x22, #1
+    mov x0, #0
+    b pop_ctx_ret
+pop_ctx_err:
+    mov x23, x20
+    mov x0, #-1
+pop_ctx_ret:
+    ldp x29, x30, [sp], #16
+    ret
+
+// set_ctx_state_2: set current context (object) state to 2 (expect value)
+set_ctx_state_2:
+    stp x29, x30, [sp, #-16]!
+    mov x29, sp
+    cmp x22, #0
+    b.eq set_ctx_err
+    adrp x3, ctx_stack
+    add x3, x3, :lo12:ctx_stack
+    sub x4, x22, #1
+    add x3, x3, x4, lsl #2
+    ldr w5, [x3]
+    // check type is object (low byte 0)
+    and w6, w5, #0xFF
+    cbnz w6, set_ctx_err
+    // set state to 2 (bits 8-15)
+    bfi w5, #2, #8, #8
+    str w5, [x3]
+    mov x0, #0
+    b set_ctx_ret
+set_ctx_err:
+    mov x23, x20
+    mov x0, #-1
+set_ctx_ret:
+    ldp x29, x30, [sp], #16
+    ret
+
+// set_ctx_state_3: set current context (object) state to 3 (expect ',' or '}')
+set_ctx_state_3:
+    stp x29, x30, [sp, #-16]!
+    mov x29, sp
+    cmp x22, #0
+    b.eq set_ctx_err
+    adrp x3, ctx_stack
+    add x3, x3, :lo12:ctx_stack
+    sub x4, x22, #1
+    add x3, x3, x4, lsl #2
+    ldr w5, [x3]
+    and w6, w5, #0xFF
+    cbnz w6, set_ctx_err
+    bfi w5, #3, #8, #8
+    str w5, [x3]
+    mov x0, #0
+    b set_ctx_ret
+
+// set_arr_state_1: set current context (array) state to 1 (expect ',' or ']')
+set_arr_state_1:
+    stp x29, x30, [sp, #-16]!
+    mov x29, sp
+    cmp x22, #0
+    b.eq set_ctx_err
+    adrp x3, ctx_stack
+    add x3, x3, :lo12:ctx_stack
+    sub x4, x22, #1
+    add x3, x3, x4, lsl #2
+    ldr w5, [x3]
+    and w6, w5, #0xFF
+    cmp w6, #1
+    b.ne set_ctx_err
+    bfi w5, #1, #8, #8
+    str w5, [x3]
+    mov x0, #0
+    b set_ctx_ret
+
+// utoa: convert unsigned 64-bit integer in x0 to decimal string at x1
+// Returns length in x0
+utoa:
+    stp x29, x30, [sp, #-16]!
+    mov x29, sp
+    // handle zero
+    cbz x0, utoa_zero
+    mov x2, #0          // digit count
+    mov x3, #10
+1:
+    udiv x4, x0, x3
+    msub x5, x4, x3, x0  // remainder
+    add w5, w5, #'0'
+    strb w5, [x1, x2]
+    add x2, x2, #1
+    mov x0, x4
+    cbnz x0, 1b
+    // reverse string
+    sub x3, x2, #1
+    mov x4, #0
+2:
+    cmp x4, x3
+    b.ge 3f
+    ldrb w5, [x1, x4]
+    ldrb w6, [x1, x3]
+    strb w6, [x1, x4]
+    strb w5, [x1, x3]
+    add x4, x4, #1
+    sub x3, x3, #1
+    b 2b
+3:
+    mov x0, x2
+    b utoa_ret
+utoa_zero:
+    mov w2, #'0'
+    strb w2, [x1]
+    mov x0, #1
+utoa_ret:
+    ldp x29, x30, [sp], #16
+    ret
+
+// End of program
+```

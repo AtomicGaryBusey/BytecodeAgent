@@ -1,0 +1,217 @@
+.section .bss
+.align 4096
+stdin_buf:   .zero 65536
+tape:        .zero 30000
+jump_table:  .zero 65536 * 4
+output_buf:  .zero 65536
+
+.section .text
+.globl _start
+_start:
+    # Load static addresses
+    lea r8, [rip + output_buf]
+    lea r9, [rip + tape]
+    lea r10, [rip + jump_table]
+    lea r13, [rip + stdin_buf]   # r13 = stdin_buf base
+
+    # ---------- read all stdin into stdin_buf ----------
+    mov rsi, r13                 # current write pointer
+    mov r12, 65536               # remaining capacity
+    xor r14, r14                 # total bytes read
+.read_loop:
+    test r12, r12
+    jz .read_done
+    mov rax, 0                   # sys_read
+    mov rdi, 0                   # stdin
+    mov rdx, r12                 # count
+    syscall
+    test rax, rax
+    jz .read_done
+    add r14, rax                 # total read
+    add rsi, rax                 # advance pointer
+    sub r12, rax                 # reduce remaining
+    jmp .read_loop
+.read_done:
+    # r14 = total_len, rsi = end of data (r13 + total_len)
+    test r14, r14
+    jz .no_bang                  # empty input
+
+    # ---------- find first '!' ----------
+    mov rdi, r13                 # start of buffer
+    mov rcx, r14                 # length
+    mov al, 0x21                 # '!'
+    repne scasb
+    jne .no_bang                 # not found
+
+    # found: rdi points after '!', rcx = remaining bytes (input_len)
+    mov r15, rdi                 # input_start
+    mov r12, rcx                 # input_len
+    mov r14, rdi
+    sub r14, r13
+    dec r14                      # program_len
+    mov r11, rsp                 # save initial stack pointer for bracket check
+    jmp .bracket_check
+
+.no_bang:
+    # program_len already in r14 (total_len)
+    xor r12, r12                 # input_len = 0
+    mov r15, r13                 # input_start = stdin_buf (empty)
+    mov r11, rsp                 # save initial stack pointer
+
+.bracket_check:
+    # r13 = program_start, r14 = program_len
+    # r10 = jump_table base
+    # r11 = initial rsp
+    xor rbx, rbx                 # pc = 0
+.check_loop:
+    cmp rbx, r14
+    jae .check_done
+    movzx eax, byte ptr [r13 + rbx]
+    cmp al, '['
+    je .push_bracket
+    cmp al, ']'
+    je .pop_bracket
+    inc rbx
+    jmp .check_loop
+
+.push_bracket:
+    push rbx                     # push pc (64-bit)
+    inc rbx
+    jmp .check_loop
+
+.pop_bracket:
+    cmp rsp, r11                 # stack empty?
+    je .bracket_error
+    pop rdx                      # matching '['
+    # set jump_table[rdx] = rbx, jump_table[rbx] = rdx
+    mov dword ptr [r10 + rdx*4], ebx
+    mov dword ptr [r10 + rbx*4], edx
+    inc rbx
+    jmp .check_loop
+
+.check_done:
+    cmp rsp, r11                 # stack should be empty
+    jne .bracket_error
+    # brackets ok, proceed to execution
+    jmp .execute
+
+.bracket_error:
+    mov rax, 60                  # sys_exit
+    mov rdi, 1
+    syscall
+
+.execute:
+    # registers:
+    # r13 = program_start, r14 = program_len
+    # r15 = input_start, r12 = input_len
+    # r8 = output_buf, r9 = tape, r10 = jump_table
+    xor rbp, rbp                 # tape_ptr = 0
+    xor rbx, rbx                 # pc = 0
+    xor rsi, rsi                 # input_ptr = 0
+    xor rdi, rdi                 # output_ptr = 0
+
+.exec_loop:
+    cmp rbx, r14
+    jae .exec_done
+    movzx eax, byte ptr [r13 + rbx]
+    # dispatch
+    cmp al, '>'
+    je .cmd_right
+    cmp al, '<'
+    je .cmd_left
+    cmp al, '+'
+    je .cmd_inc
+    cmp al, '-'
+    je .cmd_dec
+    cmp al, '.'
+    je .cmd_out
+    cmp al, ','
+    je .cmd_in
+    cmp al, '['
+    je .cmd_lbracket
+    cmp al, ']'
+    je .cmd_rbracket
+    # ignore other chars
+    inc rbx
+    jmp .exec_loop
+
+.cmd_right:
+    inc rbp
+    inc rbx
+    jmp .exec_loop
+
+.cmd_left:
+    dec rbp
+    inc rbx
+    jmp .exec_loop
+
+.cmd_inc:
+    movzx ecx, byte ptr [r9 + rbp]
+    inc cl
+    mov byte ptr [r9 + rbp], cl
+    inc rbx
+    jmp .exec_loop
+
+.cmd_dec:
+    movzx ecx, byte ptr [r9 + rbp]
+    dec cl
+    mov byte ptr [r9 + rbp], cl
+    inc rbx
+    jmp .exec_loop
+
+.cmd_out:
+    movzx ecx, byte ptr [r9 + rbp]
+    mov byte ptr [r8 + rdi], cl
+    inc rdi
+    inc rbx
+    jmp .exec_loop
+
+.cmd_in:
+    cmp rsi, r12
+    jae .input_eof
+    movzx ecx, byte ptr [r15 + rsi]
+    inc rsi
+    jmp .input_store
+.input_eof:
+    xor ecx, ecx
+.input_store:
+    mov byte ptr [r9 + rbp], cl
+    inc rbx
+    jmp .exec_loop
+
+.cmd_lbracket:
+    movzx ecx, byte ptr [r9 + rbp]
+    test ecx, ecx
+    jz .jump_forward
+    inc rbx
+    jmp .exec_loop
+.jump_forward:
+    mov ebx, dword ptr [r10 + rbx*4]
+    inc rbx
+    jmp .exec_loop
+
+.cmd_rbracket:
+    movzx ecx, byte ptr [r9 + rbp]
+    test ecx, ecx
+    jnz .jump_back
+    inc rbx
+    jmp .exec_loop
+.jump_back:
+    mov ebx, dword ptr [r10 + rbx*4]
+    inc rbx
+    jmp .exec_loop
+
+.exec_done:
+    # write output buffer to stdout
+    test rdi, rdi
+    jz .exit_zero
+    mov rdx, rdi                 # length
+    mov rax, 1                   # sys_write
+    mov rdi, 1                   # stdout
+    mov rsi, r8                  # output_buf base
+    syscall
+
+.exit_zero:
+    mov rax, 60
+    xor rdi, rdi
+    syscall

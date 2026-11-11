@@ -1,0 +1,261 @@
+.section .bss
+.align 12
+stdin_buf:
+    .zero 65536
+tape:
+    .zero 30000
+bracket_stack:
+    .zero 4000        // 1000 * 4 bytes
+jump_table:
+    .zero 262144      // 65536 * 4 bytes
+
+.section .text
+.globl _start
+
+// System call numbers
+.equ SYS_READ, 63
+.equ SYS_WRITE, 64
+.equ SYS_EXIT, 93
+.equ SYS_EXIT_GROUP, 94
+
+// Constants
+.equ MAX_INPUT, 65536
+.equ TAPE_SIZE, 30000
+.equ MAX_NESTING, 1000
+
+_start:
+    // Initialize stack pointer is already 16-byte aligned.
+    // We'll use x29 as frame pointer, but not necessary. We'll just use registers.
+
+    // Read all stdin into stdin_buf.
+    mov x19, #0                 // total bytes read
+    mov x20, stdin_buf          // buffer pointer
+    mov x21, #MAX_INPUT         // remaining capacity
+
+read_loop:
+    cmp x21, #0
+    beq read_done               // buffer full (should not happen per spec)
+    mov x8, #SYS_READ
+    mov x0, #0                  // fd = stdin
+    mov x1, x20                 // buf
+    mov x2, x21                 // count
+    svc #0
+    cbz x0, read_done           // EOF
+    add x19, x19, x0            // total read
+    add x20, x20, x0            // advance buffer pointer
+    sub x21, x21, x0            // remaining
+    b read_loop
+
+read_done:
+    // x19 = total bytes read
+    // stdin_buf contains the data
+    // Find first '!' (0x21)
+    mov x20, stdin_buf
+    mov x21, x19                // length
+    mov x22, #0                 // index
+find_bang:
+    cmp x22, x21
+    bge no_bang
+    ldrb w23, [x20, x22]
+    cmp w23, #0x21
+    beq found_bang
+    add x22, x22, #1
+    b find_bang
+
+found_bang:
+    // x22 = index of '!'
+    // program length = x22
+    // input starts at x22+1, length = x19 - x22 - 1
+    mov x23, x22                // program_len
+    add x24, x22, #1            // input_start offset
+    sub x25, x19, x24           // input_len
+    b validate_brackets
+
+no_bang:
+    // no '!' found: whole input is program, no input
+    mov x23, x19                // program_len = total_len
+    mov x24, #0                 // input_start = 0 (but input_len=0)
+    mov x25, #0                 // input_len = 0
+
+validate_brackets:
+    // We'll validate brackets and build jump_table.
+    // jump_table is an array of 32-bit integers (index of matching bracket).
+    // We'll use bracket_stack to store indices of '['.
+    // Registers:
+    //   x20 = program pointer (stdin_buf)
+    //   x21 = program_len (x23)
+    //   x22 = current index
+    //   x26 = stack pointer for bracket_stack (points to next free slot)
+    //   x27 = jump_table base
+    mov x20, stdin_buf
+    mov x21, x23
+    mov x22, #0
+    mov x26, bracket_stack
+    mov x27, jump_table
+
+validate_loop:
+    cmp x22, x21
+    bge validate_done
+    ldrb w24, [x20, x22]
+    cmp w24, #'['
+    bne check_close
+    // Push current index onto stack
+    str w22, [x26], #4
+    // Check stack overflow (max nesting 1000)
+    sub x28, x26, bracket_stack
+    cmp x28, #4000
+    bhi bracket_error
+    b validate_next
+
+check_close:
+    cmp w24, #']'
+    bne validate_next
+    // Pop from stack
+    cmp x26, bracket_stack
+    beq bracket_error           // unmatched ']'
+    sub x26, x26, #4
+    ldr w28, [x26]              // matching '[' index
+    // Set jump_table for both brackets
+    // jump_table[open] = close; jump_table[close] = open
+    str w22, [x27, x28, lsl #2] // jump_table[open] = close
+    str w28, [x27, x22, lsl #2] // jump_table[close] = open
+    b validate_next
+
+validate_next:
+    add x22, x22, #1
+    b validate_loop
+
+validate_done:
+    // Check if any unmatched '[' left
+    cmp x26, bracket_stack
+    bne bracket_error
+    // Validation successful, proceed to interpret
+    b interpret
+
+bracket_error:
+    // Exit with status 1
+    mov x8, #SYS_EXIT
+    mov x0, #1
+    svc #0
+
+interpret:
+    // Set up registers for interpretation
+    // x19 = tape pointer (index 0..29999)
+    // x20 = program counter (index into program)
+    // x21 = program length
+    // x22 = input pointer (offset from stdin_buf + input_start)
+    // x23 = input length
+    // x24 = input start offset (x24 from earlier)
+    // x25 = jump_table base
+    // x26 = tape base
+    // x27 = stdin_buf base
+    mov x19, #0                 // tape pointer
+    mov x20, #0                 // program counter
+    mov x21, x23                // program length
+    mov x22, #0                 // input index
+    mov x23, x25                // input length
+    // x24 already holds input_start offset
+    mov x25, jump_table
+    mov x26, tape
+    mov x27, stdin_buf
+
+interpret_loop:
+    cmp x20, x21
+    bge interpret_done          // end of program
+    ldrb w28, [x27, x20]        // current instruction
+    // Execute based on instruction
+    cmp w28, #'>'
+    bne check_lt
+    add x19, x19, #1
+    b inc_pc
+
+check_lt:
+    cmp w28, #'<'
+    bne check_plus
+    sub x19, x19, #1
+    b inc_pc
+
+check_plus:
+    cmp w28, #'+'
+    bne check_minus
+    ldrb w29, [x26, x19]
+    add w29, w29, #1
+    strb w29, [x26, x19]
+    b inc_pc
+
+check_minus:
+    cmp w28, #'-'
+    bne check_dot
+    ldrb w29, [x26, x19]
+    sub w29, w29, #1
+    strb w29, [x26, x19]
+    b inc_pc
+
+check_dot:
+    cmp w28, #'.'
+    bne check_comma
+    ldrb w29, [x26, x19]
+    // Write to stdout
+    // We'll buffer output? Spec says output at most 65536 bytes, we can write each byte with write syscall.
+    // But write syscall per byte is slow. We'll accumulate in a small buffer and flush when full or at end.
+    // However, spec doesn't require efficiency, but 5M commands max, output 64K max. We'll do a simple write per byte.
+    // Use a stack buffer for the byte.
+    sub sp, sp, #16
+    strb w29, [sp]
+    mov x8, #SYS_WRITE
+    mov x0, #1
+    mov x1, sp
+    mov x2, #1
+    svc #0
+    add sp, sp, #16
+    b inc_pc
+
+check_comma:
+    cmp w28, #','
+    bne check_lbracket
+    // Read next input byte into current cell
+    cmp x22, x23
+    bge input_exhausted
+    // Input available
+    ldrb w29, [x27, x24, x22]   // stdin_buf[input_start + x22]
+    add x22, x22, #1
+    strb w29, [x26, x19]
+    b inc_pc
+
+input_exhausted:
+    // Store 0
+    strb wzr, [x26, x19]
+    b inc_pc
+
+check_lbracket:
+    cmp w28, #'['
+    bne check_rbracket
+    // If current cell is 0, jump to matching ']' + 1
+    ldrb w29, [x26, x19]
+    cbnz w29, inc_pc
+    // Jump
+    ldr w30, [x25, x20, lsl #2] // jump_table[pc] = matching ']' index
+    add x20, x30, #1            // set pc to after ']'
+    b interpret_loop
+
+check_rbracket:
+    cmp w28, #']'
+    bne inc_pc                  // ignore other characters
+    // If current cell is not 0, jump back to matching '[' + 1
+    ldrb w29, [x26, x19]
+    cbz w29, inc_pc
+    ldr w30, [x25, x20, lsl #2] // matching '['
+    add x20, x30, #1
+    b interpret_loop
+
+inc_pc:
+    add x20, x20, #1
+    b interpret_loop
+
+interpret_done:
+    // Exit with status 0
+    mov x8, #SYS_EXIT
+    mov x0, #0
+    svc #0
+
+// No other functions needed.

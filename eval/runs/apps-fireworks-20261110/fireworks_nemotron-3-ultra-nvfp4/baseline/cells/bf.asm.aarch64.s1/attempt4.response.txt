@@ -1,0 +1,214 @@
+.section .text
+.globl _start
+
+_start:
+// Read all stdin into stdin_buf (max 65536 bytes)
+    adrp    x19, stdin_buf
+    add     x19, x19, :lo12:stdin_buf
+    mov     x20, #0                  // total_len
+    mov     x21, #65536              // max_len
+
+read_loop:
+    sub     x2, x21, x20             // remaining count
+    cbz     x2, read_done
+    mov     x0, #0                   // fd = 0
+    add     x1, x19, x20             // buf + total_len
+    mov     x8, #63                  // read
+    svc     #0
+    cbz     x0, read_done            // EOF
+    cmp     x0, x2
+    b.hi    read_error               // error or too many
+    add     x20, x20, x0             // total_len += bytes_read
+    b       read_loop
+
+read_done:
+// Find first '!' (0x21)
+    mov     x21, x20                 // prog_len = total_len (default)
+    mov     x22, x20                 // input_start = total_len
+    mov     x23, #0                  // input_len = 0
+    mov     x0, #0                   // index
+
+scan_loop:
+    cmp     x0, x20
+    b.ge    scan_done
+    ldrb    w1, [x19, x0]
+    cmp     w1, #0x21
+    b.eq    found_bang
+    add     x0, x0, #1
+    b       scan_loop
+
+found_bang:
+    mov     x21, x0                  // prog_len = index of '!'
+    add     x22, x0, #1              // input_start = index + 1
+    sub     x23, x20, x22            // input_len = total_len - input_start
+
+scan_done:
+// Validate brackets and build jump table
+    adrp    x24, jump_table
+    add     x24, x24, :lo12:jump_table
+    adrp    x28, bracket_stack
+    add     x28, x28, :lo12:bracket_stack
+    mov     x29, #0                  // stack top (count)
+
+    mov     x0, #0                   // ip
+
+validate_loop:
+    cmp     x0, x21
+    b.ge    validate_done
+    ldrb    w1, [x19, x0]
+    cmp     w1, #'['
+    b.eq    handle_open
+    cmp     w1, #']'
+    b.eq    handle_close
+    b       validate_next
+
+handle_open:
+    cmp     x29, #1000
+    b.ge    bracket_error
+    str     w0, [x28, x29, lsl #2]
+    add     x29, x29, #1
+    b       validate_next
+
+handle_close:
+    cbz     x29, bracket_error
+    sub     x29, x29, #1
+    ldr     w2, [x28, x29, lsl #2]  // open_idx
+    str     w0, [x24, x2, lsl #2]   // jump[open] = close
+    str     w2, [x24, x0, lsl #2]   // jump[close] = open
+    b       validate_next
+
+validate_next:
+    add     x0, x0, #1
+    b       validate_loop
+
+validate_done:
+    cbnz    x29, bracket_error
+
+// Execute program
+    adrp    x25, tape
+    add     x25, x25, :lo12:tape
+    adrp    x26, output_buf
+    add     x26, x26, :lo12:output_buf
+    mov     x27, #0                  // output_len
+    mov     x1, #0                   // data pointer (dp)
+    mov     x0, #0                   // instruction pointer (ip)
+    mov     x2, #0                   // input pointer (inp)
+    mov     x3, #0                   // command counter (optional)
+
+exec_loop:
+    cmp     x0, x21
+    b.ge    exec_done
+    ldrb    w4, [x19, x0]            // current command
+
+    cmp     w4, #'>'
+    b.eq    cmd_right
+    cmp     w4, #'<'
+    b.eq    cmd_left
+    cmp     w4, #'+'
+    b.eq    cmd_inc
+    cmp     w4, #'-'
+    b.eq    cmd_dec
+    cmp     w4, #'.'
+    b.eq    cmd_out
+    cmp     w4, #','
+    b.eq    cmd_in
+    cmp     w4, #'['
+    b.eq    cmd_jz
+    cmp     w4, #']'
+    b.eq    cmd_jnz
+    b       exec_next                // ignore other
+
+cmd_right:
+    add     x1, x1, #1
+    b       exec_next
+cmd_left:
+    sub     x1, x1, #1
+    b       exec_next
+cmd_inc:
+    ldrb    w5, [x25, x1]
+    add     w5, w5, #1
+    strb    w5, [x25, x1]
+    b       exec_next
+cmd_dec:
+    ldrb    w5, [x25, x1]
+    sub     w5, w5, #1
+    strb    w5, [x25, x1]
+    b       exec_next
+cmd_out:
+    ldrb    w5, [x25, x1]
+    strb    w5, [x26, x27]
+    add     x27, x27, #1
+    b       exec_next
+cmd_in:
+    cmp     x2, x23
+    b.ge    cmd_in_eof
+    add     x5, x19, x22
+    add     x5, x5, x2
+    ldrb    w5, [x5]
+    add     x2, x2, #1
+    strb    w5, [x25, x1]
+    b       exec_next
+cmd_in_eof:
+    strb    wzr, [x25, x1]
+    b       exec_next
+cmd_jz:
+    ldrb    w5, [x25, x1]
+    cbnz    w5, exec_next
+    ldr     w5, [x24, x0, lsl #2]
+    mov     x0, x5
+    b       exec_next
+cmd_jnz:
+    ldrb    w5, [x25, x1]
+    cbz     w5, exec_next
+    ldr     w5, [x24, x0, lsl #2]
+    mov     x0, x5
+    b       exec_next
+
+exec_next:
+    add     x0, x0, #1
+    add     x3, x3, #1
+    b       exec_loop
+
+exec_done:
+// Write output buffer to stdout (fd=1)
+    mov     x0, #1
+    mov     x1, x26
+    mov     x2, x27
+    cbz     x2, write_done           // nothing to write
+
+write_loop:
+    mov     x8, #64                  // write
+    svc     #0
+    cbz     x0, write_error          // error if 0 bytes written but more expected
+    cmp     x0, x2
+    b.eq    write_done
+    sub     x2, x2, x0               // remaining
+    add     x1, x1, x0               // advance buffer
+    b       write_loop
+
+write_done:
+// Exit with status 0
+    mov     x0, #0
+    mov     x8, #93                  // exit
+    svc     #0
+
+// Error exits
+read_error:
+bracket_error:
+write_error:
+    mov     x0, #1
+    mov     x8, #93
+    svc     #0
+
+.section .bss
+.align 12
+stdin_buf:
+    .zero   65536
+jump_table:
+    .zero   65536 * 4
+bracket_stack:
+    .zero   1000 * 4
+tape:
+    .zero   30000
+output_buf:
+    .zero   65536

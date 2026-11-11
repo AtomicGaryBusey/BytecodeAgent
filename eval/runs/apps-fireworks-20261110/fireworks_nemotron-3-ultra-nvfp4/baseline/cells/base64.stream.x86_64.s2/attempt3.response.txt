@@ -1,0 +1,139 @@
+.globl _start
+
+.section .rodata
+base64_table:
+    .ascii "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/"
+
+.section .bss
+.align 16
+input_buffer:   .zero 4096
+output_buffer:  .zero 4096
+.align 8
+input_len:      .zero 8
+input_offset:   .zero 8
+output_offset:  .zero 8
+col_count:      .zero 8
+leftover_len:   .zero 1
+leftover_byte1: .zero 1
+leftover_byte2: .zero 1
+
+.section .text
+_start:
+    # Zero all state variables
+    xor eax, eax
+    mov qword ptr [input_len], rax
+    mov qword ptr [input_offset], rax
+    mov qword ptr [output_offset], rax
+    mov qword ptr [col_count], rax
+    mov byte ptr [leftover_len], al
+    # Base64 table address in rbp
+    lea rbp, [rip + base64_table]
+
+read_loop:
+    # Load state into registers
+    mov r8, qword ptr [input_offset]
+    mov r9, qword ptr [input_len]
+    lea r8, [input_buffer + r8]        # input_ptr = input_buffer + input_offset
+    sub r9, r8                         # r9 = input_len - input_offset = remaining bytes in buffer
+    # Actually, input_len is total bytes read, input_offset is bytes consumed
+    # So available = input_len - input_offset
+    mov r10, qword ptr [input_len]
+    mov r11, qword ptr [input_offset]
+    sub r10, r11                       # r10 = available bytes
+    cmp r10, 0
+    jne process_available
+
+    # Need to read more data
+    mov rax, 0                         # sys_read
+    mov rdi, 0                         # stdin
+    lea rsi, [input_buffer]
+    mov rdx, 4096
+    syscall
+    test rax, rax
+    jz flush_final                     # EOF
+    mov qword ptr [input_len], rax
+    mov qword ptr [input_offset], 0
+    mov r10, rax                       # available = bytes read
+
+process_available:
+    # r10 = available input bytes
+    # Check if we have leftover bytes from previous iteration
+    movzx r11, byte ptr [leftover_len]
+    test r11, r11
+    jz no_leftover
+
+    # Have leftover bytes, need to combine with new input
+    cmp r11, 1
+    je one_leftover
+    # two_leftover:
+    # Need 1 more byte to make 3
+    cmp r10, 1
+    jl wait_for_more_input
+    # Have at least 1 byte
+    mov al, byte ptr [input_buffer]
+    mov byte ptr [leftover_byte2], al
+    inc qword ptr [input_offset]
+    dec r10
+    # Now encode 3 bytes: leftover_byte1, leftover_byte2, al
+    jmp encode_three_bytes
+
+one_leftover:
+    # Need 2 more bytes
+    cmp r10, 2
+    jl wait_for_more_input
+    mov al, byte ptr [input_buffer]
+    mov byte ptr [leftover_byte1], al
+    mov al, byte ptr [input_buffer + 1]
+    mov byte ptr [leftover_byte2], al
+    add qword ptr [input_offset], 2
+    sub r10, 2
+    # Now encode 3 bytes: leftover_byte1, leftover_byte1 (wait, that's wrong)
+    # Actually leftover_byte1 was the single leftover, now we have two new bytes
+    # So the three bytes are: old leftover_byte1, new byte1, new byte2
+    jmp encode_three_bytes_with_old_leftover
+
+wait_for_more_input:
+    # Not enough input to complete a group, save what we have and read more
+    cmp r11, 1
+    je save_one_leftover
+    # save two leftover (shouldn't happen since we'd have processed them)
+    jmp read_loop
+
+save_one_leftover:
+    # Save the first available byte as leftover_byte2
+    mov al, byte ptr [input_buffer]
+    mov byte ptr [leftover_byte2], al
+    inc qword ptr [input_offset]
+    mov byte ptr [leftover_len], 2
+    jmp read_loop
+
+no_leftover:
+    # No leftover, process input in groups of 3
+    mov rax, r10
+    xor rdx, rdx
+    mov rcx, 3
+    div rcx
+    test rax, rax
+    jz wait_for_more_input
+    # rax = number of complete 3-byte groups
+    mov rcx, rax                       # loop counter
+
+encode_loop:
+    # Load 3 bytes from input_buffer + input_offset
+    mov rsi, qword ptr [input_offset]
+    movzx eax, byte ptr [input_buffer + rsi]
+    movzx ebx, byte ptr [input_buffer + rsi + 1]
+    movzx ecx, byte ptr [input_buffer + rsi + 2]
+    add qword ptr [input_offset], 3
+
+    # Encode 3 bytes (eax, ebx, ecx) to 4 base64 chars
+    # eax = byte0, ebx = byte1, ecx = byte2
+    # char0 = byte0 >> 2
+    # char1 = ((byte0 & 3) << 4) | (byte1 >> 4)
+    # char2 = ((byte1 & 15) << 2) | (byte2 >> 6)
+    # char3 = byte2 & 63
+    mov edx, eax
+    shr edx, 2
+    mov dl, byte ptr [rbp + rdx]       # char0
+    mov byte ptr [output_buffer + output_offset], dl
+

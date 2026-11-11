@@ -1,0 +1,195 @@
+.section .rodata
+base64_table: .ascii "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/"
+
+.section .bss
+.align 4096
+input_buf: .space 49152
+output_buf: .space 66500
+
+.section .text
+.globl _start
+_start:
+    # read all input into input_buf
+    xor rbx, rbx                # total_read = 0
+.Lread_loop:
+    mov rax, 0                  # sys_read
+    mov rdi, 0                  # fd = 0
+    lea rsi, [input_buf + rbx]  # buf = input_buf + total_read
+    mov rdx, 49152
+    sub rdx, rbx                # count = remaining space
+    syscall
+    test rax, rax
+    jz .Lread_done              # EOF
+    add rbx, rax                # total_read += bytes_read
+    cmp rbx, 49152
+    jne .Lread_loop
+.Lread_done:
+    # rbx = input length
+    test rbx, rbx
+    jz .Lexit                   # empty input -> nothing to output
+
+    # Base64 encode
+    # Registers:
+    # rbx = input length
+    # r12 = input pointer (index)
+    # r13 = output pointer (index)
+    # r14 = line length counter (chars since last newline)
+    xor r12, r12                # input index = 0
+    xor r13, r13                # output index = 0
+    xor r14, r14                # line_pos = 0
+
+.Lencode_loop:
+    cmp r12, rbx
+    jae .Lencode_done           # all input processed
+
+    # Check remaining bytes
+    mov rax, rbx
+    sub rax, r12                # rax = remaining bytes
+    cmp rax, 3
+    jl .Lencode_final           # 1 or 2 bytes left
+
+    # Process 3 bytes
+    movzx eax, byte ptr [input_buf + r12]
+    movzx edx, byte ptr [input_buf + r12 + 1]
+    movzx ecx, byte ptr [input_buf + r12 + 2]
+
+    # Byte 0: bits 7-2 -> index 0
+    mov r8d, eax
+    shr r8d, 2
+    mov r8b, byte ptr [base64_table + r8]
+    mov byte ptr [output_buf + r13], r8b
+    inc r13
+    inc r14
+
+    # Byte 1: bits 1-0 of byte0 + bits 7-4 of byte1 -> index 1
+    mov r9d, eax
+    and r9d, 3
+    shl r9d, 4
+    mov r10d, edx
+    shr r10d, 4
+    or r9d, r10d
+    mov r9b, byte ptr [base64_table + r9]
+    mov byte ptr [output_buf + r13], r9b
+    inc r13
+    inc r14
+
+    # Byte 2: bits 3-0 of byte1 + bits 7-6 of byte2 -> index 2
+    mov r10d, edx
+    and r10d, 15
+    shl r10d, 2
+    mov r11d, ecx
+    shr r11d, 6
+    or r10d, r11d
+    mov r10b, byte ptr [base64_table + r10]
+    mov byte ptr [output_buf + r13], r10b
+    inc r13
+    inc r14
+
+    # Byte 3: bits 5-0 of byte2 -> index 3
+    mov r11d, ecx
+    and r11d, 63
+    mov r11b, byte ptr [base64_table + r11]
+    mov byte ptr [output_buf + r13], r11b
+    inc r13
+    inc r14
+
+    add r12, 3
+
+    # Check line length (76 chars)
+    cmp r14, 76
+    jne .Lencode_loop
+
+    # Insert newline
+    mov byte ptr [output_buf + r13], 10
+    inc r13
+    xor r14, r14
+    jmp .Lencode_loop
+
+.Lencode_final:
+    # rax = 1 or 2 remaining bytes
+    cmp rax, 2
+    je .Lencode_two_bytes
+
+    # One byte left
+    movzx eax, byte ptr [input_buf + r12]
+    # First char: bits 7-2
+    mov r8d, eax
+    shr r8d, 2
+    mov r8b, byte ptr [base64_table + r8]
+    mov byte ptr [output_buf + r13], r8b
+    inc r13
+    inc r14
+
+    # Second char: bits 1-0 << 4
+    mov r9d, eax
+    and r9d, 3
+    shl r9d, 4
+    mov r9b, byte ptr [base64_table + r9]
+    mov byte ptr [output_buf + r13], r9b
+    inc r13
+    inc r14
+
+    # Padding: ==
+    mov byte ptr [output_buf + r13], '='
+    inc r13
+    mov byte ptr [output_buf + r13], '='
+    inc r13
+    jmp .Lencode_done
+
+.Lencode_two_bytes:
+    # Two bytes left
+    movzx eax, byte ptr [input_buf + r12]
+    movzx edx, byte ptr [input_buf + r12 + 1]
+
+    # First char: bits 7-2 of byte0
+    mov r8d, eax
+    shr r8d, 2
+    mov r8b, byte ptr [base64_table + r8]
+    mov byte ptr [output_buf + r13], r8b
+    inc r13
+    inc r14
+
+    # Second char: bits 1-0 of byte0 + bits 7-4 of byte1
+    mov r9d, eax
+    and r9d, 3
+    shl r9d, 4
+    mov r10d, edx
+    shr r10d, 4
+    or r9d, r10d
+    mov r9b, byte ptr [base64_table + r9]
+    mov byte ptr [output_buf + r13], r9b
+    inc r13
+    inc r14
+
+    # Third char: bits 3-0 of byte1 << 2
+    mov r10d, edx
+    and r10d, 15
+    shl r10d, 2
+    mov r10b, byte ptr [base64_table + r10]
+    mov byte ptr [output_buf + r13], r10b
+    inc r13
+    inc r14
+
+    # Padding: =
+    mov byte ptr [output_buf + r13], '='
+    inc r13
+
+.Lencode_done:
+    # Add final newline if last line not empty (r14 > 0)
+    test r14, r14
+    jz .Lwrite_output
+    mov byte ptr [output_buf + r13], 10
+    inc r13
+
+.Lwrite_output:
+    # r13 = output length
+    mov rax, 1                  # sys_write
+    mov rdi, 1                  # fd = stdout
+    lea rsi, [output_buf]
+    mov rdx, r13                # count
+    syscall
+
+.Lexit:
+    mov rax, 60                 # sys_exit
+    xor rdi, rdi                # status = 0
+    syscall

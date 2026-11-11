@@ -1,0 +1,282 @@
+.globl _start
+
+.section .bss
+.align 8
+input_buffer: .zero 65536
+rpn_stack: .zero 8192
+
+.section .rodata
+error_msg: .ascii "error\n"
+error_len = . - error_msg
+min_int_str: .ascii "-9223372036854775808\n"
+min_int_len = . - min_int_str
+min_int_val: .quad -9223372036854775808
+
+.section .text
+_start:
+    # Read all input
+    lea rdi, [rip + input_buffer]
+    mov rsi, 65536
+    call read_all
+    # Process lines
+    lea rdi, [rip + input_buffer]
+    mov rsi, rax
+    call process_lines
+    # Exit
+    xor rdi, rdi
+    mov rax, 60
+    syscall
+
+# read_all: read from stdin until EOF or buffer full
+# rdi = buffer, rsi = max bytes
+# returns total bytes read in rax
+read_all:
+    mov rbx, 0          # total read
+    mov r12, rdi        # current pointer
+    mov r13, rsi        # remaining
+.read_loop:
+    test r13, r13
+    jz .read_done
+    mov rax, 0          # sys_read
+    mov rdi, 0          # stdin
+    mov rsi, r12
+    mov rdx, r13
+    syscall
+    test rax, rax
+    jz .read_done
+    add rbx, rax
+    add r12, rax
+    sub r13, rax
+    jmp .read_loop
+.read_done:
+    mov rax, rbx
+    ret
+
+# process_lines: iterate over lines in buffer
+# rdi = buffer start, rsi = length
+process_lines:
+    mov r12, rdi
+    mov r13, rsi
+    add r13, r12        # end pointer
+.line_loop:
+    cmp r12, r13
+    jae .line_done
+    # Find newline
+    mov rax, r12
+.find_nl:
+    cmp rax, r13
+    jae .no_nl
+    cmp byte ptr [rax], 10
+    je .found_nl
+    inc rax
+    jmp .find_nl
+.no_nl:
+    # Last line without newline
+    mov rdi, r12
+    mov rsi, r13
+    call eval_line
+    jmp .line_done
+.found_nl:
+    mov rdi, r12
+    mov rsi, rax
+    push r12
+    push r13
+    push rax
+    call eval_line
+    pop rax
+    pop r13
+    pop r12
+    lea r12, [rax + 1]
+    jmp .line_loop
+.line_done:
+    ret
+
+# eval_line: evaluate one RPN line
+# rdi = line start, rsi = line end (exclusive)
+eval_line:
+    mov r12, rdi
+    mov r13, rsi
+    lea r15, [rip + rpn_stack]
+    mov r14, r15        # stack pointer
+.token_loop:
+    cmp r12, r13
+    jae .token_done
+.skip_spaces:
+    cmp r12, r13
+    jae .token_done
+    mov al, byte ptr [r12]
+    cmp al, ' '
+    je .skip_next
+    cmp al, '\t'
+    je .skip_next
+    jmp .token_start
+.skip_next:
+    inc r12
+    jmp .skip_spaces
+.token_start:
+    mov rdi, r12
+.find_token_end:
+    cmp r12, r13
+    jae .token_end_found
+    mov al, byte ptr [r12]
+    cmp al, ' '
+    je .token_end_found
+    cmp al, '\t'
+    je .token_end_found
+    inc r12
+    jmp .find_token_end
+.token_end_found:
+    mov rsi, r12
+    mov rcx, rsi
+    sub rcx, rdi        # token length
+    cmp rcx, 1
+    jne .parse_integer
+    mov al, byte ptr [rdi]
+    cmp al, '+'
+    je .op_add
+    cmp al, '-'
+    je .op_sub
+    cmp al, '*'
+    je .op_mul
+    cmp al, '/'
+    je .op_div
+    cmp al, '%'
+    je .op_mod
+    jmp .parse_integer
+
+.op_add:
+    lea rax, [r15 + 16]
+    cmp r14, rax
+    jb .error
+    sub r14, 8
+    mov rbx, qword ptr [r14]
+    sub r14, 8
+    mov rax, qword ptr [r14]
+    add rax, rbx
+    mov qword ptr [r14], rax
+    add r14, 8
+    jmp .token_loop
+
+.op_sub:
+    lea rax, [r15 + 16]
+    cmp r14, rax
+    jb .error
+    sub r14, 8
+    mov rbx, qword ptr [r14]
+    sub r14, 8
+    mov rax, qword ptr [r14]
+    sub rax, rbx
+    mov qword ptr [r14], rax
+    add r14, 8
+    jmp .token_loop
+
+.op_mul:
+    lea rax, [r15 + 16]
+    cmp r14, rax
+    jb .error
+    sub r14, 8
+    mov rbx, qword ptr [r14]
+    sub r14, 8
+    mov rax, qword ptr [r14]
+    imul rax, rbx
+    mov qword ptr [r14], rax
+    add r14, 8
+    jmp .token_loop
+
+.op_div:
+    lea rax, [r15 + 16]
+    cmp r14, rax
+    jb .error
+    sub r14, 8
+    mov rbx, qword ptr [r14]
+    sub r14, 8
+    mov rax, qword ptr [r14]
+    test rbx, rbx
+    jz .error
+    mov rcx, qword ptr [rip + min_int_val]
+    cmp rax, rcx
+    jne .div_ok
+    cmp rbx, -1
+    je .error
+.div_ok:
+    cqo
+    idiv rbx
+    mov qword ptr [r14], rax
+    add r14, 8
+    jmp .token_loop
+
+.op_mod:
+    lea rax, [r15 + 16]
+    cmp r14, rax
+    jb .error
+    sub r14, 8
+    mov rbx, qword ptr [r14]
+    sub r14, 8
+    mov rax, qword ptr [r14]
+    test rbx, rbx
+    jz .error
+    mov rcx, qword ptr [rip + min_int_val]
+    cmp rax, rcx
+    jne .mod_ok
+    cmp rbx, -1
+    je .error
+.mod_ok:
+    cqo
+    idiv rbx
+    mov qword ptr [r14], rdx
+    add r14, 8
+    jmp .token_loop
+
+.parse_integer:
+    # Parse integer literal: optional '-' followed by 1-18 digits
+    mov rax, rdi
+    mov rbx, 0          # sign: 0 = positive, 1 = negative
+    mov rcx, 0          # digit count
+    mov rdx, 0          # accumulated value
+    mov r8, 10
+.parse_sign:
+    cmp r12, r13
+    jae .parse_digits
+    mov al, byte ptr [r12]
+    cmp al, '-'
+    jne .parse_digits
+    mov rbx, 1
+    inc r12
+    inc rcx
+    jmp .parse_digits
+.parse_digits:
+    cmp r12, r13
+    jae .check_digits
+    mov al, byte ptr [r12]
+    cmp al, '0'
+    jb .check_digits
+    cmp al, '9'
+    ja .check_digits
+    # Valid digit
+    inc r12
+    inc rcx
+    sub al, '0'
+    movzx r9, al
+    # Check overflow: rdx * 10 + r9 > 2^63-1 (or 2^63 for negative)
+    # We'll use 128-bit check via mul
+    mov rax, rdx
+    mul r8
+    jc .int_error       # overflow in mul
+    add rax, r9
+    jc .int_error       # overflow in add
+    # Check if exceeds 2^63-1 (9223372036854775807) for positive
+    # or 2^63 (9223372036854775808) for negative
+    mov rdx, rax
+    cmp rcx, 19
+    ja .int_error       # more than 18 digits
+    jmp .parse_digits
+.check_digits:
+    test rcx, rcx
+    jz .int_error       # no digits
+    cmp rcx, 19
+    ja .int_error       # more than 18 digits
+    # Check value bounds
+    test rbx, rbx
+    jz .check_positive
+    # negative: max is 9223372036854775808
+    cmp rdx, 9223372036854775808

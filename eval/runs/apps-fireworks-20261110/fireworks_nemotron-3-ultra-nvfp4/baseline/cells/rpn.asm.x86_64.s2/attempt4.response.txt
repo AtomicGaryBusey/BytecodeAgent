@@ -1,0 +1,424 @@
+.section .bss
+.align 16
+input_buf: .zero 65536
+stack: .zero 8192
+
+.section .rodata
+error_msg: .ascii "error\n"
+error_len = . - error_msg
+int64_min_str: .ascii "-9223372036854775808\n"
+int64_min_len = . - int64_min_str
+
+.section .text
+.globl _start
+
+.equ SYS_READ, 0
+.equ SYS_WRITE, 1
+.equ SYS_EXIT, 60
+.equ STDIN, 0
+.equ STDOUT, 1
+
+_start:
+    # Read all input into input_buf
+    mov r15, input_buf          # base address
+    xor r14, r14                # total bytes read
+    mov r13, 65536              # max size
+.read_loop:
+    cmp r14, r13
+    jae .read_done
+    mov rax, SYS_READ
+    mov rdi, STDIN
+    lea rsi, [r15 + r14]
+    mov rdx, r13
+    sub rdx, r14
+    syscall
+    test rax, rax
+    jz .read_done
+    add r14, rax
+    jmp .read_loop
+.read_done:
+    # r14 = total bytes read
+    # Initialize stack pointer
+    mov r12, stack              # stack top (next free slot)
+    mov r13, stack              # stack base
+    # Set up input pointers
+    mov rsi, r15                # current position
+    lea rdi, [r15 + r14]        # end of input
+    jmp .line_loop
+
+.line_loop:
+    cmp rsi, rdi
+    jae .exit_program
+    # Find next newline
+    mov r8, rsi
+.find_newline:
+    cmp r8, rdi
+    jae .no_newline
+    cmp byte ptr [r8], 10
+    je .found_newline
+    inc r8
+    jmp .find_newline
+.found_newline:
+    mov r10, rsi                # line_start
+    mov r11, r8                 # line_end (exclusive)
+    lea rsi, [r8 + 1]           # next line start
+    jmp .process_line
+.no_newline:
+    mov r10, rsi
+    mov r11, rdi
+    mov rsi, rdi                # will exit after this line
+    jmp .process_line
+
+.process_line:
+    # Reset stack
+    mov r12, r13
+    xor r8, r8                  # error flag (0 = ok)
+    mov r9, r10                 # token pointer
+.token_loop:
+    cmp r9, r11
+    jae .token_done
+    # Skip spaces and tabs
+    mov al, byte ptr [r9]
+    cmp al, ' '
+    je .skip_space
+    cmp al, 9
+    je .skip_space
+    jmp .token_start
+.skip_space:
+    inc r9
+    jmp .token_loop
+.token_start:
+    mov r10, r9                 # token_start
+.find_token_end:
+    cmp r9, r11
+    jae .token_end
+    mov al, byte ptr [r9]
+    cmp al, ' '
+    je .token_end
+    cmp al, 9
+    je .token_end
+    inc r9
+    jmp .find_token_end
+.token_end:
+    # Token from r10 to r9
+    mov rdi, r10
+    mov rsi, r9
+    call process_token
+    test rax, rax
+    jnz .line_error
+    jmp .token_loop
+
+.token_done:
+    # Check stack has exactly one value
+    mov rax, r12
+    sub rax, r13
+    cmp rax, 8
+    jne .line_error
+    # Pop result
+    mov rax, qword ptr [r13]
+    call output_number
+    jmp .line_loop
+
+.line_error:
+    # Output "error\n"
+    mov rdi, STDOUT
+    lea rsi, [rip + error_msg]
+    mov rdx, error_len
+    call write_all
+    jmp .line_loop
+
+.exit_program:
+    mov rax, SYS_EXIT
+    xor rdi, rdi
+    syscall
+
+# process_token(token_start, token_end)
+# returns 0 on success, non-zero on error
+process_token:
+    # rdi = start, rsi = end
+    mov r8, rsi
+    sub r8, rdi                 # length
+    cmp r8, 1
+    jne .try_literal
+    # Length 1: check if operator
+    mov al, byte ptr [rdi]
+    cmp al, '+'
+    je .op_add
+    cmp al, '-'
+    je .op_sub
+    cmp al, '*'
+    je .op_mul
+    cmp al, '/'
+    je .op_div
+    cmp al, '%'
+    je .op_mod
+    # Not an operator, fall through to literal parsing
+.try_literal:
+    # Parse integer literal
+    # rdi = start, rsi = end
+    mov r9, rdi
+    mov r10, rsi
+    mov r11, 1                  # sign = 1
+    cmp byte ptr [r9], '-'
+    jne .parse_digits
+    mov r11, -1                 # sign = -1
+    inc r9
+.parse_digits:
+    mov r8, r10
+    sub r8, r9                  # digit count
+    test r8, r8
+    jz .token_error
+    cmp r8, 18
+    ja .token_error
+    # Check all digits
+    mov rcx, r8
+    mov r8, r9
+.check_digit:
+    mov al, byte ptr [r8]
+    cmp al, '0'
+    jb .token_error
+    cmp al, '9'
+    ja .token_error
+    inc r8
+    loop .check_digit
+    # Convert to integer
+    xor rax, rax
+    mov r8, r9
+    mov rcx, r10
+.convert_loop:
+    cmp r8, rcx
+    jae .convert_done
+    movzx rdx, byte ptr [r8]
+    sub rdx, '0'
+    imul rax, 10
+    add rax, rdx
+    inc r8
+    jmp .convert_loop
+.convert_done:
+    # Apply sign
+    test r11, r11
+    js .negate_value
+    jmp .push_value
+.negate_value:
+    neg rax
+.push_value:
+    # Push rax onto stack
+    mov qword ptr [r12], rax
+    add r12, 8
+    xor rax, rax                # success
+    ret
+.token_error:
+    mov rax, 1                  # error
+    ret
+
+# Operators
+.op_add:
+    call pop_two
+    test rax, rax
+    jnz .token_error
+    add rbx, rcx                # a + b
+    jmp .push_result
+.op_sub:
+    call pop_two
+    test rax, rax
+    jnz .token_error
+    sub rbx, rcx                # a - b
+    jmp .push_result
+.op_mul:
+    call pop_two
+    test rax, rax
+    jnz .token_error
+    imul rbx, rcx               # a * b (low 64 bits)
+    jmp .push_result
+.op_div:
+    call pop_two
+    test rax, rax
+    jnz .token_error
+    # Check division by zero
+    test rcx, rcx
+    jz .token_error
+    # Check INT64_MIN / -1
+    cmp rbx, 0x8000000000000000
+    jne .do_div
+    cmp rcx, -1
+    je .token_error
+.do_div:
+    mov rax, rbx
+    cqo
+    idiv rcx
+    mov rbx, rax                # quotient
+    jmp .push_result
+.op_mod:
+    call pop_two
+    test rax, rax
+    jnz .token_error
+    test rcx, rcx
+    jz .token_error
+    cmp rbx, 0x8000000000000000
+    jne .do_mod
+    cmp rcx, -1
+    je .token_error
+.do_mod:
+    mov rax, rbx
+    cqo
+    idiv rcx
+    mov rbx, rdx                # remainder
+    jmp .push_result
+
+pop_two:
+    # Returns 0 on success, 1 on stack underflow
+    # Results: rbx = a, rcx = b
+    mov rax, r12
+    sub rax, r13
+    cmp rax, 16
+    jb .underflow
+    sub r12, 16
+    mov rbx, qword ptr [r12]       # a
+    mov rcx, qword ptr [r12 + 8]   # b
+    xor rax, rax
+    ret
+.underflow:
+    mov rax, 1
+    ret
+
+.push_result:
+    mov qword ptr [r12], rbx
+    add r12, 8
+    xor rax, rax
+    ret
+
+# output_number(rax = value)
+output_number:
+    # Check for INT64_MIN
+    cmp rax, 0x8000000000000000
+    jne .convert_positive
+    # Special case
+    mov rdi, STDOUT
+    lea rsi, [rip + int64_min_str]
+    mov rdx, int64_min_len
+    call write_all
+    ret
+.convert_positive:
+    test rax, rax
+    jns .do_convert
+    # Negative
+    push rax
+    mov al, '-'
+    # We'll build string on stack
+    sub rsp, 32                 # temporary buffer
+    mov byte ptr [rsp + 31], 10 # newline
+    lea rdi, [rsp + 30]         # current position
+    pop rax
+    neg rax
+    jmp .convert_loop
+.do_convert:
+    sub rsp, 32
+    mov byte ptr [rsp + 31], 10
+    lea rdi, [rsp + 30]
+.convert_loop:
+    test rax, rax
+    jz .convert_done
+    xor rdx, rdx
+    mov rcx, 10
+    div rcx
+    add dl, '0'
+    mov byte ptr [rdi], dl
+    dec rdi
+    jmp .convert_loop
+.convert_done:
+    # If negative, add sign
+    # We need to know if original was negative. We can check if rdi < rsp+30 and the value was negative.
+    # Simpler: we can keep a flag. But we used stack for buffer. Let's use a register to remember sign.
+    # We'll restructure: use rbx for sign flag.
+    # Actually we can do: after conversion, if original was negative, we write '-' at rdi.
+    # But we lost original sign. Let's keep sign in a register (r8).
+    # We'll rewrite this function with better register usage.
+    # For now, we'll assume we have a flag. Let's redo.
+
+# Let's restart output_number with better approach.
+# We'll use rbx for sign, rdi for buffer end, rsi for start.
+# But we need to preserve registers across write_all. We'll use callee-saved registers.
+# We'll rewrite output_number completely.
+
+# We'll delete the above and write a new version.
+
+# Let's write a new output_number:
+
+output_number:
+    # rax = value
+    mov rbx, rax
+    cmp rbx, 0x8000000000000000
+    jne .not_min
+    # INT64_MIN
+    mov rdi, STDOUT
+    lea rsi, [rip + int64_min_str]
+    mov rdx, int64_min_len
+    call write_all
+    ret
+.not_min:
+    xor r8, r8                  # sign flag
+    test rbx, rbx
+    jns .positive
+    neg rbx
+    mov r8, 1
+.positive:
+    sub rsp, 32                 # buffer on stack
+    mov byte ptr [rsp + 31], 10 # newline
+    lea rdi, [rsp + 30]         # current position
+.convert_loop:
+    test rbx, rbx
+    jz .convert_done
+    xor rdx, rdx
+    mov rcx, 10
+    div rcx                     # rax = quotient, rdx = remainder (but rbx is in rax? Wait, we need to use rbx as dividend)
+    # We have rbx as the value. We'll use rax for division.
+    mov rax, rbx
+    xor rdx, rdx
+    mov rcx, 10
+    div rcx
+    mov rbx, rax                # quotient back to rbx
+    add dl, '0'
+    mov byte ptr [rdi], dl
+    dec rdi
+    jmp .convert_loop
+.convert_done:
+    test r8, r8
+    jz .write_buffer
+    mov byte ptr [rdi], '-'
+    dec rdi
+.write_buffer:
+    lea rsi, [rdi + 1]
+    mov rdx, rsp
+    add rdx, 32
+    sub rdx, rsi                # length
+    mov rdi, STDOUT
+    call write_all
+    add rsp, 32
+    ret
+
+# write_all(fd, buf, len) - writes all bytes, loops on partial write
+write_all:
+    # rdi = fd, rsi = buf, rdx = len
+    push rdi
+    push rsi
+    push rdx
+.write_loop:
+    pop rdx
+    pop rsi
+    pop rdi
+    test rdx, rdx
+    jz .write_done
+    mov rax, SYS_WRITE
+    syscall
+    test rax, rax
+    jz .write_done              # should not happen, but avoid infinite loop
+    cmp rax, rdx
+    je .write_done
+    sub rdx, rax
+    add rsi, rax
+    push rdi
+    push rsi
+    push rdx
+    jmp .write_loop
+.write_done:
+    ret

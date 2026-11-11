@@ -1,0 +1,352 @@
+.section .text
+.globl _start
+
+.equ SYS_READ, 63
+.equ SYS_WRITE, 64
+.equ SYS_EXIT, 93
+.equ STDIN, 0
+.equ STDOUT, 1
+.equ MAX_INPUT, 65536
+.equ STACK_SIZE, 512
+
+_start:
+// Load addresses of .bss buffers
+    adrp    x19, input_buf
+    add     x19, x19, :lo12:input_buf
+    adrp    x27, eval_stack
+    add     x27, x27, :lo12:eval_stack
+
+// Read all input
+    mov     x20, #0                     // total_read = 0
+read_loop:
+    mov     x0, #STDIN
+    add     x1, x19, x20                // buf = input_buf + total_read
+    mov     x2, #MAX_INPUT
+    sub     x2, x2, x20                 // count = MAX_INPUT - total_read
+    mov     x8, #SYS_READ
+    svc     #0
+    cbz     x0, read_done               // EOF
+    add     x20, x20, x0                // total_read += bytes read
+    cmp     x20, #MAX_INPUT
+    b.ne    read_loop
+read_done:
+
+// Process lines
+    mov     x21, #0                     // current_pos = 0
+line_loop:
+    cmp     x21, x20
+    b.ge    done_lines                  // no more data
+
+    // Find end of line (newline or end of input)
+    mov     x22, x21                    // line_start = current_pos
+    mov     x23, #0                     // line_len = 0
+find_nl_loop:
+    cmp     x21, x20
+    b.ge    line_end_no_nl              // reached end of input without newline
+    ldrb    w0, [x19, x21]
+    cmp     w0, #10                     // '\n'
+    b.eq    found_nl
+    add     x21, x21, #1
+    add     x23, x23, #1
+    b       find_nl_loop
+found_nl:
+    add     x21, x21, #1                // skip newline for next line
+    b       process_line
+line_end_no_nl:
+    // last line without newline, x23 already set, x22 = line_start, x21 = total_read
+
+process_line:
+    // Reset evaluation stack
+    mov     x26, #0                     // stack_top = 0
+
+    // Tokenize line: x24 = current offset in input_buf, x29 = line_end (exclusive)
+    mov     x24, x22
+    add     x29, x22, x23
+
+skip_spaces:
+    cmp     x24, x29
+    b.ge    token_done                  // no more tokens
+    ldrb    w0, [x19, x24]
+    cmp     w0, #' '
+    b.eq    skip_space
+    cmp     w0, #9                      // '\t'
+    b.eq    skip_space
+    b       token_start_found
+skip_space:
+    add     x24, x24, #1
+    b       skip_spaces
+
+token_start_found:
+    mov     x25, x24                    // token_start = current
+
+find_token_end:
+    cmp     x24, x29
+    b.ge    token_end
+    ldrb    w0, [x19, x24]
+    cmp     w0, #' '
+    b.eq    token_end
+    cmp     w0, #9
+    b.eq    token_end
+    add     x24, x24, #1
+    b       find_token_end
+
+token_end:
+    sub     x28, x24, x25               // token_len = x24 - x25
+
+    // Check if operator (single char + - * / %)
+    cmp     x28, #1
+    b.ne    parse_integer
+    ldrb    w0, [x19, x25]
+    cmp     w0, #'+'
+    b.eq    op_add
+    cmp     w0, #'-'
+    b.eq    op_sub
+    cmp     w0, #'*'
+    b.eq    op_mul
+    cmp     w0, #'/'
+    b.eq    op_div
+    cmp     w0, #'%'
+    b.eq    op_mod
+    // Not an operator -> parse as integer
+    b       parse_integer
+
+// Operator implementations
+op_add:
+    cmp     x26, #2
+    b.lt    error_line
+    sub     x26, x26, #1
+    ldr     x0, [x27, x26, lsl #3]      // b
+    sub     x26, x26, #1
+    ldr     x1, [x27, x26, lsl #3]      // a
+    add     x0, x1, x0
+    str     x0, [x27, x26, lsl #3]
+    add     x26, x26, #1
+    b       next_token
+
+op_sub:
+    cmp     x26, #2
+    b.lt    error_line
+    sub     x26, x26, #1
+    ldr     x0, [x27, x26, lsl #3]
+    sub     x26, x26, #1
+    ldr     x1, [x27, x26, lsl #3]
+    sub     x0, x1, x0
+    str     x0, [x27, x26, lsl #3]
+    add     x26, x26, #1
+    b       next_token
+
+op_mul:
+    cmp     x26, #2
+    b.lt    error_line
+    sub     x26, x26, #1
+    ldr     x0, [x27, x26, lsl #3]
+    sub     x26, x26, #1
+    ldr     x1, [x27, x26, lsl #3]
+    mul     x0, x1, x0
+    str     x0, [x27, x26, lsl #3]
+    add     x26, x26, #1
+    b       next_token
+
+op_div:
+    cmp     x26, #2
+    b.lt    error_line
+    sub     x26, x26, #1
+    ldr     x0, [x27, x26, lsl #3]      // b
+    sub     x26, x26, #1
+    ldr     x1, [x27, x26, lsl #3]      // a
+    cbz     x0, error_line              // division by zero
+    // Check a == INT64_MIN && b == -1
+    mov     x2, #0
+    movk    x2, #0x8000, lsl #48        // INT64_MIN = 0x8000000000000000
+    cmp     x1, x2
+    b.ne    div_ok
+    cmp     x0, #-1
+    b.eq    error_line
+div_ok:
+    sdiv    x0, x1, x0
+    str     x0, [x27, x26, lsl #3]
+    add     x26, x26, #1
+    b       next_token
+
+op_mod:
+    cmp     x26, #2
+    b.lt    error_line
+    sub     x26, x26, #1
+    ldr     x0, [x27, x26, lsl #3]      // b
+    sub     x26, x26, #1
+    ldr     x1, [x27, x26, lsl #3]      // a
+    cbz     x0, error_line
+    mov     x2, #0
+    movk    x2, #0x8000, lsl #48        // INT64_MIN
+    cmp     x1, x2
+    b.ne    mod_ok
+    cmp     x0, #-1
+    b.eq    error_line
+mod_ok:
+    sdiv    x3, x1, x0                  // quotient
+    msub    x0, x3, x0, x1              // remainder = a - q*b
+    str     x0, [x27, x26, lsl #3]
+    add     x26, x26, #1
+    b       next_token
+
+parse_integer:
+    // x25 = token_start, x28 = token_len
+    // Check for leading '-'
+    ldrb    w0, [x19, x25]
+    cmp     w0, #'-'
+    b.ne    integer_digits_start
+    mov     x9, #1                      // sign flag: 1 = negative
+    add     x25, x25, #1
+    sub     x28, x28, #1
+    cbz     x28, error_line             // only '-' -> invalid
+    b       integer_check_digits
+integer_digits_start:
+    mov     x9, #0                      // positive
+
+integer_check_digits:
+    cmp     x28, #18
+    b.gt    error_line                  // more than 18 digits
+    // Verify all characters are digits
+    mov     x30, x25                    // current pointer
+    mov     x10, x28                    // remaining count
+digit_check_loop:
+    cbz     x10, digit_check_done
+    ldrb    w0, [x19, x30]
+    cmp     w0, #'0'
+    b.lt    error_line
+    cmp     w0, #'9'
+    b.gt    error_line
+    add     x30, x30, #1
+    sub     x10, x10, #1
+    b       digit_check_loop
+digit_check_done:
+
+    // Parse digits to integer (unsigned accumulation)
+    mov     x0, #0                      // value
+    mov     x1, x25                     // pointer
+    mov     x2, x28                     // count
+parse_loop:
+    cbz     x2, parse_done
+    ldrb    w3, [x19, x1]
+    sub     w3, w3, #'0'
+    mov     x4, #10
+    mul     x0, x0, x4
+    add     x0, x0, x3
+    add     x1, x1, #1
+    sub     x2, x2, #1
+    b       parse_loop
+parse_done:
+    // Apply sign
+    cbz     x9, push_value
+    neg     x0, x0
+push_value:
+    str     x0, [x27, x26, lsl #3]
+    add     x26, x26, #1
+
+next_token:
+    b       skip_spaces
+
+token_done:
+    // All tokens processed, check stack
+    cmp     x26, #1
+    b.ne    error_line
+    ldr     x0, [x27, #0]               // result
+    b       print_result
+
+error_line:
+    // Write "error\n"
+    mov     x0, #STDOUT
+    adrp    x1, err_msg
+    add     x1, x1, :lo12:err_msg
+    mov     x2, #6
+    mov     x8, #SYS_WRITE
+    svc     #0
+    b       line_loop
+
+print_result:
+    // Check for INT64_MIN
+    mov     x1, #0
+    movk    x1, #0x8000, lsl #48        // INT64_MIN
+    cmp     x0, x1
+    b.ne    not_min
+    // Print precomputed MIN string
+    mov     x0, #STDOUT
+    adrp    x1, min_msg
+    add     x1, x1, :lo12:min_msg
+    mov     x2, #21
+    mov     x8, #SYS_WRITE
+    svc     #0
+    b       line_loop
+
+not_min:
+    // Convert x0 to decimal in num_buf
+    adrp    x5, num_buf
+    add     x5, x5, :lo12:num_buf
+    // x5 = buffer base, x6 = write pointer (start at end)
+    add     x6, x5, #31
+    // Store newline at end
+    mov     w3, #10
+    strb    w3, [x6]
+    sub     x6, x6, #1
+
+    // Handle sign
+    cmp     x0, #0
+    b.ge    positive_convert
+    mov     x7, #1
+    neg     x0, x0
+    b       convert_loop
+positive_convert:
+    mov     x7, #0
+
+convert_loop:
+    cbz     x0, zero_case
+    mov     x2, #10
+div_loop:
+    udiv    x3, x0, x2
+    msub    x4, x3, x2, x0              // remainder
+    add     w4, w4, #'0'
+    strb    w4, [x6]
+    sub     x6, x6, #1
+    mov     x0, x3
+    cbnz    x0, div_loop
+    b       after_digits
+zero_case:
+    mov     w4, #'0'
+    strb    w4, [x6]
+    sub     x6, x6, #1
+
+after_digits:
+    cbz     x7, write_number
+    mov     w4, #'-'
+    strb    w4, [x6]
+    sub     x6, x6, #1
+
+write_number:
+    // x6 points to last unused byte, string starts at x6+1, length = (x5+31) - x6
+    add     x1, x6, #1
+    add     x2, x5, #31
+    sub     x2, x2, x6
+    mov     x0, #STDOUT
+    mov     x8, #SYS_WRITE
+    svc     #0
+    b       line_loop
+
+done_lines:
+    mov     x0, #0
+    mov     x8, #SYS_EXIT
+    svc     #0
+
+.section .rodata
+err_msg:
+    .ascii  "error\n"
+min_msg:
+    .ascii  "-9223372036854775808\n"
+
+.section .bss
+.align 3
+input_buf:
+    .space  MAX_INPUT
+eval_stack:
+    .space  STACK_SIZE * 8
+num_buf:
+    .space  32

@@ -1,0 +1,201 @@
+.equ SYS_READ, 0
+.equ SYS_WRITE, 1
+.equ SYS_EXIT, 60
+.equ STDIN_FD, 0
+.equ STDOUT_FD, 1
+.equ STDERR_FD, 2
+.equ MAX_INPUT, 65536
+.equ TAPE_SIZE, 30000
+.equ MAX_OUTPUT, 65536
+.equ MAX_PROGRAM, 65536
+.equ MAX_NESTING, 1000
+
+.section .text
+.globl _start
+_start:
+    # load base addresses of static buffers
+    lea r10, [rip + stdin_buf]
+    lea r11, [rip + tape]
+    lea r12, [rip + output_buf]
+    lea r13, [rip + jump_table]
+    lea r14, [rip + bracket_stack]
+
+    # read all stdin into stdin_buf
+    xor r8, r8                   # total_read = 0
+.read_loop:
+    mov rdi, STDIN_FD
+    mov rsi, r10
+    add rsi, r8
+    mov rdx, MAX_INPUT
+    sub rdx, r8
+    mov rax, SYS_READ
+    syscall
+    test rax, rax
+    jz .read_done
+    add r8, rax
+    jmp .read_loop
+.read_done:
+    # r8 = stdin_len
+    test r8, r8
+    jz .no_excl
+    xor r9, r9                   # index = 0
+.find_excl:
+    cmp byte ptr [r10 + r9], '!'
+    je .found_excl
+    inc r9
+    cmp r9, r8
+    jne .find_excl
+.no_excl:
+    mov r9, r8                   # program_len = stdin_len
+    xor r15, r15                 # input_start = 0
+    xor rbx, rbx                 # input_len = 0
+    jmp .after_split
+.found_excl:
+    # r9 = index of '!'
+    lea r15, [r9 + 1]            # input_start = r9 + 1
+    mov rbx, r8
+    sub rbx, r15                 # input_len = stdin_len - input_start
+.after_split:
+    # r9 = program_len, r15 = input_start, rbx = input_len
+    # bracket matching and jump table construction
+    xor r8, r8                   # stack pointer (reuse r8)
+    xor rsi, rsi                 # i = 0
+.bracket_loop:
+    cmp rsi, r9
+    jae .bracket_done
+    movzx eax, byte ptr [r10 + rsi]
+    cmp al, '['
+    je .push_br
+    cmp al, ']'
+    je .pop_br
+    inc rsi
+    jmp .bracket_loop
+.push_br:
+    cmp r8, MAX_NESTING
+    jge .bracket_error
+    mov dword ptr [r14 + r8*4], esi
+    inc r8
+    inc rsi
+    jmp .bracket_loop
+.pop_br:
+    test r8, r8
+    jz .bracket_error
+    dec r8
+    mov edx, dword ptr [r14 + r8*4]
+    mov dword ptr [r13 + rdx*4], esi
+    mov dword ptr [r13 + rsi*4], edx
+    inc rsi
+    jmp .bracket_loop
+.bracket_error:
+    mov rdi, 1
+    mov rax, SYS_EXIT
+    syscall
+.bracket_done:
+    test r8, r8
+    jnz .bracket_error
+
+    # execution setup
+    xor rbp, rbp                 # data pointer (dp)
+    xor rsi, rsi                 # instruction pointer (ip)
+    xor rdi, rdi                 # input pointer
+    xor r8, r8                   # output length
+    lea r14, [r10 + r15]         # input_base = stdin_buf + input_start
+
+.exec_loop:
+    cmp rsi, r9
+    jae .exec_done
+    movzx eax, byte ptr [r10 + rsi]
+    cmp al, '>'
+    je .cmd_right
+    cmp al, '<'
+    je .cmd_left
+    cmp al, '+'
+    je .cmd_inc
+    cmp al, '-'
+    je .cmd_dec
+    cmp al, '.'
+    je .cmd_out
+    cmp al, ','
+    je .cmd_in
+    cmp al, '['
+    je .cmd_jz
+    cmp al, ']'
+    je .cmd_jnz
+    inc rsi
+    jmp .exec_loop
+
+.cmd_right:
+    inc rbp
+    inc rsi
+    jmp .exec_loop
+
+.cmd_left:
+    dec rbp
+    inc rsi
+    jmp .exec_loop
+
+.cmd_inc:
+    inc byte ptr [r11 + rbp]
+    inc rsi
+    jmp .exec_loop
+
+.cmd_dec:
+    dec byte ptr [r11 + rbp]
+    inc rsi
+    jmp .exec_loop
+
+.cmd_out:
+    mov al, byte ptr [r11 + rbp]
+    mov byte ptr [r12 + r8], al
+    inc r8
+    inc rsi
+    jmp .exec_loop
+
+.cmd_in:
+    cmp rdi, rbx
+    jae .in_eof
+    mov al, byte ptr [r14 + rdi]
+    inc rdi
+    jmp .in_store
+.in_eof:
+    xor al, al
+.in_store:
+    mov byte ptr [r11 + rbp], al
+    inc rsi
+    jmp .exec_loop
+
+.cmd_jz:
+    cmp byte ptr [r11 + rbp], 0
+    jne .jz_no_jump
+    mov esi, dword ptr [r13 + rsi*4]
+.jz_no_jump:
+    inc rsi
+    jmp .exec_loop
+
+.cmd_jnz:
+    cmp byte ptr [r11 + rbp], 0
+    je .jnz_no_jump
+    mov esi, dword ptr [r13 + rsi*4]
+.jnz_no_jump:
+    inc rsi
+    jmp .exec_loop
+
+.exec_done:
+    test r8, r8
+    jz .exit0
+    mov rdx, r8
+    mov rsi, r12
+    mov rdi, STDOUT_FD
+    mov rax, SYS_WRITE
+    syscall
+.exit0:
+    xor rdi, rdi
+    mov rax, SYS_EXIT
+    syscall
+
+.section .bss
+stdin_buf:      .zero MAX_INPUT
+tape:           .zero TAPE_SIZE
+output_buf:     .zero MAX_OUTPUT
+jump_table:     .zero MAX_PROGRAM * 4
+bracket_stack:  .zero MAX_NESTING * 4

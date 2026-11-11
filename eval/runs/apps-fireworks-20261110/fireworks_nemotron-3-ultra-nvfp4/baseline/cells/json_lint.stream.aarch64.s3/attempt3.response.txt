@@ -1,0 +1,549 @@
+.section .rodata
+ok_msg: .ascii "ok\n"
+ok_len = . - ok_msg
+err_prefix: .ascii "error at "
+err_prefix_len = . - err_prefix
+newline: .ascii "\n"
+newline_len = . - newline
+
+.section .bss
+.align 12
+input_buf: .space 65536
+input_len: .space 8
+
+.section .text
+.globl _start
+
+.equ SYS_READ, 63
+.equ SYS_WRITE, 64
+.equ SYS_EXIT, 93
+.equ SYS_EXIT_GROUP, 94
+
+.equ MAX_DEPTH, 1000
+.equ STATE_STACK_SIZE, MAX_DEPTH * 8
+
+.equ STATE_START, 0
+.equ STATE_VALUE, 1
+.equ STATE_OBJECT_KEY, 2
+.equ STATE_OBJECT_COLON, 3
+.equ STATE_OBJECT_VALUE, 4
+.equ STATE_OBJECT_COMMA_OR_END, 5
+.equ STATE_ARRAY_VALUE, 6
+.equ STATE_ARRAY_COMMA_OR_END, 7
+.equ STATE_STRING, 8
+.equ STATE_STRING_ESCAPE, 9
+.equ STATE_STRING_UNICODE, 10
+.equ STATE_NUMBER, 11
+.equ STATE_NUMBER_FRAC, 12
+.equ STATE_NUMBER_EXP, 13
+.equ STATE_NUMBER_EXP_SIGN, 14
+.equ STATE_NUMBER_EXP_DIGITS, 15
+.equ STATE_TRUE, 16
+.equ STATE_FALSE, 17
+.equ STATE_NULL, 18
+.equ STATE_DONE, 19
+
+.equ CHAR_SPACE, 0x20
+.equ CHAR_TAB, 0x09
+.equ CHAR_NL, 0x0A
+.equ CHAR_CR, 0x0D
+.equ CHAR_LBRACE, 0x7B
+.equ CHAR_RBRACE, 0x7D
+.equ CHAR_LBRACKET, 0x5B
+.equ CHAR_RBRACKET, 0x5D
+.equ CHAR_COLON, 0x3A
+.equ CHAR_COMMA, 0x2C
+.equ CHAR_QUOTE, 0x22
+.equ CHAR_BACKSLASH, 0x5C
+.equ CHAR_MINUS, 0x2D
+.equ CHAR_DOT, 0x2E
+.equ CHAR_E, 0x65
+.equ CHAR_UPPER_E, 0x45
+.equ CHAR_PLUS, 0x2B
+.equ CHAR_0, 0x30
+.equ CHAR_9, 0x39
+.equ CHAR_a, 0x61
+.equ CHAR_f, 0x66
+.equ CHAR_A, 0x41
+.equ CHAR_F, 0x46
+.equ CHAR_b, 0x62
+.equ CHAR_n, 0x6E
+.equ CHAR_r, 0x72
+.equ CHAR_t, 0x74
+.equ CHAR_u, 0x75
+.equ CHAR_SLASH, 0x2F
+
+_start:
+    mov x19, xzr
+    adrp x20, input_buf
+    add x20, x20, :lo12:input_buf
+
+read_loop:
+    cmp x19, #65536
+    b.ge read_done
+    
+    mov x8, #SYS_READ
+    mov x0, #0
+    add x1, x20, x19
+    sub x2, xzr, x19
+    add x2, x2, #65536
+    svc #0
+    
+    cmp x0, #0
+    b.le read_done
+    
+    add x19, x19, x0
+    b read_loop
+
+read_done:
+    adrp x0, input_len
+    add x0, x0, :lo12:input_len
+    str x19, [x0]
+    
+    mov x21, xzr
+    mov x22, #STATE_START
+    
+    // Allocate state stack
+    mov x23, #STATE_STACK_SIZE
+    sub sp, sp, x23
+    mov x24, sp  // stack base for state stack
+    mov x25, xzr  // stack depth (number of elements)
+
+    // Main parsing loop
+parse_loop:
+    // Check if we've consumed all input
+    cmp x21, x19
+    b.ge parse_eof
+    
+    // Load current byte
+    ldrb w26, [x20, x21]
+    
+    // Dispatch based on state
+    cmp x22, #STATE_START
+    b.eq parse_start
+    cmp x22, #STATE_VALUE
+    b.eq parse_value
+    cmp x22, #STATE_OBJECT_KEY
+    b.eq parse_object_key
+    cmp x22, #STATE_OBJECT_COLON
+    b.eq parse_object_colon
+    cmp x22, #STATE_OBJECT_VALUE
+    b.eq parse_object_value
+    cmp x22, #STATE_OBJECT_COMMA_OR_END
+    b.eq parse_object_comma_or_end
+    cmp x22, #STATE_ARRAY_VALUE
+    b.eq parse_array_value
+    cmp x22, #STATE_ARRAY_COMMA_OR_END
+    b.eq parse_array_comma_or_end
+    cmp x22, #STATE_STRING
+    b.eq parse_string
+    cmp x22, #STATE_STRING_ESCAPE
+    b.eq parse_string_escape
+    cmp x22, #STATE_STRING_UNICODE
+    b.eq parse_string_unicode
+    cmp x22, #STATE_NUMBER
+    b.eq parse_number
+    cmp x22, #STATE_NUMBER_FRAC
+    b.eq parse_number_frac
+    cmp x22, #STATE_NUMBER_EXP
+    b.eq parse_number_exp
+    cmp x22, #STATE_NUMBER_EXP_SIGN
+    b.eq parse_number_exp_sign
+    cmp x22, #STATE_NUMBER_EXP_DIGITS
+    b.eq parse_number_exp_digits
+    cmp x22, #STATE_TRUE
+    b.eq parse_true
+    cmp x22, #STATE_FALSE
+    b.eq parse_false
+    cmp x22, #STATE_NULL
+    b.eq parse_null
+    cmp x22, #STATE_DONE
+    b.eq parse_done_state
+    
+    // Unknown state - error
+    b parse_error
+
+// Helper: push state onto stack (x22 = state to push)
+push_state:
+    str x22, [x24, x25, lsl #3]
+    add x25, x25, #1
+    ret
+
+// Helper: pop state from stack (returns in x22)
+pop_state:
+    cbz x25, parse_error  // stack underflow
+    sub x25, x25, #1
+    ldr x22, [x24, x25, lsl #3]
+    ret
+
+// Helper: check if byte is whitespace
+is_ws:
+    cmp w26, #CHAR_SPACE
+    b.eq 1f
+    cmp w26, #CHAR_TAB
+    b.eq 1f
+    cmp w26, #CHAR_NL
+    b.eq 1f
+    cmp w26, #CHAR_CR
+    b.eq 1f
+    mov w0, #0
+    ret
+1:
+    mov w0, #1
+    ret
+
+// Helper: check if byte is digit
+is_digit:
+    cmp w26, #CHAR_0
+    b.lt 1f
+    cmp w26, #CHAR_9
+    b.gt 1f
+    mov w0, #1
+    ret
+1:
+    mov w0, #0
+    ret
+
+// Helper: check if byte is hex digit
+is_hex_digit:
+    cmp w26, #CHAR_0
+    b.lt 1f
+    cmp w26, #CHAR_9
+    b.le 2f
+1:
+    cmp w26, #CHAR_A
+    b.lt 3f
+    cmp w26, #CHAR_F
+    b.le 2f
+3:
+    cmp w26, #CHAR_a
+    b.lt 1f
+    cmp w26, #CHAR_f
+    b.gt 1f
+2:
+    mov w0, #1
+    ret
+1:
+    mov w0, #0
+    ret
+
+// Helper: advance position and continue
+advance_and_continue:
+    add x21, x21, #1
+    b parse_loop
+
+// Helper: report error at current position (x21)
+parse_error:
+    // Print "error at N\n"
+    adrp x0, err_prefix
+    add x0, x0, :lo12:err_prefix
+    mov x1, #1
+    mov x8, #SYS_WRITE
+    mov x2, #err_prefix_len
+    svc #0
+    
+    // Convert x21 to decimal
+    // Use stack for digits
+    sub sp, sp, #32
+    mov x26, sp
+    mov x27, #0
+    
+    mov x28, x21
+    cbz x28, 2f
+1:
+    mov x29, #10
+    udiv x30, x28, x29
+    msub x29, x30, x29, x28
+    add w29, w29, #CHAR_0
+    strb w29, [x26, x27]
+    add x27, x27, #1
+    mov x28, x30
+    cbnz x28, 1b
+2:
+    cbnz x27, 3f
+    mov w29, #CHAR_0
+    strb w29, [x26]
+    add x27, x27, #1
+3:
+    // Reverse digits
+    mov x28, xzr
+4:
+    cmp x28, x27
+    b.ge 5f
+    sub x29, x27, #1
+    sub x29, x29, x28
+    ldrb w30, [x26, x28]
+    ldrb w29, [x26, x29]
+    strb w30, [x26, x29]
+    strb w29, [x26, x28]
+    add x28, x28, #1
+    b 4b
+5:
+    // Write number
+    mov x0, #1
+    mov x1, x26
+    mov x2, x27
+    mov x8, #SYS_WRITE
+    svc #0
+    
+    // Write newline
+    adrp x0, newline
+    add x0, x0, :lo12:newline
+    mov x1, #1
+    mov x2, #newline_len
+    mov x8, #SYS_WRITE
+    svc #0
+    
+    add sp, sp, #32
+    mov x0, #1
+    mov x8, #SYS_EXIT
+    svc #0
+
+// Helper: success
+parse_success:
+    adrp x0, ok_msg
+    add x0, x0, :lo12:ok_msg
+    mov x1, #1
+    mov x2, #ok_len
+    mov x8, #SYS_WRITE
+    svc #0
+    mov x0, #0
+    mov x8, #SYS_EXIT
+    svc #0
+
+// STATE_START: skip leading whitespace, then expect value
+parse_start:
+    bl is_ws
+    cbnz w0, advance_and_continue
+    mov x22, #STATE_VALUE
+    b parse_loop
+
+// STATE_VALUE: expect start of a value
+parse_value:
+    bl is_ws
+    cbnz w0, advance_and_continue
+    
+    cmp w26, #CHAR_LBRACE
+    b.eq parse_value_object
+    cmp w26, #CHAR_LBRACKET
+    b.eq parse_value_array
+    cmp w26, #CHAR_QUOTE
+    b.eq parse_value_string
+    cmp w26, #CHAR_MINUS
+    b.eq parse_value_number
+    cmp w26, #CHAR_0
+    b.eq parse_value_number
+    cmp w26, #CHAR_9
+    b.gt parse_value_check_true
+    // Check for digits 1-9
+    cmp w26, #CHAR_0
+    b.gt parse_value_number
+parse_value_check_true:
+    cmp w26, #CHAR_t
+    b.eq parse_value_true
+    cmp w26, #CHAR_f
+    b.eq parse_value_false
+    cmp w26, #CHAR_n
+    b.eq parse_value_null
+    b parse_error
+
+parse_value_object:
+    // Push STATE_DONE after object
+    mov x22, #STATE_DONE
+    bl push_state
+    mov x22, #STATE_OBJECT_KEY
+    b advance_and_continue
+
+parse_value_array:
+    mov x22, #STATE_DONE
+    bl push_state
+    mov x22, #STATE_ARRAY_VALUE
+    b advance_and_continue
+
+parse_value_string:
+    mov x22, #STATE_STRING
+    b advance_and_continue
+
+parse_value_number:
+    mov x22, #STATE_NUMBER
+    b parse_loop  // re-process this byte in NUMBER state
+
+parse_value_true:
+    mov x22, #STATE_TRUE
+    b advance_and_continue
+
+parse_value_false:
+    mov x22, #STATE_FALSE
+    b advance_and_continue
+
+parse_value_null:
+    mov x22, #STATE_NULL
+    b advance_and_continue
+
+// STATE_OBJECT_KEY: expect string or }
+parse_object_key:
+    bl is_ws
+    cbnz w0, advance_and_continue
+    
+    cmp w26, #CHAR_RBRACE
+    b.eq parse_object_empty
+    cmp w26, #CHAR_QUOTE
+    b.eq parse_object_key_string
+    b parse_error
+
+parse_object_empty:
+    // Empty object, pop to STATE_DONE
+    bl pop_state
+    b advance_and_continue
+
+parse_object_key_string:
+    mov x22, #STATE_STRING
+    b advance_and_continue
+
+// STATE_OBJECT_COLON: expect :
+parse_object_colon:
+    bl is_ws
+    cbnz w0, advance_and_continue
+    
+    cmp w26, #CHAR_COLON
+    b.eq parse_object_colon_found
+    b parse_error
+
+parse_object_colon_found:
+    mov x22, #STATE_OBJECT_VALUE
+    b advance_and_continue
+
+// STATE_OBJECT_VALUE: expect value
+parse_object_value:
+    bl is_ws
+    cbnz w0, advance_and_continue
+    
+    // Same as STATE_VALUE but after colon
+    cmp w26, #CHAR_LBRACE
+    b.eq parse_value_object
+    cmp w26, #CHAR_LBRACKET
+    b.eq parse_value_array
+    cmp w26, #CHAR_QUOTE
+    b.eq parse_value_string
+    cmp w26, #CHAR_MINUS
+    b.eq parse_value_number
+    cmp w26, #CHAR_0
+    b.eq parse_value_number
+    cmp w26, #CHAR_9
+    b.gt parse_object_value_check_true
+    cmp w26, #CHAR_0
+    b.gt parse_value_number
+parse_object_value_check_true:
+    cmp w26, #CHAR_t
+    b.eq parse_value_true
+    cmp w26, #CHAR_f
+    b.eq parse_value_false
+    cmp w26, #CHAR_n
+    b.eq parse_value_null
+    b parse_error
+
+// STATE_OBJECT_COMMA_OR_END: expect , or }
+parse_object_comma_or_end:
+    bl is_ws
+    cbnz w0, advance_and_continue
+    
+    cmp w26, #CHAR_COMMA
+    b.eq parse_object_comma
+    cmp w26, #CHAR_RBRACE
+    b.eq parse_object_end
+    b parse_error
+
+parse_object_comma:
+    mov x22, #STATE_OBJECT_KEY
+    b advance_and_continue
+
+parse_object_end:
+    bl pop_state
+    b advance_and_continue
+
+// STATE_ARRAY_VALUE: expect value or ]
+parse_array_value:
+    bl is_ws
+    cbnz w0, advance_and_continue
+    
+    cmp w26, #CHAR_RBRACKET
+    b.eq parse_array_empty
+    // Same as value
+    cmp w26, #CHAR_LBRACE
+    b.eq parse_value_object
+    cmp w26, #CHAR_LBRACKET
+    b.eq parse_value_array
+    cmp w26, #CHAR_QUOTE
+    b.eq parse_value_string
+    cmp w26, #CHAR_MINUS
+    b.eq parse_value_number
+    cmp w26, #CHAR_0
+    b.eq parse_value_number
+    cmp w26, #CHAR_9
+    b.gt parse_array_value_check_true
+    cmp w26, #CHAR_0
+    b.gt parse_value_number
+parse_array_value_check_true:
+    cmp w26, #CHAR_t
+    b.eq parse_value_true
+    cmp w26, #CHAR_f
+    b.eq parse_value_false
+    cmp w26, #CHAR_n
+    b.eq parse_value_null
+    b parse_error
+
+parse_array_empty:
+    bl pop_state
+    b advance_and_continue
+
+// STATE_ARRAY_COMMA_OR_END: expect , or ]
+parse_array_comma_or_end:
+    bl is_ws
+    cbnz w0, advance_and_continue
+    
+    cmp w26, #CHAR_COMMA
+    b.eq parse_array_comma
+    cmp w26, #CHAR_RBRACKET
+    b.eq parse_array_end
+    b parse_error
+
+parse_array_comma:
+    mov x22, #STATE_ARRAY_VALUE
+    b advance_and_continue
+
+parse_array_end:
+    bl pop_state
+    b advance_and_continue
+
+// STATE_STRING: parse string content
+parse_string:
+    cmp w26, #CHAR_QUOTE
+    b.eq parse_string_end
+    cmp w26, #CHAR_BACKSLASH
+    b.eq parse_string_escape_start
+    // Check for control characters (0x00-0x1F)
+    cmp w26, #0x1F
+    b.le parse_error
+    // Any byte 0x20-0xFF except " and \ is valid
+    b advance_and_continue
+
+parse_string_end:
+    // String complete, return to previous state
+    bl pop_state
+    b advance_and_continue
+
+parse_string_escape_start:
+    mov x22, #STATE_STRING_ESCAPE
+    b advance_and_continue
+
+// STATE_STRING_ESCAPE: process escape sequence
+parse_string_escape:
+    cmp w26, #CHAR_QUOTE
+    b.eq parse_string_escape_valid
+    cmp w26, #CHAR_BACKSLASH
+    b.eq parse_string_escape_valid
+    cmp w26, #CHAR_SLASH
+    b.eq parse_string_escape_valid
+    cmp w26, #CHAR_b
+    b.eq parse_string_escape_valid
+    cmp w26, #CHAR_f_char

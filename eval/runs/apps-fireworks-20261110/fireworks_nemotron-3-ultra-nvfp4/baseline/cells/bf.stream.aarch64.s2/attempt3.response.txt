@@ -1,0 +1,252 @@
+.equ SYS_READ, 63
+.equ SYS_WRITE, 64
+.equ SYS_EXIT, 93
+.equ SYS_EXIT_GROUP, 94
+
+.equ TAPE_SIZE, 30000
+.equ MAX_INPUT, 65536
+.equ MAX_NESTING, 1000
+
+.section .bss
+.align 16
+tape: .space TAPE_SIZE
+input_buf: .space MAX_INPUT
+jump_table: .space MAX_INPUT * 4
+output_buf: .space MAX_INPUT
+bracket_stack: .space MAX_NESTING * 4
+
+.section .text
+.globl _start
+
+_start:
+// Load base addresses
+adrp x19, input_buf
+add x19, x19, :lo12:input_buf       // x19 = input_buf base
+adrp x20, tape
+add x20, x20, :lo12:tape            // x20 = tape base (cell pointer)
+adrp x21, jump_table
+add x21, x21, :lo12:jump_table      // x21 = jump_table base
+adrp x22, output_buf
+add x22, x22, :lo12:output_buf      // x22 = output_buf base
+adrp x23, bracket_stack
+add x23, x23, :lo12:bracket_stack   // x23 = bracket_stack base
+
+// Read all stdin into input_buf
+mov x24, #0                         // total_read = 0
+mov x25, #MAX_INPUT                 // remaining capacity
+
+read_loop:
+// read(fd=0, buf=x19+x24, count=x25)
+mov x0, #0
+add x1, x19, x24
+mov x2, x25
+mov x8, #SYS_READ
+svc #0
+
+cbz x0, read_done                   // EOF
+add x24, x24, x0                    // total_read += bytes_read
+sub x25, x25, x0                    // remaining -= bytes_read
+cbnz x25, read_loop                 // continue if space left
+// If no space left but more input, we still stop reading (spec says input at most 65536)
+read_done:
+// x24 = total bytes read (program + '!' + input)
+// Find first '!' byte
+mov x25, #0                         // index
+mov x26, x24                        // length
+find_bang:
+cmp x25, x26
+b.ge no_bang                        // not found
+ldrb w27, [x19, x25]
+cmp w27, #0x21                      // '!'
+b.eq bang_found
+add x25, x25, #1
+b find_bang
+
+bang_found:
+// x25 = index of '!'
+mov x27, x25                        // program_len = x25
+add x28, x19, x25                   // address of '!'
+add x28, x28, #1                    // start of program input
+sub x29, x26, x25                   // remaining bytes after '!'
+sub x29, x29, #1                    // input_len
+b have_split
+
+no_bang:
+mov x27, x26                        // program_len = total_read
+mov x28, xzr                        // input start = NULL
+mov x29, #0                         // input_len = 0
+
+have_split:
+// x27 = program_len, x28 = input_start, x29 = input_len
+// Validate brackets and build jump_table
+// Use bracket_stack at x23, stack pointer in x30 (reusing x30 as stack top index)
+mov x30, #0                         // stack depth = 0
+mov x25, #0                         // program index
+
+bracket_scan_loop:
+cmp x25, x27
+b.ge bracket_scan_done
+ldrb w26, [x19, x25]
+cmp w26, #'['
+b.eq handle_open
+cmp w26, #']'
+b.eq handle_close
+b bracket_next
+
+handle_open:
+// check stack overflow before push
+cmp x30, #MAX_NESTING
+b.ge bracket_error
+str w25, [x23, x30, lsl #2]
+add x30, x30, #1
+b bracket_next
+
+handle_close:
+cbz x30, bracket_error              // unmatched ']'
+sub x30, x30, #1
+ldr w26, [x23, x30, lsl #2]         // matching '['
+ // set jump_table[open] = close, jump_table[close] = open
+str w25, [x21, x26, lsl #2]
+str w26, [x21, x25, lsl #2]
+b bracket_next
+
+bracket_next:
+add x25, x25, #1
+b bracket_scan_loop
+
+bracket_scan_done:
+cbnz x30, bracket_error             // unmatched '[' left
+b run_program
+
+bracket_error:
+// print nothing, exit with status 1
+mov x0, #1
+mov x8, #SYS_EXIT
+svc #0
+
+run_program:
+// Registers:
+// x19 = input_buf base (program at x19, length x27)
+// x20 = tape pointer (current cell)
+// x21 = jump_table base
+// x22 = output_buf base
+// x24 = output index (out_idx)
+// x25 = program counter (pc)
+// x26 = input index (in_idx)
+// x27 = program_len
+// x28 = input_start
+// x29 = input_len
+// x30 = link register (used for bl/ret)
+
+mov x25, #0                         // pc = 0
+mov x26, #0                         // input index = 0
+mov x24, #0                         // output index = 0
+
+main_loop:
+cmp x25, x27
+b.ge program_end                    // pc >= program_len -> done
+ldrb w0, [x19, x25]                 // current command (use w0 as temp)
+
+// Dispatch on command
+cmp w0, #'>'
+b.eq cmd_right
+cmp w0, #'<'
+b.eq cmd_left
+cmp w0, #'+'
+b.eq cmd_inc
+cmp w0, #'-'
+b.eq cmd_dec
+cmp w0, #'.'
+b.eq cmd_out
+cmp w0, #','
+b.eq cmd_in
+cmp w0, #'['
+b.eq cmd_jz
+cmp w0, #']'
+b.eq cmd_jnz
+// ignore other characters
+b cmd_next
+
+cmd_right:
+add x20, x20, #1
+b cmd_next
+
+cmd_left:
+sub x20, x20, #1
+b cmd_next
+
+cmd_inc:
+ldrb w0, [x20]
+add w0, w0, #1
+strb w0, [x20]
+b cmd_next
+
+cmd_dec:
+ldrb w0, [x20]
+sub w0, w0, #1
+strb w0, [x20]
+b cmd_next
+
+cmd_out:
+ldrb w0, [x20]
+strb w0, [x22, x24]
+add x24, x24, #1
+cmp x24, #MAX_INPUT
+b.lt cmd_next
+// output buffer full, flush
+mov x0, #1                          // fd = stdout
+mov x1, x22                         // buf = output_buf
+mov x2, x24                         // count
+mov x8, #SYS_WRITE
+svc #0
+mov x24, #0                         // reset output index
+b cmd_next
+
+cmd_in:
+// read next byte from program input
+cmp x26, x29
+b.ge input_exhausted
+ldrb w0, [x28, x26]
+add x26, x26, #1
+b input_store
+input_exhausted:
+mov w0, #0
+input_store:
+strb w0, [x20]
+b cmd_next
+
+cmd_jz:
+// if current cell == 0, jump to after matching ']'
+ldrb w0, [x20]
+cbnz w0, cmd_next
+// jump
+ldr w0, [x21, x25, lsl #2]         // matching ']' index
+add x25, x0, #1                    // pc = after ']'
+b main_loop                         // continue with new pc
+
+cmd_jnz:
+// if current cell != 0, jump back to after matching '['
+ldrb w0, [x20]
+cbz w0, cmd_next
+// jump
+ldr w0, [x21, x25, lsl #2]         // matching '[' index
+add x25, x0, #1                    // pc = after '['
+b main_loop
+
+cmd_next:
+add x25, x25, #1
+b main_loop
+
+program_end:
+// Flush any remaining output
+cbz x24, exit_success
+mov x0, #1
+mov x1, x22
+mov x2, x24
+mov x8, #SYS_WRITE
+svc #0
+
+exit_success:
+mov x0, #0
+mov x8, #SYS_EXIT
+svc #0

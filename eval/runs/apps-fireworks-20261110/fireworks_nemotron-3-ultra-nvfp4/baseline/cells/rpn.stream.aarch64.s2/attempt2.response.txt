@@ -1,0 +1,327 @@
+.globl _start
+
+.equ STDIN, 0
+.equ STDOUT, 1
+.equ SYS_READ, 63
+.equ SYS_WRITE, 64
+.equ SYS_EXIT, 93
+.equ INT64_MIN, -9223372036854775808
+
+.section .text
+_start:
+    // Read all input into buffer
+    mov x19, 0                      // total bytes read
+    adrp x20, input_buffer
+    add x20, x20, :lo12:input_buffer
+
+read_loop:
+    mov x0, STDIN
+    add x1, x20, x19
+    mov x2, 65536
+    sub x2, x2, x19
+    cbz x2, read_done
+    mov x8, SYS_READ
+    svc #0
+    cbz x0, read_done
+    add x19, x19, x0
+    b read_loop
+
+read_done:
+    // Process lines
+    mov x21, 0                      // current offset
+    mov x22, x19                    // total size
+
+process_line_loop:
+    cmp x21, x22
+    b.ge exit_program
+
+    // Find end of line
+    mov x23, x21
+find_newline:
+    cmp x23, x22
+    b.ge line_end_no_newline
+    ldrb w24, [x20, x23]
+    add x23, x23, 1
+    cmp w24, 0x0A
+    b.ne find_newline
+
+    // Line from x21 to x23-1 (newline at x23-1)
+    mov x0, x20
+    mov x1, x21
+    mov x2, x23
+    bl evaluate_line
+    bl write_output
+
+    mov x21, x23
+    b process_line_loop
+
+line_end_no_newline:
+    // Last line without newline
+    mov x0, x20
+    mov x1, x21
+    mov x2, x22
+    bl evaluate_line
+    bl write_output
+
+exit_program:
+    mov x0, 0
+    mov x8, SYS_EXIT
+    svc #0
+
+// evaluate_line(x0=buf, x1=start, x2=end) -> x0=result, x1=error(0/1)
+// Uses only caller-saved registers x0-x18.
+evaluate_line:
+    mov x3, x1          // current offset
+    mov x4, 0           // stack depth
+    adrp x5, rpn_stack
+    add x5, x5, :lo12:rpn_stack
+    mov x15, 0          // error flag
+
+eval_loop:
+    cmp x3, x2
+    b.ge eval_done
+
+skip_spaces:
+    cmp x3, x2
+    b.ge eval_done
+    ldrb w9, [x0, x3]
+    cmp w9, 0x20
+    b.eq skip_next
+    cmp w9, 0x09
+    b.ne token_start
+skip_next:
+    add x3, x3, 1
+    b skip_spaces
+
+token_start:
+    mov x6, x3
+scan_token:
+    cmp x3, x2
+    b.ge token_end
+    ldrb w9, [x0, x3]
+    cmp w9, 0x20
+    b.eq token_end
+    cmp w9, 0x09
+    b.eq token_end
+    add x3, x3, 1
+    b scan_token
+
+token_end:
+    mov x7, x3
+    sub x8, x7, x6
+    cbz x8, eval_loop
+
+    // Check for operator (length 1)
+    cmp x8, 1
+    b.ne parse_integer
+    ldrb w9, [x0, x6]
+    cmp w9, '+'
+    b.eq op_add
+    cmp w9, '-'
+    b.eq op_sub
+    cmp w9, '*'
+    b.eq op_mul
+    cmp w9, '/'
+    b.eq op_div
+    cmp w9, '%'
+    b.eq op_mod
+    b parse_integer
+
+op_add:
+op_sub:
+op_mul:
+op_div:
+op_mod:
+    cmp x4, 2
+    b.lt eval_error
+    sub x4, x4, 1
+    ldr x13, [x5, x4, lsl #3]   // b
+    sub x4, x4, 1
+    ldr x12, [x5, x4, lsl #3]   // a
+
+    cmp w9, '+'
+    b.ne check_sub
+    add x14, x12, x13
+    b push_result
+check_sub:
+    cmp w9, '-'
+    b.ne check_mul
+    sub x14, x12, x13
+    b push_result
+check_mul:
+    cmp w9, '*'
+    b.ne check_div
+    mul x14, x12, x13
+    b push_result
+check_div:
+    cmp w9, '/'
+    b.ne check_mod
+    cbz x13, eval_error
+    mov x10, INT64_MIN
+    cmp x12, x10
+    b.ne do_div
+    cmp x13, -1
+    b.eq eval_error
+do_div:
+    sdiv x14, x12, x13
+    b push_result
+check_mod:
+    cbz x13, eval_error
+    mov x10, INT64_MIN
+    cmp x12, x10
+    b.ne do_mod
+    cmp x13, -1
+    b.eq eval_error
+do_mod:
+    sdiv x10, x12, x13
+    msub x14, x10, x13, x12
+    b push_result
+
+push_result:
+    str x14, [x5, x4, lsl #3]
+    add x4, x4, 1
+    b eval_loop
+
+parse_integer:
+    mov x16, 1          // sign
+    mov x10, x6
+    ldrb w9, [x0, x10]
+    cmp w9, '-'
+    b.ne parse_digits
+    mov x16, -1
+    add x10, x10, 1
+    sub x8, x8, 1
+    cbz x8, eval_error
+
+parse_digits:
+    cmp x8, 18
+    b.gt eval_error
+    cbz x8, eval_error
+    mov x14, 0
+    mov x11, 10         // constant 10 in register
+parse_digit_loop:
+    cbz x8, parse_done
+    ldrb w9, [x0, x10]
+    sub w9, w9, '0'
+    cmp w9, 9
+    b.gt eval_error
+    mul x14, x14, x11
+    add x14, x14, x9
+    add x10, x10, 1
+    sub x8, x8, 1
+    b parse_digit_loop
+
+parse_done:
+    mul x14, x14, x16   // apply sign
+    str x14, [x5, x4, lsl #3]
+    add x4, x4, 1
+    b eval_loop
+
+eval_error:
+    mov x15, 1
+    b eval_done
+
+eval_done:
+    cmp x15, 1
+    b.eq return_error
+    cmp x4, 1
+    b.ne return_error
+    ldr x0, [x5, 0]
+    mov x1, 0
+    ret
+
+return_error:
+    mov x0, 0
+    mov x1, 1
+    ret
+
+// write_output(x0=value, x1=error_flag)
+write_output:
+    cbz x1, write_number
+    // Write "error\n"
+    adrp x1, error_msg
+    add x1, x1, :lo12:error_msg
+    mov x2, 6
+    mov x0, STDOUT
+    mov x8, SYS_WRITE
+    svc #0
+    ret
+
+write_number:
+    // Convert x0 to decimal string in output_buffer
+    adrp x1, output_buffer
+    add x1, x1, :lo12:output_buffer
+    mov x2, 0           // digit count
+    mov x3, x0          // value
+    cbz x3, write_zero
+    cmp x3, 0
+    b.ge write_positive
+    // negative
+    mov x4, 1
+    neg x3, x3
+    b write_digits
+write_positive:
+    mov x4, 0
+write_digits:
+    mov x5, 10
+write_digit_loop:
+    cbz x3, write_digits_done
+    udiv x6, x3, x5
+    msub x7, x6, x5, x3
+    add x7, x7, '0'
+    strb w7, [x1, x2]
+    add x2, x2, 1
+    mov x3, x6
+    b write_digit_loop
+write_digits_done:
+    cmp x4, 1
+    b.ne write_reverse
+    sub x2, x2, 1
+    mov x6, '-'
+    strb w6, [x1, x2]
+write_reverse:
+    // Reverse the string in place
+    mov x6, 0
+reverse_loop:
+    cmp x6, x2
+    b.ge write_output_str
+    lsr x7, x2, 1
+    cmp x6, x7
+    b.ge write_output_str
+    ldrb w7, [x1, x6]
+    ldrb w8, [x1, x2]
+    strb w8, [x1, x6]
+    strb w7, [x1, x2]
+    add x6, x6, 1
+    sub x2, x2, 1
+    b reverse_loop
+write_zero:
+    mov x6, '0'
+    strb w6, [x1, 0]
+    mov x2, 1
+write_output_str:
+    // Add newline
+    mov x6, 0x0A
+    strb w6, [x1, x2]
+    add x2, x2, 1
+    mov x0, STDOUT
+    mov x8, SYS_WRITE
+    svc #0
+    ret
+
+.section .rodata
+error_msg:
+    .ascii "error\n"
+
+.section .bss
+.align 3
+rpn_stack:
+    .zero 256 * 8       // stack for 256 64-bit integers
+
+output_buffer:
+    .zero 32            // enough for 64-bit integer + sign + newline
+
+.section .data
+.align 4
+input_buffer:
+    .zero 65536         // max input size

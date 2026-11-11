@@ -1,0 +1,442 @@
+.globl _start
+
+.equ STDIN, 0
+.equ STDOUT, 1
+.equ STDERR, 2
+.equ SYS_READ, 63
+.equ SYS_WRITE, 64
+.equ SYS_EXIT, 93
+.equ SYS_EXIT_GROUP, 94
+
+.equ INPUT_MAX, 65536
+.equ LINE_MAX, 1000
+.equ STACK_DEPTH, 1024
+
+.section .bss
+.align 12
+input_buffer:
+    .space INPUT_MAX
+input_buffer_end:
+
+.align 3
+rpn_stack:
+    .space STACK_DEPTH * 8
+rpn_stack_end:
+
+.align 3
+output_buffer:
+    .space 32
+
+.section .rodata
+error_msg:
+    .ascii "error\n"
+error_msg_len = . - error_msg
+
+.section .text
+_start:
+    // Initialize RPN stack pointer (points to top of stack, grows down)
+    adrp x23, rpn_stack_end
+    add x23, x23, :lo12:rpn_stack_end
+    adrp x24, rpn_stack
+    add x24, x24, :lo12:rpn_stack
+    
+    // Read all input
+    bl read_all_input
+    cbz x0, exit_success  // x0 = bytes read, 0 means empty input
+    
+    // Process lines
+    mov x19, x1  // x1 = input buffer start (returned from read_all_input)
+    mov x20, x2  // x2 = input buffer end
+    bl process_lines
+
+exit_success:
+    mov x0, #0
+    mov x8, #SYS_EXIT
+    svc #0
+
+// read_all_input: reads stdin into input_buffer
+// returns: x0 = bytes read, x1 = buffer start, x2 = buffer end
+read_all_input:
+    adrp x1, input_buffer
+    add x1, x1, :lo12:input_buffer
+    mov x2, #0  // total bytes read
+    
+read_loop:
+    // Check buffer space
+    adrp x3, input_buffer_end
+    add x3, x3, :lo12:input_buffer_end
+    sub x4, x3, x1
+    cmp x4, #0
+    ble read_done
+    
+    // Read chunk
+    mov x0, #STDIN
+    mov x8, #SYS_READ
+    svc #0
+    
+    cbz x0, read_done  // EOF
+    
+    add x1, x1, x0
+    add x2, x2, x0
+    b read_loop
+
+read_done:
+    // x1 = end of data, x2 = total bytes
+    // Return buffer start in x1, end in x2
+    adrp x1, input_buffer
+    add x1, x1, :lo12:input_buffer
+    add x2, x1, x2
+    mov x0, x2
+    sub x0, x0, x1
+    ret
+
+// process_lines: x1 = start, x2 = end
+process_lines:
+    mov x21, x1  // current position
+    mov x22, x2  // end of input
+    
+line_loop:
+    cmp x21, x22
+    bge process_done
+    
+    // Find end of line (newline)
+    mov x25, x21  // line start
+    mov x26, x21  // scan pointer
+    
+find_newline:
+    cmp x26, x22
+    bge line_end_found
+    ldrb w27, [x26], #1
+    cmp w27, #0x0A  // '\n'
+    bne find_newline
+    
+    // Found newline at x26-1
+    sub x26, x26, #1
+    b process_line_content
+    
+line_end_found:
+    // No newline at end, last line
+    mov x26, x22
+    
+process_line_content:
+    // Process line from x25 to x26 (exclusive)
+    // Save next line start
+    mov x21, x26
+    cmp x21, x22
+    bge last_line
+    add x21, x21, #1  // skip newline
+    
+last_line:
+    // Evaluate line
+    mov x0, x25
+    mov x1, x26
+    bl evaluate_line
+    
+    cmp x21, x22
+    blt line_loop
+    
+process_done:
+    ret
+
+// evaluate_line: x0 = line start, x1 = line end
+// Returns nothing, writes output directly
+evaluate_line:
+    // Reset RPN stack
+    adrp x23, rpn_stack_end
+    add x23, x23, :lo12:rpn_stack_end
+    
+    mov x27, x0  // current token start
+    mov x28, x1  // line end
+    
+token_loop:
+    cmp x27, x28
+    bge token_done
+    
+    // Skip whitespace (space 0x20, tab 0x09)
+skip_ws:
+    cmp x27, x28
+    bge token_done
+    ldrb w29, [x27]
+    cmp w29, #0x20
+    beq skip_ws_next
+    cmp w29, #0x09
+    beq skip_ws_next
+    b token_start_found
+    
+skip_ws_next:
+    add x27, x27, #1
+    b skip_ws
+    
+token_start_found:
+    mov x29, x27  // token start
+    
+    // Find token end
+find_token_end:
+    cmp x27, x28
+    bge token_end_found
+    ldrb w30, [x27]
+    cmp w30, #0x20
+    beq token_end_found
+    cmp w30, #0x09
+    beq token_end_found
+    add x27, x27, #1
+    b find_token_end
+    
+token_end_found:
+    // Token is from x29 to x27 (exclusive)
+    mov x0, x29
+    mov x1, x27
+    bl process_token
+    cbz x0, token_error  // x0 = 0 means error
+    
+    b token_loop
+    
+token_done:
+    // Check stack has exactly one value
+    adrp x3, rpn_stack
+    add x3, x3, :lo12:rpn_stack
+    adrp x4, rpn_stack_end
+    add x4, x4, :lo12:rpn_stack_end
+    cmp x23, x4
+    bne token_error  // stack not exactly one element
+    
+    // Pop and print result
+    ldr x0, [x23], #8
+    bl print_number
+    ret
+
+token_error:
+    // Print error
+    adrp x0, error_msg
+    add x0, x0, :lo12:error_msg
+    mov x1, #error_msg_len
+    mov x2, #STDOUT
+    mov x8, #SYS_WRITE
+    svc #0
+    ret
+
+// process_token: x0 = token start, x1 = token end
+// Returns x0 = 1 on success, 0 on error
+process_token:
+    // Check if operator (single char: + - * / %)
+    sub x2, x1, x0
+    cmp x2, #1
+    bne check_number
+    
+    ldrb w3, [x0]
+    cmp w3, #'+'
+    beq op_add
+    cmp w3, #'-'
+    beq op_sub
+    cmp w3, #'*'
+    beq op_mul
+    cmp w3, #'/'
+    beq op_div
+    cmp w3, #'%'
+    beq op_mod
+    // Not an operator, fall through to number check
+    
+check_number:
+    // Parse integer literal: optional '-' followed by 1-18 digits
+    mov x3, x0
+    mov x4, x1
+    mov x5, #0  // negative flag
+    mov x6, #0  // digit count
+    mov x7, #0  // accumulator
+    
+    cmp x3, x4
+    bge number_error
+    
+    ldrb w8, [x3]
+    cmp w8, #'-'
+    bne parse_digits
+    mov x5, #1
+    add x3, x3, #1
+    cmp x3, x4
+    bge number_error  // just '-' is not a number
+    
+parse_digits:
+    cmp x3, x4
+    bge check_digit_count
+    ldrb w8, [x3]
+    cmp w8, #'0'
+    blo check_digit_count
+    cmp w8, #'9'
+    bhi check_digit_count
+    
+    // Valid digit
+    add x6, x6, #1
+    cmp x6, #19
+    bge number_error  // 19+ digits invalid
+    
+    // Multiply accumulator by 10 and add digit
+    // x7 = x7 * 10 + (w8 - '0')
+    sub w8, w8, #'0'
+    mov x9, #10
+    mul x7, x7, x9
+    add x7, x7, x8
+    add x3, x3, #1
+    b parse_digits
+    
+check_digit_count:
+    cmp x6, #0
+    beq number_error  // no digits
+    
+    // Check for trailing garbage
+    cmp x3, x4
+    bne number_error
+    
+    // Apply sign
+    cbz x5, push_number
+    neg x7, x7
+    
+push_number:
+    // Push x7 onto stack
+    cmp x23, x24
+    beq number_error  // stack overflow
+    str x7, [x23, #-8]!
+    mov x0, #1
+    ret
+
+number_error:
+    mov x0, #0
+    ret
+
+// Operators
+op_add:
+    // Pop b, pop a, push a+b
+    bl pop_two
+    cbz x0, op_error
+    add x7, x6, x7  // x6=a, x7=b, result in x7
+    b push_result
+
+op_sub:
+    // Pop b, pop a, push a-b
+    bl pop_two
+    cbz x0, op_error
+    sub x7, x6, x7
+    b push_result
+
+op_mul:
+    // Pop b, pop a, push a*b
+    bl pop_two
+    cbz x0, op_error
+    mul x7, x6, x7
+    b push_result
+
+op_div:
+    // Pop b, pop a, push a/b (truncated toward zero)
+    bl pop_two
+    cbz x0, op_error
+    // Check division by zero
+    cbz x7, div_error
+    // Check overflow: a == -9223372036854775808 and b == -1
+    mov x9, #-1
+    cmp x7, x9
+    bne do_div
+    mov x9, #0x8000000000000000
+    cmp x6, x9
+    beq div_error
+do_div:
+    sdiv x7, x6, x7
+    b push_result
+
+div_error:
+    mov x0, #0
+    ret
+
+op_mod:
+    // Pop b, pop a, push a%b (sign of a)
+    bl pop_two
+    cbz x0, op_error
+    // Check division by zero
+    cbz x7, div_error
+    // Check overflow: a == -9223372036854775808 and b == -1
+    mov x9, #-1
+    cmp x7, x9
+    bne do_mod
+    mov x9, #0x8000000000000000
+    cmp x6, x9
+    beq div_error
+do_mod:
+    sdiv x9, x6, x7
+    msub x7, x9, x7, x6  // x7 = x6 - x9 * x7
+    b push_result
+
+pop_two:
+    // Returns x0=1 on success, x0=0 on error
+    // Pops b into x7, a into x6
+    cmp x23, x24
+    beq pop_error
+    add x23, x23, #8
+    ldr x7, [x23, #-8]
+    cmp x23, x24
+    beq pop_error
+    add x23, x23, #8
+    ldr x6, [x23, #-8]
+    mov x0, #1
+    ret
+
+pop_error:
+    mov x0, #0
+    ret
+
+push_result:
+    cmp x23, x24
+    beq op_error
+    str x7, [x23, #-8]!
+    mov x0, #1
+    ret
+
+op_error:
+    mov x0, #0
+    ret
+
+// print_number: x0 = signed 64-bit integer to print
+print_number:
+    adrp x1, output_buffer
+    add x1, x1, :lo12:output_buffer
+    add x2, x1, #32  // end of buffer
+    mov x3, x2  // current position (start from end)
+    
+    // Handle zero
+    cbz x0, print_zero
+    
+    // Handle negative
+    mov x4, #0
+    cmp x0, #0
+    bge print_loop
+    mov x4, #1
+    neg x0, x0
+    
+print_loop:
+    cmp x0, #0
+    beq print_sign
+    sub x3, x3, #1
+    mov x5, #10
+    udiv x6, x0, x5
+    msub x7, x6, x5, x0  // x7 = x0 % 10
+    add w7, w7, #'0'
+    strb w7, [x3]
+    mov x0, x6
+    b print_loop
+    
+print_sign:
+    cbz x4, print_output
+    sub x3, x3, #1
+    mov w7, #'-'
+    strb w7, [x3]
+    
+print_output:
+    mov x0, #STDOUT
+    mov x1, x3
+    sub x2, x2, x3
+    mov x8, #SYS_WRITE
+    svc #0
+    ret
+
+print_zero:
+    sub x3, x3, #1
+    mov w7, #'0'
+    strb w7, [x3]
+    b print_output

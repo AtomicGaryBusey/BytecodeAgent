@@ -1,0 +1,201 @@
+.section .bss
+.align 12
+input_buf:      .space 65536
+jump_table:     .space 262144
+tape:           .space 30000
+output_buf:     .space 65536
+bracket_stack:  .space 4000
+
+.section .text
+.globl _start
+_start:
+    // Initialize base addresses
+    adrp    x28, input_buf
+    add     x28, x28, :lo12:input_buf       // x28 = input_buf base (also program base)
+    adrp    x19, jump_table
+    add     x19, x19, :lo12:jump_table      // x19 = jump_table base
+    adrp    x27, tape
+    add     x27, x27, :lo12:tape            // x27 = tape base
+    adrp    x17, output_buf
+    add     x17, x17, :lo12:output_buf      // x17 = output_buf base
+    adrp    x16, bracket_stack
+    add     x16, x16, :lo12:bracket_stack   // x16 = bracket_stack base
+
+    // Read all stdin
+    mov     x21, #65536                     // max read
+    mov     x20, #0                         // total_read = 0
+read_loop:
+    sub     x2, x21, x20                    // remaining space
+    cbz     x2, read_done
+    mov     x0, #0                          // fd = 0
+    add     x1, x28, x20                    // buf = input_buf + total_read
+    mov     x8, #63                         // read syscall
+    svc     #0
+    cbz     x0, read_done                   // EOF
+    add     x20, x20, x0                    // total_read += bytes_read
+    b       read_loop
+read_done:
+
+    // Scan for '!' (0x21)
+    mov     x21, x20                        // program_len = total_read (default)
+    mov     x22, x20                        // input_start = total_read (default)
+    mov     x23, #0                         // input_len = 0 (default)
+    mov     x0, #0                          // index
+scan_loop:
+    cmp     x0, x20
+    b.ge    scan_done
+    ldrb    w1, [x28, x0]
+    cmp     w1, #0x21
+    b.ne    scan_next
+    // Found '!'
+    mov     x21, x0                         // program_len = index
+    add     x22, x0, #1                     // input_start = index + 1
+    sub     x23, x20, x22                   // input_len = total_read - input_start
+    b       scan_done
+scan_next:
+    add     x0, x0, #1
+    b       scan_loop
+scan_done:
+    mov     x24, x22                        // input_ptr = input_start
+
+    // Bracket matching
+    mov     w15, #0                         // stack_ptr = 0
+    mov     x26, #0                         // ip = 0
+bracket_loop:
+    cmp     x26, x21
+    b.ge    bracket_done
+    ldrb    w0, [x28, x26]
+    cmp     w0, #0x5B                       // '['
+    b.eq    bracket_open
+    cmp     w0, #0x5D                       // ']'
+    b.eq    bracket_close
+    b       bracket_next
+bracket_open:
+    cmp     w15, #1000
+    b.ge    bracket_error
+    str     w26, [x16, w15, uxtw #2]        // push ip
+    add     w15, w15, #1
+    b       bracket_next
+bracket_close:
+    cbz     w15, bracket_error
+    sub     w15, w15, #1
+    ldr     w1, [x16, w15, uxtw #2]         // pop matching open
+    str     w26, [x19, w1, uxtw #2]         // jump_table[open] = close
+    str     w1,  [x19, x26, uxtw #2]        // jump_table[close] = open
+    b       bracket_next
+bracket_next:
+    add     x26, x26, #1
+    b       bracket_loop
+bracket_done:
+    cbnz    w15, bracket_error
+    b       interpret_start
+bracket_error:
+    mov     x0, #1
+    mov     x8, #93
+    svc     #0
+
+interpret_start:
+    // Prepare registers for interpretation
+    mov     x22, x24                        // x22 = input_ptr
+    mov     x23, #0                         // x23 = output_ptr
+    mov     x24, #0                         // x24 = dp
+    mov     x25, #0                         // x25 = ip
+    mov     x26, x27                        // x26 = tape_base
+    // x28 = program_base (already)
+    // x19 = jump_table (already)
+    // x17 = output_buf_base (already)
+    // x20 = total_read (input_end)
+    // x21 = program_len
+
+interpret_loop:
+    cmp     x25, x21
+    b.ge    interpret_end
+
+    ldrb    w0, [x28, x25]                  // fetch command
+
+    // Dispatch
+    cmp     w0, #0x3E                       // '>'
+    b.eq    cmd_right
+    cmp     w0, #0x3C                       // '<'
+    b.eq    cmd_left
+    cmp     w0, #0x2B                       // '+'
+    b.eq    cmd_inc
+    cmp     w0, #0x2D                       // '-'
+    b.eq    cmd_dec
+    cmp     w0, #0x2E                       // '.'
+    b.eq    cmd_out
+    cmp     w0, #0x2C                       // ','
+    b.eq    cmd_in
+    cmp     w0, #0x5B                       // '['
+    b.eq    cmd_jump_forward
+    cmp     w0, #0x5D                       // ']'
+    b.eq    cmd_jump_back
+    b       cmd_next                        // ignore other bytes
+
+cmd_right:
+    add     x24, x24, #1
+    b       cmd_next
+
+cmd_left:
+    sub     x24, x24, #1
+    b       cmd_next
+
+cmd_inc:
+    ldrb    w1, [x26, x24]
+    add     w1, w1, #1
+    strb    w1, [x26, x24]
+    b       cmd_next
+
+cmd_dec:
+    ldrb    w1, [x26, x24]
+    sub     w1, w1, #1
+    strb    w1, [x26, x24]
+    b       cmd_next
+
+cmd_out:
+    ldrb    w1, [x26, x24]
+    strb    w1, [x17, x23]
+    add     x23, x23, #1
+    b       cmd_next
+
+cmd_in:
+    cmp     x22, x20
+    b.ge    cmd_in_eof
+    ldrb    w1, [x28, x22]
+    add     x22, x22, #1
+    strb    w1, [x26, x24]
+    b       cmd_next
+cmd_in_eof:
+    strb    wzr, [x26, x24]
+    b       cmd_next
+
+cmd_jump_forward:
+    ldrb    w1, [x26, x24]
+    cbnz    w1, cmd_next
+    ldr     w1, [x19, x25, lsl #2]
+    mov     x25, x1
+    b       cmd_next
+
+cmd_jump_back:
+    ldrb    w1, [x26, x24]
+    cbz     w1, cmd_next
+    ldr     w1, [x19, x25, lsl #2]
+    mov     x25, x1
+    b       cmd_next
+
+cmd_next:
+    add     x25, x25, #1
+    b       interpret_loop
+
+interpret_end:
+    // Write output
+    mov     x0, #1                          // fd = 1
+    mov     x1, x17                         // output_buf
+    mov     x2, x23                         // output_ptr bytes
+    mov     x8, #64                         // write syscall
+    svc     #0
+
+    // Exit with status 0
+    mov     x0, #0
+    mov     x8, #93
+    svc     #0

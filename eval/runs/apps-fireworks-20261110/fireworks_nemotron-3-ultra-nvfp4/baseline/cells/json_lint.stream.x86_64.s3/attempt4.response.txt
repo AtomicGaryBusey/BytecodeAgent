@@ -1,0 +1,701 @@
+.section .bss
+.align 16
+buffer: .zero 65536
+.align 8
+input_len: .zero 8
+.align 8
+parse_pos: .zero 8
+.align 8
+error_pos: .zero 8
+.align 8
+nesting_depth: .zero 8
+.align 8
+state_stack: .zero 8000
+.align 8
+num_buffer: .zero 21
+
+.section .rodata
+ok_msg: .ascii "ok\n"
+ok_len = . - ok_msg
+error_prefix: .ascii "error at "
+error_prefix_len = . - error_prefix
+newline: .ascii "\n"
+
+.section .text
+.globl _start
+
+_start:
+    # Read all input into buffer
+    mov qword ptr [rip + input_len], 0
+    lea rdi, [rip + buffer]
+
+read_loop:
+    mov rax, 0          # sys_read
+    mov rdi, 0          # stdin
+    mov rsi, rdi        # buffer pointer (current position)
+    mov rdx, 65536
+    sub rdx, [rip + input_len]
+    syscall
+    test rax, rax
+    jz read_done
+    add qword ptr [rip + input_len], rax
+    add rdi, rax
+    cmp qword ptr [rip + input_len], 65536
+    jne read_loop
+
+read_done:
+    # Initialize parser state
+    mov qword ptr [rip + parse_pos], 0
+    mov qword ptr [rip + error_pos], 0
+    mov qword ptr [rip + nesting_depth], 0
+    
+    # Skip leading whitespace
+    call skip_whitespace
+    
+    # Check if empty input (only whitespace)
+    mov rax, [rip + parse_pos]
+    cmp rax, [rip + input_len]
+    je error_eof
+    
+    # Parse value
+    call parse_value
+    
+    # Check for error during parsing
+    cmp qword ptr [rip + error_pos], 0
+    jne report_error
+    
+    # Skip trailing whitespace
+    call skip_whitespace
+    
+    # Check if we consumed all input
+    mov rax, [rip + parse_pos]
+    cmp rax, [rip + input_len]
+    jne error_extra
+    
+    # Success
+    mov rax, 1          # sys_write
+    mov rdi, 1          # stdout
+    lea rsi, [rip + ok_msg]
+    mov rdx, ok_len
+    syscall
+    mov rax, 60         # sys_exit
+    xor rdi, rdi        # exit code 0
+    syscall
+
+# Skip whitespace (space, tab, newline, carriage return)
+skip_whitespace:
+    mov rax, [rip + parse_pos]
+    lea rbx, [rip + buffer]
+.skip_loop:
+    cmp rax, [rip + input_len]
+    je .skip_done
+    movzx ecx, byte ptr [rbx + rax]
+    cmp cl, 0x20        # space
+    je .skip_char
+    cmp cl, 0x09        # tab
+    je .skip_char
+    cmp cl, 0x0A        # newline
+    je .skip_char
+    cmp cl, 0x0D        # carriage return
+    je .skip_char
+    jmp .skip_done
+.skip_char:
+    inc rax
+    jmp .skip_loop
+.skip_done:
+    mov [rip + parse_pos], rax
+    ret
+
+# Parse a JSON value
+parse_value:
+    mov rax, [rip + parse_pos]
+    cmp rax, [rip + input_len]
+    je set_error_eof
+    lea rbx, [rip + buffer]
+    movzx ecx, byte ptr [rbx + rax]
+    
+    cmp cl, 0x7B        # '{'
+    je parse_object_entry
+    cmp cl, 0x5B        # '['
+    je parse_array_entry
+    cmp cl, 0x22        # '"'
+    je parse_string_entry
+    cmp cl, 0x74        # 't' (true)
+    je parse_true_entry
+    cmp cl, 0x66        # 'f' (false)
+    je parse_false_entry
+    cmp cl, 0x6E        # 'n' (null)
+    je parse_null_entry
+    cmp cl, 0x2D        # '-'
+    je parse_number_entry
+    cmp cl, 0x30        # '0'
+    je parse_number_entry
+    cmp cl, 0x31        # '1'-'9'
+    jl set_error_here
+    cmp cl, 0x39
+    jle parse_number_entry
+    jmp set_error_here
+
+parse_object_entry:
+    call parse_object
+    ret
+parse_array_entry:
+    call parse_array
+    ret
+parse_string_entry:
+    call parse_string
+    ret
+parse_true_entry:
+    call parse_true
+    ret
+parse_false_entry:
+    call parse_false
+    ret
+parse_null_entry:
+    call parse_null
+    ret
+parse_number_entry:
+    call parse_number
+    ret
+
+# Parse object: { ws } or { ws member (ws , ws member)* ws }
+parse_object:
+    # Check nesting depth
+    mov rax, [rip + nesting_depth]
+    cmp rax, 1000
+    jge set_error_here
+    inc rax
+    mov [rip + nesting_depth], rax
+    
+    # Consume '{'
+    mov rax, [rip + parse_pos]
+    inc rax
+    mov [rip + parse_pos], rax
+    
+    call skip_whitespace
+    
+    # Check for empty object
+    mov rax, [rip + parse_pos]
+    cmp rax, [rip + input_len]
+    je set_error_eof
+    lea rbx, [rip + buffer]
+    movzx ecx, byte ptr [rbx + rax]
+    cmp cl, 0x7D        # '}'
+    je .object_empty
+    
+.object_member_loop:
+    # Parse member: string ws : ws value
+    call parse_string
+    cmp qword ptr [rip + error_pos], 0
+    jne .object_done
+    
+    call skip_whitespace
+    mov rax, [rip + parse_pos]
+    cmp rax, [rip + input_len]
+    je set_error_eof
+    movzx ecx, byte ptr [rbx + rax]
+    cmp cl, 0x3A        # ':'
+    jne set_error_here
+    inc rax
+    mov [rip + parse_pos], rax
+    
+    call skip_whitespace
+    call parse_value
+    cmp qword ptr [rip + error_pos], 0
+    jne .object_done
+    
+    call skip_whitespace
+    mov rax, [rip + parse_pos]
+    cmp rax, [rip + input_len]
+    je set_error_eof
+    movzx ecx, byte ptr [rbx + rax]
+    cmp cl, 0x2C        # ','
+    je .object_next_member
+    cmp cl, 0x7D        # '}'
+    je .object_close
+    jmp set_error_here
+    
+.object_next_member:
+    inc rax
+    mov [rip + parse_pos], rax
+    call skip_whitespace
+    jmp .object_member_loop
+    
+.object_close:
+    inc rax
+    mov [rip + parse_pos], rax
+    jmp .object_done
+    
+.object_empty:
+    inc rax
+    mov [rip + parse_pos], rax
+    
+.object_done:
+    mov rax, [rip + nesting_depth]
+    dec rax
+    mov [rip + nesting_depth], rax
+    ret
+
+# Parse array: [ ws ] or [ ws value (ws , ws value)* ws ]
+parse_array:
+    # Check nesting depth
+    mov rax, [rip + nesting_depth]
+    cmp rax, 1000
+    jge set_error_here
+    inc rax
+    mov [rip + nesting_depth], rax
+    
+    # Consume '['
+    mov rax, [rip + parse_pos]
+    inc rax
+    mov [rip + parse_pos], rax
+    
+    call skip_whitespace
+    
+    # Check for empty array
+    mov rax, [rip + parse_pos]
+    cmp rax, [rip + input_len]
+    je set_error_eof
+    lea rbx, [rip + buffer]
+    movzx ecx, byte ptr [rbx + rax]
+    cmp cl, 0x5D        # ']'
+    je .array_empty
+    
+.array_value_loop:
+    call parse_value
+    cmp qword ptr [rip + error_pos], 0
+    jne .array_done
+    
+    call skip_whitespace
+    mov rax, [rip + parse_pos]
+    cmp rax, [rip + input_len]
+    je set_error_eof
+    movzx ecx, byte ptr [rbx + rax]
+    cmp cl, 0x2C        # ','
+    je .array_next_value
+    cmp cl, 0x5D        # ']'
+    je .array_close
+    jmp set_error_here
+    
+.array_next_value:
+    inc rax
+    mov [rip + parse_pos], rax
+    call skip_whitespace
+    jmp .array_value_loop
+    
+.array_close:
+    inc rax
+    mov [rip + parse_pos], rax
+    jmp .array_done
+    
+.array_empty:
+    inc rax
+    mov [rip + parse_pos], rax
+    
+.array_done:
+    mov rax, [rip + nesting_depth]
+    dec rax
+    mov [rip + nesting_depth], rax
+    ret
+
+# Parse string: " chars "
+parse_string:
+    # Consume opening quote
+    mov rax, [rip + parse_pos]
+    inc rax
+    mov [rip + parse_pos], rax
+    
+.string_loop:
+    mov rax, [rip + parse_pos]
+    cmp rax, [rip + input_len]
+    je set_error_eof
+    lea rbx, [rip + buffer]
+    movzx ecx, byte ptr [rbx + rax]
+    
+    cmp cl, 0x22        # '"'
+    je .string_close
+    cmp cl, 0x5C        # '\'
+    je .string_escape
+    cmp cl, 0x1F
+    jbe set_error_here  # control characters 0x00-0x1F
+    # Accept any byte >= 0x20 except " and \
+    inc rax
+    mov [rip + parse_pos], rax
+    jmp .string_loop
+    
+.string_escape:
+    inc rax
+    mov [rip + parse_pos], rax
+    cmp rax, [rip + input_len]
+    je set_error_eof
+    movzx ecx, byte ptr [rbx + rax]
+    # Check valid escape sequences: " \ / b f n r t u
+    cmp cl, 0x22        # "
+    je .escape_valid
+    cmp cl, 0x5C        # \
+    je .escape_valid
+    cmp cl, 0x2F        # /
+    je .escape_valid
+    cmp cl, 0x62        # b
+    je .escape_valid
+    cmp cl, 0x66        # f
+    je .escape_valid
+    cmp cl, 0x6E        # n
+    je .escape_valid
+    cmp cl, 0x72        # r
+    je .escape_valid
+    cmp cl, 0x74        # t
+    je .escape_valid
+    cmp cl, 0x75        # u
+    je .escape_unicode
+    jmp set_error_here
+    
+.escape_unicode:
+    # Need exactly 4 hex digits
+    mov rcx, 4
+.unicode_loop:
+    inc rax
+    cmp rax, [rip + input_len]
+    je set_error_eof
+    movzx edx, byte ptr [rbx + rax]
+    # Check hex digit
+    cmp dl, 0x30        # '0'
+    jl set_error_here
+    cmp dl, 0x39        # '9'
+    jle .hex_digit_ok
+    cmp dl, 0x41        # 'A'
+    jl set_error_here
+    cmp dl, 0x46        # 'F'
+    jle .hex_digit_ok
+    cmp dl, 0x61        # 'a'
+    jl set_error_here
+    cmp dl, 0x66        # 'f'
+    jle .hex_digit_ok
+    jmp set_error_here
+.hex_digit_ok:
+    dec rcx
+    jnz .unicode_loop
+    inc rax
+    mov [rip + parse_pos], rax
+    jmp .string_loop
+    
+.escape_valid:
+    inc rax
+    mov [rip + parse_pos], rax
+    jmp .string_loop
+    
+.string_close:
+    inc rax
+    mov [rip + parse_pos], rax
+    ret
+
+# Parse number: -? int frac? exp?
+parse_number:
+    mov rax, [rip + parse_pos]
+    lea rbx, [rip + buffer]
+    movzx ecx, byte ptr [rbx + rax]
+    
+    # Optional minus
+    cmp cl, 0x2D        # '-'
+    jne .number_int
+    inc rax
+    mov [rip + parse_pos], rax
+    cmp rax, [rip + input_len]
+    je set_error_eof
+    movzx ecx, byte ptr [rbx + rax]
+    
+.number_int:
+    # Integer part: 0 or 1-9 followed by digits
+    cmp cl, 0x30        # '0'
+    je .int_zero
+    cmp cl, 0x31        # '1'-'9'
+    jl set_error_here
+    cmp cl, 0x39
+    jg set_error_here
+    # Digit 1-9, consume and allow more digits
+    inc rax
+    mov [rip + parse_pos], rax
+.int_digits:
+    cmp rax, [rip + input_len]
+    je .number_frac_exp_check
+    movzx ecx, byte ptr [rbx + rax]
+    cmp cl, 0x30
+    jl .number_frac_exp_check
+    cmp cl, 0x39
+    jg .number_frac_exp_check
+    inc rax
+    mov [rip + parse_pos], rax
+    jmp .int_digits
+    
+.int_zero:
+    inc rax
+    mov [rip + parse_pos], rax
+    # After 0, cannot have more digits (no leading zeros)
+    cmp rax, [rip + input_len]
+    je .number_frac_exp_check
+    movzx ecx, byte ptr [rbx + rax]
+    cmp cl, 0x30
+    jge .check_digit_after_zero
+    jmp .number_frac_exp_check
+.check_digit_after_zero:
+    cmp cl, 0x39
+    jle set_error_here  # leading zero not allowed
+    jmp .number_frac_exp_check
+    
+.number_frac_exp_check:
+    cmp rax, [rip + input_len]
+    je .number_done
+    movzx ecx, byte ptr [rbx + rax]
+    cmp cl, 0x2E        # '.'
+    je .number_frac
+    cmp cl, 0x65        # 'e'
+    je .number_exp
+    cmp cl, 0x45        # 'E'
+    je .number_exp
+    jmp .number_done
+    
+.number_frac:
+    # Fractional part: . followed by one or more digits
+    inc rax
+    mov [rip + parse_pos], rax
+    cmp rax, [rip + input_len]
+    je set_error_eof
+    movzx ecx, byte ptr [rbx + rax]
+    cmp cl, 0x30
+    jl set_error_here
+    cmp cl, 0x39
+    jg set_error_here
+    # At least one digit
+    inc rax
+    mov [rip + parse_pos], rax
+.frac_digits:
+    cmp rax, [rip + input_len]
+    je .number_exp_check
+    movzx ecx, byte ptr [rbx + rax]
+    cmp cl, 0x30
+    jl .number_exp_check
+    cmp cl, 0x39
+    jg .number_exp_check
+    inc rax
+    mov [rip + parse_pos], rax
+    jmp .frac_digits
+    
+.number_exp_check:
+    cmp rax, [rip + input_len]
+    je .number_done
+    movzx ecx, byte ptr [rbx + rax]
+    cmp cl, 0x65        # 'e'
+    je .number_exp
+    cmp cl, 0x45        # 'E'
+    je .number_exp
+    jmp .number_done
+    
+.number_exp:
+    # Exponent part: e/E followed by optional +/-, then one or more digits
+    inc rax
+    mov [rip + parse_pos], rax
+    cmp rax, [rip + input_len]
+    je set_error_eof
+    movzx ecx, byte ptr [rbx + rax]
+    cmp cl, 0x2B        # '+'
+    je .exp_sign
+    cmp cl, 0x2D        # '-'
+    je .exp_sign
+    jmp .exp_digits
+.exp_sign:
+    inc rax
+    mov [rip + parse_pos], rax
+    cmp rax, [rip + input_len]
+    je set_error_eof
+.exp_digits:
+    movzx ecx, byte ptr [rbx + rax]
+    cmp cl, 0x30
+    jl set_error_here
+    cmp cl, 0x39
+    jg set_error_here
+    # At least one digit
+    inc rax
+    mov [rip + parse_pos], rax
+.exp_digits_loop:
+    cmp rax, [rip + input_len]
+    je .number_done
+    movzx ecx, byte ptr [rbx + rax]
+    cmp cl, 0x30
+    jl .number_done
+    cmp cl, 0x39
+    jg .number_done
+    inc rax
+    mov [rip + parse_pos], rax
+    jmp .exp_digits_loop
+    
+.number_done:
+    ret
+
+# Parse literal 'true'
+parse_true:
+    mov rax, [rip + parse_pos]
+    lea rbx, [rip + buffer]
+    # Check 'true' (4 bytes)
+    cmp rax, [rip + input_len]
+    jae set_error_eof
+    movzx ecx, byte ptr [rbx + rax]
+    cmp cl, 0x74        # 't'
+    jne set_error_here
+    inc rax
+    cmp rax, [rip + input_len]
+    je set_error_eof
+    movzx ecx, byte ptr [rbx + rax]
+    cmp cl, 0x72        # 'r'
+    jne set_error_here
+    inc rax
+    cmp rax, [rip + input_len]
+    je set_error_eof
+    movzx ecx, byte ptr [rbx + rax]
+    cmp cl, 0x75        # 'u'
+    jne set_error_here
+    inc rax
+    cmp rax, [rip + input_len]
+    je set_error_eof
+    movzx ecx, byte ptr [rbx + rax]
+    cmp cl, 0x65        # 'e'
+    jne set_error_here
+    inc rax
+    mov [rip + parse_pos], rax
+    ret
+
+# Parse literal 'false'
+parse_false:
+    mov rax, [rip + parse_pos]
+    lea rbx, [rip + buffer]
+    movzx ecx, byte ptr [rbx + rax]
+    cmp cl, 0x66        # 'f'
+    jne set_error_here
+    inc rax
+    cmp rax, [rip + input_len]
+    je set_error_eof
+    movzx ecx, byte ptr [rbx + rax]
+    cmp cl, 0x61        # 'a'
+    jne set_error_here
+    inc rax
+    cmp rax, [rip + input_len]
+    je set_error_eof
+    movzx ecx, byte ptr [rbx + rax]
+    cmp cl, 0x6C        # 'l'
+    jne set_error_here
+    inc rax
+    cmp rax, [rip + input_len]
+    je set_error_eof
+    movzx ecx, byte ptr [rbx + rax]
+    cmp cl, 0x73        # 's'
+    jne set_error_here
+    inc rax
+    cmp rax, [rip + input_len]
+    je set_error_eof
+    movzx ecx, byte ptr [rbx + rax]
+    cmp cl, 0x65        # 'e'
+    jne set_error_here
+    inc rax
+    mov [rip + parse_pos], rax
+    ret
+
+# Parse literal 'null'
+parse_null:
+    mov rax, [rip + parse_pos]
+    lea rbx, [rip + buffer]
+    movzx ecx, byte ptr [rbx + rax]
+    cmp cl, 0x6E        # 'n'
+    jne set_error_here
+    inc rax
+    cmp rax, [rip + input_len]
+    je set_error_eof
+    movzx ecx, byte ptr [rbx + rax]
+    cmp cl, 0x75        # 'u'
+    jne set_error_here
+    inc rax
+    cmp rax, [rip + input_len]
+    je set_error_eof
+    movzx ecx, byte ptr [rbx + rax]
+    cmp cl, 0x6C        # 'l'
+    jne set_error_here
+    inc rax
+    cmp rax, [rip + input_len]
+    je set_error_eof
+    movzx ecx, byte ptr [rbx + rax]
+    cmp cl, 0x6C        # 'l'
+    jne set_error_here
+    inc rax
+    mov [rip + parse_pos], rax
+    ret
+
+# Set error at current parse position
+set_error_here:
+    mov rax, [rip + parse_pos]
+    mov [rip + error_pos], rax
+    ret
+
+# Set error at EOF (parse_pos == input_len)
+set_error_eof:
+    mov rax, [rip + input_len]
+    mov [rip + error_pos], rax
+    ret
+
+# Error: extra content after value
+error_extra:
+    mov rax, [rip + parse_pos]
+    mov [rip + error_pos], rax
+    jmp report_error
+
+# Error: empty input or only whitespace
+error_eof:
+    mov rax, [rip + input_len]
+    mov [rip + error_pos], rax
+    jmp report_error
+
+# Report error and exit
+report_error:
+    # Convert error_pos to decimal string
+    mov rax, [rip + error_pos]
+    lea rdi, [rip + num_buffer + 20]  # buffer for number (max 5 digits + null)
+    mov byte ptr [rdi], 0
+    dec rdi
+    test rax, rax
+    jz .write_zero
+.convert_loop:
+    xor rdx, rdx
+    mov rcx, 10
+    div rcx
+    add dl, '0'
+    mov byte ptr [rdi], dl
+    dec rdi
+    test rax, rax
+    jnz .convert_loop
+    jmp .write_number
+.write_zero:
+    mov byte ptr [rdi], '0'
+    dec rdi
+.write_number:
+    inc rdi
+    # rdi points to number string
+    # Write "error at N\n"
+    mov rax, 1          # sys_write
+    mov rdi, 1          # stdout (fd in rdi)
+    lea rsi, [rip + error_prefix]
+    mov rdx, error_prefix_len
+    syscall
+    
+    mov rax, 1
+    mov rsi, rdi
+    # Calculate length
+    lea rdx, [rip + num_buffer + 21]
+    sub rdx, rdi
+    syscall
+    
+    mov rax, 1
+    lea rsi, [rip + newline]
+    mov rdx, 1
+    syscall
+    
+    mov rax, 60         # sys_exit
+    mov rdi, 1          # exit code 1
+    syscall
+```

@@ -1,0 +1,186 @@
+.section .rodata
+hex_digits: .ascii "0123456789abcdef"
+
+.section .bss
+    .align 4096
+input_buffer:
+    .zero 65536
+output_buffer:
+    .zero 256
+
+.section .text
+.globl _start
+
+.equ SYS_READ, 0
+.equ SYS_WRITE, 1
+.equ SYS_EXIT, 60
+
+_start:
+    # Read all input into input_buffer
+    xor r12, r12                # total bytes read
+    lea r13, [rip + input_buffer]  # current write pointer
+    mov r14, 65536              # remaining capacity
+
+read_loop:
+    mov rdi, 0                  # fd = stdin
+    mov rsi, r13
+    mov rdx, r14
+    mov rax, SYS_READ
+    syscall
+    test rax, rax
+    jz read_done
+    add r12, rax                # update total
+    add r13, rax                # advance pointer
+    sub r14, rax                # reduce remaining
+    jnz read_loop               # continue if buffer not full
+    # buffer full, but input guaranteed <= 65536, so we're done
+
+read_done:
+    # Process buffer in 16-byte rows
+    xor r15, r15                # current offset
+    lea r13, [rip + input_buffer]  # start of data
+
+process_loop:
+    cmp r15, r12
+    jge process_done            # all bytes processed
+
+    # Compute row length n = min(16, r12 - r15)
+    mov rax, r12
+    sub rax, r15
+    cmp rax, 16
+    jl short_row
+    mov r8, 16
+    jmp format_row
+short_row:
+    mov r8, rax
+format_row:
+    # r8 = row length (1..16), r15 = offset, r13 = data pointer
+    # Format line into output_buffer
+    lea rdi, [rip + output_buffer]
+
+    # Write offset as 8 hex digits
+    mov rax, r15
+    mov rcx, 8
+    lea rsi, [rip + hex_digits]
+    lea rdi, [rip + output_buffer + 7]
+offset_hex_loop:
+    mov r9, rax
+    and r9, 0xF
+    mov r9b, byte ptr [rsi + r9]
+    mov byte ptr [rdi], r9b
+    dec rdi
+    shr rax, 4
+    dec rcx
+    jnz offset_hex_loop
+
+    lea rdi, [rip + output_buffer + 8]
+    mov word ptr [rdi], 0x2020  # two spaces
+    add rdi, 2
+
+    # Hex bytes (16 slots)
+    mov rsi, r13
+    xor r9, r9                  # i = 0
+    mov rcx, 16
+hex_bytes_loop:
+    cmp r9, r8
+    jl byte_present
+    # Missing byte: three spaces
+    mov word ptr [rdi], 0x2020
+    mov byte ptr [rdi+2], 0x20
+    add rdi, 3
+    jmp after_hex_byte
+byte_present:
+    movzx eax, byte ptr [rsi]
+    inc rsi
+    # Convert to two hex digits
+    mov r10, rax
+    shr r10, 4
+    and r10, 0xF
+    lea r11, [rip + hex_digits]
+    mov r10b, byte ptr [r11 + r10]
+    mov byte ptr [rdi], r10b
+    mov r10, rax
+    and r10, 0xF
+    mov r10b, byte ptr [r11 + r10]
+    mov byte ptr [rdi+1], r10b
+    mov byte ptr [rdi+2], 0x20
+    add rdi, 3
+after_hex_byte:
+    cmp r9, 7
+    jne not_seven
+    mov byte ptr [rdi], 0x20   # extra space after 8th slot
+    inc rdi
+not_seven:
+    inc r9
+    dec rcx
+    jnz hex_bytes_loop
+
+    # Space and '|'
+    mov word ptr [rdi], 0x7C20  # ' ' then '|'
+    add rdi, 2
+
+    # ASCII representation
+    mov rcx, r8
+    mov rsi, r13
+ascii_loop:
+    movzx eax, byte ptr [rsi]
+    inc rsi
+    cmp al, 0x20
+    jl ascii_dot
+    cmp al, 0x7E
+    jg ascii_dot
+    mov byte ptr [rdi], al
+    jmp ascii_next
+ascii_dot:
+    mov byte ptr [rdi], 0x2E
+ascii_next:
+    inc rdi
+    dec rcx
+    jnz ascii_loop
+
+    # '|' and newline
+    mov word ptr [rdi], 0x0A7C
+    add rdi, 2
+
+    # Write line to stdout
+    lea rax, [rip + output_buffer]
+    sub rdi, rax                # rdi = line length
+    mov rdx, rdi
+    mov rdi, 1
+    lea rsi, [rip + output_buffer]
+    mov rax, SYS_WRITE
+    syscall
+
+    # Advance to next row
+    add r13, r8
+    add r15, r8
+    jmp process_loop
+
+process_done:
+    # Print final offset (total bytes) as 8 hex digits + newline
+    mov rax, r12
+    lea rdi, [rip + output_buffer + 7]
+    mov rcx, 8
+    lea rsi, [rip + hex_digits]
+final_hex_loop:
+    mov r9, rax
+    and r9, 0xF
+    mov r9b, byte ptr [rsi + r9]
+    mov byte ptr [rdi], r9b
+    dec rdi
+    shr rax, 4
+    dec rcx
+    jnz final_hex_loop
+
+    lea rdi, [rip + output_buffer]
+    mov byte ptr [rdi + 8], 0x0A
+    mov rdi, 1
+    lea rsi, [rip + output_buffer]
+    mov rdx, 9
+    mov rax, SYS_WRITE
+    syscall
+
+    # Exit
+    xor rdi, rdi
+    mov rax, SYS_EXIT
+    syscall

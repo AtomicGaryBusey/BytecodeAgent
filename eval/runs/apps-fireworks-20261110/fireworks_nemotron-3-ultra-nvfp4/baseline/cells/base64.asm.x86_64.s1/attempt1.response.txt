@@ -1,0 +1,209 @@
+.equ SYS_READ, 0
+.equ SYS_WRITE, 1
+.equ SYS_EXIT, 60
+.equ STDIN, 0
+.equ STDOUT, 1
+.equ INPUT_MAX, 49152
+.equ OUTPUT_MAX, 70000
+
+.section .rodata
+base64_table:
+    .ascii "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/"
+
+.section .bss
+.align 4096
+input_buf:
+    .zero INPUT_MAX
+output_buf:
+    .zero OUTPUT_MAX
+
+.section .text
+.globl _start
+
+_start:
+    # Read all input
+    xor r12, r12                # total_read = 0
+    lea r13, [rip + input_buf]  # input_buf address
+    mov r14, INPUT_MAX          # max input
+
+read_loop:
+    mov rax, SYS_READ
+    mov rdi, STDIN
+    lea rsi, [r13 + r12]        # buf + total_read
+    mov rdx, r14
+    sub rdx, r12                # remaining
+    syscall
+    test rax, rax
+    jz read_done
+    add r12, rax                # total_read += bytes read
+    cmp r12, r14
+    jne read_loop
+    jmp read_loop
+
+read_done:
+    # r12 = total_read
+    # Set up for encoding
+    mov rsi, r13                # src = input_buf
+    lea rdi, [r13 + r12]        # src_end
+    lea rdx, [rip + output_buf] # dst
+    xor rcx, rcx                # line_count = 0
+    lea rbx, [rip + base64_table]
+
+    # If no input, skip encoding
+    cmp rsi, rdi
+    je write_output
+
+encode_loop:
+    # Check if at least 3 bytes remain
+    lea rax, [rsi + 3]
+    cmp rax, rdi
+    jg encode_partial           # less than 3 bytes left
+
+    # Load 3 bytes
+    movzx eax, byte ptr [rsi]
+    movzx ebx, byte ptr [rsi + 1]
+    movzx ecx, byte ptr [rsi + 2]
+    add rsi, 3
+
+    # Compute indices
+    # idx0 = eax >> 2
+    mov r8d, eax
+    shr r8d, 2
+    # idx1 = ((eax & 3) << 4) | (ebx >> 4)
+    mov r9d, eax
+    and r9d, 3
+    shl r9d, 4
+    mov r10d, ebx
+    shr r10d, 4
+    or r9d, r10d
+    # idx2 = ((ebx & 0xF) << 2) | (ecx >> 6)
+    mov r11d, ebx
+    and r11d, 0xF
+    shl r11d, 2
+    mov r12d, ecx
+    shr r12d, 6
+    or r11d, r12d
+    # idx3 = ecx & 0x3F
+    mov r12d, ecx
+    and r12d, 0x3F
+
+    # Output 4 chars
+    mov al, byte ptr [rbx + r8]
+    call output_char
+    mov al, byte ptr [rbx + r9]
+    call output_char
+    mov al, byte ptr [rbx + r11]
+    call output_char
+    mov al, byte ptr [rbx + r12]
+    call output_char
+
+    jmp encode_loop
+
+encode_partial:
+    # rsi points to remaining bytes (1 or 2), rdi is end
+    mov rax, rdi
+    sub rax, rsi                # remaining count (1 or 2)
+    test rax, rax
+    jz write_output             # no remaining
+
+    cmp rax, 2
+    je two_bytes
+
+    # One byte remaining
+    movzx eax, byte ptr [rsi]
+    # idx0 = eax >> 2
+    mov r8d, eax
+    shr r8d, 2
+    # idx1 = (eax & 3) << 4
+    mov r9d, eax
+    and r9d, 3
+    shl r9d, 4
+    # Output idx0, idx1, then two '='
+    mov al, byte ptr [rbx + r8]
+    call output_char
+    mov al, byte ptr [rbx + r9]
+    call output_char
+    mov al, '='
+    call output_char
+    mov al, '='
+    call output_char
+    jmp write_output
+
+two_bytes:
+    movzx eax, byte ptr [rsi]
+    movzx ebx, byte ptr [rsi + 1]
+    # idx0 = eax >> 2
+    mov r8d, eax
+    shr r8d, 2
+    # idx1 = ((eax & 3) << 4) | (ebx >> 4)
+    mov r9d, eax
+    and r9d, 3
+    shl r9d, 4
+    mov r10d, ebx
+    shr r10d, 4
+    or r9d, r10d
+    # idx2 = (ebx & 0xF) << 2
+    mov r11d, ebx
+    and r11d, 0xF
+    shl r11d, 2
+    # Output idx0, idx1, idx2, then '='
+    mov al, byte ptr [rbx + r8]
+    call output_char
+    mov al, byte ptr [rbx + r9]
+    call output_char
+    mov al, byte ptr [rbx + r11]
+    call output_char
+    mov al, '='
+    call output_char
+
+write_output:
+    # After all base64 chars, if line_count > 0, output newline
+    test rcx, rcx
+    jz do_write
+    mov byte ptr [rdx], 0x0A
+    inc rdx
+
+do_write:
+    # Compute output length
+    lea rsi, [rip + output_buf]
+    sub rdx, rsi                # rdx = output_len
+    mov r12, rdx                # save length
+    test rdx, rdx
+    jz exit_success
+
+    # Write loop (handle partial writes)
+    mov r13, rsi                # buf pointer
+write_loop:
+    mov rax, SYS_WRITE
+    mov rdi, STDOUT
+    mov rsi, r13
+    mov rdx, r12
+    syscall
+    test rax, rax
+    jz exit_success
+    sub r12, rax
+    jz exit_success
+    add r13, rax
+    jmp write_loop
+
+exit_success:
+    mov rax, SYS_EXIT
+    xor rdi, rdi
+    syscall
+
+# output_char: writes a single character (in al) to output buffer, handling line breaks.
+# Input: al = character to write
+# State: rbx = base64_table (unused here), rdx = dst pointer, rcx = line_count (0-76)
+# Modifies: rdx, rcx, rax
+output_char:
+    cmp rcx, 76
+    jne .put_char
+    # Insert newline because line is full
+    mov byte ptr [rdx], 0x0A
+    inc rdx
+    xor rcx, rcx
+.put_char:
+    mov byte ptr [rdx], al
+    inc rdx
+    inc rcx
+    ret

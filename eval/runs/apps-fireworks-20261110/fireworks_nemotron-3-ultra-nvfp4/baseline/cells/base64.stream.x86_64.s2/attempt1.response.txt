@@ -1,0 +1,346 @@
+.globl _start
+
+.section .rodata
+base64_table:
+    .ascii "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/"
+
+.section .bss
+.align 16
+input_buffer:
+    .zero 4096
+output_buffer:
+    .zero 4096
+
+.section .text
+_start:
+    # Initialize registers and memory state
+    xor eax, eax
+    mov qword ptr [rip + input_pos], rax
+    mov qword ptr [rip + output_pos], rax
+    mov qword ptr [rip + col_count], rax
+    mov byte ptr [rip + leftover_len], al
+    # r12 = col_count, r13 = leftover_len, r14 = leftover_byte1, r15 = leftover_byte2
+    xor r12, r12
+    xor r13, r13
+    xor r14, r14
+    xor r15, r15
+    lea rbp, [rip + base64_table]   # base64 table address
+
+read_loop:
+    # sys_read(fd=0, buf=input_buffer, count=4096)
+    mov rax, 0
+    mov rdi, 0
+    lea rsi, [rip + input_buffer]
+    mov rdx, 4096
+    syscall
+    test rax, rax
+    jz eof_processing
+    mov qword ptr [rip + input_len], rax
+    mov qword ptr [rip + input_pos], 0
+
+    # Set up processing registers
+    lea r8, [rip + input_buffer]        # input_ptr
+    mov r9, r8
+    add r9, rax                         # input_end
+    lea r10, [rip + output_buffer]      # output_ptr
+    mov r11, r10
+    add r11, 4096                       # output_end
+
+process_loop:
+    # Check if we have leftover bytes
+    test r13, r13
+    jz no_leftover
+
+    # We have leftover (1 or 2 bytes). Need to take more from input.
+    cmp r8, r9
+    je wait_for_more_input   # no more input in this chunk, go read more
+
+    # At least one byte available
+    movzx eax, byte ptr [r8]
+    inc r8
+    cmp r13, 1
+    je leftover1_has1
+    # leftover_len == 2, we have two leftover bytes, need one more
+    mov r14d, eax   # this is the third byte
+    jmp process_triplet_from_regs
+
+leftover1_has1:
+    # leftover_len == 1, we have one leftover byte in r14, need two more
+    mov r15d, eax   # second byte
+    cmp r8, r9
+    je wait_for_more_input2
+    movzx eax, byte ptr [r8]
+    inc r8
+    mov r14d, eax   # third byte (reuse r14 for third)
+    # now we have three bytes: r14 (old leftover), r15, r14 (new) -> but careful: we need to keep order.
+    # Actually leftover byte is in r14 (from previous), then we read two new bytes: first new in r15, second new in al.
+    # So triplet = (r14, r15, al). We'll process them.
+    jmp process_triplet_from_regs
+
+wait_for_more_input2:
+    # Only one new byte available, so we have two bytes total (leftover + one new). Store as leftover_len=2.
+    mov byte ptr [rip + leftover_len], 2
+    mov byte ptr [rip + leftover_byte1], r14b   # original leftover
+    mov byte ptr [rip + leftover_byte2], r15b   # new byte
+    # Update input_pos in memory
+    mov qword ptr [rip + input_pos], r8
+    sub r8, qword ptr [rip + input_buffer]
+    jmp read_loop
+
+wait_for_more_input:
+    # No input bytes available, keep leftover as is, go read more.
+    mov qword ptr [rip + input_pos], r8
+    sub r8, qword ptr [rip + input_buffer]
+    jmp read_loop
+
+no_leftover:
+    # Check if at least 3 bytes available
+    lea rax, [r8 + 3]
+    cmp rax, r9
+    ja not_enough_for_triplet
+    # Load 3 bytes
+    movzx r14d, byte ptr [r8]
+    movzx r15d, byte ptr [r8+1]
+    movzx eax, byte ptr [r8+2]
+    add r8, 3
+    jmp process_triplet_from_regs
+
+not_enough_for_triplet:
+    # 1 or 2 bytes left, store as leftover
+    mov rcx, r9
+    sub rcx, r8
+    mov byte ptr [rip + leftover_len], cl
+    test cl, cl
+    jz read_loop   # should not happen, but safe
+    movzx eax, byte ptr [r8]
+    mov byte ptr [rip + leftover_byte1], al
+    inc r8
+    cmp cl, 2
+    jne read_loop
+    movzx eax, byte ptr [r8]
+    mov byte ptr [rip + leftover_byte2], al
+    inc r8
+    jmp read_loop
+
+process_triplet_from_regs:
+    # We have three bytes in r14, r15, rax (lowest 8 bits each). Order: first = r14, second = r15, third = al.
+    # Encode to 4 base64 chars.
+    # We'll compute indices:
+    # idx0 = first >> 2
+    # idx1 = ((first & 3) << 4) | (second >> 4)
+    # idx2 = ((second & 15) << 2) | (third >> 6)
+    # idx3 = third & 63
+    mov ecx, r14d
+    shr ecx, 2
+    mov cl, byte ptr [rbp + rcx]
+    # store idx0
+    mov byte ptr [r10], cl
+    inc r10
+
+    mov ecx, r14d
+    and ecx, 3
+    shl ecx, 4
+    mov edx, r15d
+    shr edx, 4
+    or ecx, edx
+    mov cl, byte ptr [rbp + rcx]
+    mov byte ptr [r10], cl
+    inc r10
+
+    mov ecx, r15d
+    and ecx, 15
+    shl ecx, 2
+    mov edx, eax
+    shr edx, 6
+    or ecx, edx
+    mov cl, byte ptr [rbp + rcx]
+    mov byte ptr [r10], cl
+    inc r10
+
+    mov ecx, eax
+    and ecx, 63
+    mov cl, byte ptr [rbp + rcx]
+    mov byte ptr [r10], cl
+    inc r10
+
+    # Update column count: add 4
+    add r12, 4
+    cmp r12, 76
+    jb check_output_buffer
+    # Column reached 76, need to output newline
+    mov byte ptr [r10], 10   # '\n'
+    inc r10
+    xor r12, r12
+
+check_output_buffer:
+    cmp r10, r11
+    jb process_continue
+    # Output buffer full, flush
+    call flush_output
+    jmp process_continue
+
+process_continue:
+    # Check if more input to process
+    cmp r8, r9
+    jb process_loop
+    # Input chunk exhausted, save state and read more
+    mov qword ptr [rip + input_pos], r8
+    sub r8, qword ptr [rip + input_buffer]
+    mov qword ptr [rip + output_pos], r10
+    sub r10, qword ptr [rip + output_buffer]
+    mov qword ptr [rip + col_count], r12
+    mov byte ptr [rip + leftover_len], r13b
+    # leftover bytes already in r14, r15? But we only have leftover when we explicitly set r13.
+    # In our flow, leftover is stored in memory when we set leftover_len. So we need to save r14, r15 to memory if leftover_len>0.
+    # Actually, we only set leftover_len in memory in not_enough_for_triplet and wait_for_more_input2.
+    # In those cases we already stored the bytes in memory. So r14, r15 are not needed across read_loop.
+    # But we also have the case where we processed a triplet and leftover_len is 0. So fine.
+    jmp read_loop
+
+eof_processing:
+    # End of input. Process any leftover bytes.
+    # Load leftover_len from memory
+    movzx r13, byte ptr [rip + leftover_len]
+    test r13, r13
+    jz flush_final
+    # Load leftover bytes
+    movzx r14, byte ptr [rip + leftover_byte1]
+    cmp r13, 1
+    je leftover1_final
+    # leftover_len == 2
+    movzx r15, byte ptr [rip + leftover_byte2]
+    # Encode 2 bytes -> 3 chars + '='
+    # Triplet: r14, r15, 0 (third byte zero)
+    mov eax, r14d
+    shr eax, 2
+    mov al, byte ptr [rbp + rax]
+    mov byte ptr [r10], al
+    inc r10
+
+    mov eax, r14d
+    and eax, 3
+    shl eax, 4
+    mov edx, r15d
+    shr edx, 4
+    or eax, edx
+    mov al, byte ptr [rbp + rax]
+    mov byte ptr [r10], al
+    inc r10
+
+    mov eax, r15d
+    and eax, 15
+    shl eax, 2
+    # third byte is 0, so >>6 is 0
+    mov al, byte ptr [rbp + rax]
+    mov byte ptr [r10], al
+    inc r10
+
+    mov byte ptr [r10], 61   # '='
+    inc r10
+
+    add r12, 4
+    cmp r12, 76
+    jb flush_final_check
+    mov byte ptr [r10], 10
+    inc r10
+    xor r12, r12
+    jmp flush_final_check
+
+leftover1_final:
+    # 1 byte -> 2 chars + '=='
+    mov eax, r14d
+    shr eax, 2
+    mov al, byte ptr [rbp + rax]
+    mov byte ptr [r10], al
+    inc r10
+
+    mov eax, r14d
+    and eax, 3
+    shl eax, 4
+    mov al, byte ptr [rbp + rax]
+    mov byte ptr [r10], al
+    inc r10
+
+    mov byte ptr [r10], 61
+    inc r10
+    mov byte ptr [r10], 61
+    inc r10
+
+    add r12, 4
+    cmp r12, 76
+    jb flush_final_check
+    mov byte ptr [r10], 10
+    inc r10
+    xor r12, r12
+
+flush_final_check:
+    # Check output buffer space
+    cmp r10, r11
+    jb flush_final
+    call flush_output
+
+flush_final:
+    # If col_count > 0, output newline
+    test r12, r12
+    jz write_remaining
+    mov byte ptr [r10], 10
+    inc r10
+    cmp r10, r11
+    jb write_remaining
+    call flush_output
+
+write_remaining:
+    # Flush any remaining output buffer
+    mov rax, qword ptr [rip + output_pos]
+    lea r10, [rip + output_buffer]
+    add r10, rax
+    cmp r10, qword ptr [rip + output_buffer]
+    je exit_program
+    # There is data to write
+    mov rdx, r10
+    sub rdx, qword ptr [rip + output_buffer]
+    mov rax, 1
+    mov rdi, 1
+    lea rsi, [rip + output_buffer]
+    syscall
+    # Ignore write errors per spec? Just exit.
+
+exit_program:
+    mov rax, 60
+    xor rdi, rdi
+    syscall
+
+# flush_output: writes output_buffer up to r10 (current output_ptr), resets output_ptr to start.
+# Uses rax, rdi, rsi, rdx, rcx, r11. Preserves r8, r9, r10, r12, r13, r14, r15, rbp.
+flush_output:
+    # r10 is current output_ptr, output_buffer start is known.
+    mov rdx, r10
+    sub rdx, qword ptr [rip + output_buffer]
+    test rdx, rdx
+    jz flush_done
+    mov rax, 1
+    mov rdi, 1
+    lea rsi, [rip + output_buffer]
+    syscall
+    # Reset output_ptr
+    mov r10, qword ptr [rip + output_buffer]
+flush_done:
+    ret
+
+# We need to define memory variables for input_len, input_pos, output_pos, col_count, leftover_len, leftover_byte1, leftover_byte2
+# They are in .bss? We used [rip + ...] but didn't define them. Let's define them in .bss.
+
+.section .bss
+.align 8
+input_len:    .zero 8
+input_pos:    .zero 8
+output_pos:   .zero 8
+col_count:    .zero 8
+leftover_len: .zero 1
+leftover_byte1: .zero 1
+leftover_byte2: .zero 1
+
+# Note: The .bss section already has input_buffer and output_buffer. We added more variables.
+# The assembler will combine .bss sections. We need to ensure alignment? Not critical.
+
+# End of program.

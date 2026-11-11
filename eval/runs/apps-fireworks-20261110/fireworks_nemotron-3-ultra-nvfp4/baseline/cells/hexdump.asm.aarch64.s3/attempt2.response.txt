@@ -1,0 +1,223 @@
+.globl _start
+
+.equ SYS_READ, 63
+.equ SYS_WRITE, 64
+.equ SYS_EXIT, 93
+.equ STDIN, 0
+.equ STDOUT, 1
+.equ MAX_INPUT, 65536
+.equ LINE_BUF_SIZE, 80
+
+.section .bss
+.align 12
+input_buffer: .zero MAX_INPUT
+line_buffer: .zero LINE_BUF_SIZE
+
+.section .text
+
+// write_hex2: x0 = byte (0-255), x1 = dest, returns dest+2 in x0
+write_hex2:
+    ubfx x2, x0, #4, #4       // high nibble
+    ubfx x3, x0, #0, #4       // low nibble
+    // convert high nibble
+    add x4, x2, #48           // '0' + nibble
+    add x5, x2, #87           // 'a' - 10 + nibble
+    cmp x2, #10
+    csel x4, x4, x5, ge
+    // convert low nibble
+    add x6, x3, #48
+    add x7, x3, #87
+    cmp x3, #10
+    csel x6, x6, x7, ge
+    // store two bytes
+    strb w4, [x1]
+    strb w6, [x1, #1]
+    add x0, x1, #2
+    ret
+
+// write_hex8: x0 = 64-bit value, x1 = dest, returns dest+8 in x0
+write_hex8:
+    mov x2, #8
+    mov x3, x0
+1:
+    lsr x4, x3, #60
+    and x4, x4, #0xF
+    add x5, x4, #48
+    add x6, x4, #87
+    cmp x4, #10
+    csel x5, x5, x6, ge
+    strb w5, [x1]
+    add x1, x1, #1
+    lsl x3, x3, #4
+    subs x2, x2, #1
+    b.ne 1b
+    mov x0, x1
+    ret
+
+// write_stdout: x0 = buffer, x1 = length
+write_stdout:
+    mov x2, x1
+    mov x1, x0
+    mov x0, #STDOUT
+    mov x8, #SYS_WRITE
+    svc #0
+    ret
+
+_start:
+    // Read all input into input_buffer
+    adrp x19, input_buffer
+    add x19, x19, :lo12:input_buffer
+    mov x20, #0                 // total_read
+    mov x21, #MAX_INPUT         // max_size
+
+.Lread_loop:
+    mov x8, #SYS_READ
+    mov x0, #STDIN
+    add x1, x19, x20
+    sub x2, x21, x20
+    svc #0
+    cbz x0, .Lread_done
+    add x20, x20, x0
+    b .Lread_loop
+
+.Lread_done:
+    // x20 = total length
+    mov x22, #0                 // current_offset
+    mov x23, x20                // total_length
+    mov x10, #0x2E              // '.' character for non-printable
+    mov x11, #16                // constant 16 for comparisons
+
+.Lprocess_loop:
+    cmp x22, x23
+    b.ge .Lprint_final
+
+    // line_length = min(16, remaining)
+    sub x24, x23, x22
+    cmp x24, x11
+    csel x24, x24, x11, hi
+
+    // Build line in line_buffer
+    adrp x25, line_buffer
+    add x25, x25, :lo12:line_buffer
+
+    // 1. offset (8 hex digits)
+    mov x0, x22
+    mov x1, x25
+    bl write_hex8
+    mov x25, x0
+
+    // two spaces
+    mov w0, #0x2020
+    strh w0, [x25]
+    add x25, x25, #2
+
+    // 2. Hex bytes for 16 slots
+    mov x26, #0
+.Lhex_loop:
+    cmp x26, #16
+    b.ge .Lhex_done
+
+    cmp x26, x24
+    b.ge .Lhex_padding
+
+    // Real byte
+    add x27, x19, x22
+    add x27, x27, x26
+    ldrb w0, [x27]
+    mov x1, x25
+    bl write_hex2
+    mov x25, x0
+
+    // space after byte
+    mov w0, #0x20
+    strb w0, [x25]
+    add x25, x25, #1
+    b .Lhex_check_extra
+
+.Lhex_padding:
+    // Three spaces for missing byte
+    mov w0, #0x20
+    strb w0, [x25]
+    strb w0, [x25, #1]
+    strb w0, [x25, #2]
+    add x25, x25, #3
+
+.Lhex_check_extra:
+    cmp x26, #7
+    b.ne .Lhex_next
+    // Extra space after 8th slot
+    mov w0, #0x20
+    strb w0, [x25]
+    add x25, x25, #1
+
+.Lhex_next:
+    add x26, x26, #1
+    b .Lhex_loop
+
+.Lhex_done:
+    // " |"
+    mov w0, #0x20
+    strb w0, [x25]
+    mov w0, #0x7C
+    strb w0, [x25, #1]
+    add x25, x25, #2
+
+    // 3. ASCII column
+    mov x26, #0
+.Lascii_loop:
+    cmp x26, x24
+    b.ge .Lascii_done
+    add x27, x19, x22
+    add x27, x27, x26
+    ldrb w0, [x27]
+    // if 0x20 <= w0 <= 0x7E print w0 else '.'
+    cmp w0, #0x20
+    csel w1, w0, w10, lo
+    cmp w0, #0x7E
+    csel w1, w1, w10, hi
+    strb w1, [x25]
+    add x25, x25, #1
+    add x26, x26, #1
+    b .Lascii_loop
+
+.Lascii_done:
+    // "|\n"
+    mov w0, #0x7C
+    strb w0, [x25]
+    mov w0, #0x0A
+    strb w0, [x25, #1]
+    add x25, x25, #2
+
+    // Write line
+    adrp x27, line_buffer
+    add x27, x27, :lo12:line_buffer
+    sub x1, x25, x27
+    mov x0, x27
+    bl write_stdout
+
+    // Next line
+    add x22, x22, x24
+    b .Lprocess_loop
+
+.Lprint_final:
+    // Print total length as 8 hex digits + newline
+    adrp x25, line_buffer
+    add x25, x25, :lo12:line_buffer
+    mov x0, x23
+    mov x1, x25
+    bl write_hex8
+    mov x25, x0
+    mov w0, #0x0A
+    strb w0, [x25]
+    add x25, x25, #1
+
+    adrp x27, line_buffer
+    add x27, x27, :lo12:line_buffer
+    sub x1, x25, x27
+    mov x0, x27
+    bl write_stdout
+
+    // Exit
+    mov x8, #SYS_EXIT
+    mov x0, #0
+    svc #0

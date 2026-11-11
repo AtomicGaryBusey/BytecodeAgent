@@ -1,0 +1,475 @@
+.section .rodata
+error_msg: .ascii "error\n"
+error_len = . - error_msg
+int_min: .quad -9223372036854775808
+
+.section .bss
+.align 8
+input_buf: .zero 65536
+input_len: .zero 8
+stack: .zero 8192
+output_buf: .zero 1024
+
+.section .text
+.globl _start
+
+.equ SYS_READ, 0
+.equ SYS_WRITE, 1
+.equ SYS_EXIT, 60
+.equ STDIN, 0
+.equ STDOUT, 1
+
+_start:
+    # Read all input
+    lea rdi, [rip + input_buf]
+    mov rsi, 65536
+    call read_all
+    mov [rip + input_len], rax
+
+    # Process lines
+    lea rsi, [rip + input_buf]
+    mov rcx, [rip + input_len]
+    call process_lines
+
+    # Exit
+    xor rdi, rdi
+    call exit
+
+# read_all: reads from STDIN into buffer until EOF
+# RDI = buffer, RSI = max size
+# Returns total bytes read in RAX
+read_all:
+    push rbx
+    push r12
+    push r13
+    xor rbx, rbx          # total
+    mov r12, rdi          # current pointer
+    mov r13, rsi          # remaining
+.read_loop:
+    test r13, r13
+    jz .read_done
+    mov rax, SYS_READ
+    mov rdi, STDIN
+    mov rsi, r12
+    mov rdx, r13
+    syscall
+    test rax, rax
+    jz .read_done
+    add rbx, rax
+    add r12, rax
+    sub r13, rax
+    jmp .read_loop
+.read_done:
+    mov rax, rbx
+    pop r13
+    pop r12
+    pop rbx
+    ret
+
+# process_lines: processes each line in buffer
+# RSI = buffer start, RCX = total length
+process_lines:
+    push rbx
+    push r12
+    push r13
+    push r14
+    push r15
+    mov r13, rsi          # current pointer
+    mov r14, rcx          # remaining bytes
+.next_line:
+    test r14, r14
+    jz .line_done
+    mov rdi, r13
+    mov rcx, r14
+    xor rax, rax
+.scan_loop:
+    cmp byte ptr [rdi], 0x0A
+    je .found_newline
+    inc rdi
+    dec rcx
+    jnz .scan_loop
+    # No newline found: final line
+    mov rdx, r14
+    call evaluate_line
+    jmp .line_done
+.found_newline:
+    # Line length = rdi - r13
+    mov rdx, rdi
+    sub rdx, r13
+    call evaluate_line
+    # Update for next line: skip newline
+    inc rdi
+    sub r14, rdx
+    dec r14
+    mov r13, rdi
+    jmp .next_line
+.line_done:
+    pop r15
+    pop r14
+    pop r13
+    pop r12
+    pop rbx
+    ret
+
+# evaluate_line: evaluates a single RPN line
+# RDI = line start, RSI = line length
+evaluate_line:
+    push rbx
+    push r12
+    push r13
+    push r14
+    push r15
+    lea r13, [rip + stack]   # stack base
+    mov r12, r13             # stack top (next free)
+    mov r14, rdi             # current token pointer
+    mov r15, rsi             # remaining length in line
+
+.token_loop:
+    # Skip spaces and tabs
+    test r15, r15
+    jz .end_tokens
+    mov al, byte ptr [r14]
+    cmp al, 0x20
+    je .skip_space
+    cmp al, 0x09
+    je .skip_space
+    jmp .token_start
+.skip_space:
+    inc r14
+    dec r15
+    jmp .token_loop
+
+.token_start:
+    # Find token end
+    mov rdi, r14
+    mov rcx, r15
+.scan_token:
+    cmp byte ptr [rdi], 0x20
+    je .token_end
+    cmp byte ptr [rdi], 0x09
+    je .token_end
+    inc rdi
+    dec rcx
+    jnz .scan_token
+.token_end:
+    # Token length = rdi - r14
+    mov rbx, rdi
+    sub rbx, r14
+    call process_token
+    test rax, rax
+    jnz .error
+    # Update pointers
+    mov r14, rdi
+    mov r15, rcx
+    jmp .token_loop
+
+.end_tokens:
+    # Check stack has exactly one element
+    mov rax, r12
+    sub rax, r13
+    cmp rax, 8
+    jne .error
+    # Pop and print
+    sub r12, 8
+    mov rax, [r12]
+    call print_int
+    jmp .done
+
+.error:
+    call print_error
+
+.done:
+    pop r15
+    pop r14
+    pop r13
+    pop r12
+    pop rbx
+    ret
+
+# process_token: processes a single token
+# R14 = token start, RBX = token length
+# Returns RAX = 0 success, 1 error
+process_token:
+    cmp rbx, 1
+    jne .try_literal
+    mov al, byte ptr [r14]
+    cmp al, '+'
+    je .op_add
+    cmp al, '-'
+    je .op_sub
+    cmp al, '*'
+    je .op_mul
+    cmp al, '/'
+    je .op_div
+    cmp al, '%'
+    je .op_mod
+.try_literal:
+    call parse_literal
+    test rax, rax
+    jnz .error_ret
+    # Push value (in RDX)
+    mov [r12], rdx
+    add r12, 8
+    xor rax, rax
+    ret
+
+.op_add:
+    # Need at least 2 elements
+    lea rax, [r12 - 16]
+    cmp rax, r13
+    jb .error_ret
+    sub r12, 8
+    mov rax, [r12]
+    sub r12, 8
+    add rax, [r12]
+    mov [r12], rax
+    add r12, 8
+    xor rax, rax
+    ret
+
+.op_sub:
+    lea rax, [r12 - 16]
+    cmp rax, r13
+    jb .error_ret
+    sub r12, 8
+    mov rax, [r12]   # b
+    sub r12, 8
+    mov rdx, [r12]   # a
+    sub rdx, rax
+    mov [r12], rdx
+    add r12, 8
+    xor rax, rax
+    ret
+
+.op_mul:
+    lea rax, [r12 - 16]
+    cmp rax, r13
+    jb .error_ret
+    sub r12, 8
+    mov rax, [r12]
+    sub r12, 8
+    imul rax, [r12]
+    mov [r12], rax
+    add r12, 8
+    xor rax, rax
+    ret
+
+.op_div:
+    lea rax, [r12 - 16]
+    cmp rax, r13
+    jb .error_ret
+    sub r12, 8
+    mov rcx, [r12]   # b
+    sub r12, 8
+    mov rax, [r12]   # a
+    test rcx, rcx
+    jz .error_ret
+    mov r8, qword ptr [rip + int_min]
+    cmp rax, r8
+    jne .do_div
+    cmp rcx, -1
+    je .error_ret
+.do_div:
+    cqo
+    idiv rcx
+    mov [r12], rax
+    add r12, 8
+    xor rax, rax
+    ret
+
+.op_mod:
+    lea rax, [r12 - 16]
+    cmp rax, r13
+    jb .error_ret
+    sub r12, 8
+    mov rcx, [r12]   # b
+    sub r12, 8
+    mov rax, [r12]   # a
+    test rcx, rcx
+    jz .error_ret
+    mov r8, qword ptr [rip + int_min]
+    cmp rax, r8
+    jne .do_mod
+    cmp rcx, -1
+    je .error_ret
+.do_mod:
+    cqo
+    idiv rcx
+    mov [r12], rdx
+    add r12, 8
+    xor rax, rax
+    ret
+
+.error_ret:
+    mov rax, 1
+    ret
+
+# parse_literal: parses integer literal
+# R14 = token start, RBX = token length
+# Returns RAX = 0 success, 1 error; RDX = parsed value
+parse_literal:
+    mov rsi, r14
+    mov rcx, rbx
+    xor rdx, rdx
+    mov r8, 1
+    cmp byte ptr [rsi], '-'
+    jne .parse_digits
+    mov r8, -1
+    inc rsi
+    dec rcx
+    jz .error_ret_lit
+.parse_digits:
+    cmp rcx, 1
+    jl .error_ret_lit
+    cmp rcx, 18
+    jg .error_ret_lit
+    mov r9, rcx
+    mov r10, rsi
+.digit_loop:
+    mov al, byte ptr [r10]
+    cmp al, '0'
+    jl .error_ret_lit
+    cmp al, '9'
+    jg .error_ret_lit
+    inc r10
+    dec r9
+    jnz .digit_loop
+    # Convert
+    xor rax, rax
+    mov rcx, rbx
+    mov rsi, r14
+    cmp byte ptr [rsi], '-'
+    jne .conv_loop
+    inc rsi
+    dec rcx
+.conv_loop:
+    movzx rdx, byte ptr [rsi]
+    sub rdx, '0'
+    imul rax, 10
+    add rax, rdx
+    inc rsi
+    dec rcx
+    jnz .conv_loop
+    imul rax, r8
+    mov rdx, rax
+    xor rax, rax
+    ret
+
+.error_ret_lit:
+    mov rax, 1
+    ret
+
+# print_int: prints signed 64-bit integer in RAX followed by newline
+print_int:
+    push rbx
+    push rcx
+    push rdx
+    push rsi
+    push rdi
+    push r8
+    push r9
+    push r10
+    push r11
+    lea rbx, [rip + output_buf]
+    mov rdi, rbx
+    test rax, rax
+    jns .positive
+    mov byte ptr [rdi], '-'
+    inc rdi
+    neg rax
+.positive:
+    sub rsp, 32
+    mov rsi, rsp
+    mov r8, 0
+    mov r9, 10
+    test rax, rax
+    jz .zero_digit
+.gen_loop:
+    xor rdx, rdx
+    div r9
+    add dl, '0'
+    mov byte ptr [rsi + r8], dl
+    inc r8
+    test rax, rax
+    jnz .gen_loop
+    jmp .copy_digits
+.zero_digit:
+    mov byte ptr [rsi], '0'
+    mov r8, 1
+.copy_digits:
+    lea rsi, [rsp + r8 - 1]
+.copy_loop:
+    mov al, byte ptr [rsi]
+    mov byte ptr [rdi], al
+    inc rdi
+    dec rsi
+    cmp rsi, rsp
+    jge .copy_loop
+    mov byte ptr [rdi], 0x0A
+    inc rdi
+    mov rdx, rdi
+    sub rdx, rbx
+    mov rsi, rbx
+    mov rdi, STDOUT
+    call write_all
+    add rsp, 32
+    pop r11
+    pop r10
+    pop r9
+    pop r8
+    pop rdi
+    pop rsi
+    pop rdx
+    pop rcx
+    pop rbx
+    ret
+
+# print_error: prints "error\n"
+print_error:
+    push rax
+    push rdi
+    push rsi
+    push rdx
+    lea rsi, [rip + error_msg]
+    mov rdx, error_len
+    mov rdi, STDOUT
+    call write_all
+    pop rdx
+    pop rsi
+    pop rdi
+    pop rax
+    ret
+
+# write_all: writes all bytes, handling partial writes
+# RDI = fd, RSI = buf, RDX = len
+write_all:
+    push rbx
+    push r12
+    push r13
+    mov rbx, rdx
+    mov r12, rsi
+    mov r13, rdi
+.wl_loop:
+    mov rax, SYS_WRITE
+    mov rdi, r13
+    mov rsi, r12
+    mov rdx, rbx
+    syscall
+    test rax, rax
+    jz .wl_done
+    sub rbx, rax
+    add r12, rax
+    test rbx, rbx
+    jnz .wl_loop
+.wl_done:
+    pop r13
+    pop r12
+    pop rbx
+    ret
+
+# exit: exits with status in RDI
+exit:
+    mov rax, SYS_EXIT
+    syscall
+    # Should not return
+    ud2
