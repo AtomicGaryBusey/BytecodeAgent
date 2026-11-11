@@ -307,7 +307,7 @@ is the only local model that runs the app battery (3/96 first attempt, 16/96 wit
   of ~23 KB that run out the 400 s limit on every attempt (Qwen3-30B-A3B at ~50 tokens/s).
 - **False-reject review:** every failed attempt was replayed through the current pipeline. Qwen3-Coder-Next and
   Qwen3-30B-A3B: none. Qwen2.5-14B: 6 stream attempts on AArch64 (3 cells) were stopped at a line keystone refused
-  but GNU as accepts (fixed since in c1c1df7f); the answers were cut off there, so they cannot be rescored. Its
+  but GNU as accepts (fixed since in 1502d04e); the answers were cut off there, so they cannot be rescored. Its
   first-attempt count could be at most one higher; details in the run's `ADJUSTMENTS.md`.
   Qwen3.6-35B-A3B (both modes, 790 failed attempts): none; the one `crosscheck` reject (`lea r9, [r13 - r13]`) is
   refused by GNU as too.
@@ -350,10 +350,10 @@ session record shows the real answer). Rescored with the duplicate removed they 
 above (details in that run's `ADJUSTMENTS.md`); the adapter now scores grok's session record, not the stream.
 GPT-6 Luna via Copilot: one, `mat_pow.stream.aarch64` attempt 1, rejected at `mov x17, x20, lsl #3`, which keystone
 refuses outright but GNU as accepts (an alias of `orr x17, xzr, x20, lsl #3`); rescored with the recorded answer it
-passes, and it counts as a pass above (fixed in c1c1df7f: the stream path takes GNU as's bytes when keystone refuses).
+passes, and it counts as a pass above (fixed in 1502d04e: the stream path takes GNU as's bytes when keystone refuses).
 Claude Sonnet 5.5 via Copilot: none. Two answers define x86 labels named like registers (`cl`, `ch`) and jump to
 them; the encoder refused the jump. That is genuine: the x86 jump schema in the prompt says register names are not
-usable as labels, and GNU as also rejects `jmp cl` with a label `cl` defined (d7df9dda now refuses such a label at
+usable as labels, and GNU as also rejects `jmp cl` with a label `cl` defined (ea22a6bc now refuses such a label at
 its definition, with a clearer message; no verdict changes). Also, `vm_run.structured.aarch64` passed on a fresh re-run after the pre-fix output-cap abort (the runtime's
 continuation event stopped the subject); under the current rule the capped 34,574-character answer (ending in a
 run of repeated characters) is scored, and it fails as `format`, so that cell counts as a first-attempt failure.

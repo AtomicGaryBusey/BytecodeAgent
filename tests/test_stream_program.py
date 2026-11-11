@@ -54,7 +54,7 @@ def _golden_cases():
 @pytest.mark.parametrize("path,case", _golden_cases(), ids=lambda v: v if isinstance(v, str) else "")
 def test_function_mode_matches_recorded_golden(path, case):
     """Golden outputs were recorded with the implementation before program mode existed
-    (git HEAD cacb394c) on a fixed sample of recorded stream answers."""
+    (git HEAD 41a543f2) on a fixed sample of recorded stream answers."""
     text = (ROOT / path).read_text()
     got = summarise(stream_mod, case["isa"], text, None)
     assert json.loads(json.dumps(got)) == case["whole"]

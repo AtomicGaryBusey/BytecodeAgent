@@ -13,7 +13,7 @@ withdrawn after checking the prompt and GNU as (see the note under it).
   with a label `cl` defined. The +1 first proposed here is withdrawn; the attempt stays a genuine failure.
 - `vm_run.structured.aarch64`: the first call hit Copilot's 32,000-token output cap and the runtime emitted a
   `model_turn_continuation` (thinking-exhausted-continuation) event, which at the time aborted the subject as an
-  isolation failure (fixed in 929d4577). The cell was re-run fresh and passed on attempt 1. Under the current
+  isolation failure (fixed in b54e5595). The cell was re-run fresh and passed on attempt 1. Under the current
   rule the capped text is scored as it stands: 34,574 characters ending in a long run of a repeated character,
   which fails as `format`. Counted as a first-attempt failure. (Whether later attempts would have passed is
   unknown; the cell's within-four result is left as recorded.)

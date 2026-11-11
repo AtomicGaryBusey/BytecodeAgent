@@ -54,7 +54,7 @@ Approved by the user on 2026-10-22. After each: by-hand false-reject review, the
 ## Done (pick-up, 2026-10-24)
 
 - [x] **Kimi K3.1 Pro, function batteries**: 218/224 first try (97%), 223/224 within four; second to Astra (221)
-  and statistically level with it. Kimi CLI 2.3.1 re-audited (f9078a56). Reviewed: no false rejects; one odd
+  and statistically level with it. Kimi CLI 2.3.1 re-audited (3a2d55f3). Reviewed: no false rejects; one odd
   reply is logged for follow-up in the gitignored `followups/` folder. Not yet decided: apps (96 cells), hex
   (32 cells), and the K3.1 Pro Highspeed variant.
 

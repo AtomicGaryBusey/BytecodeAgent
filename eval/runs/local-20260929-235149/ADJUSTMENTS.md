@@ -12,11 +12,11 @@ Served by Ollama 0.30.10 (container bca-ollama, models volume mounted read-only)
 ## Review (2026-10-01)
 
 Every failed attempt was replayed through the current pipeline (QBE, the stream assembler with the GNU as
-cross-check and fallbacks of c1c1df7f / 79a275c1 / 95dcdb0, the structured encoder, the emulator checks). Everything
+cross-check and fallbacks of 1502d04e / 366f29f9 / 83c313e, the structured encoder, the emulator checks). Everything
 is genuine except one group:
 
 **Unresolved, harness-affected (not rescorable): Qwen2.5-14B, 6 stream attempts on AArch64.** Generation was stopped
-at a line keystone refused but GNU as accepts; since c1c1df7f the stream path takes GNU as's bytes for such lines.
+at a line keystone refused but GNU as accepts; since 1502d04e the stream path takes GNU as's bytes for such lines.
 The answers were cut off at that line, so they cannot be rescored, and the run will not be resumed:
 
 | Cell | Attempts | Line |

@@ -1045,35 +1045,35 @@ def code_quality(path="eval/code_quality.jsonl"):
 
 # ------------------------------------------------------------------------------------------------ 11. audit
 HARNESS_FIXES = [
-    ("32d73541", "2026-09-29", "App battery, asm path: a program could read host files (a `.macro` body pasting "
+    ("2ca76d55", "2026-09-29", "App battery, asm path: a program could read host files (a `.macro` body pasting "
      "`.incbin` together with `\\()`). The asm path now refuses the stream path's whole not-allowed list, "
      "backslashes outside literals, and runs GNU as under a 1 GiB address-space limit.",
      "Found by adversarial review before any live app run; no verdict affected."),
-    ("c4ea602c", "2026-09-29", "Stream: keystone and GNU as encoded AArch64 `uxtw x0, w2` differently (both "
+    ("b1b37fd8", "2026-09-29", "Stream: keystone and GNU as encoded AArch64 `uxtw x0, w2` differently (both "
      "valid, same size) and the cross-check refused it; same-size disagreements now take GNU as's bytes.",
      "Codex Daybreak Blue `max_byte.stream.aarch64` attempt 1 counted as a pass (ADJ +1)."),
-    ("95dcdb0b", "2026-09-29", "Stream: refused `lt` as a label name, which GNU as accepts.",
+    ("83c313ed", "2026-09-29", "Stream: refused `lt` as a label name, which GNU as accepts.",
      "Claude Sonnet 5.5 `json_lint.stream.aarch64.s1` (apps) superseded and re-run: passed on attempt 1."),
-    ("c7df64d0", "2026-09-29", "App battery, asm path: did not enforce the placement and constant rules the prompt "
+    ("01261154", "2026-09-29", "App battery, asm path: did not enforce the placement and constant rules the prompt "
      "states and the stream path enforced (data in `.text`, constants before use).",
      "Claude Opus 5.5 `rpn.asm.aarch64.s1` (apps) superseded and re-run under the rule: passed on attempt 1."),
-    ("47576eca", "2026-09-29", "Grok CLI 1.0.41's streaming output repeated a text chunk (`{\"`) the model never "
+    ("f1f1feff", "2026-09-29", "Grok CLI 1.0.41's streaming output repeated a text chunk (`{\"`) the model never "
      "wrote; the adapter now scores grok's own session record.",
      "Grok 4.7 build-fast: 3 long-battery structured cells counted as passes (ADJ +3)."),
-    ("c1c1df7f", "2026-09-30", "Stream: keystone refused valid lines GNU as accepts (e.g. AArch64 "
+    ("1502d04e", "2026-09-30", "Stream: keystone refused valid lines GNU as accepts (e.g. AArch64 "
      "`mov x17, x20, lsl #3`, an `orr` alias); the stream path now takes GNU as's bytes for them.",
      "GPT-6 Luna via Copilot `mat_pow.stream.aarch64` counted as a pass (ADJ +1). Qwen2.5-14B: 6 attempts were "
      "cut off at such lines and cannot be rescored (its count could be at most 1 higher)."),
-    ("79a275c1", "2026-09-30", "Stream and asm paths treated `.end`, `.arch armv8-a` / `.cpu generic` and GNU's "
+    ("366f29f9", "2026-09-30", "Stream and asm paths treated `.end`, `.arch armv8-a` / `.cpu generic` and GNU's "
      "one-quote `'c` literal differently from GNU as and from each other.",
      "MAI-Code `wc.stream.aarch64.s2` and `json_lint.stream.aarch64.s1` (apps) superseded and re-run."),
-    ("929d4577", "2026-09-30", "Copilot: the runtime's output-cap continuation event aborted the subject as an "
+    ("b54e5595", "2026-09-30", "Copilot: the runtime's output-cap continuation event aborted the subject as an "
      "isolation failure; the capped answer is now scored as it stands.",
      "Claude Sonnet 5.5 via Copilot `vm_run.structured.aarch64`: the fresh re-run's pass replaced by the capped "
      "answer's failure (ADJ −1)."),
-    ("d7df9dda", "2026-09-30", "Structured x86-64: a label named like a register (`cl`) is now refused at its "
+    ("ea22a6bc", "2026-09-30", "Structured x86-64: a label named like a register (`cl`) is now refused at its "
      "definition with a clear message (the prompt and GNU as already forbid it).", "No verdict changed."),
-    ("5dd977b1", "2026-10-01", "Hex path: capstone does not decode some valid ARMv8.0 words (`ldtrb`); GNU objdump "
+    ("769f4c23", "2026-10-01", "Hex path: capstone does not decode some valid ARMv8.0 words (`ldtrb`); GNU objdump "
      "now decodes them.", "Claude Sonnet 4.5 `sort_lines.hex.aarch64` attempt 3 still fails at runtime: no "
      "verdict changed."),
     ("linker", "2026-10-22", "The linker refused a section alignment above 4 KiB, which GNU ld accepts (AArch64 "

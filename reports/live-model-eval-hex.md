@@ -266,7 +266,7 @@ From a by-hand review of every failed attempt (first attempts and repairs), with
 
 Every failed attempt was reviewed by hand. One harness false reject was found and fixed: capstone does not
 decode some valid ARMv8.0 encodings (`384568e7`, the unprivileged load `ldtrb w7, [x7, #86]`, which GNU as
-accepts), so the hex path refused them as "does not decode". Fixed in 5dd977b1 (GNU objdump decodes a word
+accepts), so the hex path refused them as "does not decode". Fixed in 769f4c23 (GNU objdump decodes a word
 capstone does not know; undefined words and ARMv8.1+ instructions are still refused). The one affected attempt
 (Sonnet 4.5 `sort_lines.hex.aarch64` attempt 3) still fails at runtime under the fix, so no verdict changes.
 Every other pre-run refusal was checked against GNU objdump: undefined words, or ARMv8.1+ instructions the

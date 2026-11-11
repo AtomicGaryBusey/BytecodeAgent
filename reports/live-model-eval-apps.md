@@ -223,7 +223,7 @@ change the picture; see the local section of the cross-vendor report).
 
 - **Sandbox escape found and closed before any live run.** An adversarial review showed that a program could
   read any host file on the `asm` path: inside a `.macro`/`.irpc` body GNU as's empty paste `\()` builds
-  `.incbin` without the literal name appearing, which the literal-name filter missed. Fixed (32d7354): the asm
+  `.incbin` without the literal name appearing, which the literal-name filter missed. Fixed (2ca76d5): the asm
   path refuses the prompt's whole "not allowed" list (macros, repetition blocks, conditionals, file inclusion,
   `.fill`, `.org`, `.comm`, ...) wherever it appears outside a string or comment, refuses backslashes outside
   literals, and runs GNU as under a 1 GiB address-space limit. The process runner itself (host-side instruction
@@ -232,11 +232,11 @@ change the picture; see the local section of the cross-vendor report).
   acceptance is a fairness bug. Fixed as found:
   - the asm path now enforces the placement and constant rules the prompt states and the stream path already
     enforced (instructions only in `.text`, data only in data sections, `.bss` only `.zero`/`.space`, constants
-    defined before use; c7df64d);
-  - the stream path accepts every label name GNU as accepts (it had refused AArch64 `lt`; 95dcdb0);
-  - the stream path uses GNU as's bytes when keystone refuses a line GNU as accepts (c1c1df7f);
+    defined before use; 0126115);
+  - the stream path accepts every label name GNU as accepts (it had refused AArch64 `lt`; 83c313e);
+  - the stream path uses GNU as's bytes when keystone refuses a line GNU as accepts (1502d04e);
   - `.end`, `.arch`/`.cpu` (only at the prompt's ISA level, on both paths) and GNU's one-quote character
-    literal `'c` (79a275c1).
+    literal `'c` (366f29f9).
 
   After the fixes, every complete recorded app answer (717) was run through both paths: they accept and refuse
   the same programs.

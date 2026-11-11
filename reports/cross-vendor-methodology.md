@@ -333,11 +333,11 @@ GNU as (and the prompt) accept; every recorded answer was replayed after each on
 
 | Change | What it fixed | Effect on committed results |
 |---|---|---|
-| 95dcdb0 | stream: labels named like AArch64 keywords or registers (`lt`, `x0`, ...) that GNU as accepts | one app cell re-run (Sonnet 5.5) |
-| c7df64d | asm path (apps): the prompt's placement and constant rules, as the stream path enforces them | one app cell re-run (Opus 5.5) |
-| c1c1df7f | stream: keystone refuses a line GNU as accepts (e.g. `mov x17, x20, lsl #3`) -> GNU as's bytes | GPT-6 Luna via Copilot +1 (ADJ); 3 Qwen2.5 cells cut off, not rescorable (documented) |
-| 79a275c1 | stream: `.end`, `.arch`/`.cpu` within the prompt's ISA level (both paths), GNU's one-quote `'c` | two MAI-Code app cells re-run |
-| d7df9dda | structured x86-64: a label named like a register is refused where it is defined (the prompt forbids it; GNU as rejects the jump) | none (the affected attempts had failed genuinely) |
+| 83c313e | stream: labels named like AArch64 keywords or registers (`lt`, `x0`, ...) that GNU as accepts | one app cell re-run (Sonnet 5.5) |
+| 0126115 | asm path (apps): the prompt's placement and constant rules, as the stream path enforces them | one app cell re-run (Opus 5.5) |
+| 1502d04e | stream: keystone refuses a line GNU as accepts (e.g. `mov x17, x20, lsl #3`) -> GNU as's bytes | GPT-6 Luna via Copilot +1 (ADJ); 3 Qwen2.5 cells cut off, not rescorable (documented) |
+| 366f29f9 | stream: `.end`, `.arch`/`.cpu` within the prompt's ISA level (both paths), GNU's one-quote `'c` | two MAI-Code app cells re-run |
+| ea22a6bc | structured x86-64: a label named like a register is refused where it is defined (the prompt forbids it; GNU as rejects the jump) | none (the affected attempts had failed genuinely) |
 
 Fable 5.1: Claude Code used to re-run a refused call on claude-opus-4-8 silently. The fallback is now
 off, a refusal is scored, and on real task prompts Fable answers as itself.

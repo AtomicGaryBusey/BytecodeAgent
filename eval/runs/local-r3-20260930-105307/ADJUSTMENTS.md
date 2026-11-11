@@ -13,7 +13,7 @@ Subjects (Ollama 0.30.10 on bca-ollama2, :11436; Q8_0, digest 0218f872e86b; num_
 ## False-reject review (2026-10-01)
 
 All 790 failed attempts were replayed through the current pipeline (recorded response text, current stream / encoder
-/ QBE / checker code, which includes c1c1df7f, 79a275c1 and d7df9dda): no verdict changes, so no ADJ. The one
+/ QBE / checker code, which includes 1502d04e, 366f29f9 and ea22a6bc): no verdict changes, so no ADJ. The one
 `crosscheck` reject (`sum8.stream.x86_64` attempt 1, `lea r9, [r13 - r13]`) is refused by GNU as too ("invalid use of
 register"). Everything else is genuine: invalid QBE (144 compile failures with thinking off), stream lines GNU as also
 rejects, structured schema misuse and malformed JSON (format), wrong results, ABI and runtime faults.
