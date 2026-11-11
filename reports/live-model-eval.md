@@ -76,7 +76,8 @@ previous code is the text up to the abort. The failure is one of:
   expected and actual array).
 
 Every prompt, raw event stream (`attemptN.raw.jsonl`), response, verdict (with code hex and disassembly) and the
-final disassembly is saved per cell. `attempts.jsonl` and `results.jsonl` hold the aggregate records. The run
+final disassembly is saved per cell. (Since 2026-11-11 the raw event streams are gzipped and kept off git, on the
+machine that ran the eval; the rest is in the repository.) `attempts.jsonl` and `results.jsonl` hold the aggregate records. The run
 used 4 parallel subjects, is resume-safe (a finished cell has `cell.json`), and has a hard call budget persisted
 in `calls.log` (cap 195).
 

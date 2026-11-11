@@ -237,7 +237,7 @@ bca/stream.py                     streaming assembler with the GNU as oracle
 bca/structured/                   JSON instruction encoders, schemas, tool definitions
 bca/ir/                           QBE / C / WAT lowering and a minimal ELF extractor
 bca/liveeval/                     live-model eval: tasks, prompts, pipelines, runner, vendor adapters (CLI and direct API)
-eval/runs/                        recorded runs (prompts, responses, raw streams, verdicts)
+eval/runs/                        recorded runs (prompts, responses, verdicts; raw vendor streams kept off git)
 eval/*.py                         table generators (xv_, app_, hex_, declared_, assist_tables), analytics, code quality, dashboard
 tests/                            the test suite (pytest)
 reports/                          eval write-ups, methodology, literature survey and its 2026-11 landscape update
@@ -251,4 +251,6 @@ demo/editor-hex/                  the same editor written directly as machine co
 
 Code is under the [MIT license](LICENSE). The reports in `reports/` and the recorded run data in `eval/runs/`
 are under [CC BY 4.0](LICENSE-CC-BY-4.0): reuse them freely, with credit. `eval/runs/` holds raw model outputs
-recorded from each vendor's service; those vendors' own terms may also apply to their outputs.
+recorded from each vendor's service; those vendors' own terms may also apply to their outputs. The raw vendor
+event streams behind each answer (`*.raw.jsonl`, 20 GB uncompressed) are not in the repository: they were removed
+from its history on 2026-11-11 and are kept gzipped on the machine that ran the eval.
