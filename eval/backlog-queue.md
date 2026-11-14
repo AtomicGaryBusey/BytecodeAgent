@@ -29,11 +29,6 @@ cli_version; attempts from 15:34 on are 2.1.323 (Opus 4.7's last 2 hex-program c
 
 ## In progress
 
-- **Kolibri re-tune, then COMMIT** (user, 2026-11-13: "Re-tune it and SAVE IT TO THE REPO this time. Commit after
-  this is done"; also "commit after 3 is done" for all pending work). `eval/kolibri-tune/after-hex-20261113.sh` waits
-  for the Kolibri hex run, then `tune.sh` (bs 1 tuned on the GB10 + the B200 2048 entry, num_stages 3) writes the
-  config into eval/kolibri-tune/; `serve.sh` recreates `bca-vllm-kolibri` mounting it from the repo. Then commit all
-  pending work in parts (Forgejo conventions: git pushall).
 - **Muse tier comparison resumed 07:1x** (`eval/runs/muse-tier-resume-20261113.sh`) after the search-proposal audit
   (eval/audits/muse-1.4.18-search-20261113: not reproduced in 3 replays). Fails closed if it recurs.
 - **Muse round 2** (user, 2026-11-13, after subscribing to Muse Code Power Usage; contributor mode is fine for
@@ -114,6 +109,12 @@ cli_version; attempts from 15:34 on are 2.1.323 (Opus 4.7's last 2 hex-program c
 - **Housekeeping**: Docker images (~72 GB), Forgejo GC.
 
 ## Done (this loop)
+
+- **Kolibri re-tune and commit** (user, 2026-11-13): config re-tuned (bs 1 on the GB10: M16 N32 K64 G1 w4 s5; 2048
+  from B200 E=256 with num_stages 3) and kept in eval/kolibri-tune/; serve.sh verified (vLLM reads it from the repo);
+  47.3 / 47.1 tok/s tuned vs 46-48 default, no gain on today's stack. All pending work committed in six commits
+  (d24d37c8f .. f86d07c1e) plus the methodology note; NOT pushed (the user has not asked). `.git/gc.log` reports too
+  many unreachable loose objects (left by the history rewrite): `git prune` is housekeeping for the user to approve.
 
 - **Write-up of every finished run** (2026-11-12, at the user's request; not committed): by-hand review of the new
   runs (no false rejects; 162 suspect attempts in 39 groups, 15 cross-check rejections); cross-vendor, apps, hex,

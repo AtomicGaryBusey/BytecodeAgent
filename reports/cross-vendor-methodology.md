@@ -292,6 +292,14 @@ The kernels are not the bottleneck; the tuned config is kept, and it changes ker
 outputs. **Stack per battery:** every Kolibri battery runs on the official vLLM 0.29.0 image + plugin
 1.0.0 + tuned config.
 
+**The tuned config was lost and re-tuned (2026-11-13).** It lived in a `/tmp` scratchpad and went with the power
+loss of 2026-11-12, so Kolibri's hex functions (2026-11-13) ran on vLLM's default config for that shape (same image,
+weights and flags; speed only, and budget mode has no wall-clock limit). It was then re-tuned by the same method and
+is now kept in the repo, `eval/kolibri-tune/` (tune.sh, serve.sh, and run_tuner.py, which loads the Aleph-Alpha
+plugin and maps the Kolibri1ForCausalLM expert shape the stock tuner does not know). Measured on that day's stack:
+47.3 / 47.1 tok/s over 1,024 / 4,096 tokens with it, 46-48 on the default config: no gain any more, so the hex
+functions are comparable with the earlier batteries in everything that is scored.
+
 ## Known limits
 
 - The vendors' extra context differs (table above); none of it is removable through the CLIs, all of it is
