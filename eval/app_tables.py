@@ -4,10 +4,17 @@ already the one in results.jsonl (see each run's ADJUSTMENTS.md). Run from the r
 import collections
 import glob
 import json
+import os
+import sys
+
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+from model_names import NEW_NAMES, in_progress  # noqa: E402
 
 recs = {}
 for f in sorted(glob.glob("eval/runs/apps-*/*/baseline/results.jsonl") + glob.glob("eval/runs/kolibri-budget-apps-*/*/baseline/results.jsonl")):
-    if "smoke" in f:
+    if "/vibe_" in f or "/muse_" in f or "effort-study" in f:  # reported apart: the Vibe agent-harness study and effort experiments
+        continue
+    if "smoke" in f or in_progress(f):
         continue
     for line in open(f):
         r = json.loads(line)
@@ -16,7 +23,7 @@ for f in sorted(glob.glob("eval/runs/apps-*/*/baseline/results.jsonl") + glob.gl
         if r.get("path") not in ("asm", "stream"):  # the opt-in hex path is reported on its own
             continue
         subj = r.get("subject") or ""
-        if subj.startswith(("codex_", "kimi_", "agy_", "grok_", "copilot_", "foundry_", "fireworks_", "apple_")):
+        if subj.startswith(("codex_", "kimi_", "agy_", "grok_", "copilot_", "foundry_", "fireworks_", "cerebras_", "apple_")):
             label = subj.replace("_", ":", 1).replace("kimi-code_", "kimi-code/")
         elif subj.startswith("local_"):
             think = (r.get("local") or {}).get("think")  # @think / @nothink runs are separate rows
@@ -34,6 +41,7 @@ names = {"claude-opus-4-8": "Claude Opus 4.8", "claude-sonnet-5": "Claude Sonnet
          "local:qwen2.5:14b": "Qwen2.5-14B Q4 (local)", "local:qwen3-coder-next:q4_K_M": "Qwen3-Coder-Next Q4 (local)",
          "local:qwen3.6:35b-a3b-q8_0@nothink": "Qwen3.6-35B-A3B Q8, thinking off (local)",
          "local:qwen3.6:35b-a3b-q8_0@think": "Qwen3.6-35B-A3B Q8, thinking on (local)"}
+names.update(NEW_NAMES)
 TASKS = ["wc", "rev_lines", "hexdump", "sort_lines", "rpn", "base64", "bf", "json_lint"]
 FULL = 96  # 8 tasks x 2 paths x 2 ISAs x 3 samples
 

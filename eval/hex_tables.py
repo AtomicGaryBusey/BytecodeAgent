@@ -4,6 +4,11 @@ paths. Run from the repo root: .venv/bin/python eval/hex_tables.py"""
 import collections
 import glob
 import json
+import os
+import sys
+
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+from model_names import NEW_NAMES, in_progress  # noqa: E402
 
 NAMES = {"kimi:kimi-code/k3.1-pro": "Kimi K3.1 Pro", "fireworks:deepseek-v4p1-flash": "DeepSeek V4.1 Flash (Fireworks)", "fireworks:nemotron-3-ultra-nvfp4": "NVIDIA Nemotron 3 Ultra NVFP4 (Fireworks)", "fireworks:minimax-m3": "MiniMax M3 (Fireworks)", "fireworks:glm-5p3": "Z.ai GLM-5.3 (Fireworks)", "fireworks:qwen3p8-max": "Qwen 3.8 Max (Fireworks)", "foundry:mai-thinking-1": "Microsoft MAI-Thinking-1 (Azure Foundry)", "foundry:deepseek-v4-pro": "DeepSeek-V4-Pro high (Azure Foundry)", 
     "codex:gpt-6-astra": "Codex GPT-6 Astra", "codex:gpt-6-sol": "Codex GPT-6 Sol", "codex:gpt-5.5": "Codex GPT-5.5",
@@ -17,10 +22,12 @@ NAMES = {"kimi:kimi-code/k3.1-pro": "Kimi K3.1 Pro", "fireworks:deepseek-v4p1-fl
     "agy:gemini-3.8-flash-high": "Gemini 3.8 Flash High (Antigravity)",
 }
 
+NAMES.update(NEW_NAMES)
+
 
 def label_of(r: dict) -> str:
     subj = r.get("subject") or ""
-    if subj.startswith(("codex_", "kimi_", "agy_", "grok_", "copilot_", "foundry_", "fireworks_", "apple_")):
+    if subj.startswith(("codex_", "kimi_", "agy_", "grok_", "copilot_", "foundry_", "fireworks_", "cerebras_", "apple_")):
         return subj.replace("_", ":", 1).replace("kimi-code_", "kimi-code/")
     return subj if subj.startswith("claude-") else (r.get("model") or subj)
 
@@ -28,7 +35,9 @@ def label_of(r: dict) -> str:
 def load(pattern: str):
     out = {}
     for f in sorted(glob.glob(pattern, recursive=True)):
-        if "smoke" in f:
+        if "/vibe_" in f or "/muse_" in f or "effort-study" in f:  # reported apart: the Vibe agent-harness study and effort experiments
+            continue
+        if "smoke" in f or in_progress(f):
             continue
         rd = f.split("/")[2]
         for line in open(f):
@@ -95,7 +104,9 @@ if app_models:
     # Safety blocks are scored as failures above; split them out (attempt records, category "refusal")
     att = collections.defaultdict(list)  # label -> every hex app attempt
     for f in sorted(glob.glob("eval/runs/apps-*/*/baseline/attempts.jsonl")):
-        if "smoke" in f:
+        if "/vibe_" in f or "/muse_" in f or "effort-study" in f:  # reported apart: the Vibe agent-harness study and effort experiments
+            continue
+        if "smoke" in f or in_progress(f):
             continue
         for line in open(f):
             r = json.loads(line)

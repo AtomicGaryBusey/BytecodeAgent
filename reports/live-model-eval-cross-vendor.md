@@ -3,12 +3,13 @@
 > **Account caveat.** The Claude account is enrolled in Anthropic's **Cyber Verification Program** and the
 > ChatGPT account in OpenAI's **Daybreak** (Blue tier; no Red / `*-cyber` models); both relax cyber safeguards,
 > so treat those rows as upper bounds for ordinary accounts. The Kimi, Google and xAI accounts have no known
-> equivalent. Plans: Claude Max 20x, ChatGPT Pro 100 (Plus until 2026-10-04; Codex runs committed
+> equivalent. Plans: Claude Ultra (formerly Max 20x), ChatGPT Pro 100 (Plus until 2026-10-04; Codex runs committed
 > before then used Plus), Kimi Allegretto, Google AI Pro (AI Plus 2 TB until 2026-11-06; every reported Antigravity
 > run used Plus), SuperGrok, GitHub Copilot Pro. The Azure Foundry rows
 > are pay-as-you-go API calls on the user's Azure subscription, with Azure's default content filter on.
 > The Fireworks rows are pay-per-token calls to Fireworks.ai's serverless API on the user's prepaid account ($51
-> of credit). The Apple rows run on the user's Mac: the on-device model through `fm serve` behind the Mac session's
+> of credit, topped up by $50 on 2026-11-10). The Cerebras rows are pay-per-token calls to Cerebras' inference API on
+> the user's prepaid account ($60 of credit in all). The Apple rows run on the user's Mac: the on-device model through `fm serve` behind the Mac session's
 > memory and rate governor, and Private Cloud Compute on the user's iCloud+ account's daily quota.
 > Method, fairness contract and known limits: [cross-vendor-methodology.md](cross-vendor-methodology.md).
 
@@ -17,8 +18,8 @@ Every model got the same 224 cells: rounds 1 + 2, the long-program battery and t
 four attempts and repair feedback. Each ran with zero tools, the same system and task prompts, and its route's default effort
 unless a row says otherwise: most through their vendor's own coding CLI (Claude Code, Codex, Kimi Code,
 Antigravity, Grok Build), the `copilot:` rows through GitHub Copilot's SDK runtime, the `foundry:` rows through
-the Azure AI Foundry API directly, the `fireworks:` rows through Fireworks.ai's API directly, the `apple:` rows through Apple's `fm serve` on the user's Mac, and the local rows through Ollama or vLLM on this machine. Runs date from
-2026-09-27 to 2026-11-09. Every result records the CLI or API version it ran on (`cli_version` in each
+the Azure AI Foundry API directly, the `fireworks:` rows through Fireworks.ai's API directly, the `cerebras:` rows through Cerebras' API directly, the `apple:` rows through Apple's `fm serve` on the user's Mac, and the local rows through Ollama or vLLM on this machine. Runs date from
+2026-09-27 to 2026-11-12. Every result records the CLI or API version it ran on (`cli_version` in each
 `results.jsonl`); the audited versions are in the methodology report.
 
 ## Results (first-attempt passes per battery)
@@ -28,22 +29,30 @@ the Azure AI Foundry API directly, the `fireworks:` rows through Fireworks.ai's 
 | Codex GPT-6 Astra | 46 | 61 | 54 | 60 | **221/224 (99%)** | 224/224 (100%) | 1.01 |
 | Claude Mythos 5.2 | 47 | 61 | 53 | 59 | **220/224 (98%)** | 224/224 (100%) | 1.02 |
 | Claude Fable 5.2 | 47 | 62 | 50 | 60 | **219/224 (98%)** | 224/224 (100%) | 1.02 |
-| Kimi K3.1 Pro | 47 | 60 | 52 | 59 | **218/224 (97%)** | 223/224 (100%) | 1.04 |
 | Claude Mythos 5.1 | 47 | 59 | 54 | 57 | **217/224 (97%)** | 224/224 (100%) | 1.04 |
+| Codex GPT-6.1 Sol | 44 | 60 | 53 | 59 | **216/224 (96%)** | 224/224 (100%) | 1.04 |
 | Claude Opus 5.5 | 45 | 60 | 53 | 57 | **215/224 (96%)** | 224/224 (100%) | 1.04 |
+| Kimi K3.1 Pro Highspeed | 47 | 59 | 49 | 60 | **215/224 (96%)** | 224/224 (100%) | 1.04 |
 | Codex GPT-6 Sol | 43 | 62 | 48 | 60 | **213/224 (95%)** | 224/224 (100%) | 1.05 |
 | Grok 4.7 build-fast | 47 | 60 | 49 | 57 | **213/224 (95%)** | 223/224 (100%) | 1.08 |
 | Claude Fable 5.1 | 44 | 62 | 52 | 54 | **212/224 (95%)** | 223/224 (100%) | 1.08 |
 | Grok 4.7 | 48 | 59 | 48 | 56 | **211/224 (94%)** | 220/224 (98%) | 1.10 |
 | Grok 4.6 | 45 | 59 | 50 | 57 | **211/224 (94%)** | 223/224 (100%) | 1.07 |
+| Claude Opus 4.7 | 42 | 58 | 51 | 58 | **209/224 (93%)** | 223/224 (100%) | 1.08 |
 | Codex GPT-5.5 | 47 | 57 | 45 | 58 | **207/224 (92%)** | 224/224 (100%) | 1.08 |
+| Kimi K3.1 Pro | 45 | 61 | 45 | 56 | **207/224 (92%)** | 224/224 (100%) | 1.08 |
+| Codex GPT-6.1 Terra | 45 | 59 | 48 | 54 | **206/224 (92%)** | 224/224 (100%) | 1.09 |
+| Codex GPT-5.6 Sol | 42 | 60 | 46 | 56 | **204/224 (91%)** | 224/224 (100%) | 1.09 |
 | Kimi K3 | 45 | 58 | 45 | 56 | **204/224 (91%)** | 224/224 (100%) | 1.11 |
 | Claude Haiku 5.5 | 42 | 58 | 46 | 57 | **203/224 (91%)** | 222/224 (99%) | 1.11 |
 | Claude Sonnet 4.5 | 48 | 55 | 44 | 56 | **203/224 (91%)** | 221/224 (99%) | 1.14 |
 | Codex Daybreak Blue | 45 | 55 | 42 | 59 | **201/224 (90%)** | 224/224 (100%) | 1.12 |
 | Claude Sonnet 5.5 | 47 | 56 | 45 | 53 | **201/224 (90%)** | 223/224 (100%) | 1.12 |
+| Claude Fable 5 | 45 | 58 | 45 | 51 | **199/224 (89%)** | 203/224 (91%) | 1.30 |
+| Claude Opus 5 | 40 | 57 | 50 | 51 | **198/224 (88%)** | 224/224 (100%) | 1.12 |
 | Grok 4.5 | 47 | 55 | 41 | 54 | **197/224 (88%)** | 222/224 (99%) | 1.16 |
 | DeepSeek V4.1 Flash (Fireworks) | 41 | 53 | 46 | 50 | **190/224 (85%)** | 224/224 (100%) | 1.19 |
+| Codex GPT-5.6 Terra | 41 | 55 | 38 | 55 | **189/224 (84%)** | 223/224 (100%) | 1.19 |
 | Qwen 3.8 Max (Fireworks) | 40 | 50 | 42 | 50 | **182/224 (81%)** | 222/224 (99%) | 1.28 |
 | GPT-6 Luna via Copilot | 42 | 53 | 31 | 50 | **176/224 (79%)** | 224/224 (100%) | 1.29 |
 | Claude Sonnet 5 | 40 | 49 | 41 | 45 | **175/224 (78%)** | 222/224 (99%) | 1.30 |
@@ -51,26 +60,36 @@ the Azure AI Foundry API directly, the `fireworks:` rows through Fireworks.ai's 
 | Z.ai GLM-5.3 (Fireworks) | 39 | 53 | 30 | 50 | **172/224 (77%)** | 217/224 (97%) | 1.39 |
 | Claude Sonnet 5.5 via Copilot | 45 | 55 | 19 | 51 | **170/224 (76%)** | 219/224 (98%) | 1.35 |
 | Kimi K2.8 (for-coding) | 37 | 46 | 28 | 46 | **157/224 (70%)** | 213/224 (95%) | 1.52 |
+| Codex GPT-5.6 Luna | 40 | 44 | 12 | 46 | **142/224 (63%)** | 214/224 (96%) | 1.62 |
 | DeepSeek-V4-Pro high (Azure Foundry) | 33 | 45 | 20 | 41 | **139/224 (62%)** | 217/224 (97%) | 1.60 |
 | Codex GPT-6 Luna | 33 | 41 | 10 | 46 | **130/224 (58%)** | 209/224 (93%) | 1.71 |
 | MiniMax M3 (Fireworks) | 31 | 36 | 13 | 37 | **117/224 (52%)** | 184/224 (82%) | 2.00 |
 | Claude Haiku 4.5 | 30 | 34 | 17 | 35 | **116/224 (52%)** | 158/224 (71%) | 2.19 |
 | Microsoft MAI-Code 1.1 Flash (Copilot) | 26 | 34 | 12 | 35 | **107/224 (48%)** | 151/224 (67%) | 2.29 |
+| Qwen 3.8 27B (Cerebras) | 29 | 34 | 10 | 29 | **102/224 (46%)** | 142/224 (63%) | 2.39 |
 | NVIDIA Nemotron 3 Ultra NVFP4 (Fireworks) | 20 | 28 | 13 | 25 | **86/224 (38%)** | 151/224 (67%) | 2.41 |
 | Microsoft MAI-Thinking-1 (Azure Foundry) | 22 | 22 | 2 | 26 | **72/224 (32%)** | 144/224 (64%) | 2.58 |
+| OpenAI gpt-oss-120b (Cerebras) | 26 | 21 | 3 | 21 | **71/224 (32%)** | 117/224 (52%) | 2.78 |
+| OpenAI gpt-oss-120b (Fireworks) | 24 | 22 | 4 | 21 | **71/224 (32%)** | 120/224 (54%) | 2.71 |
 | Gemini 3.8 Flash High (Antigravity) † | 46 | 60 | 48 | 57/59 | **211/223 (95%)** | 223/223 (100%) | 1.06 |
 | Apple Private Cloud Compute † | 2 | — | — | — | **2/48 (4%)** | 5/48 (10%) | 3.77 |
-| Apple AFM 3 Core Advanced, on-device † | 0/32 | — | — | — | **0/32 (0%)** | 0/32 (0%) | 4.00 |
 
 Codex Daybreak Blue includes one reviewed harness false reject counted as a pass, Grok 4.7 build-fast
 three and GPT-6 Luna via Copilot one; Claude Sonnet 5.5 via Copilot is one lower than recorded (a pre-fix
 output-cap do-over counted as the failure it would be now; see the false-reject review below). 
-Kimi K3.1 Pro, completed 2026-10-24: **218/224 first try (97%)**, second only to Codex GPT-6 Astra (221) and
-statistically level with it on the same cells (they disagree on 9 cells, exact McNemar p = 0.51). Its gain over Kimi
-K3 (204) is significant: 19 cells passed that K3 failed, 5 the other way (p = 0.007). It ran through Kimi Code CLI
-2.3.1, re-audited for the harness on 2026-10-23 (the model appeared after a fresh `kimi login`), at that CLI's default
-effort for the model, `max` (K3's default is `high`); median call 43 s. Its first-attempt failures were reviewed by
-hand: no harness false rejects. Three are 180 s timeouts; one is a wrong base64 result; one is invalid QBE (`%digit
+**Kimi K3.1 Pro's row changed on 2026-11-12: 207/224 first try (92%) at `high` effort, replacing 218/224 (97%) at
+`max`.** Kimi Code's catalog default effort for the model moved from `max` (Kimi Code 2.3.1, 2026-10-23) to `high`
+(Kimi Code 2.5.3, after a new `kimi login` on 2026-11-11), and the model's app and hex batteries (2026-11-10) had
+already run at `high`. So the function batteries were re-run at `high` (241 calls, CLI 2.5.3, re-audited), so that
+every K3.1 Pro battery is at one effort, the CLI default, like every other row. The `max` run is kept as an effort
+study and left out of every table here: `max` passed 15 cells on the first attempt that `high` failed and `high`
+passed 4 that `max` failed (exact McNemar p = 0.019), most of them in the long and adversarial batteries; `high`
+recovered all 224 cells within four attempts (`max`: 223) in half the time per call (37 s against 78 s) and under
+half the output tokens ([effort and serving studies](live-model-eval-effort.md)). At `high`, K3.1 Pro is level with
+Kimi K3 (204; +17 / −14, p = 0.72). The notes below describe the `max` run of 2026-10-24: 218/224 first try,
+statistically level with Codex GPT-6 Astra on the same cells (they disagreed on 9 cells, p = 0.51), and
+significantly ahead of Kimi K3 (19 cells against 5, p = 0.007), through Kimi Code CLI 2.3.1; median call 43 s. Its
+first-attempt failures were reviewed by hand: no harness false rejects. Three are 180 s timeouts; one is a wrong base64 result; one is invalid QBE (`%digit
 ch`, a missing `%`); and two answers had nothing to do with the task although the adapter verified the request
 exactly: an "I do not have access to your previous conversation" reply that drifts into mixed English and Chinese,
 and "Ready when you are." (`count_nonzero_prefix.structured.aarch64`, its one cell not passed within four).
@@ -83,7 +102,19 @@ result class, `xor eax, 0` used to zero a register, malformed JSON, unencodable 
 
 † Partial, quota-paced (Google AI Plus): rounds 1 + 2 and long complete, adversarial 59/60 (one cell, `stats_f.ir.aarch64`, left; its resume loop was stopped on 2026-10-24 and the cell is run by hand). Like for like on the complete batteries, rounds 1 + 2 + long: **154/164 (94%)**, level with Grok 4.6 (154), just behind Grok 4.7 (155), Grok 4.7 build-fast (156), Claude Opus 5.5 and Fable 5.1 (158 each), Kimi K3.1 Pro (159) and Codex GPT-6 Astra (161), and ahead of Codex GPT-6 Sol (153). Its first-attempt failures were reviewed by hand: no harness false rejects (hex literals in QBE, `%x =l %y` without `copy`, malformed JSON, an invented `subl` opcode, a 400 s timeout spent thinking: 62,910 of 65,532 output tokens, and two 180 s timeouts on adversarial `stats_f`).
 
-† The Apple rows cover round 1 only: on-device, the stream and IR paths (32 cells; the structured cells were deferred to PCC because their ~5.5K-token schema prompts push the on-device inference service over the Mac's 3 GB memory cap); PCC, all 48 round-1 cells (completed 2026-11-09 after the daily PCC quota paused it at 37), at the model's default setting (no `reasoning_effort`).
+† Apple Private Cloud Compute covers round 1 only: all 48 cells (completed 2026-11-09 after the daily PCC quota paused it at 37), at the model's default setting (no `reasoning_effort`). Apple's on-device model runs on the user's Mac, not on Apple's servers, so it is listed with the [local models](#local-models-dgx-spark-and-apples-on-device-model-on-a-mac).
+
+**In progress on 2026-11-12, and left out of every table until complete** (`eval/model_names.py`): Claude Sonnet
+4.6, Opus 4.6 and Opus 4.5 (the rest of the older-Claude set); Kimi K3.1 Pro Highspeed's app battery (19 of 96 cells
+when the Kimi plan's 7-day cap was reached) and all of Kimi K2.7 Code Highspeed; Gemini 4 Argon High (122 of 224
+function cells, paused on the Google AI Pro quota; its remaining cells run on Antigravity 1.5.7, re-audited
+2026-11-12, the first 122 on 1.5.3).
+
+Versions behind the 2026-11-11 and 11-12 rows: Codex CLI 0.167.0; Kimi Code 2.5.3 (K3.1 Pro's app and hex batteries
+of 2026-11-10: 2.3.1); Claude Code 2.1.322 (Opus 4.7's last three hex-program attempts: 2.1.323, after the CLI
+updated itself); Grok Build 1.0.41; the Fireworks and Cerebras APIs directly. The machine lost power on 2026-11-12
+at 03:52 and was rebooted three more times that day for system updates: no record was damaged, a call in flight
+left no attempt record and ran again, and every chain resumed with the same commands and settings.
 
 ## By emission path (first-attempt passes, complete runs)
 
@@ -92,22 +123,30 @@ result class, `xor eax, 0` used to zero a register, malformed JSON, unencodable 
 | Codex GPT-6 Astra | 76/76 (100%) | 74/74 (100%) | 71/74 (96%) |
 | Claude Mythos 5.2 | 75/76 (99%) | 72/74 (97%) | 73/74 (99%) |
 | Claude Fable 5.2 | 75/76 (99%) | 71/74 (96%) | 73/74 (99%) |
-| Kimi K3.1 Pro | 74/76 (97%) | 72/74 (97%) | 72/74 (97%) |
 | Claude Mythos 5.1 | 70/76 (92%) | 74/74 (100%) | 73/74 (99%) |
+| Codex GPT-6.1 Sol | 76/76 (100%) | 73/74 (99%) | 67/74 (91%) |
 | Claude Opus 5.5 | 74/76 (97%) | 71/74 (96%) | 70/74 (95%) |
+| Kimi K3.1 Pro Highspeed | 73/76 (96%) | 71/74 (96%) | 71/74 (96%) |
 | Codex GPT-6 Sol | 73/76 (96%) | 71/74 (96%) | 69/74 (93%) |
 | Grok 4.7 build-fast | 75/76 (99%) | 72/74 (97%) | 66/74 (89%) |
 | Claude Fable 5.1 | 72/76 (95%) | 69/74 (93%) | 71/74 (96%) |
 | Grok 4.7 | 76/76 (100%) | 71/74 (96%) | 64/74 (86%) |
 | Grok 4.6 | 73/76 (96%) | 73/74 (99%) | 65/74 (88%) |
+| Claude Opus 4.7 | 70/76 (92%) | 71/74 (96%) | 68/74 (92%) |
 | Codex GPT-5.5 | 72/76 (95%) | 71/74 (96%) | 64/74 (86%) |
+| Kimi K3.1 Pro | 73/76 (96%) | 70/74 (95%) | 64/74 (86%) |
+| Codex GPT-6.1 Terra | 75/76 (99%) | 72/74 (97%) | 59/74 (80%) |
+| Codex GPT-5.6 Sol | 75/76 (99%) | 68/74 (92%) | 61/74 (82%) |
 | Kimi K3 | 75/76 (99%) | 66/74 (89%) | 63/74 (85%) |
 | Claude Haiku 5.5 | 75/76 (99%) | 59/74 (80%) | 69/74 (93%) |
 | Claude Sonnet 4.5 | 74/76 (97%) | 67/74 (91%) | 62/74 (84%) |
 | Codex Daybreak Blue | 71/76 (93%) | 69/74 (93%) | 61/74 (82%) |
 | Claude Sonnet 5.5 | 73/76 (96%) | 68/74 (92%) | 60/74 (81%) |
+| Claude Fable 5 | 69/76 (91%) | 67/74 (91%) | 63/74 (85%) |
+| Claude Opus 5 | 72/76 (95%) | 67/74 (91%) | 59/74 (80%) |
 | Grok 4.5 | 73/76 (96%) | 71/74 (96%) | 53/74 (72%) |
 | DeepSeek V4.1 Flash (Fireworks) | 73/76 (96%) | 55/74 (74%) | 62/74 (84%) |
+| Codex GPT-5.6 Terra | 68/76 (89%) | 69/74 (93%) | 52/74 (70%) |
 | Qwen 3.8 Max (Fireworks) | 73/76 (96%) | 72/74 (97%) | 37/74 (50%) |
 | GPT-6 Luna via Copilot | 67/76 (88%) | 61/74 (82%) | 48/74 (65%) |
 | Claude Sonnet 5 | 63/76 (83%) | 53/74 (72%) | 59/74 (80%) |
@@ -115,19 +154,24 @@ result class, `xor eax, 0` used to zero a register, malformed JSON, unencodable 
 | Z.ai GLM-5.3 (Fireworks) | 68/76 (89%) | 64/74 (86%) | 40/74 (54%) |
 | Claude Sonnet 5.5 via Copilot | 61/76 (80%) | 62/74 (84%) | 47/74 (64%) |
 | Kimi K2.8 (for-coding) | 67/76 (88%) | 52/74 (70%) | 38/74 (51%) |
+| Codex GPT-5.6 Luna | 59/76 (78%) | 41/74 (55%) | 42/74 (57%) |
 | DeepSeek-V4-Pro high (Azure Foundry) | 67/76 (88%) | 42/74 (57%) | 30/74 (41%) |
 | Codex GPT-6 Luna | 60/76 (79%) | 45/74 (61%) | 25/74 (34%) |
 | MiniMax M3 (Fireworks) | 63/76 (83%) | 43/74 (58%) | 11/74 (15%) |
 | Claude Haiku 4.5 | 61/76 (80%) | 54/74 (73%) | 1/74 (1%) |
 | Microsoft MAI-Code 1.1 Flash (Copilot) | 59/76 (78%) | 44/74 (59%) | 4/74 (5%) |
+| Qwen 3.8 27B (Cerebras) | 52/76 (68%) | 50/74 (68%) | 0/74 (0%) |
 | NVIDIA Nemotron 3 Ultra NVFP4 (Fireworks) | 57/76 (75%) | 27/74 (36%) | 2/74 (3%) |
 | Microsoft MAI-Thinking-1 (Azure Foundry) | 40/76 (53%) | 24/74 (32%) | 8/74 (11%) |
+| OpenAI gpt-oss-120b (Cerebras) | 50/76 (66%) | 21/74 (28%) | 0/74 (0%) |
+| OpenAI gpt-oss-120b (Fireworks) | 48/76 (63%) | 23/74 (31%) | 0/74 (0%) |
 
 ## Findings
 
 - **Codex GPT-6 Astra leads at 99%** (221/224; 100% on stream and structured, 224/224 within four attempts),
-  ahead of Claude Mythos 5.2 and Fable 5.2 (98%), Kimi K3.1 Pro and Claude Mythos 5.1 (97%), Opus 5.5 (96%), Grok 4.7 build-fast and Fable 5.1 (95%), Grok 4.7 (94%) and Kimi K3
-  (91%).
+  ahead of Claude Mythos 5.2 and Fable 5.2 (98%), Claude Mythos 5.1 (97%), Codex GPT-6.1 Sol, Opus 5.5 and Kimi
+  K3.1 Pro Highspeed (96%), Codex GPT-6 Sol, Grok 4.7 build-fast and Fable 5.1 (95%), Grok 4.7 and 4.6 (94%),
+  Claude Opus 4.7 (93%) and Kimi K3.1 Pro (92% at `high` effort; 97% at `max`, see above).
 - **Within a vendor, model choice matters as much as vendor**: Codex spans 58% (Luna) to 99% (Astra) on
   the same CLI, account and prompts.
 - **The IR path separates models most.** Raw assembly (stream) is easy for nearly everyone (Grok 76/76);
@@ -152,14 +196,46 @@ result class, `xor eax, 0` used to zero a register, malformed JSON, unencodable 
   1.02-1.04 attempts per cell. All three are statistically level with Astra and with each other (paired exact
   McNemar, Holm-corrected; see the analytics report); Fable 5.1 to 5.2 is +11 / −4 (p = 0.12) and Mythos 5.1 to
   5.2 +7 / −4 (p = 0.55), so neither step is significant on its own. Run through `claude -p` (Claude Code
-  2.1.322) on the Claude Max account at CLI-default effort, like every other Claude row (CVP caveat applies),
+  2.1.322) on the Claude Ultra account at CLI-default effort, like every other Claude row (CVP caveat applies),
   691 calls for the three; no refusals and no infrastructure errors. All 16 first-attempt failures were
   reviewed by hand; none is a false reject. Mythos 5.1's stream score (70/76) is its weak spot: four of its
   misses open with a sentence of prose ("Simple scalar loop is sufficient.") on a path that takes
   instructions only; Mythos 5.2 once sent a broken JSON program followed by a "Correction" with a second one.
+- **Five more Codex models (added 2026-11-11) fill in OpenAI's tiers**: GPT-6.1 Sol 216/224 (96%), GPT-6.1 Terra
+  206 (92%), GPT-5.6 Sol 204 (91%), GPT-5.6 Terra 189 (84%) and GPT-5.6 Luna 142 (63%). All ran through Codex CLI
+  0.167.0 on ChatGPT Pro at each model's catalog default effort, pinned in the adapter: `low` for both GPT-6.1
+  models and GPT-5.6 Sol, `medium` for GPT-5.6 Terra and Luna. Tier decides more than release: within a tier,
+  GPT-5.6 Terra to GPT-6.1 Terra is the only significant step (+29 / −12, p = 0.012); GPT-5.6 Sol to GPT-6 Sol
+  (+18 / −9, p = 0.12), GPT-6 Sol to GPT-6.1 Sol (+10 / −7, p = 0.63) and GPT-5.6 Luna to GPT-6 Luna (+29 / −41,
+  p = 0.19) are not. GPT-6.1 Sol is level with Astra's neighbours at a fifth of Astra's list price and 12 s a call.
+  The Luna tier stays the outlier on QBE (57% and 34%) and the long battery (12 and 10 of 54). GPT-6.1 Sol, GPT-6.1
+  Terra and GPT-5.6 Sol passed all 224 cells within four attempts.
+- **Three older Claude models (added 2026-11-12; Sonnet 4.6, Opus 4.6 and Opus 4.5 are still running)**: Opus 4.7
+  209/224 (93%), Fable 5 199 (89%) and Opus 5 198 (88%), through `claude -p` at CLI-default effort on the Claude
+  Ultra account (CVP caveat applies). The Opus line is not monotonic: Opus 4.7 is ahead of both Opus 4.8 (175;
+  +10 / −44 going from 4.7 to 4.8, p < 0.001, most of it on QBE, 92% against 62%) and Opus 5 (198), and only Opus
+  5.5 (215) passes it. **Fable 5's row is held down by the API's safety classifier, not by the model**: 21 of its
+  224 cells were blocked on all four attempts ("Fable 5's safeguards flagged this message", the cyber category)
+  before the model answered, 17 of them x86-64 and 11 on the QBE path (`fill_down` 5 cells, `vm_run` 4,
+  `packbits_decode` 3, seven other tasks 1-2 each). They are scored as refusals, like every safety block here, which is why only
+  203 cells pass within four. On the 203 cells it was allowed to answer, Fable 5 passed 199 on the first attempt
+  (98%) and all 203 within four. Its hex and app batteries drew no blocks. Opus 5 and Opus 4.7 were never blocked.
+- **Serving speed did not cost Kimi K3.1 Pro accuracy.** K3.1 Pro Highspeed (twice the price and plan quota) scored
+  215/224 against K3.1 Pro's 207 at the same `high` effort (6 cells only the standard tier passed, 14 only
+  Highspeed; p = 0.12, not significant), at 19 s a call against 37 s; both recover all 224 within four.
+- **OpenAI's open-weight gpt-oss-120b scores the same on two hosts**: 71/224 (32%) on Fireworks and 71/224 on
+  Cerebras at each host's default settings, disagreeing on 32 cells split 16 / 16 (p = 1), while Cerebras answers in
+  1.4 s a call against 11.5 s. Its ceiling is the model, not the host: 296 of its failed attempts on each host are
+  invalid QBE. At `reasoning_effort: high` on Cerebras it reaches 97/224 (36 cells gained, 10 lost, p < 0.001) for
+  six times the output tokens. **Qwen 3.8 27B on Cerebras: 102/224 (46%)**, with 191 of its 404 failed attempts
+  timeouts at the uniform limits even at Cerebras' speed (median 33,000 output tokens on a first attempt).
+- **Two vendor CLIs could not be made tool-free and are reported apart**, never ranked with these rows: Mistral
+  Large 4 and Medium 3.5 through Mistral Vibe (156/224 and 91/224 first attempt) and Meta Muse Spark 1.3 through
+  Muse Code (222/224). Their requests carry the vendor's own agent prompt, and Vibe's carry tool definitions the
+  model cannot use: [agent-harness studies](live-model-eval-agent-harness.md).
 - **Claude Haiku 5.5 jumps 39 points over Haiku 4.5** (91% vs 52%, 203/224; 222/224 within four), level
   with Kimi K3 and Sonnet 4.5 and just ahead of Sonnet 5.5 (90%). Run 2026-11-07 through `claude -p` on the
-  Claude Max account (CVP caveat as for every Claude row), never through another vendor. QBE went from 1/74
+  Claude Ultra account (CVP caveat as for every Claude row), never through another vendor. QBE went from 1/74
   to 69/74. Its weak spot is the structured path on AArch64 (25/37 first attempt): in 11 cells it wrote the
   schema's family title as the opcode (`"op": "arith"` with `add` in the comment), which the schema's `op`
   enum rules out; every such cell passed on the retry. All 21 first-attempt failures were reviewed by hand;
@@ -249,7 +325,14 @@ result class, `xor eax, 0` used to zero a register, malformed JSON, unencodable 
 - **Fable 5.1's** one final failure is a refusal: Anthropic's cyber classifier blocked
   `fill_down.ir.x86_64` on all four attempts, even on the CVP account.
 
-## Local open-weight models (DGX Spark)
+## Local models (DGX Spark, and Apple's on-device model on a Mac)
+
+Models that run on the user's own hardware. One of them is not open-weight and not on the DGX Spark: **Apple AFM 3
+Core Advanced, on-device**, runs on the user's Mac through Apple's `fm serve` (`apple:system`; the Apple finding
+above and the methodology report have the details). It covers round 1 only, on the stream and IR paths (32 cells:
+the structured cells were deferred to Private Cloud Compute because their ~5.5K-token schema prompts push the
+on-device inference service over the Mac's 3 GB memory cap), and passed none. It moved here from the vendor table
+on 2026-11-12. The rest of this section is about the open-weight models.
 
 Open-weight models served on this machine, an NVIDIA DGX Spark (GB10, 128 GB unified memory), by Ollama 0.30.10
 (`local:<model>`; setup and isolation in [cross-vendor-methodology.md](cross-vendor-methodology.md#local-models-localmodel))
@@ -270,6 +353,7 @@ These results say what such a desktop setup can do, not what the same models do 
 | Qwen3-30B-A3B Instruct 2507 Q8 (local) † | 5 | 1 | 0/5 | — | **6/115 (5%)** | 13/115 (11%) | 3.75 |
 | Qwen3.6-35B-A3B Q8, thinking off (local) † | 1 | 3 | — | — | **4/110 (4%)** | 15/110 (14%) | 3.77 |
 | Qwen2.5-14B Q4 (local) † | 1 | 2 | 0/4 | — | **3/114 (3%)** | 5/114 (4%) | 3.89 |
+| Apple AFM 3 Core Advanced, on-device † | 0/32 | — | — | — | **0/32 (0%)** | 0/32 (0%) | 4.00 |
 
 | Model | Stream | Structured | IR (QBE) |
 |---|---|---|---|
@@ -279,6 +363,7 @@ These results say what such a desktop setup can do, not what the same models do 
 | Qwen3-30B-A3B Instruct 2507 Q8 (local) † | 5/40 (12%) | 1/38 (3%) | 0/37 (0%) |
 | Qwen3.6-35B-A3B Q8, thinking off (local) † | 3/38 (8%) | 1/36 (3%) | 0/36 (0%) |
 | Qwen2.5-14B Q4 (local) † | 2/40 (5%) | 1/38 (3%) | 0/36 (0%) |
+| Apple AFM 3 Core Advanced, on-device † | 0/16 (0%) | — | 0/16 (0%) |
 
 † partial, by decision (2026-10-01): local runs were trimmed to save days of GPU time once it was clear they score
 in single digits. Qwen3-Coder-Next ran all four batteries; Qwen3-30B-A3B and Qwen2.5-14B stopped early in the long
@@ -359,6 +444,24 @@ continuation event stopped the subject); under the current rule the capped 34,57
 run of repeated characters) is scored, and it fails as `format`, so that cell counts as a first-attempt failure.
 Kimi K3, Grok 4.7, Grok 4.6, Grok 4.5, Codex Astra, Sol and GPT-5.5, Claude Sonnet 4.5, Opus 4.8, MAI-Code, MAI-Thinking-1 and DeepSeek-V4-Pro: none
 (Astra's 227 attempts were all rescored and reproduced; 181 failed attempts reviewed across the last six).
+
+Runs of 2026-11-11 and 11-12 (Codex GPT-6.1 Sol and Terra, GPT-5.6 Sol, Terra and Luna; gpt-oss-120b on Fireworks and
+Cerebras; Qwen 3.8 27B on Cerebras; Kimi K3.1 Pro at `high` and K3.1 Pro Highspeed; Claude Opus 5, Fable 5 and Opus
+4.7; Grok 4.5's app battery; the Vibe and Muse harness studies): none. For the stronger models (the five Codex
+models' two upper tiers, both Kimi rows, the three Claude models, Grok 4.5's apps, Mistral Large 4 and Muse Spark
+1.3) every failed attempt in a category where the harness could be at fault (assembler and encoder rejections,
+format, encoding, cross-check, link) was grouped by message and read: 162 attempts in 39 groups. Each rejection is
+one GNU as also makes (an unencodable AArch64 immediate, `cmp x2, sp`, a 64-bit register offset with `uxtw`, three
+registers in an x86 address, `rip` with an index, a symbol used before its definition, a label named `k0`) or a
+rule the prompt states (the structured schema's operand forms, instructions only on the stream path). All 15
+cross-check rejections in the new runs were re-read: 14 use `x31` as a register name, which keystone accepts and GNU
+as does not. The remaining one, `.skip 0` in an older Nemotron run (a third attempt in a cell that failed all four),
+is the stated rule that an assembler warning rejects the statement, which applies to every model. Two faults were
+found in adapters and fixed before the affected cells counted. Muse Code discards a streamed sample containing
+characters of another script and samples again; the first Muse adapter graded the discarded partial sample followed
+by the new one (3 cells superseded and re-run; the adapter now grades Muse's final answer). The Vibe adapter retried
+Vibe's turn limit as an infrastructure error, giving extra draws (19 cells superseded and re-run; now a scored
+timeout). Both are in the [agent-harness report](live-model-eval-agent-harness.md), outside these tables.
 
 Latency figures are not comparable across vendors (whole-message CLIs; and Kimi's recorded durations in
 this run include waits for the credential-refresh lock, fixed for future runs).

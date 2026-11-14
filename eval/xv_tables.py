@@ -1,15 +1,20 @@
 """Cross-vendor tables from every recorded baseline run in eval/runs (skips smokes), with the reviewed
 false-reject corrections (ADJ) applied. Run from the repo root: .venv/bin/python eval/xv_tables.py"""
-import json, glob, collections
+import json, glob, collections, os, sys
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+from model_names import NEW_NAMES, in_progress, is_local  # noqa: E402
 recs = {}
 for f in sorted(glob.glob("eval/runs/*/**/results.jsonl", recursive=True) + glob.glob("eval/runs/*/results.jsonl")):
+    if "/vibe_" in f or "/muse_" in f or "effort-study" in f:  # reported apart: the Vibe agent-harness study and effort experiments
+        continue
     if "smoke" in f or "untuned-trial" in f: continue  # the untuned Kolibri wall-clock trial is not reported
+    if in_progress(f): continue  # a battery still running or paused: unreported until complete
     rd = f.split("/")[2]
     for l in open(f):
         r = json.loads(l)
         if r.get("variant", "baseline") != "baseline": continue
         subj = r.get("subject") or "opus"
-        if subj.startswith(("codex_", "kimi_", "agy_", "grok_", "copilot_", "foundry_", "fireworks_", "apple_")):
+        if subj.startswith(("codex_", "kimi_", "agy_", "grok_", "copilot_", "foundry_", "fireworks_", "cerebras_", "apple_")):
             label = subj.replace("_", ":", 1).replace("kimi-code_", "kimi-code/")
         elif subj.startswith("local_"):  # @think / @nothink runs are separate rows
             think = (r.get("local") or {}).get("think")
@@ -41,6 +46,7 @@ names = {"claude-opus-5-5": "Claude Opus 5.5", "claude-fable-5-1": "Claude Fable
  "local:vllm:Aleph-Alpha/Kolibri-1": "Aleph Alpha Kolibri-1 FP8, token budget (local)",
  "local:qwen3.6:35b-a3b-q8_0@nothink": "Qwen3.6-35B-A3B Q8, thinking off (local)",
  "local:qwen3.6:35b-a3b-q8_0@think": "Qwen3.6-35B-A3B Q8, thinking on (local)"}
+names.update(NEW_NAMES)
 # reviewed harness false rejects counted as first-attempt passes: label -> [(battery, path, n)]
 ADJ = {"codex:gpt-daybreak-blue-latest": [("adversarial", "stream", 1)],
        "grok:grok-4.7-build-fast": [("long", "structured", 3)],
@@ -86,8 +92,8 @@ def path_table(rows, partial_ok=False):
 
 # Vendor models first (complete runs; partial ones marked †), then local open-weight models in their own tables:
 # their quantised weights on one shared DGX Spark GPU are not the same kind of subject.
-vendor = [r for r in rows if not r[2].startswith("local:")]
-local = [r for r in rows if r[2].startswith("local:")]
+vendor = [r for r in rows if not is_local(r[2])]
+local = [r for r in rows if is_local(r[2])]  # the open-weight models here, and Apple's on-device model on the user's Mac
 main_table(vendor)
 print()
 path_table(vendor)

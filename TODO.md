@@ -93,10 +93,38 @@ Approved by the user on 2026-10-22. After each: by-hand false-reject review, the
   (after a $50 top-up). Reviewed: one harness false reject (stream alignment cap; fixed, 4 cells re-run) and one
   adapter fix (`IncompleteRead`); no refusals. Cost section added to the analytics (`eval/api_prices.py`).
 
+## Done (2026-11-11/12)
+
+- [x] **Five Codex models** (`gpt-6.1-sol`, `gpt-6.1-terra`, `gpt-5.6-sol`, `gpt-5.6-terra`, `gpt-5.6-luna`): all four
+  function batteries, apps, hex functions and hex programs. Functions 216 / 206 / 204 / 189 / 142 of 224.
+- [x] **Cerebras**: gpt-oss-120b (71/224, apps 8/96) and Qwen 3.8 27B (102/224, apps 9/96), plus a gpt-oss-120b
+  `high`-effort study (97/224). **gpt-oss-120b on Fireworks** (71/224, apps 10/96).
+- [x] **Grok 4.5 app battery** (76/96).
+- [x] **Kimi K3.1 Pro true-up at `high`** (207/224; the `max` run of 10-23 kept as an effort study) and **K3.1 Pro
+  Highspeed** functions (215/224) and hex functions (14/16).
+- [x] **Older Claude models, three of six**: Opus 5 (198/224), Fable 5 (199/224; 21 cells blocked by the safety
+  classifier) and Opus 4.7 (209/224), each with apps, hex functions and hex programs.
+- [x] **Agent-harness studies**: Mistral Large 4 and Medium 3.5 through Vibe, Meta Muse Spark 1.3 through Muse Code
+  (`reports/live-model-eval-agent-harness.md`).
+- [x] Large prompts go on stdin (Claude Code, Codex) or a prompt file (Copilot, Vibe, Muse); the other CLIs refuse
+  them as an isolation error. The four harness improvements exist as the opt-in `harness_v2` variant.
+- [x] Reports: cross-vendor, apps, hex, methodology, analytics and README updated; two new reports
+  (`live-model-eval-agent-harness.md`, `live-model-eval-effort.md`); new generators `eval/harness_tables.py`,
+  `eval/effort_tables.py`, `eval/update_report_tables.py`, `eval/model_names.py`; audits kept in `eval/audits/`.
+- [x] Raw vendor streams are gzipped after each call and are not in git (history rewritten 2026-11-11).
+
+The live work queue (what is running, what is next, what needs the user) is `eval/backlog-queue.md`.
+
 ## Waiting
 
+- [ ] **Claude Sonnet 4.6, Opus 4.6, Opus 4.5** (the rest of the older-Claude set): running one after another
+  (`eval/runs/claude-older-resume-20261112.sh`). When complete: remove them from `eval/model_names.IN_PROGRESS`,
+  regenerate, review first-attempt failures.
+- [ ] **Kimi K3.1 Pro Highspeed apps and hex programs; Kimi K2.7 Code Highspeed** (everything): paused on the Kimi
+  7-day cap since 2026-11-12 01:53; `eval/runs/kimi-highspeed-resume-20261111.sh` resumes them.
+
 - [ ] **Gemini 4 Argon High (Antigravity, Google AI Pro), function batteries**: stopped on quota at 122/224 cells
-  (181 calls). An 8-hourly retry loop resumes it (`eval/runs/agy-argon-20261107-142027.loop.sh`, status in
+  (181 calls). The remaining cells run on agy 1.5.7 (re-audited 2026-11-12; quota resets about 2026-11-14). An 8-hourly retry loop resumes it (`eval/runs/agy-argon-20261107-142027.loop.sh`, status in
   `.loop`). Run as-is with the uniform 180 s limit (user decision 2026-11-07). When complete: by-hand review,
   then README and the cross-vendor report (state the plan: Google AI Pro).
 - [ ] **Antigravity (Gemini 3.8 Flash High)**: 1 cell left (`stats_f.ir.aarch64`, adversarial). The hourly loop
@@ -107,14 +135,16 @@ Approved by the user on 2026-10-22. After each: by-hand false-reject review, the
 
 ## Backlog
 
-- [ ] The non-Claude CLI adapters (codex, kimi, agy, grok, copilot) still pass the prompt in argv, so a repair
+- [x] (done 2026-11-11, see above) The non-Claude CLI adapters (codex, kimi, agy, grok, copilot) still pass the prompt in argv, so a repair
   prompt over 128 KiB would fail with E2BIG as `claude -p` did on 2026-11-10. None has hit it; fix when one does
   or when a battery makes it likely.
 
 **New subjects (deferred by the user)**
 
-- [ ] **Cerebras: gpt-oss-120b and Qwen 3.8 27B** (backlogged 2026-11-11; do not start unless asked): the user has a
-  Cerebras account with $15 of credit; both models are served very fast. Needs a new `cerebras:` adapter: Cerebras'
+- [x] (done 2026-11-11, see above) **Cerebras: gpt-oss-120b and Qwen 3.8 27B** (backlogged 2026-11-11; do not start unless asked): the user has a
+  Cerebras account with $15 of credit; both models are served very fast. **Adapter built 2026-11-11**
+  (`bca/liveeval/vendor_cerebras.py`; model ids `gpt-oss-120b`, `qwen-3.8-27b` from GET /v1/models; key in
+  `~/.config/bca/cerebras.key`; per-model cap $7.50; one live probe per model passed). Design notes: Cerebras'
   API is OpenAI-style chat completions, so it can follow `vendor_fireworks.py` (a `FoundrySubject` subclass:
   request ours byte for byte, streamed, priced into the shared spend ledger, per-model cap). Key from
   `CEREBRAS_API_KEY` or `~/.config/bca/cerebras.key` (mode 0600, written by the user; never asked for in chat,
@@ -122,7 +152,7 @@ Approved by the user on 2026-10-22. After each: by-hand false-reject review, the
   gpt-oss-120b $0.35 in / $0.75 out per 1M (~3,000 tok/s); Qwen 3.8 27B $0.99 / $1.49 (~1,850 tok/s). Estimate
   from comparable token use (DeepSeek V4.1 Flash for gpt-oss, Qwen 3.8 Max for the 27B; +/-50%): gpt-oss-120b
   about $2 functions, $4 apps, <$1 hex, so ~$6-7 for everything; Qwen 3.8 27B about $7 functions and ~$15 apps.
-  Both in full (~$28) exceeds the $15 credit: fits gpt-oss-120b in full plus Qwen 3.8 27B functions (~$14,
+  User adding $20 on 2026-11-11 (about $35 in all): both in full (~$28-30) then fits. Before that, both in full (~$28) exceeded the $15 credit: fits gpt-oss-120b in full plus Qwen 3.8 27B functions (~$14,
   tight), Qwen's apps after a top-up. Before any run: read the exact model ids from the console, check per-tier rate limits (requests and
   tokens per minute), context window and output cap against our longest prompts and answers, then a 5-cell smoke
   and a cost estimate against the $15. Same time limits as every model: fast serving is measured, not
@@ -130,7 +160,7 @@ Approved by the user on 2026-10-22. After each: by-hand false-reject review, the
   for one open-weight model; Qwen 3.8 27B on Cerebras is a hosted route to the same model family as the
   backlogged Qwen3.8-27B from the user's DGX cluster (the Ring0-Agent model), which allows a hosted-versus-own-
   cluster comparison if the quantisation and settings are recorded.
-- [ ] **gpt-oss-120b via Fireworks** (backlogged 2026-11-11; do not start unless asked): OpenAI's open-weight
+- [x] (done 2026-11-11, see above) **gpt-oss-120b via Fireworks** (backlogged 2026-11-11; do not start unless asked): OpenAI's open-weight
   model, not benchmarked anywhere; it would be the first OpenAI open-weight row. Fireworks' model API reports
   `accounts/fireworks/models/gpt-oss-120b` READY, serverless, 131,072-token context. Price about $0.15 / $0.015 /
   $0.60 per 1M (input / cached / output; one source quotes $0.18 / $0.018 / $0.72: confirm on fireworks.ai/pricing).
@@ -139,7 +169,7 @@ Approved by the user on 2026-10-22. After each: by-hand false-reject review, the
   `gpt-oss-120b-medium`, which would compete with Argon for the Google AI Pro quota and fixes the effort at
   Medium. Not backlogged from Antigravity: the Argon and Flash low / medium effort variants (one effort per model)
   and the Claude Opus / Sonnet 5.5 front-end duplicates.
-- [ ] **App battery for Grok 4.5** (backlogged 2026-11-11; do not start unless asked): the one Grok model without
+- [x] (done 2026-11-11, see above) **App battery for Grok 4.5** (backlogged 2026-11-11; do not start unless asked): the one Grok model without
   app results (functions 197/224, hex functions and programs done). 96 cells, about 110-130 calls on SuperGrok,
   Grok Build CLI 1.0.41 (audited), CLI-default effort. Fills the Grok 4.5 -> 4.6 -> 4.7 app comparison.
 - [ ] **Two Copilot routes** (backlogged 2026-11-11; do not start unless asked; the user confirmed OpenAI models
@@ -155,14 +185,14 @@ Approved by the user on 2026-10-22. After each: by-hand false-reject review, the
   Stay on CLI 1.0.107 / SDK 1.0.29 (1.0.109 / 1.0.31 are out, not audited). Left out: `auto` (a router; the
   answering model is unknown) and the other front-end duplicates (Claude Sonnet 5 / Haiku 5.5 / Haiku 4.5,
   GPT-5.6 / 6.1, Grok 4.7 / 4.6 through Copilot).
-- [ ] **Two Kimi Code models** (backlogged 2026-11-11; do not start unless asked): `kimi-code/k3.1-pro-highspeed`
+- [ ] (started 2026-11-11, see Waiting) **Two Kimi Code models** (backlogged 2026-11-11): `kimi-code/k3.1-pro-highspeed`
   (K3.1 Pro served faster at 2x usage cost: does the faster serving cost accuracy, as Grok 4.7 build-fast did
   not?) and `kimi-code/kimi-for-coding-highspeed` (K2.7 Code Highspeed: extends the Kimi line K2.7 -> K2.8 ->
   K3 -> K3.1 Pro). Kimi Allegretto plan (5-hour and 7-day caps), CLI 2.3.1, each model's catalog default effort.
   About 250 calls per model for the functions (the highspeed K3.1 Pro at double quota), ~400 with apps and hex.
   Left out: `kimi-code/k3-256k` (K3 with a shorter context; would repeat K3). Re-run `kimi login` first to
   refresh the catalog (as of 2026-11-07).
-- [ ] **Five untested GPT models in Codex CLI** (backlogged 2026-11-11; do not start unless asked; the ChatGPT
+- [x] (done 2026-11-11, see above) **Five untested GPT models in Codex CLI** (backlogged 2026-11-11; do not start unless asked; the ChatGPT
   plan is reserved, so the user names models before any run): `gpt-6.1-sol`, `gpt-6.1-terra` (needs CLI >= 0.165.0),
   `gpt-5.6-sol`, `gpt-5.6-terra`, `gpt-5.6-luna`. All five are in the Codex catalog (CLI 0.167.0, ChatGPT Pro) and
   in the OpenAI API list. Before running: pin each model's Codex catalog default effort (`CODEX_PINNED_EFFORT`;
@@ -176,12 +206,12 @@ Approved by the user on 2026-10-22. After each: by-hand false-reject review, the
   rule. `codex-auto-review` is Codex's review helper. API-only GPT models
   (GPT-5.4 family, gpt-5.3-codex, 5.2, 5.1, 5, -pro variants, o3, GPT-4.1, GPT-4o) would need a direct OpenAI API
   adapter (pay-per-token); a separate decision.
-- [ ] **Six older Claude models not yet benchmarked** (backlogged 2026-11-11; do not start unless asked):
+- [ ] (three done, three running, see above) **Six older Claude models not yet benchmarked** (backlogged 2026-11-11):
   `claude-opus-5` (Opus 5), `claude-fable-5` (Fable 5), `claude-opus-4-7`, `claude-opus-4-6`,
   `claude-opus-4-5-20251101` (Opus 4.5) and `claude-sonnet-4-6`. Each answered as itself through `claude -p` on
   2026-11-11 and is listed in the account's API model playground. Full set per model (functions, apps, hex
   functions, hex programs at >= 12/16 within four): roughly 350-500 calls, about 2,500 for all six, on the
-  Claude Max plan (no money; CVP caveat applies). It completes the Opus 4.5 -> 4.8, Opus 5 -> 5.5, Fable 5 ->
+  Claude Ultra plan (no money; CVP caveat applies). It completes the Opus 4.5 -> 4.8, Opus 5 -> 5.5, Fable 5 ->
   5.2 and Sonnet 4.5 -> 5.5 lineages. Not available: Opus 4.1 and Opus 4 (`claude -p` silently serves Opus 5.5
   for those ids), Sonnet 4 and all Claude 3.x (retired). Mythos 5.1 / 5.2 are reachable through Claude Code
   but are not in the API playground.
@@ -201,12 +231,17 @@ Approved by the user on 2026-10-22. After each: by-hand false-reject review, the
 
 **Harness improvements for a new round** (each changes what models see, so not a patch to the current runs)
 
-- [ ] Echo the offending source line with QBE compile errors (`reports/live-model-eval-haiku-sonnet.md`).
-- [ ] Rename the structured schema's `$defs/reg` (e.g. `register_name`) so bare register strings are more
+All four now exist as the opt-in prompt variant `harness_v2` (`--variant harness_v2`;
+`bca/liveeval/harness_v2.py`). It is off by default and not part of `--variant all`: under every other
+variant, baseline included, prompts, failure texts and what the pipelines accept are byte-identical to
+before (pinned by `tests/test_liveeval_harness_v2.py`). Ticked items below are available in v2 only.
+
+- [x] Echo the offending source line with QBE compile errors (`reports/live-model-eval-haiku-sonnet.md`).
+- [x] Rename the structured schema's `$defs/reg` (e.g. `register_name`) so bare register strings are more
   obvious (same report).
-- [ ] Add extend and add-with-carry ops (`sxtb`/`sxtw`, `adc`) to the structured AArch64 schema; models keep
+- [x] Add extend and add-with-carry ops (`sxtb`/`sxtw`, `adc`) to the structured AArch64 schema; models keep
   reaching for them (`reports/live-model-eval-adversarial.md`; x86 already has `movsx` / `adc`).
-- [ ] When a checked output buffer differs, show the first differing index, not only the first 12 elements
+- [x] When a checked output buffer differs, show the first differing index, not only the first 12 elements
   (`reports/live-model-eval-long.md`).
 
 **Housekeeping**

@@ -1,6 +1,6 @@
 # Cross-vendor live eval: how the subjects are made comparable
 
-> **Account caveat (Claude results).** Every Claude run in this repository used a Claude Max subscription enrolled in Anthropic's **Cyber Verification Program** (relaxed cyber safeguards for verified security researchers; confirmed active 2026-09-28). Claude's safety classifiers are less restrictive on this account than on one without CVP, so refusal rates here are likely lower, and pass rates likely higher, than a non-CVP org or subscription would see on this machine-code work. Treat Claude numbers as an upper bound for non-CVP accounts. The ChatGPT account used for Codex is enrolled in OpenAI's equivalent **Daybreak** program at the **Blue** tier only (no Daybreak Red / `*-cyber` models); whether Daybreak relaxes anything for the non-Daybreak models evaluated here (e.g. `gpt-6-luna`) is unknown. The Kimi, Google and xAI accounts have no known equivalent enrolment.
+> **Account caveat (Claude results).** Every Claude run in this repository used a Claude Ultra subscription (formerly Max 20x) enrolled in Anthropic's **Cyber Verification Program** (relaxed cyber safeguards for verified security researchers; confirmed active 2026-09-28). Claude's safety classifiers are less restrictive on this account than on one without CVP, so refusal rates here are likely lower, and pass rates likely higher, than a non-CVP org or subscription would see on this machine-code work. Treat Claude numbers as an upper bound for non-CVP accounts. The ChatGPT account used for Codex is enrolled in OpenAI's equivalent **Daybreak** program at the **Blue** tier only (no Daybreak Red / `*-cyber` models); whether Daybreak relaxes anything for the non-Daybreak models evaluated here (e.g. `gpt-6-luna`) is unknown. The Kimi, Google and xAI accounts have no known equivalent enrolment.
 
 Adapters: `bca/liveeval/vendor_base.py` (shared), `vendor_codex.py`, `vendor_kimi.py`, `vendor_agy.py`,
 `vendor_grok.py`, `vendor_copilot.py` (+ `copilot_driver.mjs`), the direct-API adapters `vendor_foundry.py` and
@@ -25,13 +25,17 @@ the user's Mac; see [Direct API routes](#direct-api-routes-foundry-fireworks) an
 
 | Vendor / CLI | Plan | Safety program | Limits seen in these runs |
 |---|---|---|---|
-| Anthropic / Claude Code | **Claude Max 20x** | Cyber Verification Program (relaxed cyber safeguards) | none hit |
+| Anthropic / Claude Code | **Claude Ultra** (formerly Max 20x) | Cyber Verification Program (relaxed cyber safeguards) | none hit |
 | OpenAI / Codex CLI | **ChatGPT Pro 100** since 2026-10-04 (**Plus** before; every committed Codex run used Plus) | Daybreak, Blue tier (no Red / `*-cyber` models) | the 5-hour window, once (Astra's app battery); weekly not reached |
 | Moonshot / Kimi Code | **Kimi Allegretto** | none known | a 5-hour window (~125-160 calls), a 7-day window on Code usage (reached 100% on 2026-09-29, 10-04 and 10-11) and monthly credits; the 7-day window is the binding one (see below) |
 | Google / Antigravity | **Google AI Pro** since 2026-11-06 (**AI Plus 2 TB** before; every reported Antigravity run used Plus) | none known | on Plus, ~75 calls per week, per account (not per model); on Pro, a Gemini 4 Argon High run stopped on quota at 181 calls |
 | Microsoft / Azure AI Foundry API | **pay-as-you-go** (Global Standard, serverless) | Azure's default content filter (`Microsoft.MAIDefault`, `Microsoft.DefaultV2`) | a per-model spend cap in the harness ($25; raised to $28 for MAI-Thinking-1); token-rate 429s at 2 parallel jobs for DeepSeek |
 | xAI / Grok Build | **SuperGrok** | none known | weekly included usage ~70% at most (app calls cost ~0.4% each); not exceeded, no paid credits used |
 | GitHub / Copilot CLI | **GitHub Copilot Pro** (1,500 AI credits a month, billed per token) | none known | the September credits, spent 2026-09-30 (overage off; resumed after the monthly reset) |
+| Fireworks.ai API | **pay-per-token**, prepaid ($51, plus $50 on 2026-11-10) | none known | a per-model spend cap in the harness; a whole-account stop on the ledger |
+| Cerebras Inference API | **pay-per-token**, prepaid ($60 in all, 2026-11-11) | none known | a per-model spend cap; per-minute token limits (HTTP 429) on Qwen 3.8 27B, which was re-run two calls at a time |
+| Mistral / Vibe CLI (agent-harness study only) | **Mistral Pro**: a $300 monthly Vibe Code allowance (the plan's separate $30 API allowance was not used) | none known | none hit ($141 of the Vibe allowance used by 2026-11-12) |
+| Meta / Muse Code CLI (agent-harness study only) | Meta AI account, **no subscription allowance**; the `-contributor` model in Meta's contributor tier (sessions shared with Meta) | none known | none hit |
 
 Plan tier matters: it decides which models are available (e.g. Kimi's high-speed model needs a higher tier)
 and how quickly a full battery can run, and the safety programs change refusal behaviour. Results describe
@@ -82,11 +86,66 @@ proof. From 2026-10-04 every Codex call passes its effort explicitly. Known mode
 (`CODEX_PINNED_EFFORT`), any other model must be given `--effort`, and each call records the effort it ran at
 ("low (pinned)" or "... (requested)").
 
-## Direct API routes (`foundry:`, `fireworks:`)
+**More Codex pins (2026-11-11).** Five more models run at their catalog default, pinned the same way: `low` for
+`gpt-6.1-sol`, `gpt-6.1-terra` and `gpt-5.6-sol`, `medium` for `gpt-5.6-terra` and `gpt-5.6-luna` (Codex CLI
+0.167.0, ChatGPT Pro).
+
+**Kimi Code 2.5.3 (re-audited 2026-11-11).** The CLI updated itself at a new `kimi login`. The audit found one new
+wire event (`environment.set_binding`) and a tool-selection catalogue event (`tool_select.initialized`), both
+bookkeeping; the adapter accepts them only while the request's `toolSelect` is off. The catalog default effort for
+`k3.1-pro` moved from `max` to `high`, which is why that model's function batteries were re-run
+([effort report](live-model-eval-effort.md)). Each Kimi attempt now records the effort it ran at.
+
+**Antigravity 1.5.7 (re-audited 2026-11-12, `eval/audits/agy-1.5.7-20261112`).** The CLI updated itself at a new
+sign-in. One real call through the adapter, with the version pin lifted for that process, showed the same events,
+step types and request record as 1.5.3: the request declares only `manage_task`, the system instruction is exactly
+ours, and the user turn matches the wrapper. 1.5.7 made Auto the default agent mode for headless runs; the adapter
+pins Default (the recorded request is identical in both). After a reboot agy kept its sign-in in a token file
+because the keyring was unusable; the adapter now copies that file into each call's private home when it exists and
+copies a refreshed token back, as for every other CLI's credential file.
+
+**Claude Code 2.1.323.** The CLI updated itself during the reboots of 2026-11-12. The Claude adapter has no version
+pin (each call is checked from the CLI's own log: `tools: []`, the served model); every attempt records its
+version, and rows that span 2.1.322 and 2.1.323 say so.
+
+**One call is one model call, on every route (audited 2026-11-12).** Claude Code continued calls that stopped on
+`max_tokens`: it injected a user turn ("Output token limit hit. Resume directly ... Break remaining work into
+smaller pieces.") and called the model again, until the model finished or the time limit hit, on every version seen
+(2.1.285 to 2.1.323). 117 attempts in 46 cells were affected, mostly Claude Sonnet 4.6 and whole programs in hex; 5
+of them had passed. The Claude adapter now stops at the first `max_tokens` stop and scores what was written within
+the cap, the rule the Copilot adapter already followed for its runtime's continuation, and fails closed on any other
+user turn; all 46 cells were superseded and re-run. Every other route was checked from its recorded calls:
+Codex shows one turn and one answer item in all 4,217 recorded attempts; Antigravity reports one turn in all 359
+that reached a result; Grok Build and Copilot already fail closed unless there is exactly one model call (Copilot
+stops its own continuation as above); Muse Code runs one model step (its guard resamples are disclosed in the
+agent-harness report); Vibe's four turns are part of that study by design; the direct APIs send one request each.
+Kimi Code made a second or third request in 12 of 1,768 attempts, every one a retry after `APIConnectionError`
+before any answer arrived (a transport retry inside the CLI; the model answered the prompt once). They stand.
+
+**Large prompts.** A repair prompt can exceed Linux's 128 KiB limit on one argument. Since 2026-11-11 a prompt over
+100 KB goes on stdin for Claude Code and Codex (byte for byte the same text) and through a prompt file for Copilot,
+Vibe and Muse; Kimi, Grok and Antigravity take the prompt only as an argument, so a larger prompt is refused as an
+isolation error before any call is made. None has occurred outside Claude Code.
+
+## Agent-harness studies (`vibe:`, `muse:`)
+
+Mistral Vibe and Meta Muse Code cannot meet the contract above: Vibe always sends tool definitions and its own
+agent prompt, and Muse Code always sends its own 60,000-character agent prompt. Their models are therefore measured
+inside the vendor's harness and reported apart, never in the tables this document covers. What each adapter does
+and checks (private home, every tool denied or none sent, our system prompt embedded or appended, the request
+verified from the CLI's own export or event log, fail-closed on any tool that runs) is in
+`bca/liveeval/vendor_vibe.py` and `vendor_muse.py`, and the results in the
+[agent-harness report](live-model-eval-agent-harness.md). Run directories and subjects named `vibe_`, `muse_` or
+`effort-study` are skipped by every table generator.
+
+## Direct API routes (`foundry:`, `fireworks:`, `cerebras:`)
 
 `foundry:<deployment>` (`vendor_foundry.py`) calls an Azure AI Foundry deployment's chat-completions API over
 HTTPS, streaming; `fireworks:<model id>` (`vendor_fireworks.py`) is the same adapter pointed at Fireworks.ai's
-serverless API. There is no CLI and no local home, so the contract is met differently:
+serverless API, and `cerebras:<model id>` (`vendor_cerebras.py`, added 2026-11-11) at Cerebras
+Inference's (`api.cerebras.ai`; gpt-oss-120b and qwen-3.8-27b; checked live with one call per model: OpenAI-style
+stream, exact model ids, `reasoning` deltas, usage in the last chunk). There is no CLI and no local home, so the
+contract is met differently:
 
 - **Same prompts, no tools:** the request body is built by the harness itself: `messages` = the harness system
   prompt and the task prompt, byte for byte; `stream: true` with usage; no `tools` key, no sampling fields and
@@ -114,6 +173,9 @@ serverless API. There is no CLI and no local home, so the contract is met differ
 - **State:** one independent HTTPS request per call; nothing is carried between calls.
 
 ## Apple Foundation Models (`apple:`)
+
+In the result tables, `apple:pcc` (Private Cloud Compute, Apple's servers) is a vendor row and `apple:system` (the
+on-device model, on the user's Mac) is a local row (`eval/model_names.py`, `ON_DEVICE`).
 
 `apple:system` (the on-device model, AFM 3 Core Advanced, 8,192-token context; macOS 27.2, FoundationModels
 2.1.14) and `apple:pcc` (Private Cloud Compute) are called through Apple's `fm serve`, an OpenAI-style
@@ -277,6 +339,21 @@ outputs. **Stack per battery:** every Kolibri battery runs on the official vLLM 
   time, but the recorded wall time includes the wait for the server, so local latencies are not comparable.
 
 ## Plan quotas and interruptions
+
+**2026-11-12: a power loss and three reboots.** The machine hung at about 03:52 and was power-cycled; it was
+rebooted three more times that day for system updates. Every record was checked afterwards and none was damaged: a
+call in flight has no attempt record, so it runs again, and a cell is complete only when its `cell.json` exists. The
+chains that drive the batteries were rewritten on one helper (`eval/runs/chain-lib.sh`): a finished step is skipped
+by counting its cells, logs are appended, and the hex-program gate is read from the cell records. The earlier
+chains read the gate from a log that a resumed run rewrites, which would have skipped Claude Opus 4.7's hex
+programs; that was caught before it ran. Three CLIs updated themselves around the reboots (Muse Code 1.4.15 to
+1.4.18, Antigravity 1.5.3 to 1.5.7, Claude Code 2.1.322 to 2.1.323); the two with a version pin refused to run
+until re-audited, so no cell was scored on an unaudited version. Audit tooling and captures now live in
+`eval/audits/` and not in a temporary directory, after the Vibe and first Muse captures were lost with `/tmp`.
+
+**Kimi (Allegretto), 2026-11-12:** the 5-hour window was reached at 00:23 during K3.1 Pro Highspeed's function
+batteries (resumed at 01:10) and the 7-day window at 01:53 during its app battery (19 of 96 cells). The Highspeed
+models use plan quota at twice the rate. A resumer probes every 15 minutes and continues when the window resets.
 
 Each subject has its own infrastructure-error guard: a vendor whose plan quota is spent stops its own cells
 only, and the others keep running; the same command resumes it later. Seen so far:

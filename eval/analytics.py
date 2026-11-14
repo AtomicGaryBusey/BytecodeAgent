@@ -19,6 +19,8 @@ sys.path.insert(0, os.path.dirname(__file__))
 _stdout = sys.stdout
 sys.stdout = open(os.devnull, "w")  # xv_tables prints its tables on import; reuse its names and ADJ only
 import xv_tables  # noqa: E402
+from model_names import IN_PROGRESS  # noqa: E402
+import model_names  # noqa: E402
 import api_prices  # noqa: E402
 
 sys.stdout.close()
@@ -42,12 +44,13 @@ FULL_FN, FULL_APPS = 224, 96
 # completes. Its run directory is skipped everywhere the script walks eval/runs.
 EXCLUDED_RUN = "eval/runs/agy-argon-20261107-142027"
 # PCC with reasoning_effort=medium was paused after one cell (2026-11-10: empty, zero-usage answers) and is unreported.
-EXCLUDED_RUNS = (EXCLUDED_RUN, "eval/runs/apple-pcc-medium-20261110")
+# Batteries still running or paused (eval/model_names.IN_PROGRESS) are unreported until complete, as in the tables.
+EXCLUDED_RUNS = (EXCLUDED_RUN, "eval/runs/apple-pcc-medium-20261110") + tuple(f"eval/runs/{d}/" for d in IN_PROGRESS)
 
 
 def label_of(r: dict) -> str:
     subj = r.get("subject") or "opus"
-    if subj.startswith(("codex_", "kimi_", "agy_", "grok_", "copilot_", "foundry_", "fireworks_", "apple_")):
+    if subj.startswith(("codex_", "kimi_", "agy_", "grok_", "copilot_", "foundry_", "fireworks_", "cerebras_", "apple_")):
         return subj.replace("_", ":", 1).replace("kimi-code_", "kimi-code/")
     if subj.startswith("local_"):
         think = (r.get("local") or {}).get("think")
@@ -63,6 +66,8 @@ def load():
     fn, apps = {}, {}
     files = sorted(glob.glob("eval/runs/*/**/results.jsonl", recursive=True) + glob.glob("eval/runs/*/results.jsonl"))
     for f in files:
+        if "/vibe_" in f or "/muse_" in f or "effort-study" in f:  # reported apart: the Vibe agent-harness study and effort experiments
+            continue
         if "smoke" in f or f.startswith(EXCLUDED_RUNS) or "untuned-trial" in f:
             continue
         rd = f.split("/")[2]
@@ -97,7 +102,7 @@ def name(m: str) -> str:
 
 
 def is_local(m: str) -> bool:
-    return m.startswith("local:")
+    return model_names.is_local(m)  # local: routes and on-device models (Apple's, on the user's Mac)
 
 
 def wilson(k: int, n: int, z: float = 1.959964) -> tuple[float, float]:
@@ -675,6 +680,8 @@ def variants(by_fn):
     vrecs = {}
     hexbase = {}
     for f in sorted(glob.glob("eval/runs/*/**/results.jsonl", recursive=True)):
+        if "/vibe_" in f or "/muse_" in f or "effort-study" in f:  # reported apart: the Vibe agent-harness study and effort experiments
+            continue
         if "smoke" in f or f.startswith(EXCLUDED_RUNS):
             continue
         rd = f.split("/")[2]
@@ -722,6 +729,8 @@ def load_all():
     """Every recorded cell, all variants, batteries and paths (hex included): (label, variant, battery, cell) -> r."""
     out = {}
     for f in sorted(glob.glob("eval/runs/*/**/results.jsonl", recursive=True) + glob.glob("eval/runs/*/results.jsonl")):
+        if "/vibe_" in f or "/muse_" in f or "effort-study" in f:  # reported apart: the Vibe agent-harness study and effort experiments
+            continue
         if "smoke" in f or f.startswith(EXCLUDED_RUNS) or "untuned-trial" in f:
             continue
         rd = f.split("/")[2]
@@ -787,13 +796,17 @@ def refusals_section(allr):
 
 # ------------------------------------------------------------------------------------------------ 8. generations
 GENERATIONS = [
-    ("Anthropic Opus", ["claude-opus-4-8", "claude-opus-5-5"]),
-    ("Anthropic Sonnet", ["claude-sonnet-4-5-20250929", "claude-sonnet-5", "claude-sonnet-5-5"]),
+    ("Anthropic Opus", ["claude-opus-4-5-20251101", "claude-opus-4-6", "claude-opus-4-7", "claude-opus-4-8",
+                        "claude-opus-5", "claude-opus-5-5"]),
+    ("Anthropic Sonnet", ["claude-sonnet-4-5-20250929", "claude-sonnet-4-6", "claude-sonnet-5", "claude-sonnet-5-5"]),
     ("Anthropic Haiku", ["claude-haiku-4-5-20251001", "claude-haiku-5-5"]),
-    ("Anthropic Fable", ["claude-fable-5-1", "claude-fable-5-2"]),
+    ("Anthropic Fable", ["claude-fable-5", "claude-fable-5-1", "claude-fable-5-2"]),
     ("Anthropic Mythos", ["claude-mythos-5-1", "claude-mythos-5-2"]),
     ("xAI Grok", ["grok:grok-4.5", "grok:grok-4.6", "grok:grok-4.7"]),
     ("OpenAI (Codex CLI)", ["codex:gpt-5.5", "codex:gpt-6-luna", "codex:gpt-6-sol", "codex:gpt-6-astra"]),
+    ("OpenAI Luna tier", ["codex:gpt-5.6-luna", "codex:gpt-6-luna"]),
+    ("OpenAI Terra tier", ["codex:gpt-5.6-terra", "codex:gpt-6.1-terra"]),
+    ("OpenAI Sol tier", ["codex:gpt-5.6-sol", "codex:gpt-6-sol", "codex:gpt-6.1-sol"]),
     ("Moonshot Kimi", ["kimi:kimi-code/kimi-for-coding", "kimi:kimi-code/k3", "kimi:kimi-code/k3.1-pro"]),
 ]
 
@@ -1102,6 +1115,15 @@ HARNESS_FIXES = [
      "Four first attempts in the 2026-11-10 Fireworks app runs (DeepSeek V4.1 Flash `base64.stream.aarch64.s3`; "
      "Nemotron 3 Ultra `bf.stream.aarch64.s2`/`.s3`, `rev_lines.stream.aarch64.s3`) superseded and re-run from "
      "scratch: Nemotron's `rev_lines` cell now passes on attempt 1, the other three again fail it genuinely."),
+    ("uncommitted", "2026-11-12", "Claude Code: a call that stopped on max_tokens was continued by the CLI with an "
+     "injected user turn ('Output token limit hit. Resume directly ...') and a second model call, until the model "
+     "finished or the time limit hit (every CLI version seen, 2.1.285 to 2.1.323). The adapter now stops at the cap "
+     "and scores what was written; any other injected user turn fails closed.",
+     "117 attempts in 46 cells (Sonnet 4.6 functions 18 and apps 11, in progress; hex programs: Sonnet 5 7, Opus 4.7 "
+     "5, Mythos 5.1 4, Opus 4.8 1). 5 continued attempts had passed. All 46 cells superseded and re-run."),
+    ("uncommitted", "2026-11-12", "Copilot: a host-only `conversation.repetition.detected` telemetry event after a "
+     "finished model call aborted the run as an unknown event; it is now recorded and the answer scored as written.",
+     "Kimi K3 via Copilot, hex programs: one attempt unscored and drawn again (kept in infra.jsonl)."),
 ]
 
 
@@ -1140,6 +1162,8 @@ def audit():
     cnt = collections.defaultdict(collections.Counter)
     first_last = {}
     for f in glob.glob("eval/runs/*/**/infra.jsonl", recursive=True) + glob.glob("eval/runs/*/infra.jsonl"):
+        if "/vibe_" in f or "/muse_" in f or "effort-study" in f:  # reported apart: the Vibe agent-harness study and effort experiments
+            continue
         if "smoke" in f or f.startswith(EXCLUDED_RUNS):
             continue
         for line in open(f):
@@ -1156,6 +1180,8 @@ def audit():
                 first_last[m] = (min(lo, t), max(hi, t))
     attempts = collections.Counter()
     for f in glob.glob("eval/runs/*/**/attempts.jsonl", recursive=True):
+        if "/vibe_" in f or "/muse_" in f or "effort-study" in f:  # reported apart: the Vibe agent-harness study and effort experiments
+            continue
         if "smoke" in f or f.startswith(EXCLUDED_RUNS):
             continue
         for line in open(f):

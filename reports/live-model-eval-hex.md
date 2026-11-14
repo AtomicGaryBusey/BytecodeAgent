@@ -34,9 +34,13 @@ results on the other paths (16 cells each):
 | Model | Hex first attempt | Hex within 4 | Stream | Structured | IR (QBE) |
 |---|---|---|---|---|---|
 | Claude Opus 5.5 | **16/16** | 16/16 | 15/16 | 16/16 | 14/16 |
+| Claude Fable 5 | **16/16** | 16/16 | 15/16 | 15/16 | 15/16 |
 | Claude Fable 5.2 | **16/16** | 16/16 | 16/16 | 16/16 | 15/16 |
 | Claude Mythos 5.1 | **16/16** | 16/16 | 15/16 | 16/16 | 16/16 |
 | Claude Mythos 5.2 | **16/16** | 16/16 | 16/16 | 15/16 | 16/16 |
+| Claude Opus 4.7 | **16/16** | 16/16 | 14/16 | 16/16 | 12/16 |
+| Codex GPT-5.6 Sol | **16/16** | 16/16 | 16/16 | 14/16 | 12/16 |
+| Codex GPT-6.1 Sol | **16/16** | 16/16 | 16/16 | 16/16 | 12/16 |
 | DeepSeek V4.1 Flash (Fireworks) | **16/16** | 16/16 | 16/16 | 11/16 | 14/16 |
 | Codex Daybreak Blue | **15/16** | 16/16 | 16/16 | 16/16 | 13/16 |
 | Codex GPT-6 Astra | **15/16** | 16/16 | 16/16 | 16/16 | 14/16 |
@@ -47,30 +51,42 @@ results on the other paths (16 cells each):
 | Grok 4.7 build-fast | **14/16** | 16/16 | 16/16 | 16/16 | 15/16 |
 | Claude Opus 4.8 | **14/16** | 16/16 | 13/16 | 15/16 | 7/16 |
 | Claude Sonnet 5.5 | **14/16** | 16/16 | 16/16 | 15/16 | 16/16 |
+| Kimi K3.1 Pro Highspeed | **14/16** | 16/16 | 16/16 | 16/16 | 15/16 |
+| Claude Opus 5 | **13/16** | 16/16 | 15/16 | 15/16 | 10/16 |
 | Claude Haiku 5.5 | **13/16** | 16/16 | 16/16 | 12/16 | 14/16 |
 | Kimi K3 | **13/16** | 16/16 | 16/16 | 14/16 | 15/16 |
 | Claude Sonnet 5 | **13/16** | 16/16 | 16/16 | 10/16 | 14/16 |
+| Codex GPT-5.6 Terra | **12/16** | 16/16 | 16/16 | 16/16 | 9/16 |
 | GPT-6 Luna via Copilot | **12/16** | 16/16 | 16/16 | 15/16 | 11/16 |
 | Grok 4.6 | **12/16** | 16/16 | 15/16 | 16/16 | 14/16 |
-| Kimi K3.1 Pro | **11/16** | 16/16 | 16/16 | 15/16 | 16/16 |
+| Kimi K3.1 Pro | **11/16** | 16/16 | 16/16 | 16/16 | 13/16 |
+| Codex GPT-6.1 Terra | **10/16** | 16/16 | 16/16 | 16/16 | 13/16 |
 | Grok 4.5 | **10/16** | 16/16 | 16/16 | 16/16 | 15/16 |
 | Claude Sonnet 4.5 | **10/16** | 16/16 | 16/16 | 16/16 | 16/16 |
 | Codex GPT-6 Luna | **10/16** | 15/16 | 15/16 | 12/16 | 6/16 |
 | MiniMax M3 (Fireworks) | **8/16** | 10/16 | 15/16 | 12/16 | 4/16 |
+| Codex GPT-5.6 Luna | **7/16** | 16/16 | 16/16 | 12/16 | 12/16 |
 | Microsoft MAI-Code 1.1 Flash (Copilot) | **6/16** | 11/16 | 16/16 | 10/16 | 0/16 |
 | Kimi K2.8 (for-coding) | **5/16** | 15/16 | 15/16 | 13/16 | 9/16 |
 | Claude Haiku 4.5 | **5/16** | 8/16 | 16/16 | 14/16 | 0/16 |
 | NVIDIA Nemotron 3 Ultra NVFP4 (Fireworks) | **3/16** | 8/16 | 14/16 | 6/16 | 0/16 |
+| OpenAI gpt-oss-120b (Fireworks) | **2/16** | 10/16 | 15/16 | 9/16 | 0/16 |
 | Claude Sonnet 5.5 via Copilot | **1/16** | 16/16 | 16/16 | 15/16 | 14/16 |
+| OpenAI gpt-oss-120b (Cerebras) | **1/16** | 9/16 | 16/16 | 10/16 | 0/16 |
+| Qwen 3.8 27B (Cerebras) | **0/16** | 5/16 | 15/16 | 14/16 | 0/16 |
 
 Per ISA, hex first attempt:
 
 | Model | AArch64 | x86-64 |
 |---|---|---|
 | Claude Opus 5.5 | 8/8 | 8/8 |
+| Claude Fable 5 | 8/8 | 8/8 |
 | Claude Fable 5.2 | 8/8 | 8/8 |
 | Claude Mythos 5.1 | 8/8 | 8/8 |
 | Claude Mythos 5.2 | 8/8 | 8/8 |
+| Claude Opus 4.7 | 8/8 | 8/8 |
+| Codex GPT-5.6 Sol | 8/8 | 8/8 |
+| Codex GPT-6.1 Sol | 8/8 | 8/8 |
 | DeepSeek V4.1 Flash (Fireworks) | 8/8 | 8/8 |
 | Codex Daybreak Blue | 8/8 | 7/8 |
 | Codex GPT-6 Astra | 8/8 | 7/8 |
@@ -81,21 +97,29 @@ Per ISA, hex first attempt:
 | Grok 4.7 build-fast | 6/8 | 8/8 |
 | Claude Opus 4.8 | 6/8 | 8/8 |
 | Claude Sonnet 5.5 | 6/8 | 8/8 |
+| Kimi K3.1 Pro Highspeed | 6/8 | 8/8 |
+| Claude Opus 5 | 5/8 | 8/8 |
 | Claude Haiku 5.5 | 5/8 | 8/8 |
 | Kimi K3 | 5/8 | 8/8 |
 | Claude Sonnet 5 | 7/8 | 6/8 |
+| Codex GPT-5.6 Terra | 6/8 | 6/8 |
 | GPT-6 Luna via Copilot | 6/8 | 6/8 |
 | Grok 4.6 | 5/8 | 7/8 |
 | Kimi K3.1 Pro | 3/8 | 8/8 |
+| Codex GPT-6.1 Terra | 7/8 | 3/8 |
 | Grok 4.5 | 5/8 | 5/8 |
 | Claude Sonnet 4.5 | 2/8 | 8/8 |
 | Codex GPT-6 Luna | 5/8 | 5/8 |
 | MiniMax M3 (Fireworks) | 2/8 | 6/8 |
+| Codex GPT-5.6 Luna | 3/8 | 4/8 |
 | Microsoft MAI-Code 1.1 Flash (Copilot) | 2/8 | 4/8 |
 | Kimi K2.8 (for-coding) | 0/8 | 5/8 |
 | Claude Haiku 4.5 | 0/8 | 5/8 |
 | NVIDIA Nemotron 3 Ultra NVFP4 (Fireworks) | 0/8 | 3/8 |
+| OpenAI gpt-oss-120b (Fireworks) | 0/8 | 2/8 |
 | Claude Sonnet 5.5 via Copilot | 1/8 | 0/8 |
+| OpenAI gpt-oss-120b (Cerebras) | 0/8 | 1/8 |
+| Qwen 3.8 27B (Cerebras) | 0/8 | 0/8 |
 
 ## Whole programs (app battery, sample 1)
 
@@ -108,16 +132,22 @@ results (— where that model did not run the app battery):
 | Claude Opus 4.8 | **15/16** | 16/16 | 15/16 | 13/16 |
 | Codex GPT-6 Astra | **15/16** | 16/16 | 16/16 | 16/16 |
 | Claude Mythos 5.2 | **15/16** | 16/16 | 14/16 | 16/16 |
+| Claude Fable 5 | **13/16** | 16/16 | 14/16 | 15/16 |
 | Claude Sonnet 5.5 | **13/16** | 15/16 | 14/16 | 15/16 |
 | Claude Fable 5.1 | **12/16** | 16/16 | 13/16 | 13/16 |
+| Codex GPT-6.1 Sol | **12/16** | 15/16 | 13/16 | 16/16 |
 | Claude Haiku 5.5 | **11/16** | 16/16 | 14/16 | 14/16 |
+| Claude Opus 5 | **11/16** | 16/16 | 16/16 | 13/16 |
 | Grok 4.6 | **11/16** | 16/16 | 16/16 | 15/16 |
 | Grok 4.7 | **10/16** | 16/16 | 16/16 | 15/16 |
 | Grok 4.7 build-fast | **10/16** | 16/16 | 16/16 | 14/16 |
+| Claude Opus 4.7 | **9/16** | 12/16 | 13/16 | 13/16 |
 | Claude Sonnet 5 | **7/16** | 9/16 | 12/16 | 11/16 |
 | Claude Opus 5.5 | **7/16** | 12/16 | 16/16 | 15/16 |
 | Claude Mythos 5.1 | **7/16** | 15/16 | 15/16 | 15/16 |
 | Codex GPT-6 Sol | **6/16** | 14/16 | 13/16 | 15/16 |
+| Codex GPT-5.6 Sol | **4/16** | 11/16 | 13/16 | 16/16 |
+| Codex GPT-6.1 Terra | **4/16** | 9/16 | 15/16 | 16/16 |
 | DeepSeek V4.1 Flash (Fireworks) | **4/16** | 11/16 | 12/16 | 11/16 |
 | Kimi K3.1 Pro | **4/16** | 15/16 | 15/16 | 14/16 |
 | Codex GPT-5.5 | **3/16** | 12/16 | — | — |
@@ -125,8 +155,10 @@ results (— where that model did not run the app battery):
 | GPT-6 Luna via Copilot | **2/16** | 5/16 | — | — |
 | Kimi K3 | **2/16** | 15/16 | 15/16 | 14/16 |
 | Kimi K2.8 (for-coding) | **2/16** | 7/16 | — | — |
-| Grok 4.5 | **1/16** | 15/16 | — | — |
+| Codex GPT-5.6 Terra | **1/16** | 7/16 | 13/16 | 12/16 |
+| Grok 4.5 | **1/16** | 15/16 | 14/16 | 13/16 |
 | Claude Sonnet 4.5 | **0/16** | 4/16 | 8/16 | 10/16 |
+| Codex GPT-5.6 Luna | **0/16** | 1/16 | 6/16 | 5/16 |
 | Codex GPT-6 Luna | **0/16** | 0/16 | — | — |
 | Claude Sonnet 5.5 via Copilot | **0/16** | 4/16 | — | — |
 
@@ -141,14 +173,20 @@ apart (first attempts only, except the last column):
 | Codex GPT-6 Astra | 16 | 15 | 0 | 1 | 15/16 (94%) | 0 of 17 |
 | Claude Mythos 5.2 | 16 | 15 | 0 | 1 | 15/16 (94%) | 0 of 17 |
 | Claude Sonnet 5.5 | 16 | 13 | 1 | 2 | 13/15 (87%) | 3 of 23 |
+| Claude Fable 5 | 16 | 13 | 0 | 3 | 13/16 (81%) | 0 of 19 |
 | Claude Fable 5.1 | 16 | 12 | 0 | 4 | 12/16 (75%) | 0 of 20 |
+| Codex GPT-6.1 Sol | 16 | 12 | 0 | 4 | 12/16 (75%) | 0 of 22 |
 | Claude Haiku 5.5 | 16 | 11 | 0 | 5 | 11/16 (69%) | 0 of 25 |
+| Claude Opus 5 | 16 | 11 | 0 | 5 | 11/16 (69%) | 0 of 22 |
 | Grok 4.6 | 16 | 11 | 0 | 5 | 11/16 (69%) | 0 of 23 |
 | Grok 4.7 | 16 | 10 | 0 | 6 | 10/16 (62%) | 0 of 22 |
 | Grok 4.7 build-fast | 16 | 10 | 0 | 6 | 10/16 (62%) | 0 of 23 |
+| Claude Opus 4.7 | 16 | 9 | 0 | 7 | 9/16 (56%) | 0 of 33 |
 | Claude Sonnet 5 | 16 | 7 | 0 | 9 | 7/16 (44%) | 0 of 40 |
 | Claude Mythos 5.1 | 16 | 7 | 0 | 9 | 7/16 (44%) | 0 of 34 |
 | Codex GPT-6 Sol | 16 | 6 | 0 | 10 | 6/16 (38%) | 0 of 33 |
+| Codex GPT-5.6 Sol | 16 | 4 | 0 | 12 | 4/16 (25%) | 0 of 40 |
+| Codex GPT-6.1 Terra | 16 | 4 | 0 | 12 | 4/16 (25%) | 0 of 47 |
 | DeepSeek V4.1 Flash (Fireworks) | 16 | 4 | 0 | 12 | 4/16 (25%) | 0 of 43 |
 | Kimi K3.1 Pro | 16 | 4 | 0 | 12 | 4/16 (25%) | 0 of 34 |
 | Codex GPT-5.5 | 16 | 3 | 0 | 13 | 3/16 (19%) | 0 of 37 |
@@ -156,8 +194,10 @@ apart (first attempts only, except the last column):
 | GPT-6 Luna via Copilot | 16 | 2 | 0 | 14 | 2/16 (12%) | 0 of 52 |
 | Kimi K3 | 16 | 2 | 0 | 14 | 2/16 (12%) | 0 of 41 |
 | Kimi K2.8 (for-coding) | 16 | 2 | 0 | 14 | 2/16 (12%) | 0 of 55 |
+| Codex GPT-5.6 Terra | 16 | 1 | 0 | 15 | 1/16 (6%) | 0 of 54 |
 | Grok 4.5 | 16 | 1 | 0 | 15 | 1/16 (6%) | 0 of 41 |
 | Claude Sonnet 4.5 | 16 | 0 | 0 | 16 | 0/16 (0%) | 0 of 57 |
+| Codex GPT-5.6 Luna | 16 | 0 | 0 | 16 | 0/16 (0%) | 0 of 63 |
 | Codex GPT-6 Luna | 16 | 0 | 0 | 16 | 0/16 (0%) | 0 of 64 |
 | Claude Sonnet 5.5 via Copilot | 16 | 0 | 14 | 2 | 0/2 (0%) | 52 of 58 |
 
@@ -222,7 +262,7 @@ let through, not as ability: every first attempt Opus 5.5 was allowed to answer 
   - GitHub Copilot's content filter blocked **every** first attempt of Claude Sonnet 5.5 through Copilot
     (52 attempts in all, finish reason `content_filter`, no content returned).
   - **Where the blocks come from.** Opus 5.5 and Sonnet 5.5 ran through `claude -p` on the user's own Claude
-    Max 20x subscription (enrolled in Anthropic's Cyber Verification Program): the API ended the stream mid-
+    Claude Ultra subscription (formerly Max 20x; enrolled in Anthropic's Cyber Verification Program): the API ended the stream mid-
     answer with `stop_reason: refusal`, `category: cyber`, after part of the hex program had streamed (the
     harness discards that partial text). x86-64 was refused far more than AArch64 (Opus 5.5: 18 of 22
     x86-64 attempts, 4 of 12 AArch64), consistent with x86 machine code that makes its own system calls
@@ -244,6 +284,41 @@ let through, not as ability: every first attempt Opus 5.5 was allowed to answer 
 - **Answer discipline still matters:** Sonnet 5.5 through Copilot opened 14 of 16 function answers with a
   prose plan ("Plan:", "Euclid's algorithm...") on a path whose first line must be machine code; it passed
   all 16 within four once told so.
+
+### Added 2026-11-11 and 11-12
+
+Hex functions for twelve more models, and whole programs for the eight that passed the gate (12 of 16 hex functions
+within four attempts):
+
+| Model | Hex functions, first / within 4 (16) | Hex programs, first / within 4 (16) |
+|---|---|---|
+| Codex GPT-6.1 Sol | 16 / 16 | 12 / 15 |
+| Codex GPT-5.6 Sol | 16 / 16 | 4 / 11 |
+| Claude Fable 5 | 16 / 16 | 13 / 16 |
+| Claude Opus 4.7 | 16 / 16 | 9 / 12 |
+| Kimi K3.1 Pro Highspeed | 14 / 16 | not yet run (Kimi 7-day cap) |
+| Claude Opus 5 | 13 / 16 | 11 / 16 |
+| Codex GPT-5.6 Terra | 12 / 16 | 1 / 7 |
+| Codex GPT-6.1 Terra | 10 / 16 | 4 / 9 |
+| Codex GPT-5.6 Luna | 7 / 16 | 0 / 1 |
+| OpenAI gpt-oss-120b (Fireworks) | 2 / 10: gate not met | not run |
+| OpenAI gpt-oss-120b (Cerebras) | 1 / 9: gate not met | not run |
+| Qwen 3.8 27B (Cerebras) | 0 / 5: gate not met | not run |
+
+- **Writing bytes by hand tracks the tier, not the release**: both Sol models and two of the three older Claude
+  models encode all 16 functions correctly on the first attempt; the Terra models manage 10 and 12; Luna 7.
+- **Whole programs in hex separate models that are level on functions**: Claude Fable 5 (13 of 16 first attempt,
+  16 within four) and GPT-6.1 Sol (12, 15) are with Opus 5.5 and Astra's class; GPT-5.6 Sol, perfect on hex
+  functions, gets 4. GPT-6.1 Terra is third of all models on the assembly app battery (92/96) and gets 4 of 16 in
+  hex: 19 of its failed attempts are malformed answers, most of them not machine code at all but a sentence
+  declining the job ("I can't reliably produce the complete machine-code program"). That is the model's own answer,
+  not a provider block, so it is scored as a malformed answer and not as a refusal.
+- **Opus 4.7's hex programs are limited by time**: 18 of its 21 failed attempts are 900 s timeouts; it passed 9
+  first time and 12 within four.
+- No safety blocks in any of these hex runs (Opus 5.5 and Sonnet 5.5 drew them on hex programs; see above).
+
+The Vibe and Muse harness studies also ran the hex path; their results are in the
+[agent-harness report](live-model-eval-agent-harness.md) and not in these tables.
 
 ## The mistakes models make when they encode by hand
 
@@ -305,7 +380,7 @@ and 1 timeout. The others are runtime faults, wrong output, and three malformed 
 objdump also decodes as undefined (an ADD with the reserved shift type).
 
 **Claude Haiku 5.5 (2026-11-07): no false rejects.** Run through `claude -p` on the user's own Claude
-account (Max 20x, CVP-enrolled; not through Copilot or Antigravity), CLI-default effort, in
+account (Claude Ultra, formerly Max 20x; CVP-enrolled; not through Copilot or Antigravity), CLI-default effort, in
 `eval/runs/hex-haiku55-20261107-174207` and `eval/runs/apps-hex-haiku55-20261107-174207`. Hex functions
 13/16 first try, 16/16 within four; whole programs 11/16 first try, 16/16 within four. All 8 first-attempt
 failures are on the model's side: two malformed AArch64 words rejected before running (`d3e0fd4b`, which GNU

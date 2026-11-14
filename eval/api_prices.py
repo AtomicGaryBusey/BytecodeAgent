@@ -2,7 +2,7 @@
 
 Routes differ in what they can tell us, so every figure carries its basis:
 
-- real: what was charged (Fireworks, Azure Foundry: priced from the call's usage, kept in the spend ledger).
+- real: what was charged (Fireworks, Cerebras, Azure Foundry: priced from the call's usage, kept in the spend ledger).
 - cli: the CLI's own API-equivalent figure for a flat-rate plan (Claude Code `total_cost_usd`, Grok Build
   `total_cost_usd`). Nothing was charged per call.
 - credits: GitHub Copilot's reported AI credits at $0.01 each (GitHub's published rate since 2026-06-01).
@@ -12,7 +12,7 @@ Routes differ in what they can tell us, so every figure carries its basis:
 - none: no price (local models; models with no published API price).
 
 The list prices are third-party aggregator figures (the vendors' own pages could not be fetched), checked
-2026-11-11; where sources disagreed the note says so. Tokenisers differ, so cross-vendor dollars are approximate.
+2026-11-11 (the entries marked 2026-11-12 on that day); where sources disagreed the note says so. Tokenisers differ, so cross-vendor dollars are approximate.
 """
 
 from __future__ import annotations
@@ -29,6 +29,13 @@ LIST_PRICES: dict[str, tuple[tuple[float, float, float], str]] = {
     "kimi:kimi-code/k3.1-pro": ((2.00, 0.20, 10.00), "BenchLM (Moonshot pricing page), Puter agree"),
     "kimi:kimi-code/k3": ((3.00, 0.30, 15.00), "BenchLM, Maximem, MorphLLM agree"),
     "agy:gemini-3.8-flash-high": ((0.75, 0.075, 3.75), "introductory rate through 2026-12-31 (doubles 2027-01-01)"),
+    # added 2026-11-12 (web search of aggregator pages; not the vendors' own pricing pages)
+    "codex:gpt-6.1-sol": ((2.00, 0.10, 10.00), "several aggregators agree; one lists $1 input (outlier); >272K-token tier not applied"),
+    "codex:gpt-6.1-terra": ((1.00, 0.05, 5.00), "several aggregators agree (half of GPT-6.1 Sol)"),
+    "codex:gpt-5.6-sol": ((5.00, 0.50, 30.00), "standard rate; one source reports a $4 / $20 promotion until 2026-11-30 (not applied)"),
+    "codex:gpt-5.6-terra": ((2.00, 0.20, 12.00), "after the 2026-07-30 cut (was $2.50 / $15); cached rate after the cut unconfirmed, 10% of input assumed"),
+    "codex:gpt-5.6-luna": ((0.20, 0.02, 1.20), "after the 2026-07-30 cut (was $1 / $6); cached rate after the cut unconfirmed, 10% of input assumed"),
+    "kimi:kimi-code/k3.1-pro-highspeed": ((4.00, 0.20, 20.00), "several aggregators citing Moonshot's pricing page: twice K3.1 Pro's input and output rates"),
 }
 # models with no published API price for the id we ran
 NO_LIST_PRICE = {
@@ -50,7 +57,7 @@ def vendor_of(label: str) -> str:
 def attempt_cost(label: str, a: dict) -> tuple[float | None, str]:
     """(USD or None, basis) for one attempt record of model `label` (an eval/analytics.py label)."""
     v, u = vendor_of(label), a.get("usage") or {}
-    if v in ("fireworks", "foundry"):
+    if v in ("fireworks", "foundry", "cerebras"):
         return (a.get("cost_usd"), "real") if isinstance(a.get("cost_usd"), (int, float)) else (None, "real")
     if v == "claude":
         return (a.get("cost_usd"), "cli") if isinstance(a.get("cost_usd"), (int, float)) else (None, "cli")
