@@ -1,0 +1,279 @@
+.globl _start
+
+.text
+_start:
+    mov dword ptr [rip + toklen], 0
+    mov dword ptr [rip + errflag], 0
+    mov dword ptr [rip + stacksp], 0
+    mov dword ptr [rip + active], 0
+
+read_more:
+    xor eax, eax
+    xor edi, edi
+    lea rsi, [rip + inputbuf]
+    mov edx, 4096
+    syscall
+    test rax, rax
+    jz at_eof
+    mov r12, rax
+    lea r13, [rip + inputbuf]
+
+byte_loop:
+    test r12, r12
+    jz read_more
+    movzx eax, byte ptr [r13]
+    inc r13
+    dec r12
+
+    cmp al, 10
+    je got_newline
+
+    mov dword ptr [rip + active], 1
+    cmp al, 32
+    je got_separator
+    cmp al, 9
+    je got_separator
+
+    cmp dword ptr [rip + errflag], 0
+    jne byte_loop
+    mov ecx, dword ptr [rip + toklen]
+    lea rdx, [rip + tokenbuf]
+    mov byte ptr [rdx + rcx], al
+    inc ecx
+    mov dword ptr [rip + toklen], ecx
+    jmp byte_loop
+
+got_separator:
+    cmp dword ptr [rip + toklen], 0
+    je byte_loop
+    call finish_token
+    jmp byte_loop
+
+got_newline:
+    cmp dword ptr [rip + toklen], 0
+    je 1f
+    call finish_token
+1:
+    call emit_line
+    jmp byte_loop
+
+at_eof:
+    cmp dword ptr [rip + active], 0
+    je do_exit
+    cmp dword ptr [rip + toklen], 0
+    je 2f
+    call finish_token
+2:
+    call emit_line
+
+do_exit:
+    mov eax, 60
+    xor edi, edi
+    syscall
+
+finish_token:
+    cmp dword ptr [rip + errflag], 0
+    jne ft_clear
+    mov ecx, dword ptr [rip + toklen]
+    cmp ecx, 1
+    jne parse_literal
+    mov al, byte ptr [rip + tokenbuf]
+    cmp al, '+'
+    je parse_operator
+    cmp al, '-'
+    je parse_operator
+    cmp al, '*'
+    je parse_operator
+    cmp al, '/'
+    je parse_operator
+    cmp al, '%'
+    je parse_operator
+
+parse_literal:
+    mov ecx, dword ptr [rip + toklen]
+    xor edi, edi
+    xor r9d, r9d
+    mov al, byte ptr [rip + tokenbuf]
+    cmp al, '-'
+    jne 3f
+    mov r9d, 1
+    inc edi
+3:
+    mov r8d, ecx
+    sub r8d, edi
+    jz parse_bad
+    cmp r8d, 18
+    ja parse_bad
+    xor rax, rax
+4:
+    cmp edi, ecx
+    jae 5f
+    lea rsi, [rip + tokenbuf]
+    movzx edx, byte ptr [rsi + rdi]
+    sub edx, '0'
+    cmp edx, 9
+    ja parse_bad
+    imul rax, rax, 10
+    add rax, rdx
+    inc edi
+    jmp 4b
+5:
+    test r9d, r9d
+    jz 6f
+    neg rax
+6:
+    mov edx, dword ptr [rip + stacksp]
+    lea rsi, [rip + valuestack]
+    mov qword ptr [rsi + rdx*8], rax
+    inc edx
+    mov dword ptr [rip + stacksp], edx
+    jmp ft_clear
+
+parse_operator:
+    mov ecx, dword ptr [rip + stacksp]
+    cmp ecx, 2
+    jb parse_bad
+    lea rsi, [rip + valuestack]
+    mov rax, qword ptr [rsi + rcx*8 - 16]
+    mov rdx, qword ptr [rsi + rcx*8 - 8]
+    mov bl, byte ptr [rip + tokenbuf]
+    cmp bl, '+'
+    je op_add
+    cmp bl, '-'
+    je op_sub
+    cmp bl, '*'
+    je op_mul
+    cmp bl, '/'
+    je op_div
+    cmp bl, '%'
+    je op_mod
+    jmp parse_bad
+
+op_add:
+    add rax, rdx
+    jmp op_store
+op_sub:
+    sub rax, rdx
+    jmp op_store
+op_mul:
+    imul rax, rdx
+    jmp op_store
+
+op_div:
+    test rdx, rdx
+    jz parse_bad
+    mov rbx, 0x8000000000000000
+    cmp rax, rbx
+    jne 7f
+    cmp rdx, -1
+    je parse_bad
+7:
+    mov rbx, rdx
+    cqo
+    idiv rbx
+    jmp op_store
+
+op_mod:
+    test rdx, rdx
+    jz parse_bad
+    mov rbx, 0x8000000000000000
+    cmp rax, rbx
+    jne 8f
+    cmp rdx, -1
+    je parse_bad
+8:
+    mov rbx, rdx
+    cqo
+    idiv rbx
+    mov rax, rdx
+
+op_store:
+    lea rsi, [rip + valuestack]
+    mov qword ptr [rsi + rcx*8 - 16], rax
+    dec ecx
+    mov dword ptr [rip + stacksp], ecx
+    jmp ft_clear
+
+parse_bad:
+    mov dword ptr [rip + errflag], 1
+
+ft_clear:
+    mov dword ptr [rip + toklen], 0
+    ret
+
+emit_line:
+    cmp dword ptr [rip + errflag], 0
+    jne print_error
+    cmp dword ptr [rip + stacksp], 1
+    jne print_error
+
+    lea rdi, [rip + outbuf + 32]
+    mov byte ptr [rdi], 10
+    lea rsi, [rip + valuestack]
+    mov rax, qword ptr [rsi]
+    xor r8d, r8d
+    test rax, rax
+    jns 9f
+    mov r8d, 1
+    neg rax
+9:
+    mov rbx, 10
+10:
+    xor edx, edx
+    div rbx
+    add dl, '0'
+    dec rdi
+    mov byte ptr [rdi], dl
+    test rax, rax
+    jne 10b
+    test r8d, r8d
+    jz 11f
+    dec rdi
+    mov byte ptr [rdi], '-'
+11:
+    lea rdx, [rip + outbuf + 33]
+    sub rdx, rdi
+    mov eax, 1
+    mov edi, 1
+    mov rsi, rdi
+    syscall
+    jmp reset_line
+
+print_error:
+    mov eax, 1
+    mov edi, 1
+    lea rsi, [rip + errmsg]
+    mov edx, errmsg_len
+    syscall
+
+reset_line:
+    mov dword ptr [rip + toklen], 0
+    mov dword ptr [rip + errflag], 0
+    mov dword ptr [rip + stacksp], 0
+    mov dword ptr [rip + active], 0
+    ret
+
+.section .rodata
+errmsg:
+    .ascii "error\n"
+errmsg_len = . - errmsg
+
+.bss
+.align 16
+inputbuf:
+    .zero 4096
+tokenbuf:
+    .zero 1024
+.align 8
+valuestack:
+    .zero 8192
+outbuf:
+    .zero 40
+toklen:
+    .zero 4
+errflag:
+    .zero 4
+stacksp:
+    .zero 4
+active:
+    .zero 4

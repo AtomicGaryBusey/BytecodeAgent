@@ -1,0 +1,565 @@
+	.text
+	.global	_start
+
+	.equ	SYS_READ, 63
+	.equ	SYS_WRITE, 64
+	.equ	SYS_EXIT, 93
+
+	.equ	BUF_SIZE, 65536
+	.equ	MAX_DEPTH, 1000
+
+_start:
+	adrp	x19, buf
+	add	x19, x19, :lo12:buf
+	mov	x20, #0			// total length
+	mov	x21, #0			// current index
+
+read_loop:
+	mov	x2, #BUF_SIZE
+	sub	x2, x2, x20
+	cmp	x2, #0
+	beq	read_done
+
+	mov	x0, #0
+	add	x1, x19, x20
+	mov	x8, #SYS_READ
+	svc	#0
+	cmp	x0, #0
+	beq	read_done
+	add	x20, x20, x0
+	b	read_loop
+
+read_done:
+	bl	parse_document
+
+	// success -> write "ok\n"
+	adrp	x0, ok_msg
+	add	x0, x0, :lo12:ok_msg
+	adrp	x1, ok_len
+	ldr	x2, [x1]
+	mov	x0, #1
+	mov	x8, #SYS_WRITE
+	svc	#0
+
+	// exit 0
+	mov	x0, #0
+	mov	x8, #SYS_EXIT
+	svc	#0
+
+// -------------------------------------------------
+parse_document:
+	bl	skip_ws
+	bl	parse_value
+	bl	skip_ws
+	cmp	x21, x20
+	beq	.pdoc_ok
+	// extra non‑whitespace
+	mov	x0, x21
+	b	error_report
+.pdoc_ok:
+	ret
+
+// -------------------------------------------------
+skip_ws:
+1:
+	cmp	x21, x20
+	bcs	2f
+	ldrb	w5, [x19, x21]
+	cmp	w5, #0x20
+	beq	.ws_inc
+	cmp	w5, #0x09
+	beq	.ws_inc
+	cmp	w5, #0x0A
+	beq	.ws_inc
+	cmp	w5, #0x0D
+	beq	.ws_inc
+	b	2f
+.ws_inc:
+	add	x21, x21, #1
+	b	1b
+2:
+	ret
+
+// -------------------------------------------------
+parse_value:
+	cmp	x21, x20
+	bcs	error_at_eof
+	ldrb	w5, [x19, x21]
+
+	cmp	w5, #0x7B	// '{'
+	b.eq	parse_object
+	cmp	w5, #0x5B	// '['
+	b.eq	parse_array
+	cmp	w5, #0x22	// '"'
+	b.eq	parse_string
+	cmp	w5, #0x74	// 't'
+	b.eq	parse_true
+	cmp	w5, #0x66	// 'f'
+	b.eq	parse_false
+	cmp	w5, #0x6E	// 'n'
+	b.eq	parse_null
+	cmp	w5, #0x2D	// '-'
+	b.eq	parse_number
+	cmp	w5, #0x30
+	b.lt	error_unexpected
+	cmp	w5, #0x39
+	b.le	parse_number
+	// otherwise
+error_unexpected:
+	mov	x0, x21
+	b	error_report
+
+error_at_eof:
+	mov	x0, x20
+	b	error_report
+
+// -------------------------------------------------
+parse_object:
+	add	x21, x21, #1		// consume '{'
+	bl	skip_ws
+
+	cmp	x21, x20
+	bcs	error_at_eof
+	ldrb	w5, [x19, x21]
+	cmp	w5, #0x7D		// '}'
+	b.eq	.empty_obj
+
+1:
+	bl	parse_string
+	bl	skip_ws
+	// expect ':'
+	cmp	x21, x20
+	bcs	error_at_eof
+	ldrb	w5, [x19, x21]
+	cmp	w5, #0x3A
+	b.ne	error_unexpected
+	add	x21, x21, #1		// consume ':'
+	bl	skip_ws
+	bl	parse_value
+	bl	skip_ws
+	cmp	x21, x20
+	bcs	error_at_eof
+	ldrb	w5, [x19, x21]
+	cmp	w5, #0x2C		// ','
+	b.eq	.comma
+	cmp	w5, #0x7D		// '}'
+	b.eq	.end_obj
+	b	error_unexpected
+
+.comma:
+	add	x21, x21, #1
+	bl	skip_ws
+	b	1b
+
+.end_obj:
+	add	x21, x21, #1
+	ret
+
+.empty_obj:
+	add	x21, x21, #1
+	ret
+
+// -------------------------------------------------
+parse_array:
+	add	x21, x21, #1		// consume '['
+	bl	skip_ws
+
+	cmp	x21, x20
+	bcs	error_at_eof
+	ldrb	w5, [x19, x21]
+	cmp	w5, #0x5D		// ']'
+	b.eq	.empty_arr
+
+1:
+	bl	parse_value
+	bl	skip_ws
+	cmp	x21, x20
+	bcs	error_at_eof
+	ldrb	w5, [x19, x21]
+	cmp	w5, #0x2C		// ','
+	b.eq	.comma_arr
+	cmp	w5, #0x5D		// ']'
+	b.eq	.end_arr
+	b	error_unexpected
+
+.comma_arr:
+	add	x21, x21, #1
+	bl	skip_ws
+	b	1b
+
+.end_arr:
+	add	x21, x21, #1
+	ret
+
+.empty_arr:
+	add	x21, x21, #1
+	ret
+
+// -------------------------------------------------
+parse_string:
+	// opening quote
+	cmp	x21, x20
+	bcs	error_at_eof
+	ldrb	w5, [x19, x21]
+	cmp	w5, #0x22
+	b.ne	error_unexpected
+	add	x21, x21, #1
+
+1:
+	cmp	x21, x20
+	bcs	error_at_eof
+	ldrb	w5, [x19, x21]
+	cmp	w5, #0x22
+	b.eq	.str_end
+	cmp	w5, #0x5C
+	b.ne	.normal_char
+
+	// escape
+	add	x21, x21, #1
+	cmp	x21, x20
+	bcs	error_at_eof
+	ldrb	w5, [x19, x21]
+
+	// simple escapes
+	cmp	w5, #0x22
+	beq	.escape_ok
+	cmp	w5, #0x5C
+	beq	.escape_ok
+	cmp	w5, #0x2F
+	beq	.escape_ok
+	cmp	w5, #0x62
+	beq	.escape_ok
+	cmp	w5, #0x66
+	beq	.escape_ok
+	cmp	w5, #0x6E
+	beq	.escape_ok
+	cmp	w5, #0x72
+	beq	.escape_ok
+	cmp	w5, #0x74
+	beq	.escape_ok
+	cmp	w5, #0x75
+	beq	.unicode_escape
+	b	error_unexpected
+
+.escape_ok:
+	add	x21, x21, #1
+	b	1b
+
+.unicode_escape:
+	// consume 'u'
+	add	x21, x21, #1
+	mov	x6, #4
+2:
+	cmp	x21, x20
+	bcs	error_at_eof
+	ldrb	w5, [x19, x21]
+
+	// digit?
+	cmp	w5, #0x30
+	b.lt	.invalid_hex
+	cmp	w5, #0x39
+	ble	.hex_ok
+	cmp	w5, #0x41
+	b.lt	.check_lower
+	cmp	w5, #0x46
+	ble	.hex_ok
+.check_lower:
+	cmp	w5, #0x61
+	b.lt	.invalid_hex
+	cmp	w5, #0x66
+	b.gt	.invalid_hex
+.hex_ok:
+	add	x21, x21, #1
+	subs	x6, x6, #1
+	bne	2b
+	b	1b
+
+.invalid_hex:
+	b	error_unexpected
+
+.normal_char:
+	cmp	w5, #0x20
+	b.lt	error_unexpected
+	add	x21, x21, #1
+	b	1b
+
+.str_end:
+	add	x21, x21, #1
+	ret
+
+// -------------------------------------------------
+parse_number:
+	// optional '-'
+	cmp	x21, x20
+	bcs	error_at_eof
+	ldrb	w5, [x19, x21]
+	cmp	w5, #0x2D
+	b.ne	.int_part
+	add	x21, x21, #1
+
+.int_part:
+	cmp	x21, x20
+	bcs	error_at_eof
+	ldrb	w5, [x19, x21]
+	cmp	w5, #0x30
+	blt	error_unexpected
+	cmp	w5, #0x39
+	bgt	error_unexpected
+
+	cmp	w5, #0x30
+	b.ne	.nonzero_int
+	// zero
+	add	x21, x21, #1
+	b	.after_int
+.nonzero_int:
+	// first non‑zero digit
+	add	x21, x21, #1
+	// following digits
+1:
+	cmp	x21, x20
+	bcs	.after_int
+	ldrb	w5, [x19, x21]
+	cmp	w5, #0x30
+	blt	.after_int
+	cmp	w5, #0x39
+	bgt	.after_int
+	add	x21, x21, #1
+	b	1b
+
+.after_int:
+	// optional fraction
+	cmp	x21, x20
+	bcs	.after_frac
+	ldrb	w5, [x19, x21]
+	cmp	w5, #0x2E
+	b.ne	.after_frac
+	add	x21, x21, #1
+	// at least one digit
+	cmp	x21, x20
+	bcs	error_at_eof
+	ldrb	w5, [x19, x21]
+	cmp	w5, #0x30
+	blt	error_unexpected
+	cmp	w5, #0x39
+	bgt	error_unexpected
+	// consume fraction digits
+1:
+	add	x21, x21, #1
+	cmp	x21, x20
+	bcs	.after_frac
+	ldrb	w5, [x19, x21]
+	cmp	w5, #0x30
+	blt	.after_frac
+	cmp	w5, #0x39
+	bgt	.after_frac
+	b	1b
+
+.after_frac:
+	// optional exponent
+	cmp	x21, x20
+	bcs	.num_done
+	ldrb	w5, [x19, x21]
+	cmp	w5, #0x65
+	beq	.exp_start
+	cmp	w5, #0x45
+	b.ne	.num_done
+
+.exp_start:
+	add	x21, x21, #1
+	// optional sign
+	cmp	x21, x20
+	bcs	error_at_eof
+	ldrb	w5, [x19, x21]
+	cmp	w5, #0x2B
+	beq	.sign_ok
+	cmp	w5, #0x2D
+	beq	.sign_ok
+	b	.exp_digit
+
+.sign_ok:
+	add	x21, x21, #1
+
+.exp_digit:
+	cmp	x21, x20
+	bcs	error_at_eof
+	ldrb	w5, [x19, x21]
+	cmp	w5, #0x30
+	blt	error_unexpected
+	cmp	w5, #0x39
+	bgt	error_unexpected
+	// consume exponent digits
+1:
+	add	x21, x21, #1
+	cmp	x21, x20
+	bcs	.num_done
+	ldrb	w5, [x19, x21]
+	cmp	w5, #0x30
+	blt	.num_done
+	cmp	w5, #0x39
+	bgt	.num_done
+	b	1b
+
+.num_done:
+	ret
+
+// -------------------------------------------------
+parse_true:
+	adrp	x5, lit_true
+	add	x5, x5, :lo12:lit_true
+	mov	x6, #4
+1:
+	cmp	x21, x20
+	bcs	error_at_eof
+	ldrb	w7, [x19, x21]
+	ldrb	w8, [x5], #1
+	cmp	w7, w8
+	b.ne	error_unexpected
+	add	x21, x21, #1
+	subs	x6, x6, #1
+	b.ne	1b
+	ret
+
+// -------------------------------------------------
+parse_false:
+	adrp	x5, lit_false
+	add	x5, x5, :lo12:lit_false
+	mov	x6, #5
+1:
+	cmp	x21, x20
+	bcs	error_at_eof
+	ldrb	w7, [x19, x21]
+	ldrb	w8, [x5], #1
+	cmp	w7, w8
+	b.ne	error_unexpected
+	add	x21, x21, #1
+	subs	x6, x6, #1
+	b.ne	1b
+	ret
+
+// -------------------------------------------------
+parse_null:
+	adrp	x5, lit_null
+	add	x5, x5, :lo12:lit_null
+	mov	x6, #4
+1:
+	cmp	x21, x20
+	bcs	error_at_eof
+	ldrb	w7, [x19, x21]
+	ldrb	w8, [x5], #1
+	cmp	w7, w8
+	b.ne	error_unexpected
+	add	x21, x21, #1
+	subs	x6, x6, #1
+	b.ne	1b
+	ret
+
+// -------------------------------------------------
+error_report:
+	// write "error at "
+	adrp	x1, err_prefix
+	add	x1, x1, :lo12:err_prefix
+	adrp	x2, err_prefix_len
+	ldr	x3, [x2]
+	mov	x0, #1
+	mov	x8, #SYS_WRITE
+	svc	#0
+
+	// convert offset
+	mov	x4, x0			// preserve offset
+	adrp	x1, dec_buf
+	add	x1, x1, :lo12:dec_buf
+	mov	x0, x4
+	bl	decimal_convert		// returns x1=ptr, x2=len
+
+	// write decimal string
+	mov	x0, #1
+	mov	x8, #SYS_WRITE
+	svc	#0
+
+	// write newline
+	adrp	x1, newline
+	add	x1, x1, :lo12:newline
+	adrp	x2, newline_len
+	ldr	x3, [x2]
+	mov	x0, #1
+	mov	x8, #SYS_WRITE
+	svc	#0
+
+	// exit status 1
+	mov	x0, #1
+	mov	x8, #SYS_EXIT
+	svc	#0
+
+// -------------------------------------------------
+decimal_convert:
+	// x0 = number, x1 = buffer start (6 bytes)
+	// buffer layout: [0..5]
+	// we fill from end (index 5) backwards
+	mov	x5, x1
+	add	x5, x5, #5			// x5 points at last byte
+
+	cmp	x0, #0
+	bne	.conv_loop_start
+
+	// number is zero
+	mov	w14, #'0'
+	strb	w14, [x5]
+	// final pointer = x5
+	mov	x1, x5
+	mov	x2, #1
+	ret
+
+.conv_loop_start:
+	// loop: while x0 != 0
+1:
+	udiv	x12, x0, #10
+	mul	x13, x12, #10
+	sub	x14, x0, x13		// remainder in x14 (0..9)
+	add	w15, w14, #'0'		// convert to ASCII
+	strb	w15, [x5]
+	sub	x5, x5, #1
+	mov	x0, x12
+	cmp	x0, #0
+	bne	1b
+
+	// after loop, x5 points one byte before first digit
+	add	x5, x5, #1			// point to first digit
+	// compute length = (buffer+5) - x5 + 1
+	mov	x6, x1
+	add	x6, x6, #5
+	sub	x2, x6, x5
+	add	x2, x2, #1
+	mov	x1, x5
+	ret
+
+	// -------------------------------------------------
+	.section .bss
+	.align	4
+buf:
+	.zero	BUF_SIZE
+dec_buf:
+	.zero	6
+
+	.section .rodata
+	.align	3
+ok_msg:
+	.ascii	"ok\n"
+ok_len:
+	.quad	3
+
+err_prefix:
+	.ascii	"error at "
+err_prefix_len:
+	.quad	10
+
+newline:
+	.ascii	"\n"
+newline_len:
+	.quad	1
+
+lit_true:
+	.ascii	"true"
+lit_false:
+	.ascii	"false"
+lit_null:
+	.ascii	"null"

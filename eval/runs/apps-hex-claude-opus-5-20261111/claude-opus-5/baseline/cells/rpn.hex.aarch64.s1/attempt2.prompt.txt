@@ -1,0 +1,427 @@
+Write the complete program `rpn`: a static Linux executable for AArch64 (ARMv8-A, little-endian), written directly as machine code. There is no assembler, no linker, no C library, no C runtime and no helper code: you write every instruction, every table and string, and make the system calls yourself.
+
+Entry state (as the Linux kernel sets it up): execution starts at the first instruction of your code, address 0x400000. sp is 16-byte aligned and points at argc = 0, followed by the NULL terminators of an empty argv, an empty envp and an empty auxiliary vector: the program gets no arguments. Every other general-purpose register (x0-x30) is zero; x30 is not a return address; the program ends only through the exit system call.
+
+System calls: the `svc #0` instruction, with the system call number in x8 and the arguments in x0, x1, x2; the result comes back in x0. Every other register is preserved. Exactly these four are available:
+- read = 63: read(fd = 0, buf, count) reads up to count bytes of standard input into buf; returns the number of bytes read, 0 at end of input.
+- write = 64: write(fd, buf, count) with fd 1 (standard output) or 2 (standard error); returns count.
+- exit = 93: exit(status) ends the program; the exit status is the low 8 bits of status.
+- exit_group = 94: the same as exit.
+Any other system call number or file descriptor stops the program with an error, and so does a buffer that is not entirely inside the program's memory.
+
+Memory: the code, data and zero-initialised areas below, plus a stack of 1 MiB below the entry sp. There is no heap (no brk, no mmap, no malloc). Code is not writable. Any access outside these areas stops the program. Each test run may execute at most 50,000,000 instructions.
+
+Output format: the whole program as raw machine code and data bytes, which you encode yourself: there is no assembler, no linker and no encoder, and your bytes are loaded exactly as you write them. The memory layout is fixed:
+- code (read and execute): your instruction lines, from address 0x400000; the entry point is the first instruction; at most 1 MiB.
+- data (read and write): the data bytes you give, from address 0x500000, at most 1 MiB; your strings and tables go here, at offsets you choose and keep track of (the byte you write at position k of the data section is at address 0x500000 + k).
+- a zero-initialised work area (read and write) of 1 MiB from address 0x600000.
+- the stack (above).
+Write a line `.text` followed by the instruction lines, then optionally a line `.data` followed by the data lines. These two markers are the only directives: no labels, no symbols, no other directive, so every address and offset is a number you compute.
+Instructions: one per line as its 32-bit instruction word in hexadecimal, exactly 8 hex digits (an optional 0x prefix is allowed), e.g. `8b010000` is `add x0, x0, x1` and `d4000001` is `svc #0`. The words are stored little-endian one after another: the first instruction line is at 0x400000, the next at 0x400004, and so on. Every branch and PC-relative field (b, b.cond, bl, cbz, cbnz, tbz, tbnz, adr, adrp) holds an offset from the address of that instruction itself, encoded as the architecture specifies (b/bl/b.cond/cbz/tbz: byte offset / 4; adr: byte offset; adrp: (target page - this instruction's page) / 4096, pages being addresses with the low 12 bits cleared), which you compute. Because the addresses below are fixed, you can also build an address with movz/movk (e.g. `d2a00a01` is `movz x1, #0x50, lsl #16`, i.e. x1 = 0x500000).
+Data: bytes in memory order as pairs of hex digits, separated by spaces or not, any number per line (e.g. `68 65 6c 6c 6f 0a` or `68656c6c6f0a` is "hello\n").
+You may end any line with a comment starting with `//` or `;` (e.g. `d4000001 // svc #0`); comments and blank lines are ignored.
+Instruction set: ARMv8.0-A with floating point and Advanced SIMD (NEON). Not supported (rejected): CRC32, LSE atomics, dot product, half-precision, crypto (AES/SHA/PMULL) and SVE.
+Output ONLY the program text: no Markdown fences, no prose before or after it.
+
+Specification: Task `rpn`: evaluate one Reverse Polish Notation expression per input line and print one result line per input
+line.
+
+Lines: a line is a (possibly empty) sequence of bytes terminated by a newline 0x0A; if the input does not end
+with a newline, the bytes after the last newline form one more, final line. Empty input has no lines (prints
+nothing), and the empty remainder after a final newline is not a line.
+
+Tokens: the separators are space 0x20 and tab 0x09 only; a token is a maximal run of other bytes. Any number of
+separators may appear before, between and after tokens. A token is exactly one of:
+- an integer literal: an optional `-` followed by 1 to 18 decimal digits `0`-`9` (leading zeros allowed, `-0`
+  is 0). A literal with 19 or more digits is invalid;
+- an operator: exactly one of `+` `-` `*` `/` `%` (a lone `-` is the subtraction operator);
+- anything else (for example `1a`, `+5`, `--3`, `1.5`, `x`, or a token containing 0x0D or any other byte) is
+  invalid.
+
+Evaluation uses a stack of signed 64-bit integers, empty at the start of each line. Process tokens left to right:
+a literal is pushed; an operator pops b (top) then a, and pushes `a op b`. `+`, `-`, `*` wrap modulo 2^64 (two's
+complement). `/` is division truncated toward zero; `%` is the remainder with the sign of a (a == (a/b)*b +
+a%b), as in C. A line is an ERROR if: it contains an invalid token; an operator finds fewer than two values on
+the stack; `/` or `%` has b == 0; `/` or `%` has a == -9223372036854775808 and b == -1; or, after the last token,
+the stack does not hold exactly one value (this includes a line with no tokens, e.g. an empty line).
+
+Output per line: if it is not an error, the single remaining value in decimal (a `-` sign if negative, no `+`,
+no leading zeros; -9223372036854775808 must print correctly) followed by a newline; if it is an error, exactly
+`error\n`. After an error the rest of that line is ignored and evaluation continues with the next line.
+
+Example: input `3 4 +\n-7 2 /\n1 +\n\n5 1 2 + 4 * + 3 -` prints `7\n-3\nerror\nerror\n14\n`.
+
+Limits: the input is at most 65536 bytes; a line is at most 1000 bytes. Exit status 0.
+
+Input and output (applies to this whole task):
+- The input is the complete contents of standard input (file descriptor 0). Read it with `read` until `read`
+  returns 0 (end of input). A `read` may return FEWER bytes than requested, at any position (in the middle of a
+  line, a token or a group of bytes), so keep calling it; only a return value of 0 means end of input.
+- Write the output to standard output (file descriptor 1). Only the bytes this task describes may appear on
+  standard output (standard error is ignored). Every output byte must be written before the program exits.
+- Finish with `exit` (or `exit_group`) and the exit status this task gives. The program must not run off the end
+  of its code or crash.
+
+Your previous attempt was:
+<previous>
+.text
+d2a00c13 // movz x19, #0x60, lsl #16   ; input buf 0x600000
+d2a00c37 // movz x23, #0x61, lsl #16   ; eval stack 0x610000
+d2a00cd6 // movz x22, #0x66, lsl #16   ; out cursor 0x660000
+d2a00cbc // movz x28, #0x65, lsl #16   ; scratch 0x650000
+d2800000 // L_read: movz x0, #0
+8b150261 // add x1, x19, x21
+d2a00022 // movz x2, #1, lsl #16
+cb150042 // sub x2, x2, x21
+b40000c2 // cbz x2, L_readdone
+d28007e8 // movz x8, #63
+d4000001 // svc #0
+b4000060 // cbz x0, L_readdone
+8b0002b5 // add x21, x21, x0
+17fffff7 // b L_read
+aa1503f4 // L_readdone: mov x20, x21
+d2800015 // movz x21, #0
+eb1402bf // L_line: cmp x21, x20
+540011c2 // b.hs L_end
+aa1503f8 // mov x24, x21
+aa1503f9 // mov x25, x21
+eb14033f // L_scan: cmp x25, x20
+540000c2 // b.hs L_scan_done
+38796a69 // ldrb w9, [x19, x25]
+7100293f // cmp w9, #10
+540000a0 // b.eq L_scan_nl
+91000739 // add x25, x25, #1
+17fffffa // b L_scan
+aa1403f5 // L_scan_done: mov x21, x20
+14000002 // b L_eval
+91000735 // L_scan_nl: add x21, x25, #1
+d280001a // L_eval: movz x26, #0
+eb19031f // L_tok: cmp x24, x25
+54000bc2 // b.hs L_tokend
+38786a69 // ldrb w9, [x19, x24]
+7100813f // cmp w9, #32
+54000080 // b.eq L_skip
+7100253f // cmp w9, #9
+54000040 // b.eq L_skip
+14000003 // b L_tokstart
+91000718 // L_skip: add x24, x24, #1
+17fffff7 // b L_tok
+aa1803fb // L_tokstart: mov x27, x24
+eb19031f // L_tokscan: cmp x24, x25
+54000102 // b.hs L_tokgot
+38786a69 // ldrb w9, [x19, x24]
+7100813f // cmp w9, #32
+540000a0 // b.eq L_tokgot
+7100253f // cmp w9, #9
+54000060 // b.eq L_tokgot
+91000718 // add x24, x24, #1
+17fffff8 // b L_tokscan
+cb1b030a // L_tokgot: sub x10, x24, x27
+f100055f // cmp x10, #1
+540005c1 // b.ne L_literal
+387b6a69 // ldrb w9, [x19, x27]
+7100ad3f // cmp w9, #0x2b
+54000140 // b.eq L_op
+7100b53f // cmp w9, #0x2d
+54000100 // b.eq L_op
+7100a93f // cmp w9, #0x2a
+540000c0 // b.eq L_op
+7100bd3f // cmp w9, #0x2f
+54000080 // b.eq L_op
+7100953f // cmp w9, #0x25
+54000040 // b.eq L_op
+14000022 // b L_literal
+f1000b5f // L_op: cmp x26, #2
+54000aa3 // b.lo L_error
+d1000b5a // sub x26, x26, #2
+f87a7aeb // ldr x11, [x23, x26, lsl #3]
+9100074c // add x12, x26, #1
+f86c7aec // ldr x12, [x23, x12, lsl #3]
+7100ad3f // cmp w9, #0x2b
+54000240 // b.eq L_add
+7100b53f // cmp w9, #0x2d
+54000240 // b.eq L_sub
+7100a93f // cmp w9, #0x2a
+54000240 // b.eq L_mul
+b400094c // cbz x12, L_error
+d2f0000d // movz x13, #0x8000, lsl #48
+eb0d017f // cmp x11, x13
+54000061 // b.ne L_div_ok
+b100059f // cmn x12, #1
+540008a0 // b.eq L_error
+7100bd3f // L_div_ok: cmp w9, #0x2f
+54000080 // b.eq L_divop
+9acc0d6d // sdiv x13, x11, x12
+9b0cadad // msub x13, x13, x12, x11
+14000008 // b L_push
+9acc0d6d // L_divop: sdiv x13, x11, x12
+14000006 // b L_push
+8b0c016d // L_add: add x13, x11, x12
+14000004 // b L_push
+cb0c016d // L_sub: sub x13, x11, x12
+14000002 // b L_push
+9b0c7d6d // L_mul: mul x13, x11, x12
+f83a7aed // L_push: str x13, [x23, x26, lsl #3]
+9100075a // add x26, x26, #1
+17ffffbd // b L_tok
+aa1b03ee // L_literal: mov x14, x27
+d280000f // movz x15, #0
+386e6a69 // ldrb w9, [x19, x14]
+7100b53f // cmp w9, #0x2d
+54000061 // b.ne L_nonneg
+910005ce // add x14, x14, #1
+d280002f // movz x15, #1
+cb0e030a // L_nonneg: sub x10, x24, x14
+b40005aa // cbz x10, L_error
+f100495f // cmp x10, #18
+54000568 // b.hi L_error
+d280000d // movz x13, #0
+d2800150 // movz x16, #10
+eb1801df // L_digloop: cmp x14, x24
+54000102 // b.hs L_digdone
+386e6a69 // ldrb w9, [x19, x14]
+5100c129 // sub w9, w9, #0x30
+7100253f // cmp w9, #9
+54000468 // b.hi L_error
+9b1025ad // madd x13, x13, x16, x9
+910005ce // add x14, x14, #1
+17fffff8 // b L_digloop
+b400004f // L_digdone: cbz x15, L_pushlit
+cb0d03ed // neg x13, x13
+f83a7aed // L_pushlit: str x13, [x23, x26, lsl #3]
+9100075a // add x26, x26, #1
+17ffffa2 // b L_tok
+f100075f // L_tokend: cmp x26, #1
+54000321 // b.ne L_error
+f94002ed // ldr x13, [x23]
+aa0d03e1 // mov x1, x13
+b6f8008d // tbz x13, #63, L_pos
+528005a0 // movz w0, #0x2d
+380016c0 // strb w0, [x22], #1
+cb0d03e1 // neg x1, x13
+91006382 // L_pos: add x2, x28, #24
+aa0203e3 // mov x3, x2
+d2800144 // movz x4, #10
+9ac40825 // L_dloop: udiv x5, x1, x4
+9b0484a6 // msub x6, x5, x4, x1
+9100c0c6 // add x6, x6, #0x30
+d1000463 // sub x3, x3, #1
+39000066 // strb w6, [x3]
+aa0503e1 // mov x1, x5
+b5ffff41 // cbnz x1, L_dloop
+39400066 // L_cloop: ldrb w6, [x3]
+380016c6 // strb w6, [x22], #1
+91000463 // add x3, x3, #1
+eb02007f // cmp x3, x2
+54ffff83 // b.lo L_cloop
+52800146 // movz w6, #10
+380016c6 // strb w6, [x22], #1
+17ffff79 // b L_line
+528e4ca0 // L_error: movz w0, #0x7265
+72adee40 // movk w0, #0x6f72, lsl #16
+b90002c0 // str w0, [x22]
+52814e40 // movz w0, #0x0a72
+790008c0 // strh w0, [x22, #4]
+91001ad6 // add x22, x22, #6
+17ffff72 // b L_line
+d2a00cc1 // L_end: movz x1, #0x66, lsl #16
+cb0102c2 // sub x2, x22, x1
+b4000122 // L_wloop: cbz x2, L_exit
+d2800020 // movz x0, #1
+d2800808 // movz x8, #64
+d4000001 // svc #0
+f100041f // cmp x0, #1
+5400008b // b.lt L_exit
+8b000021 // add x1, x1, x0
+cb000042 // sub x2, x2, x0
+17fffff8 // b L_wloop
+d2800000 // L_exit: movz x0, #0
+d2800ba8 // movz x8, #93
+d4000001 // svc #0
+</previous>
+It failed:
+<failure>
+Test `one_newline` failed (stdin delivered whole; test run 2 of 46; the runs before it passed).
+stdin (1 bytes): "\n"
+The program stopped with a fault (oob): 2-byte write of unmapped memory at 0x4, pc=0x400270 at pc 0x400270 [the faulting instruction is line 158: `790008c0 // strh w0, [x22, #4]`]
+exit status: expected 0, got none (the program did not exit)
+stdout differs from byte 0 on (line 1, column 1 of the expected output); expected 6 bytes in total, got 0
+  expected from byte 0: "error\n"
+  actual from byte 0:   (end of output)
+
+Your machine code, as written, decodes as (address, your line, the hex, the disassembly; the entry point is the first line):
+  0x400000 line    2: d2a00c13                 mov x19, #0x600000
+  0x400004 line    3: d2a00c37                 mov x23, #0x610000
+  0x400008 line    4: d2a00cd6                 mov x22, #0x660000
+  0x40000c line    5: d2a00cbc                 mov x28, #0x650000
+  0x400010 line    6: d2800000                 mov x0, #0
+  0x400014 line    7: 8b150261                 add x1, x19, x21
+  0x400018 line    8: d2a00022                 mov x2, #0x10000
+  0x40001c line    9: cb150042                 sub x2, x2, x21
+  0x400020 line   10: b40000c2                 cbz x2, #0x400038
+  0x400024 line   11: d28007e8                 mov x8, #0x3f
+  0x400028 line   12: d4000001                 svc #0
+  0x40002c line   13: b4000060                 cbz x0, #0x400038
+  0x400030 line   14: 8b0002b5                 add x21, x21, x0
+  0x400034 line   15: 17fffff7                 b #0x400010
+  0x400038 line   16: aa1503f4                 mov x20, x21
+  0x40003c line   17: d2800015                 mov x21, #0
+  0x400040 line   18: eb1402bf                 cmp x21, x20
+  0x400044 line   19: 540011c2                 b.hs #0x40027c
+  0x400048 line   20: aa1503f8                 mov x24, x21
+  0x40004c line   21: aa1503f9                 mov x25, x21
+  0x400050 line   22: eb14033f                 cmp x25, x20
+  0x400054 line   23: 540000c2                 b.hs #0x40006c
+  0x400058 line   24: 38796a69                 ldrb w9, [x19, x25]
+  0x40005c line   25: 7100293f                 cmp w9, #0xa
+  0x400060 line   26: 540000a0                 b.eq #0x400074
+  0x400064 line   27: 91000739                 add x25, x25, #1
+  0x400068 line   28: 17fffffa                 b #0x400050
+  0x40006c line   29: aa1403f5                 mov x21, x20
+  0x400070 line   30: 14000002                 b #0x400078
+  0x400074 line   31: 91000735                 add x21, x25, #1
+  0x400078 line   32: d280001a                 mov x26, #0
+  0x40007c line   33: eb19031f                 cmp x24, x25
+  0x400080 line   34: 54000bc2                 b.hs #0x4001f8
+  0x400084 line   35: 38786a69                 ldrb w9, [x19, x24]
+  0x400088 line   36: 7100813f                 cmp w9, #0x20
+  0x40008c line   37: 54000080                 b.eq #0x40009c
+  0x400090 line   38: 7100253f                 cmp w9, #9
+  0x400094 line   39: 54000040                 b.eq #0x40009c
+  0x400098 line   40: 14000003                 b #0x4000a4
+  0x40009c line   41: 91000718                 add x24, x24, #1
+  0x4000a0 line   42: 17fffff7                 b #0x40007c
+  0x4000a4 line   43: aa1803fb                 mov x27, x24
+  0x4000a8 line   44: eb19031f                 cmp x24, x25
+  0x4000ac line   45: 54000102                 b.hs #0x4000cc
+  0x4000b0 line   46: 38786a69                 ldrb w9, [x19, x24]
+  0x4000b4 line   47: 7100813f                 cmp w9, #0x20
+  0x4000b8 line   48: 540000a0                 b.eq #0x4000cc
+  0x4000bc line   49: 7100253f                 cmp w9, #9
+  0x4000c0 line   50: 54000060                 b.eq #0x4000cc
+  0x4000c4 line   51: 91000718                 add x24, x24, #1
+  0x4000c8 line   52: 17fffff8                 b #0x4000a8
+  0x4000cc line   53: cb1b030a                 sub x10, x24, x27
+  0x4000d0 line   54: f100055f                 cmp x10, #1
+  0x4000d4 line   55: 540005c1                 b.ne #0x40018c
+  0x4000d8 line   56: 387b6a69                 ldrb w9, [x19, x27]
+  0x4000dc line   57: 7100ad3f                 cmp w9, #0x2b
+  0x4000e0 line   58: 54000140                 b.eq #0x400108
+  0x4000e4 line   59: 7100b53f                 cmp w9, #0x2d
+  0x4000e8 line   60: 54000100                 b.eq #0x400108
+  0x4000ec line   61: 7100a93f                 cmp w9, #0x2a
+  0x4000f0 line   62: 540000c0                 b.eq #0x400108
+  0x4000f4 line   63: 7100bd3f                 cmp w9, #0x2f
+  0x4000f8 line   64: 54000080                 b.eq #0x400108
+  0x4000fc line   65: 7100953f                 cmp w9, #0x25
+  0x400100 line   66: 54000040                 b.eq #0x400108
+  0x400104 line   67: 14000022                 b #0x40018c
+  0x400108 line   68: f1000b5f                 cmp x26, #2
+  0x40010c line   69: 54000aa3                 b.lo #0x400260
+  0x400110 line   70: d1000b5a                 sub x26, x26, #2
+  0x400114 line   71: f87a7aeb                 ldr x11, [x23, x26, lsl #3]
+  0x400118 line   72: 9100074c                 add x12, x26, #1
+  0x40011c line   73: f86c7aec                 ldr x12, [x23, x12, lsl #3]
+  0x400120 line   74: 7100ad3f                 cmp w9, #0x2b
+  0x400124 line   75: 54000240                 b.eq #0x40016c
+  0x400128 line   76: 7100b53f                 cmp w9, #0x2d
+  0x40012c line   77: 54000240                 b.eq #0x400174
+  0x400130 line   78: 7100a93f                 cmp w9, #0x2a
+  0x400134 line   79: 54000240                 b.eq #0x40017c
+  0x400138 line   80: b400094c                 cbz x12, #0x400260
+  0x40013c line   81: d2f0000d                 mov x13, #-0x8000000000000000
+  0x400140 line   82: eb0d017f                 cmp x11, x13
+  0x400144 line   83: 54000061                 b.ne #0x400150
+  0x400148 line   84: b100059f                 cmn x12, #1
+  0x40014c line   85: 540008a0                 b.eq #0x400260
+  0x400150 line   86: 7100bd3f                 cmp w9, #0x2f
+  0x400154 line   87: 54000080                 b.eq #0x400164
+  0x400158 line   88: 9acc0d6d                 sdiv x13, x11, x12
+  0x40015c line   89: 9b0cadad                 msub x13, x13, x12, x11
+  0x400160 line   90: 14000008                 b #0x400180
+  0x400164 line   91: 9acc0d6d                 sdiv x13, x11, x12
+  0x400168 line   92: 14000006                 b #0x400180
+  0x40016c line   93: 8b0c016d                 add x13, x11, x12
+  0x400170 line   94: 14000004                 b #0x400180
+  0x400174 line   95: cb0c016d                 sub x13, x11, x12
+  0x400178 line   96: 14000002                 b #0x400180
+  0x40017c line   97: 9b0c7d6d                 mul x13, x11, x12
+  0x400180 line   98: f83a7aed                 str x13, [x23, x26, lsl #3]
+  0x400184 line   99: 9100075a                 add x26, x26, #1
+  0x400188 line  100: 17ffffbd                 b #0x40007c
+  0x40018c line  101: aa1b03ee                 mov x14, x27
+  0x400190 line  102: d280000f                 mov x15, #0
+  0x400194 line  103: 386e6a69                 ldrb w9, [x19, x14]
+  0x400198 line  104: 7100b53f                 cmp w9, #0x2d
+  0x40019c line  105: 54000061                 b.ne #0x4001a8
+  0x4001a0 line  106: 910005ce                 add x14, x14, #1
+  0x4001a4 line  107: d280002f                 mov x15, #1
+  0x4001a8 line  108: cb0e030a                 sub x10, x24, x14
+  0x4001ac line  109: b40005aa                 cbz x10, #0x400260
+  0x4001b0 line  110: f100495f                 cmp x10, #0x12
+  0x4001b4 line  111: 54000568                 b.hi #0x400260
+  0x4001b8 line  112: d280000d                 mov x13, #0
+  0x4001bc line  113: d2800150                 mov x16, #0xa
+  0x4001c0 line  114: eb1801df                 cmp x14, x24
+  0x4001c4 line  115: 54000102                 b.hs #0x4001e4
+  0x4001c8 line  116: 386e6a69                 ldrb w9, [x19, x14]
+  0x4001cc line  117: 5100c129                 sub w9, w9, #0x30
+  0x4001d0 line  118: 7100253f                 cmp w9, #9
+  0x4001d4 line  119: 54000468                 b.hi #0x400260
+  0x4001d8 line  120: 9b1025ad                 madd x13, x13, x16, x9
+  0x4001dc line  121: 910005ce                 add x14, x14, #1
+  0x4001e0 line  122: 17fffff8                 b #0x4001c0
+  0x4001e4 line  123: b400004f                 cbz x15, #0x4001ec
+  0x4001e8 line  124: cb0d03ed                 neg x13, x13
+  0x4001ec line  125: f83a7aed                 str x13, [x23, x26, lsl #3]
+  0x4001f0 line  126: 9100075a                 add x26, x26, #1
+  0x4001f4 line  127: 17ffffa2                 b #0x40007c
+  0x4001f8 line  128: f100075f                 cmp x26, #1
+  0x4001fc line  129: 54000321                 b.ne #0x400260
+  0x400200 line  130: f94002ed                 ldr x13, [x23]
+  0x400204 line  131: aa0d03e1                 mov x1, x13
+  0x400208 line  132: b6f8008d                 tbz x13, #0x3f, #0x400218
+  0x40020c line  133: 528005a0                 mov w0, #0x2d
+  0x400210 line  134: 380016c0                 strb w0, [x22], #1
+  0x400214 line  135: cb0d03e1                 neg x1, x13
+  0x400218 line  136: 91006382                 add x2, x28, #0x18
+  0x40021c line  137: aa0203e3                 mov x3, x2
+  0x400220 line  138: d2800144                 mov x4, #0xa
+  0x400224 line  139: 9ac40825                 udiv x5, x1, x4
+  0x400228 line  140: 9b0484a6                 msub x6, x5, x4, x1
+  0x40022c line  141: 9100c0c6                 add x6, x6, #0x30
+  0x400230 line  142: d1000463                 sub x3, x3, #1
+  0x400234 line  143: 39000066                 strb w6, [x3]
+  0x400238 line  144: aa0503e1                 mov x1, x5
+  0x40023c line  145: b5ffff41                 cbnz x1, #0x400224
+  0x400240 line  146: 39400066                 ldrb w6, [x3]
+  0x400244 line  147: 380016c6                 strb w6, [x22], #1
+  0x400248 line  148: 91000463                 add x3, x3, #1
+  0x40024c line  149: eb02007f                 cmp x3, x2
+  0x400250 line  150: 54ffff83                 b.lo #0x400240
+  0x400254 line  151: 52800146                 mov w6, #0xa
+  0x400258 line  152: 380016c6                 strb w6, [x22], #1
+  0x40025c line  153: 17ffff79                 b #0x400040
+  0x400260 line  154: 528e4ca0                 mov w0, #0x7265
+  0x400264 line  155: 72adee40                 movk w0, #0x6f72, lsl #16
+  0x400268 line  156: b90002c0                 str w0, [x22]
+  0x40026c line  157: 52814e40                 mov w0, #0xa72
+  0x400270 line  158: 790008c0                 strh w0, [x6, #4]
+  0x400274 line  159: 91001ad6                 add x22, x22, #6
+  0x400278 line  160: 17ffff72                 b #0x400040
+  0x40027c line  161: d2a00cc1                 mov x1, #0x660000
+  0x400280 line  162: cb0102c2                 sub x2, x22, x1
+  0x400284 line  163: b4000122                 cbz x2, #0x4002a8
+  0x400288 line  164: d2800020                 mov x0, #1
+  0x40028c line  165: d2800808                 mov x8, #0x40
+  0x400290 line  166: d4000001                 svc #0
+  0x400294 line  167: f100041f                 cmp x0, #1
+  0x400298 line  168: 5400008b                 b.lt #0x4002a8
+  0x40029c line  169: 8b000021                 add x1, x1, x0
+  0x4002a0 line  170: cb000042                 sub x2, x2, x0
+  0x4002a4 line  171: 17fffff8                 b #0x400284
+  0x4002a8 line  172: d2800000                 mov x0, #0
+  0x4002ac line  173: d2800ba8                 mov x8, #0x5d
+  0x4002b0 line  174: d4000001                 svc #0
+</failure>
+Write a corrected, complete version. Same output format; output only the program text.

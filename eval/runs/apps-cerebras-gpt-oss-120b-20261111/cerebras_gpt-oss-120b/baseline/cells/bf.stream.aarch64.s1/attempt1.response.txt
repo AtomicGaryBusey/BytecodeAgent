@@ -1,0 +1,231 @@
+	.global _start
+	.text
+	.align 2
+
+// constants
+	.equ SYS_READ, 63
+	.equ SYS_WRITE, 64
+	.equ SYS_EXIT, 93
+	.equ STDIN, 0
+	.equ STDOUT, 1
+	.equ MAX_INPUT, 65536
+	.equ TAPE_SIZE, 30000
+	.equ MAX_PROG, 65536
+	.equ MAX_STACK, 1000
+
+_start:
+	// x10 = address of input buffer
+	adr	x10, input_buf
+	// x11 = address of tape
+	adr	x11, tape
+	// x12 = address of match table
+	adr	x12, match_table
+	// x13 = address of bracket stack
+	adr	x13, bracket_stack
+
+	// read whole stdin into input_buf
+	mov	x0, #STDIN
+	mov	x1, x10
+	mov	x2, #MAX_INPUT
+	mov	x8, #SYS_READ
+	svc	#0
+	cmp	x0, #0
+	beq	read_done
+	mov	x5, x0			// offset = bytes read
+read_loop:
+	mov	x0, #STDIN
+	add	x1, x10, x5
+	mov	x2, #MAX_INPUT
+	sub	x2, x2, x5
+	mov	x8, #SYS_READ
+	svc	#0
+	cmp	x0, #0
+	beq	read_done
+	add	x5, x5, x0
+	b	read_loop
+read_done:
+	// x5 = total_input_len
+	mov	x6, #0			// program length counter (ip)
+	mov	x7, #0			// found_excl flag
+	mov	x8, x5			// total_len copy
+find_excl:
+	cmp	x6, x8
+	bge	no_excl
+	ldrb	w2, [x10, x6]
+	cmp	w2, #0x21		// '!'
+	bne	inc_find
+	mov	x7, #1
+	b	after_excl
+inc_find:
+	add	x6, x6, #1
+	b	find_excl
+no_excl:
+	// no '!' found
+	mov	x6, x5			// program_len = total_len
+after_excl:
+	// x6 = program_len
+	// compute input start pointer and remaining length
+	cmp	x7, #0
+	beq	set_input_empty
+	add	x9, x10, x6			// after program
+	add	x9, x9, #1			// skip '!'
+	sub	x14, x5, x6
+	sub	x14, x14, #1			// input_len = total_len - prog_len - 1
+	b	set_input_done
+set_input_empty:
+	mov	x9, x10			// input_ptr points to buffer (won't be used)
+	mov	x14, #0			// input_len = 0
+set_input_done:
+	// x9 = input_ptr, x14 = input_len
+
+	// bracket parsing and match table filling
+	mov	x15, #0			// ip = 0
+	mov	x16, #0			// stack_ptr = 0
+parse_loop:
+	cmp	x15, x6
+	bge	parse_done
+	ldrb	w2, [x10, x15]		// w2 = program byte
+	cmp	w2, #'['
+	beq	handle_open
+	cmp	w2, #']'
+	beq	handle_close
+	// other char
+	add	x15, x15, #1
+	b	parse_loop
+handle_open:
+	// store ip onto stack
+	add	x0, x13, x16, LSL #2
+	str	w15, [x0]
+	add	x16, x16, #1
+	add	x15, x15, #1
+	b	parse_loop
+handle_close:
+	cmp	x16, #0
+	beq	bracket_error
+	sub	x16, x16, #1
+	add	x0, x13, x16, LSL #2
+	ldr	w1, [x0]			// w1 = matching '[' index
+	// forward jump
+	add	x2, x12, x1, LSL #2
+	str	w15, [x2]
+	// backward jump
+	add	x2, x12, x15, LSL #2
+	str	w1, [x2]
+	add	x15, x15, #1
+	b	parse_loop
+bracket_error:
+	// exit with status 1
+	mov	x0, #1
+	mov	x8, #SYS_EXIT
+	svc	#0
+parse_done:
+	cmp	x16, #0
+	bne	bracket_error
+
+	// execution
+	mov	x17, #0			// exec_ip = 0
+exec_loop:
+	cmp	x17, x6
+	bge	exit_success
+	ldrb	w2, [x10, x17]		// w2 = command
+	cmp	w2, #'>'
+	beq	cmd_inc_ptr
+	cmp	w2, #'<'
+	beq	cmd_dec_ptr
+	cmp	w2, #'+'
+	beq	cmd_inc_cell
+	cmp	w2, #'-'
+	beq	cmd_dec_cell
+	cmp	w2, #'.'
+	beq	cmd_output
+	cmp	w2, #','
+	beq	cmd_input
+	cmp	w2, #'['
+	beq	cmd_br_open
+	cmp	w2, #']'
+	beq	cmd_br_close
+	// comment char
+	add	x17, x17, #1
+	b	exec_loop
+
+cmd_inc_ptr:
+	add	x11, x11, #1
+	add	x17, x17, #1
+	b	exec_loop
+cmd_dec_ptr:
+	sub	x11, x11, #1
+	add	x17, x17, #1
+	b	exec_loop
+cmd_inc_cell:
+	ldrb	w3, [x11]
+	add	w3, w3, #1
+	and	w3, w3, #0xff
+	strb	w3, [x11]
+	add	x17, x17, #1
+	b	exec_loop
+cmd_dec_cell:
+	ldrb	w3, [x11]
+	sub	w3, w3, #1
+	and	w3, w3, #0xff
+	strb	w3, [x11]
+	add	x17, x17, #1
+	b	exec_loop
+cmd_output:
+	mov	x0, #STDOUT
+	mov	x1, x11
+	mov	x2, #1
+	mov	x8, #SYS_WRITE
+	svc	#0
+	add	x17, x17, #1
+	b	exec_loop
+cmd_input:
+	cmp	x14, #0
+	beq	input_eof
+	ldrb	w3, [x9]
+	strb	w3, [x11]
+	add	x9, x9, #1
+	sub	x14, x14, #1
+	b	input_done
+input_eof:
+	mov	w3, #0
+	strb	w3, [x11]
+input_done:
+	add	x17, x17, #1
+	b	exec_loop
+cmd_br_open:
+	ldrb	w3, [x11]
+	cbnz	w3, br_open_skip
+	// jump forward
+	add	x0, x12, x17, LSL #2
+	ldr	w1, [x0]
+	add	x17, x1, #1
+	b	exec_loop
+br_open_skip:
+	add	x17, x17, #1
+	b	exec_loop
+cmd_br_close:
+	ldrb	w3, [x11]
+	cbnz	w3, br_close_jump
+	add	x17, x17, #1
+	b	exec_loop
+br_close_jump:
+	add	x0, x12, x17, LSL #2
+	ldr	w1, [x0]
+	add	x17, x1, #1
+	b	exec_loop
+
+exit_success:
+	mov	x0, #0
+	mov	x8, #SYS_EXIT
+	svc	#0
+
+	.section .bss
+	.align 3
+input_buf:
+	.zero	MAX_INPUT
+tape:
+	.zero	TAPE_SIZE
+match_table:
+	.zero	MAX_PROG*4
+bracket_stack:
+	.zero	MAX_STACK*4

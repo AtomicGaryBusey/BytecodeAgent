@@ -1,0 +1,220 @@
+.globl _start
+
+.text
+
+// ---------------------------------------------------------------
+// cmpl: compare line x0 with line x1
+//   x19 = input buffer, x22 = offsets array, x23 = lengths array
+//   returns in w0: <0, 0, >0
+//   clobbers x0-x8
+// ---------------------------------------------------------------
+cmpl:
+    ldr     w2, [x22, x0, lsl #2]       // off a
+    ldr     w3, [x23, x0, lsl #2]       // len a
+    ldr     w4, [x22, x1, lsl #2]       // off b
+    ldr     w5, [x23, x1, lsl #2]       // len b
+    add     x2, x19, x2
+    add     x4, x19, x4
+    cmp     w3, w5
+    csel    w6, w3, w5, ls              // n = min(len a, len b)
+cmpl_loop:
+    cbz     w6, cmpl_eq
+    ldrb    w7, [x2], #1
+    ldrb    w8, [x4], #1
+    subs    w7, w7, w8
+    b.ne    cmpl_diff
+    sub     w6, w6, #1
+    b       cmpl_loop
+cmpl_eq:
+    sub     w0, w3, w5
+    ret
+cmpl_diff:
+    mov     w0, w7
+    ret
+
+_start:
+    adrp    x19, buf
+    add     x19, x19, :lo12:buf
+    adrp    x22, offs
+    add     x22, x22, :lo12:offs
+    adrp    x23, lens
+    add     x23, x23, :lo12:lens
+    adrp    x24, arrA
+    add     x24, x24, :lo12:arrA
+    adrp    x25, arrB
+    add     x25, x25, :lo12:arrB
+
+    // ---------------- read all of standard input ----------------
+    mov     x20, #0
+rd_loop:
+    mov     x2, #32768
+    sub     x2, x2, x20
+    cbz     x2, rd_done
+    mov     x0, #0
+    add     x1, x19, x20
+    mov     x8, #63
+    svc     #0
+    cmp     x0, #0
+    b.le    rd_done
+    add     x20, x20, x0
+    b       rd_loop
+rd_done:
+
+    // ---------------- split into lines ----------------
+    mov     x21, #0                     // number of lines
+    mov     x9, #0                      // position
+    mov     x10, #0                     // start of current line
+sp_loop:
+    cmp     x9, x20
+    b.hs    sp_tail
+    ldrb    w11, [x19, x9]
+    cmp     w11, #10
+    b.ne    sp_next
+    str     w10, [x22, x21, lsl #2]
+    sub     x12, x9, x10
+    str     w12, [x23, x21, lsl #2]
+    add     x21, x21, #1
+    add     x10, x9, #1
+sp_next:
+    add     x9, x9, #1
+    b       sp_loop
+sp_tail:
+    cmp     x10, x20
+    b.hs    sp_done
+    str     w10, [x22, x21, lsl #2]
+    sub     x12, x20, x10
+    str     w12, [x23, x21, lsl #2]
+    add     x21, x21, #1
+sp_done:
+
+    // ---------------- initialise index array ----------------
+    mov     x9, #0
+ini_loop:
+    cmp     x9, x21
+    b.hs    ini_done
+    str     w9, [x24, x9, lsl #2]
+    add     x9, x9, #1
+    b       ini_loop
+ini_done:
+
+    mov     x26, x24                    // src
+    mov     x27, x25                    // dst
+
+    // ---------------- bottom-up merge sort ----------------
+    mov     x28, #1                     // width
+ms_width:
+    cmp     x28, x21
+    b.hs    ms_done
+    mov     x9, #0                      // lo
+ms_run:
+    cmp     x9, x21
+    b.hs    ms_pass_end
+    add     x10, x9, x28                // mid
+    cmp     x10, x21
+    csel    x10, x10, x21, lo
+    add     x11, x9, x28
+    add     x11, x11, x28               // hi
+    cmp     x11, x21
+    csel    x11, x11, x21, lo
+    mov     x12, x9                     // k (dst)
+    mov     x13, x9                     // p
+    mov     x14, x10                    // q
+mg_loop:
+    cmp     x13, x10
+    b.hs    mg_qonly
+    cmp     x14, x11
+    b.hs    mg_takep
+    ldr     w0, [x26, x13, lsl #2]
+    ldr     w1, [x26, x14, lsl #2]
+    bl      cmpl
+    cmp     w0, #0
+    b.gt    mg_takeq
+mg_takep:
+    ldr     w15, [x26, x13, lsl #2]
+    str     w15, [x27, x12, lsl #2]
+    add     x13, x13, #1
+    add     x12, x12, #1
+    b       mg_loop
+mg_qonly:
+    cmp     x14, x11
+    b.hs    mg_end
+mg_takeq:
+    ldr     w15, [x26, x14, lsl #2]
+    str     w15, [x27, x12, lsl #2]
+    add     x14, x14, #1
+    add     x12, x12, #1
+    b       mg_loop
+mg_end:
+    lsl     x15, x28, #1
+    add     x9, x9, x15
+    b       ms_run
+ms_pass_end:
+    mov     x15, x26
+    mov     x26, x27
+    mov     x27, x15
+    lsl     x28, x28, #1
+    b       ms_width
+ms_done:
+
+    // ---------------- build the output ----------------
+    adrp    x17, outbuf
+    add     x17, x17, :lo12:outbuf
+    mov     x16, #0                     // output length
+    mov     x9, #0
+ou_loop:
+    cmp     x9, x21
+    b.hs    ou_done
+    ldr     w0, [x26, x9, lsl #2]
+    ldr     w1, [x22, x0, lsl #2]
+    ldr     w2, [x23, x0, lsl #2]
+    add     x1, x19, x1
+ou_copy:
+    cbz     w2, ou_nl
+    ldrb    w3, [x1], #1
+    strb    w3, [x17, x16]
+    add     x16, x16, #1
+    sub     w2, w2, #1
+    b       ou_copy
+ou_nl:
+    mov     w3, #10
+    strb    w3, [x17, x16]
+    add     x16, x16, #1
+    add     x9, x9, #1
+    b       ou_loop
+ou_done:
+
+    // ---------------- write the output ----------------
+    mov     x12, #0
+wr_loop:
+    cmp     x12, x16
+    b.hs    wr_done
+    mov     x0, #1
+    add     x1, x17, x12
+    sub     x2, x16, x12
+    mov     x8, #64
+    svc     #0
+    cmp     x0, #0
+    b.le    wr_done
+    add     x12, x12, x0
+    b       wr_loop
+wr_done:
+
+    mov     x0, #0
+    mov     x8, #93
+    svc     #0
+    b       wr_done
+
+.bss
+.balign 8
+buf:
+    .zero   32768
+offs:
+    .zero   4096
+lens:
+    .zero   4096
+arrA:
+    .zero   4096
+arrB:
+    .zero   4096
+outbuf:
+    .zero   34816

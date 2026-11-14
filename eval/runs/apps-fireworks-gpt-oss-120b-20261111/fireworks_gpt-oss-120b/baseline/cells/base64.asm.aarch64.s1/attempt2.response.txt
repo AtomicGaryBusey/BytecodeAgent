@@ -1,0 +1,220 @@
+.globl _start
+.text
+.align 2
+
+.equ SYS_READ, 63
+.equ SYS_WRITE, 64
+.equ SYS_EXIT, 93
+
+.equ MAX_INPUT, 49152
+.equ LINE_MAX, 76
+.equ NEWLINE, 10
+.equ EQ_CHAR, 61
+
+_start:
+    // pointers to tables and buffers
+    adr x16, b64_table          // base64 table
+    adr x17, input_buf          // input buffer start
+    adr x18, output_buf         // output buffer (write pointer)
+
+    // read all input
+    mov x19, #0                 // total bytes read
+    mov x20, #MAX_INPUT         // remaining space in input buffer
+
+read_loop:
+    mov x0, #0                  // fd = stdin
+    add x1, x17, x19            // buf = input_buf + total_read
+    mov x2, x20                 // count
+    mov x8, #SYS_READ
+    svc #0
+    cbz x0, read_done           // EOF
+
+    add x19, x19, x0            // total_read += n
+    sub x20, x20, x0            // remaining -= n
+    cbnz x20, read_loop
+read_done:
+
+    // if no input, exit silently
+    cbz x19, exit
+
+    // set up processing registers
+    mov x21, x17                // src pointer
+    mov x22, x19                // bytes remaining
+    mov x23, #0                 // line character count
+
+encode_loop:
+    cmp x22, #3
+    blt encode_tail
+
+    // load three bytes
+    ldrb w0, [x21], #1
+    ldrb w1, [x21], #1
+    ldrb w2, [x21], #1
+    sub x22, x22, #3
+
+    // char 0
+    ubfx x3, x0, #2, #6
+    ldrb w4, [x16, x3]
+    strb w4, [x18], #1
+    add x23, x23, #1
+    cmp x23, #LINE_MAX
+    beq output_nl
+
+    // char 1
+    and x4, x0, #0x3
+    lsl x4, x4, #4
+    ubfx x5, x1, #4, #4
+    orr x4, x4, x5
+    ldrb w4, [x16, x4]
+    strb w4, [x18], #1
+    add x23, x23, #1
+    cmp x23, #LINE_MAX
+    beq output_nl
+
+    // char 2
+    and x5, x1, #0xF
+    lsl x5, x5, #2
+    ubfx x6, x2, #6, #2
+    orr x5, x5, x6
+    ldrb w4, [x16, x5]
+    strb w4, [x18], #1
+    add x23, x23, #1
+    cmp x23, #LINE_MAX
+    beq output_nl
+
+    // char 3
+    and x6, x2, #0x3F
+    ldrb w4, [x16, x6]
+    strb w4, [x18], #1
+    add x23, x23, #1
+    cmp x23, #LINE_MAX
+    beq output_nl
+
+    b encode_loop
+
+encode_tail:
+    cmp x22, #0
+    beq finish_output
+    cmp x22, #1
+    beq tail_one
+
+    // tail two bytes
+tail_two:
+    ldrb w0, [x21]          // b0
+    ldrb w1, [x21, #1]      // b1
+
+    // char 0
+    ubfx x3, x0, #2, #6
+    ldrb w4, [x16, x3]
+    strb w4, [x18], #1
+    add x23, x23, #1
+    cmp x23, #LINE_MAX
+    beq output_nl
+
+    // char 1
+    and x4, x0, #0x3
+    lsl x4, x4, #4
+    ubfx x5, x1, #4, #4
+    orr x4, x4, x5
+    ldrb w4, [x16, x4]
+    strb w4, [x18], #1
+    add x23, x23, #1
+    cmp x23, #LINE_MAX
+    beq output_nl
+
+    // char 2 (from b1 low bits)
+    and x5, x1, #0xF
+    lsl x5, x5, #2
+    ldrb w4, [x16, x5]
+    strb w4, [x18], #1
+    add x23, x23, #1
+    cmp x23, #LINE_MAX
+    beq output_nl
+
+    // padding '='
+    mov w4, #EQ_CHAR
+    strb w4, [x18], #1
+    add x23, x23, #1
+    cmp x23, #LINE_MAX
+    beq output_nl
+
+    b finish_output
+
+tail_one:
+    ldrb w0, [x21]          // b0
+
+    // char 0
+    ubfx x3, x0, #2, #6
+    ldrb w4, [x16, x3]
+    strb w4, [x18], #1
+    add x23, x23, #1
+    cmp x23, #LINE_MAX
+    beq output_nl
+
+    // char 1
+    and x4, x0, #0x3
+    lsl x4, x4, #4
+    ldrb w4, [x16, x4]
+    strb w4, [x18], #1
+    add x23, x23, #1
+    cmp x23, #LINE_MAX
+    beq output_nl
+
+    // two pad chars
+    mov w4, #EQ_CHAR
+    strb w4, [x18], #1
+    add x23, x23, #1
+    cmp x23, #LINE_MAX
+    beq output_nl
+
+    mov w4, #EQ_CHAR
+    strb w4, [x18], #1
+    add x23, x23, #1
+    cmp x23, #LINE_MAX
+    beq output_nl
+
+    b finish_output
+
+output_nl:
+    mov w4, #NEWLINE
+    strb w4, [x18], #1
+    mov x23, #0
+    b encode_loop
+
+finish_output:
+    // if line not empty, emit final newline
+    cmp x23, #0
+    beq write_output
+    mov w4, #NEWLINE
+    strb w4, [x18], #1
+
+write_output:
+    // length = x18 - output_buf
+    adr x9, output_buf
+    sub x10, x18, x9          // length
+
+    cbz x10, exit
+
+    // write(fd=1, buf=output_buf, count=length)
+    mov x0, #1
+    mov x1, x9
+    mov x2, x10
+    mov x8, #SYS_WRITE
+    svc #0
+
+exit:
+    mov x8, #SYS_EXIT
+    mov x0, #0
+    svc #0
+
+.section .rodata
+.align 2
+b64_table:
+    .ascii "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/"
+
+.bss
+.align 4
+input_buf:
+    .zero MAX_INPUT
+output_buf:
+    .zero 70000

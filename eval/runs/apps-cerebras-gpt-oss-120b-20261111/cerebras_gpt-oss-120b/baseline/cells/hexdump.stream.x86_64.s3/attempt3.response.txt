@@ -1,0 +1,206 @@
+.globl _start
+.equ MAX_BUF, 65536
+
+.section .rodata
+hex_digits:
+    .ascii "0123456789abcdef"
+
+.bss
+.align 16
+buf:
+    .zero MAX_BUF
+line_buf:
+    .zero 80
+
+.text
+_start:
+    # r14 = input buffer base, r9 = hex table base
+    lea r14, [rip + buf]
+    lea r9,  [rip + hex_digits]
+
+    xor r12, r12          # total_len = 0
+    xor r13, r13          # offset = 0
+    mov rbx, r14          # rbx = read pointer
+
+read_loop:
+    mov rax, 0            # sys_read
+    mov rdi, 0
+    mov rsi, rbx
+    mov rdx, MAX_BUF
+    sub rdx, r12          # remaining space
+    syscall
+    test rax, rax
+    jz read_done
+    add r12, rax          # total_len += bytes_read
+    add rbx, rax          # advance read pointer
+    jmp read_loop
+read_done:
+
+row_loop:
+    cmp r13, r12
+    jae after_rows        # if offset >= total_len, done
+
+    mov rax, r12
+    sub rax, r13          # remaining = total_len - offset
+    mov rcx, 16
+    cmp rax, rcx
+    cmovb rcx, rax        # rcx = row_len (0..16)
+    mov r10, rcx          # preserve row_len for later
+
+    # line buffer pointer in rsi
+    lea rsi, [rip + line_buf]
+
+    # ----- offset hex (8 digits) -----
+    mov rbx, r13          # rbx = offset value
+    mov r8, 8
+off_hex_loop:
+    mov rax, rbx
+    shr rax, 28
+    and rax, 0xF
+    movzx rdx, al
+    mov al, [r9 + rdx]    # hex char
+    mov [rsi], al
+    inc rsi
+    shl rbx, 4
+    dec r8
+    jne off_hex_loop
+
+    # two spaces after offset
+    mov byte ptr [rsi], ' '
+    inc rsi
+    mov byte ptr [rsi], ' '
+    inc rsi
+
+    # ----- byte area (16 slots) -----
+    xor r8, r8            # i = 0
+byte_area_loop:
+    cmp r8, 16
+    je after_byte_area
+
+    cmp r8, rcx
+    jl byte_present
+    # pad three spaces
+    mov byte ptr [rsi], ' '
+    inc rsi
+    mov byte ptr [rsi], ' '
+    inc rsi
+    mov byte ptr [rsi], ' '
+    inc rsi
+    jmp after_byte_store
+byte_present:
+    # load byte = buf[offset + i]
+    mov rax, r13
+    add rax, r8
+    mov bl, [r14 + rax]
+
+    # high nibble
+    movzx rdx, bl
+    shr rdx, 4
+    and rdx, 0xF
+    mov al, [r9 + rdx]
+    mov [rsi], al
+    inc rsi
+    # low nibble
+    movzx rdx, bl
+    and rdx, 0xF
+    mov al, [r9 + rdx]
+    mov [rsi], al
+    inc rsi
+    # space after byte
+    mov byte ptr [rsi], ' '
+    inc rsi
+after_byte_store:
+    inc r8
+    cmp r8, 8
+    jne byte_area_loop
+    # extra space after the 8th byte slot
+    mov byte ptr [rsi], ' '
+    inc rsi
+    jmp byte_area_loop
+
+after_byte_area:
+    # space and '|'
+    mov byte ptr [rsi], ' '
+    inc rsi
+    mov byte ptr [rsi], '|'
+    inc rsi
+
+    # ----- ASCII column -----
+    xor r8, r8            # i = 0
+ascii_loop:
+    cmp r8, r10
+    je after_ascii
+    mov rax, r13
+    add rax, r8
+    mov bl, [r14 + rax]
+
+    movzx eax, bl
+    cmp al, 0x20
+    jl not_printable
+    cmp al, 0x7e
+    jg not_printable
+    # printable
+    mov [rsi], bl
+    inc rsi
+    jmp ascii_next
+not_printable:
+    mov byte ptr [rsi], '.'
+    inc rsi
+ascii_next:
+    inc r8
+    jmp ascii_loop
+after_ascii:
+    # closing '|' and newline
+    mov byte ptr [rsi], '|'
+    inc rsi
+    mov byte ptr [rsi], 0x0a
+    inc rsi
+
+    # length = rsi - line_buf
+    lea rbx, [rip + line_buf]
+    mov rdx, rsi
+    sub rdx, rbx          # rdx = length
+    mov rsi, rbx          # rsi = buffer addr
+
+    # write line
+    mov rax, 1            # sys_write
+    mov rdi, 1            # stdout
+    syscall
+
+    # advance offset
+    add r13, r10          # offset += row_len
+    jmp row_loop
+
+after_rows:
+    # ----- final total offset line -----
+    lea rsi, [rip + line_buf]
+    mov rbx, r12          # total length
+    mov r8, 8
+off_hex_final:
+    mov rax, rbx
+    shr rax, 28
+    and rax, 0xF
+    movzx rdx, al
+    mov al, [r9 + rdx]
+    mov [rsi], al
+    inc rsi
+    shl rbx, 4
+    dec r8
+    jne off_hex_final
+
+    mov byte ptr [rsi], 0x0a
+    inc rsi
+
+    lea rbx, [rip + line_buf]
+    mov rdx, rsi
+    sub rdx, rbx          # length
+    mov rsi, rbx
+
+    mov rax, 1            # sys_write
+    mov rdi, 1
+    syscall
+
+    # exit
+    mov rax, 60           # sys_exit
+    xor rdi, rdi
+    syscall

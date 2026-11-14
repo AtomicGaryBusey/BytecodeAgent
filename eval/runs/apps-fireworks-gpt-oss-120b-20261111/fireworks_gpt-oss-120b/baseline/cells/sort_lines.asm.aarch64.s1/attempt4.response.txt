@@ -1,0 +1,289 @@
+	.globl _start
+	.text
+	.align 4
+
+// constants
+MAX_INPUT   = 32768
+MAX_LINES   = 1000
+
+_start:
+	// read all input into input_buf
+	mov	w19, #0                // total bytes read (input_len)
+
+read_loop:
+	mov	x0, #0                // fd = stdin
+	adrp	x1, input_buf
+	add	x1, x1, :lo12:input_buf
+	mov	w2, #MAX_INPUT
+	mov	x8, #63               // sys_read
+	svc	#0
+	cbnz	x0, have_data
+	// EOF reached
+	b	read_done
+have_data:
+	add	w19, w19, w0          // accumulate length
+	cmp	w19, #MAX_INPUT
+	blt	read_loop
+	// reached max input size; stop reading
+read_done:
+	// store input_len
+	adrp	x0, input_len
+	add	x0, x0, :lo12:input_len
+	str	w19, [x0]
+
+	// parse lines
+	mov	w20, #0                // start offset of current line
+	mov	w21, #0                // line count
+	adrp	x0, input_len
+	add	x0, x0, :lo12:input_len
+	ldr	w22, [x0]             // total length
+	cbnz	w22, parse_start
+	b	no_lines
+
+parse_start:
+	mov	w23, #0                // current position
+
+parse_loop:
+	cmp	w23, w22
+	bge	parse_done
+
+	adrp	x0, input_buf
+	add	x0, x0, :lo12:input_buf
+	add	x0, x0, w23, uxtw
+	ldrb	w24, [x0]
+
+	cmp	w24, #10              // newline?
+	bne	not_nl
+
+	// newline found: record line [w20, w23)
+	sub	w25, w23, w20          // length = pos - start
+	adrp	x0, line_off
+	add	x0, x0, :lo12:line_off
+	add	x0, x0, w21, uxtw #2
+	str	w20, [x0]              // offset
+	adrp	x1, line_len
+	add	x1, x1, :lo12:line_len
+	add	x1, x1, w21, uxtw #2
+	str	w25, [x1]              // length
+	add	w21, w21, #1           // line count++
+	add	w20, w23, #1           // new start = pos+1
+	add	w23, w23, #1           // advance past newline
+	b	parse_loop
+
+not_nl:
+	add	w23, w23, #1
+	b	parse_loop
+
+parse_done:
+	// final line without trailing newline?
+	cmp	w20, w22
+	bge	no_final_line
+	sub	w25, w22, w20          // length = total - start
+	adrp	x0, line_off
+	add	x0, x0, :lo12:line_off
+	add	x0, x0, w21, uxtw #2
+	str	w20, [x0]
+	adrp	x1, line_len
+	add	x1, x1, :lo12:line_len
+	add	x1, x1, w21, uxtw #2
+	str	w25, [x1]
+	add	w21, w21, #1
+
+no_final_line:
+	// store line count
+	adrp	x0, line_cnt
+	add	x0, x0, :lo12:line_cnt
+	str	w21, [x0]
+
+no_lines:
+	// sort lines with bubble sort (if count > 1)
+	adrp	x20, input_buf
+	add	x20, x20, :lo12:input_buf   // base of input buffer
+
+	adrp	x0, line_cnt
+	add	x0, x0, :lo12:line_cnt
+	ldr	w26, [x0]                // n = line count
+	cmp	w26, #1
+	ble	sort_done
+
+	mov	w27, #0                 // i = 0
+
+outer_loop:
+	sub	w28, w26, #1            // n-1
+	cmp	w27, w28
+	bge	sort_done
+
+	// limit = n - i - 1
+	sub	w29, w26, w27
+	sub	w29, w29, #1            // number of comparisons this pass
+	mov	w30, #0                 // j = 0
+
+inner_loop:
+	cmp	w30, w29
+	bge	inner_done
+
+	add	w9, w30, #1             // b index = j+1
+
+	// load a offset
+	adrp	x0, line_off
+	add	x0, x0, :lo12:line_off
+	add	x0, x0, w30, uxtw #2
+	ldr	w5, [x0]                // a_off
+
+	// load b offset
+	adrp	x1, line_off
+	add	x1, x1, :lo12:line_off
+	add	x1, x1, w9, uxtw #2
+	ldr	w6, [x1]                // b_off
+
+	// load a length
+	adrp	x2, line_len
+	add	x2, x2, :lo12:line_len
+	add	x2, x2, w30, uxtw #2
+	ldr	w7, [x2]                // a_len
+
+	// load b length
+	adrp	x3, line_len
+	add	x3, x3, :lo12:line_len
+	add	x3, x3, w9, uxtw #2
+	ldr	w8, [x3]                // b_len
+
+	// min_len = min(a_len, b_len)
+	cmp	w7, w8
+	csel	w10, w7, w8, lo        // unsigned lower -> min
+
+	// pointers to data
+	add	x4, x20, w5, uxtw       // a_ptr
+	add	x5, x20, w6, uxtw       // b_ptr
+	mov	w11, w10                // remaining bytes to compare
+
+	cbnz	w11, compare_loop
+
+compare_len_done:
+	// all min bytes equal, decide by length
+	cmp	w7, w8
+	bgt	need_swap               // a_len > b_len -> a > b
+	b	inner_next               // a <= b, no swap
+
+compare_loop:
+	ldrb	w12, [x4], #1
+	ldrb	w13, [x5], #1
+	cmp	w12, w13
+	bne	diff_found
+	subs	w11, w11, #1
+	bne	compare_loop
+
+	b	compare_len_done
+
+diff_found:
+	cmp	w12, w13
+	bgt	need_swap               // a > b
+	b	inner_next               // a <= b
+
+need_swap:
+	// swap offsets
+	adrp	x0, line_off
+	add	x0, x0, :lo12:line_off
+	add	x0, x0, w30, uxtw #2
+	str	w6, [x0]                // b_off into a slot
+	adrp	x1, line_off
+	add	x1, x1, :lo12:line_off
+	add	x1, x1, w9, uxtw #2
+	str	w5, [x1]                // a_off into b slot
+
+	// swap lengths
+	adrp	x2, line_len
+	add	x2, x2, :lo12:line_len
+	add	x2, x2, w30, uxtw #2
+	str	w8, [x2]                // b_len into a slot
+	adrp	x3, line_len
+	add	x3, x3, :lo12:line_len
+	add	x3, x3, w9, uxtw #2
+	str	w7, [x3]                // a_len into b slot
+
+inner_next:
+	add	w30, w30, #1
+	b	inner_loop
+
+inner_done:
+	add	w27, w27, #1
+	b	outer_loop
+
+sort_done:
+	// output sorted lines
+	adrp	x0, line_cnt
+	add	x0, x0, :lo12:line_cnt
+	ldr	w26, [x0]                // n
+	cbnz	w26, do_output
+	b	exit_program
+
+do_output:
+	mov	w31, #0                 // index = 0
+
+output_loop:
+	cmp	w31, w26
+	bge	output_done
+
+	// load offset
+	adrp	x0, line_off
+	add	x0, x0, :lo12:line_off
+	add	x0, x0, w31, uxtw #2
+	ldr	w5, [x0]                // off
+
+	// load length
+	adrp	x1, line_len
+	add	x1, x1, :lo12:line_len
+	add	x1, x1, w31, uxtw #2
+	ldr	w6, [x1]                // len
+
+	// write line (if len > 0)
+	cbnz	w6, write_line
+
+write_newline:
+	// write newline
+	mov	x0, #1                 // stdout
+	adrp	x1, newline_buf
+	add	x1, x1, :lo12:newline_buf
+	mov	w2, #1
+	mov	x8, #64                // sys_write
+	svc	#0
+	add	w31, w31, #1
+	b	output_loop
+
+write_line:
+	mov	x0, #1                 // stdout
+	add	x1, x20, w5, uxtw       // buf = input_buf + off
+	mov	w2, w6
+	mov	x8, #64                // sys_write
+	svc	#0
+	b	write_newline
+
+output_done:
+	// exit
+exit_program:
+	mov	w0, #0
+	mov	x8, #93                // sys_exit
+	svc	#0
+
+	// data sections
+	.section .data
+	.align 1
+newline_buf:
+	.byte 0x0a
+
+	.section .bss
+	.align 8
+input_buf:
+	.space MAX_INPUT
+	.align 4
+line_off:
+	.space MAX_LINES*4
+	.align 4
+line_len:
+	.space MAX_LINES*4
+	.align 4
+input_len:
+	.zero 4
+	.align 4
+line_cnt:
+	.zero 4

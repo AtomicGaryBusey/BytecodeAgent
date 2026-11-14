@@ -1,0 +1,218 @@
+    .section .bss
+    .align 8
+buf:
+    .skip 65536
+linebuf:
+    .skip 80
+
+    .section .text
+    .global _start
+_start:
+    // Load addresses of buffers
+    adr     x21, buf          // x21 = pointer to input buffer
+    adr     x6, linebuf       // x6 = pointer to line buffer (will be reused)
+    // Initialize counters
+    mov     x19, #0           // total_len = 0
+    mov     x22, x21          // x22 = current write pointer into buf
+
+read_loop:
+    mov     x0, #0            // fd = stdin
+    mov     x1, x22           // buf pointer
+    // remaining = 65536 - total_len
+    mov     x2, #65536
+    sub     x2, x2, x19
+    mov     x8, #63           // sys_read
+    svc     #0
+    cbz     x0, read_done     // if read returns 0, finished
+    // x0 = bytes read
+    add     x19, x19, x0      // total_len += bytes read
+    add     x22, x22, x0      // advance write pointer
+    b       read_loop
+
+read_done:
+    // x19 = total_len
+    mov     x20, #0           // offset = 0
+
+dump_loop:
+    cmp     x20, x19
+    bge     dump_done
+
+    // n = min(16, total_len - offset)
+    sub     x4, x19, x20
+    mov     x5, #16
+    cmp     x4, #16
+    bge     have_full
+    mov     x5, x4                // n = remaining bytes
+have_full:
+    // Prepare pointers for this line
+    // src_ptr = buf + offset
+    add     x10, x21, x20
+    mov     x15, x10             // save start of line bytes for ascii later
+    // x1 will be used as line buffer pointer, start at linebuf
+    mov     x1, x6
+
+    // ---- print offset (8 hex digits) ----
+    mov     x7, #8               // counter for 8 nibbles
+hex_offset_loop:
+    lsr     x8, x20, #28         // top nibble
+    and     x8, x8, #0xf
+    add     x9, x8, #48          // assume '0'
+    cmp     w8, #9
+    addgt   x9, x8, #87          // if >9 add 'a'-10
+    strb    w9, [x1], #1
+    lsl     x20, x20, #4
+    subs    x7, x7, #1
+    bne     hex_offset_loop
+    // Restore original offset value (we shifted it)
+    // (We shifted x20, so reconstruct it)
+    // Instead of shifting, we could have used a copy; easier: use a temporary copy.
+    // We'll redo: use a copy register for conversion.
+    // (Replace above with proper copy - see next block)
+
+    // (Redo offset conversion using copy register)
+
+    // Using x0 as copy of offset
+    mov     x0, x20
+    mov     x7, #8
+    // reset x1 to linebuf start again
+    mov     x1, x6
+hex_offset_loop2:
+    lsr     x8, x0, #28
+    and     x8, x8, #0xf
+    add     x9, x8, #48
+    cmp     w8, #9
+    addgt   x9, x8, #87
+    strb    w9, [x1], #1
+    lsl     x0, x0, #4
+    subs    x7, x7, #1
+    bne     hex_offset_loop2
+
+    // Two spaces after offset
+    mov     w9, #' '
+    strb    w9, [x1], #1
+    strb    w9, [x1], #1
+
+    // ---- hex byte column ----
+    mov     x11, #0               // i = 0
+hex_byte_loop:
+    cmp     x11, #16
+    bge     after_hex_bytes
+
+    cmp     x11, x5
+    bge     missing_byte
+
+    // have a real byte
+    ldrb    w12, [x10], #1
+    // high nibble
+    mov     w13, w12, lsr #4
+    and     w13, w13, #0xf
+    add     w14, w13, #48
+    cmp     w13, #9
+    addgt   w14, w13, #87
+    strb    w14, [x1], #1
+    // low nibble
+    and     w13, w12, #0xf
+    add     w14, w13, #48
+    cmp     w13, #9
+    addgt   w14, w13, #87
+    strb    w14, [x1], #1
+    // space after byte
+    mov     w14, #' '
+    strb    w14, [x1], #1
+    b       inc_hex_i
+
+missing_byte:
+    // three spaces for missing byte
+    mov     w14, #' '
+    strb    w14, [x1], #1
+    strb    w14, [x1], #1
+    strb    w14, [x1], #1
+    b       inc_hex_i
+
+inc_hex_i:
+    // extra space after the eighth byte (i == 7)
+    cmp     x11, #7
+    bne     inc_i
+    mov     w14, #' '
+    strb    w14, [x1], #1
+inc_i:
+    add     x11, x11, #1
+    b       hex_byte_loop
+
+after_hex_bytes:
+    // space then pipe
+    mov     w14, #' '
+    strb    w14, [x1], #1
+    mov     w14, #'|'
+    strb    w14, [x1], #1
+
+    // ---- ASCII column ----
+    mov     x11, #0
+ascii_loop:
+    cmp     x11, x5
+    bge     after_ascii
+    ldrb    w12, [x15], #1
+    cmp     w12, #0x20
+    blt     ascii_dot
+    cmp     w12, #0x7e
+    bgt     ascii_dot
+    // printable
+    strb    w12, [x1], #1
+    b       inc_ascii
+ascii_dot:
+    mov     w12, #'.'
+    strb    w12, [x1], #1
+inc_ascii:
+    add     x11, x11, #1
+    b       ascii_loop
+
+after_ascii:
+    // closing pipe and newline
+    mov     w14, #'|'
+    strb    w14, [x1], #1
+    mov     w14, #10               // '\n'
+    strb    w14, [x1], #1
+
+    // write the line
+    sub     x8, x1, x6            // length = current - linebuf
+    mov     x0, #1               // fd = stdout
+    mov     x1, x6               // buffer
+    mov     x2, x8               // count
+    mov     x8, #64              // sys_write
+    svc     #0
+
+    // advance offset by n
+    add     x20, x20, x5
+    b       dump_loop
+
+dump_done:
+    // ---- final total length line ----
+    mov     x1, x6               // line buffer start
+    // convert total_len (x19) to 8 hex digits
+    mov     x0, x19
+    mov     x7, #8
+hex_total_loop:
+    lsr     x8, x0, #28
+    and     x8, x8, #0xf
+    add     x9, x8, #48
+    cmp     w8, #9
+    addgt   x9, x8, #87
+    strb    w9, [x1], #1
+    lsl     x0, x0, #4
+    subs    x7, x7, #1
+    bne     hex_total_loop
+    // newline
+    mov     w9, #10
+    strb    w9, [x1], #1
+
+    sub     x8, x1, x6            // length
+    mov     x0, #1
+    mov     x1, x6
+    mov     x2, x8
+    mov     x8, #64
+    svc     #0
+
+    // exit
+    mov     x0, #0
+    mov     x8, #93
+    svc     #0

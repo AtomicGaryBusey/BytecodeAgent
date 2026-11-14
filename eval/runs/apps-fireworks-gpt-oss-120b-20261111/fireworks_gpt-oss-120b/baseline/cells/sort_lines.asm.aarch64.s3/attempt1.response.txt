@@ -1,0 +1,238 @@
+	.global _start
+	.text
+_start:
+	// buffer pointer in x19
+	adr	x19, buf
+
+	// total_len = 0
+	mov	x20, #0
+
+read_loop:
+	// x0 = fd 0
+	mov	x0, #0
+	// x1 = buf + total_len
+	add	x1, x19, x20
+	// x2 = BUFFER_SIZE - total_len
+	ldr	x2, =32768
+	sub	x2, x2, x20
+	// sys_read
+	mov	x8, #63
+	svc	#0
+	cmp	x0, #0
+	beq	read_done
+	// x0 = bytes read
+	add	x20, x20, x0
+	b	read_loop
+
+read_done:
+	// x20 now holds total_len
+	// parse lines
+	mov	w21, #0			// offset = 0
+	mov	w22, #0			// num_lines = 0
+
+parse_loop:
+	cmp	w21, w20
+	b.ge	parse_done
+
+	// start_offset = offset
+	mov	w23, w21
+
+scan_loop:
+	cmp	w21, w20
+	b.ge	no_newline
+	add	x0, x19, w21, uxtw
+	ldrb	w0, [x0]
+	cmp	w0, #10
+	b.eq	found_newline
+	add	w21, w21, #1
+	b	scan_loop
+
+found_newline:
+	// length = offset - start_offset
+	sub	w24, w21, w23
+	// store start_offset and length
+	lsl	w0, w22, #2
+	adr	x1, lines_off
+	str	w23, [x1, w0]
+	adr	x2, lines_len
+	str	w24, [x2, w0]
+	add	w22, w22, #1		// num_lines++
+	// skip newline
+	add	w21, w21, #1
+	b	parse_loop
+
+no_newline:
+	// final line (no terminating newline)
+	sub	w24, w21, w23		// length = offset - start_offset
+	cmp	w24, #0
+	beq	parse_done		// zero‑length final line is not stored
+	lsl	w0, w22, #2
+	adr	x1, lines_off
+	str	w23, [x1, w0]
+	adr	x2, lines_len
+	str	w24, [x2, w0]
+	add	w22, w22, #1
+
+parse_done:
+	// w22 = num_lines
+	cbnz	w22, sort_start
+
+	// no lines -> exit
+	mov	x0, #0
+	mov	x8, #93
+	svc	#0
+
+sort_start:
+	// outer loop counter = num_lines - 1
+	sub	w9, w22, #1		// outer_remaining
+
+outer_loop:
+	cbnz	w9, inner_setup
+	b	sort_done
+
+inner_setup:
+	// inner limit = outer_remaining
+	mov	w10, w9			// inner_limit
+	mov	w11, #0		// j = 0
+
+inner_loop:
+	// w11 = j
+	lsl	w0, w11, #2
+	adr	x12, lines_off
+	add	x13, x12, w0		// addr_j
+	add	x14, x13, #4		// addr_j1
+
+	adr	x15, lines_len
+	add	x16, x15, w0		// len_addr_j
+	add	x17, x16, #4		// len_addr_j1
+
+	ldrw	w18, [x13]		// off_a
+	ldrw	w19, [x14]		// off_b
+	ldrw	w20, [x16]		// len_a
+	ldrw	w21, [x17]		// len_b
+
+	// call compare
+	mov	x0, x19
+	mov	x1, w18
+	mov	x2, w20
+	mov	x3, w19
+	mov	x4, w21
+	bl	_cmp
+	cbnz	w0, do_swap
+
+next_inner:
+	add	w11, w11, #1
+	cmp	w11, w10
+	blt	inner_loop
+	// end inner loop
+	sub	w9, w9, #1
+	b	outer_loop
+
+do_swap:
+	// swap offsets
+	str	w19, [x13]
+	str	w18, [x14]
+	// swap lengths
+	str	w21, [x16]
+	str	w20, [x17]
+	b	next_inner
+
+sort_done:
+	// output lines
+	mov	w23, #0			// i = 0
+
+output_loop:
+	cmp	w23, w22
+	b.ge	exit
+
+	lsl	w0, w23, #2
+	adr	x1, lines_off
+	ldrw	w2, [x1, w0]		// offset
+	adr	x3, lines_len
+	ldrw	w4, [x3, w0]		// length
+
+	// write line
+	mov	x0, #1
+	add	x1, x19, w2, uxtw
+	mov	x2, x4
+	mov	x8, #64
+	svc	#0
+
+	// write newline
+	mov	x0, #1
+	adr	x1, newline
+	mov	x2, #1
+	mov	x8, #64
+	svc	#0
+
+	add	w23, w23, #1
+	b	output_loop
+
+exit:
+	mov	x0, #0
+	mov	x8, #93
+	svc	#0
+
+	// -------------------------------------------------
+	// compare subroutine
+	// inputs: x0=buf, x1=off_a, x2=len_a, x3=off_b, x4=len_b
+	// output: w0 = 1 if a > b else 0
+_cmp:
+	// min_len = (len_a < len_b) ? len_a : len_b
+	mov	w5, w2
+	cmp	w2, w4
+	csel	w5, w2, w4, lt
+
+	// i = 0
+	mov	w6, #0
+
+cmp_loop:
+	cmp	w6, w5
+	beq	equal_prefix
+
+	// load byte a
+	add	x7, x0, x1
+	add	x7, x7, w6, uxtw
+	ldrb	w8, [x7]
+
+	// load byte b
+	add	x9, x0, x3
+	add	x9, x9, w6, uxtw
+	ldrb	w10, [x9]
+
+	cmp	w8, w10
+	blt	a_less
+	bgt	a_greater
+
+	// equal, continue
+	add	w6, w6, #1
+	b	cmp_loop
+
+a_less:
+	mov	w0, #0
+	ret
+
+a_greater:
+	mov	w0, #1
+	ret
+
+equal_prefix:
+	// compare lengths
+	cmp	w2, w4
+	blt	a_less
+	bgt	a_greater
+	mov	w0, #0
+	ret
+
+	.section .rodata
+newline:
+	.byte	0x0A
+
+	.bss
+	.align	8
+buf:
+	.skip	32768
+lines_off:
+	.skip	4000
+lines_len:
+	.skip	4000

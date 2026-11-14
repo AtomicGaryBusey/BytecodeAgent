@@ -1,0 +1,377 @@
+.equ SYS_read, 63
+.equ SYS_write, 64
+.equ SYS_exit, 93
+
+.section .rodata
+msg_ok:  .ascii "ok\n"
+msg_err: .ascii "error at "
+.equ msg_err_len, 9
+lit_true:  .ascii "true"
+lit_false: .ascii "false"
+lit_null:  .ascii "null"
+
+.bss
+.balign 8
+buf:    .space 65536
+numbuf: .space 32
+
+.text
+.globl _start
+_start:
+    adrp    x19, buf
+    add     x19, x19, :lo12:buf
+    mov     x21, #0                 // len
+.Lread_loop:
+    mov     x2, #65536
+    sub     x2, x2, x21
+    cbz     x2, .Lread_done
+    mov     x0, #0
+    add     x1, x19, x21
+    mov     x8, #SYS_read
+    svc     #0
+    cbz     x0, .Lread_done
+    tbnz    x0, #63, .Lread_done
+    add     x21, x21, x0
+    b       .Lread_loop
+.Lread_done:
+    mov     x20, #0                 // pos
+    bl      skip_ws
+    bl      parse_value
+    bl      skip_ws
+    cmp     x20, x21
+    b.ne    err
+    mov     x0, #1
+    adrp    x1, msg_ok
+    add     x1, x1, :lo12:msg_ok
+    mov     x2, #3
+    mov     x8, #SYS_write
+    svc     #0
+    mov     x0, #0
+    mov     x8, #SYS_exit
+    svc     #0
+
+// ---------------- whitespace ----------------
+skip_ws:
+1:  cmp     x20, x21
+    b.hs    2f
+    ldrb    w0, [x19, x20]
+    cmp     w0, #0x20
+    b.eq    3f
+    cmp     w0, #0x09
+    b.eq    3f
+    cmp     w0, #0x0a
+    b.eq    3f
+    cmp     w0, #0x0d
+    b.ne    2f
+3:  add     x20, x20, #1
+    b       1b
+2:  ret
+
+// ---------------- value dispatch ----------------
+parse_value:
+    stp     x29, x30, [sp, #-16]!
+    cmp     x20, x21
+    b.hs    err
+    ldrb    w0, [x19, x20]
+    cmp     w0, #0x22               // "
+    b.eq    .Lpv_str
+    cmp     w0, #0x7b               // {
+    b.eq    .Lpv_obj
+    cmp     w0, #0x5b               // [
+    b.eq    .Lpv_arr
+    cmp     w0, #0x74               // t
+    b.eq    .Lpv_true
+    cmp     w0, #0x66               // f
+    b.eq    .Lpv_false
+    cmp     w0, #0x6e               // n
+    b.eq    .Lpv_null
+    cmp     w0, #0x2d               // -
+    b.eq    .Lpv_num
+    sub     w1, w0, #0x30
+    cmp     w1, #9
+    b.ls    .Lpv_num
+    b       err
+.Lpv_str:
+    bl      parse_string
+    b       .Lpv_done
+.Lpv_obj:
+    bl      parse_object
+    b       .Lpv_done
+.Lpv_arr:
+    bl      parse_array
+    b       .Lpv_done
+.Lpv_true:
+    adrp    x0, lit_true
+    add     x0, x0, :lo12:lit_true
+    mov     x1, #4
+    bl      expect_lit
+    b       .Lpv_done
+.Lpv_false:
+    adrp    x0, lit_false
+    add     x0, x0, :lo12:lit_false
+    mov     x1, #5
+    bl      expect_lit
+    b       .Lpv_done
+.Lpv_null:
+    adrp    x0, lit_null
+    add     x0, x0, :lo12:lit_null
+    mov     x1, #4
+    bl      expect_lit
+    b       .Lpv_done
+.Lpv_num:
+    bl      parse_number
+.Lpv_done:
+    ldp     x29, x30, [sp], #16
+    ret
+
+// ---------------- literal matcher: x0=ptr, x1=len ----------------
+expect_lit:
+1:  cbz     x1, 2f
+    cmp     x20, x21
+    b.hs    err
+    ldrb    w2, [x0], #1
+    ldrb    w3, [x19, x20]
+    cmp     w2, w3
+    b.ne    err
+    add     x20, x20, #1
+    sub     x1, x1, #1
+    b       1b
+2:  ret
+
+// ---------------- string ----------------
+parse_string:
+    add     x20, x20, #1            // skip opening quote
+1:  cmp     x20, x21
+    b.hs    err
+    ldrb    w0, [x19, x20]
+    cmp     w0, #0x22               // closing quote
+    b.eq    9f
+    cmp     w0, #0x5c               // backslash
+    b.eq    3f
+    cmp     w0, #0x20
+    b.lo    err
+    add     x20, x20, #1
+    b       1b
+3:  add     x20, x20, #1
+    cmp     x20, x21
+    b.hs    err
+    ldrb    w0, [x19, x20]
+    cmp     w0, #0x75               // u
+    b.eq    5f
+    cmp     w0, #0x22               // "
+    b.eq    4f
+    cmp     w0, #0x5c               // backslash
+    b.eq    4f
+    cmp     w0, #0x2f               // /
+    b.eq    4f
+    cmp     w0, #0x62               // b
+    b.eq    4f
+    cmp     w0, #0x66               // f
+    b.eq    4f
+    cmp     w0, #0x6e               // n
+    b.eq    4f
+    cmp     w0, #0x72               // r
+    b.eq    4f
+    cmp     w0, #0x74               // t
+    b.ne    err
+4:  add     x20, x20, #1
+    b       1b
+5:  add     x20, x20, #1
+    mov     x1, #4
+6:  cmp     x20, x21
+    b.hs    err
+    ldrb    w0, [x19, x20]
+    sub     w2, w0, #0x30
+    cmp     w2, #9
+    b.ls    7f
+    orr     w2, w0, #0x20
+    sub     w2, w2, #0x61
+    cmp     w2, #5
+    b.hi    err
+7:  add     x20, x20, #1
+    subs    x1, x1, #1
+    b.ne    6b
+    b       1b
+9:  add     x20, x20, #1
+    ret
+
+// ---------------- number ----------------
+parse_number:
+    ldrb    w0, [x19, x20]
+    cmp     w0, #0x2d               // -
+    b.ne    1f
+    add     x20, x20, #1
+1:  cmp     x20, x21
+    b.hs    err
+    ldrb    w0, [x19, x20]
+    cmp     w0, #0x30               // 0
+    b.ne    2f
+    add     x20, x20, #1
+    b       40f
+2:  sub     w1, w0, #0x31           // 1-9
+    cmp     w1, #8
+    b.hi    err
+    add     x20, x20, #1
+30: cmp     x20, x21
+    b.hs    40f
+    ldrb    w0, [x19, x20]
+    sub     w1, w0, #0x30
+    cmp     w1, #9
+    b.hi    40f
+    add     x20, x20, #1
+    b       30b
+40: cmp     x20, x21
+    b.hs    99f
+    ldrb    w0, [x19, x20]
+    cmp     w0, #0x2e               // .
+    b.ne    60f
+    add     x20, x20, #1
+    cmp     x20, x21
+    b.hs    err
+    ldrb    w0, [x19, x20]
+    sub     w1, w0, #0x30
+    cmp     w1, #9
+    b.hi    err
+    add     x20, x20, #1
+50: cmp     x20, x21
+    b.hs    99f
+    ldrb    w0, [x19, x20]
+    sub     w1, w0, #0x30
+    cmp     w1, #9
+    b.hi    60f
+    add     x20, x20, #1
+    b       50b
+60: ldrb    w0, [x19, x20]
+    cmp     w0, #0x65               // e
+    b.eq    70f
+    cmp     w0, #0x45               // E
+    b.ne    99f
+70: add     x20, x20, #1
+    cmp     x20, x21
+    b.hs    err
+    ldrb    w0, [x19, x20]
+    cmp     w0, #0x2b               // +
+    b.eq    80f
+    cmp     w0, #0x2d               // -
+    b.ne    85f
+80: add     x20, x20, #1
+    cmp     x20, x21
+    b.hs    err
+    ldrb    w0, [x19, x20]
+85: sub     w1, w0, #0x30
+    cmp     w1, #9
+    b.hi    err
+    add     x20, x20, #1
+90: cmp     x20, x21
+    b.hs    99f
+    ldrb    w0, [x19, x20]
+    sub     w1, w0, #0x30
+    cmp     w1, #9
+    b.hi    99f
+    add     x20, x20, #1
+    b       90b
+99: ret
+
+// ---------------- array ----------------
+parse_array:
+    stp     x29, x30, [sp, #-16]!
+    add     x20, x20, #1            // skip [
+    bl      skip_ws
+    cmp     x20, x21
+    b.hs    err
+    ldrb    w0, [x19, x20]
+    cmp     w0, #0x5d               // ]
+    b.ne    1f
+    add     x20, x20, #1
+    b       9f
+1:  bl      parse_value
+    bl      skip_ws
+    cmp     x20, x21
+    b.hs    err
+    ldrb    w0, [x19, x20]
+    cmp     w0, #0x5d               // ]
+    b.ne    2f
+    add     x20, x20, #1
+    b       9f
+2:  cmp     w0, #0x2c               // ,
+    b.ne    err
+    add     x20, x20, #1
+    bl      skip_ws
+    b       1b
+9:  ldp     x29, x30, [sp], #16
+    ret
+
+// ---------------- object ----------------
+parse_object:
+    stp     x29, x30, [sp, #-16]!
+    add     x20, x20, #1            // skip {
+    bl      skip_ws
+    cmp     x20, x21
+    b.hs    err
+    ldrb    w0, [x19, x20]
+    cmp     w0, #0x7d               // }
+    b.ne    1f
+    add     x20, x20, #1
+    b       9f
+1:  cmp     w0, #0x22               // "
+    b.ne    err
+    bl      parse_string
+    bl      skip_ws
+    cmp     x20, x21
+    b.hs    err
+    ldrb    w0, [x19, x20]
+    cmp     w0, #0x3a               // :
+    b.ne    err
+    add     x20, x20, #1
+    bl      skip_ws
+    bl      parse_value
+    bl      skip_ws
+    cmp     x20, x21
+    b.hs    err
+    ldrb    w0, [x19, x20]
+    cmp     w0, #0x7d               // }
+    b.ne    2f
+    add     x20, x20, #1
+    b       9f
+2:  cmp     w0, #0x2c               // ,
+    b.ne    err
+    add     x20, x20, #1
+    bl      skip_ws
+    cmp     x20, x21
+    b.hs    err
+    ldrb    w0, [x19, x20]
+    b       1b
+9:  ldp     x29, x30, [sp], #16
+    ret
+
+// ---------------- error: print "error at N\n", exit 1 ----------------
+err:
+    adrp    x4, numbuf
+    add     x4, x4, :lo12:numbuf
+    add     x5, x4, #31
+    mov     w0, #0x0a
+    strb    w0, [x5]
+    mov     x2, x20
+    mov     x6, #10
+1:  udiv    x3, x2, x6
+    msub    x7, x3, x6, x2
+    add     w7, w7, #0x30
+    sub     x5, x5, #1
+    strb    w7, [x5]
+    mov     x2, x3
+    cbnz    x2, 1b
+    mov     x0, #1
+    adrp    x1, msg_err
+    add     x1, x1, :lo12:msg_err
+    mov     x2, #msg_err_len
+    mov     x8, #SYS_write
+    svc     #0
+    mov     x0, #1
+    mov     x1, x5
+    add     x2, x4, #32
+    sub     x2, x2, x5
+    mov     x8, #SYS_write
+    svc     #0
+    mov     x0, #1
+    mov     x8, #SYS_exit
+    svc     #0

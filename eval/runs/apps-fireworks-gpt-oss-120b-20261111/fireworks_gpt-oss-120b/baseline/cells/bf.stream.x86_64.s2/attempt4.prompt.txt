@@ -1,0 +1,319 @@
+Write the complete program `bf`: a static Linux executable for x86-64 (AMD64), written in assembly. There is no C library, no C runtime and no helper code: you write the entry point `_start`, every function, every table and string, and make the system calls yourself.
+
+Entry state (as the Linux kernel sets it up): execution starts at the label `_start`. rsp is 16-byte aligned and points at argc = 0, followed by the NULL terminators of an empty argv, an empty envp and an empty auxiliary vector: the program gets no arguments. Every other general-purpose register is zero, and the direction flag is clear. There is no return address: `_start` must never return with `ret`; the program ends only through the exit system call.
+
+System calls: the `syscall` instruction, with the system call number in rax and the arguments in rdi, rsi, rdx; the result comes back in rax. The kernel overwrites rcx and r11; every other register is preserved. Exactly these four are available:
+- read = 0: read(fd = 0, buf, count) reads up to count bytes of standard input into buf; returns the number of bytes read, 0 at end of input.
+- write = 1: write(fd, buf, count) with fd 1 (standard output) or 2 (standard error); returns count.
+- exit = 60: exit(status) ends the program; the exit status is the low 8 bits of status.
+- exit_group = 231: the same as exit.
+Any other system call number, another file descriptor, `int 0x80` or `sysenter` stops the program with an error, and so does a buffer that is not entirely inside the program's memory.
+
+Memory: the program's own sections plus a stack of 1 MiB below the entry sp. There is no heap (no brk, no mmap, no malloc): put working storage in `.bss` (zero-initialised), at most 1 MiB in total, or on the stack. Code is not writable. Any access outside these areas stops the program. Each test run may execute at most 200,000,000 instructions.
+
+Output format: one complete assembly source file in GNU assembler (GNU as) syntax, Intel flavour without register prefixes: the harness puts `.intel_syntax noprefix` in front of your text, so do not write it yourself. Examples: `mov rax, qword ptr [rbx + rcx*8]`, `movzx eax, byte ptr [rsi]`, `lea rsi, [rip + buffer]`. Comments start with `#`; do not use `;`.
+Allowed in the file:
+- Sections: `.text` (code), `.section .rodata` (read-only data), `.data` (initialised writable data), `.bss` (zero-initialised space: only `.zero`/`.space` and alignment). Instructions go in `.text` only.
+- Data directives: `.byte`, `.short`/`.2byte`, `.word` (2 bytes on this target), `.long`/`.int`/`.4byte`, `.quad`/`.8byte`, `.ascii`, `.asciz`/`.string`, `.zero`/`.space`, alignment with `.align`/`.balign`/`.p2align`, and `.globl`/`.global` (write `.globl _start`).
+- Labels `name:` in any section, and GNU local labels `1:` referenced as `1f` (next) / `1b` (previous).
+- Constants: `.equ name, value` (or `.set name, value`, or `name = value`), where value is a number or a difference of labels defined earlier in the same section (e.g. `msg_len = . - msg`). Define every constant before its first use.
+- Addressing data: rip-relative, `lea rdi, [rip + table]` or `mov al, byte ptr [rip + table + 3]`. The program is linked at fixed low addresses, so absolute forms (`mov esi, offset buffer`, `movzx eax, byte ptr [table + rcx]`) work as well.
+Not allowed: macros (`.macro`, `.rept`, `.irp`), conditional assembly (`.if`), `.include`, `.incbin`, `.fill`, `.org`, `.comm`/`.lcomm`, `.inst`, `.cfi_*` directives, section stacks (`.pushsection`) and any other section. No libc and no other library: there is nothing to link against, so every symbol you use must be defined in your file.
+Instruction set: x86-64 with SSE up to SSE4.2 (including SSSE3, SSE4.1 and crc32), POPCNT, LZCNT, BMI1/BMI2 (andn, bextr, blsi, blsr, tzcnt, bzhi, mulx, pdep, pext, rorx, sarx, shlx, shrx), MOVBE, AES-NI and PCLMULQDQ. Not supported (rejected): AVX, AVX2, AVX-512, FMA, F16C and every other VEX/EVEX vector instruction, ADX (adcx/adox; use adc) and SHA.
+Output ONLY the assembly source: no Markdown fences, no prose before or after it.
+
+Specification: Task `bf`: a Brainfuck interpreter. Standard input holds the program, then a `!` byte (0x21), then the program's
+input: the program is every byte before the FIRST `!`; the program's input is every byte after it (it may itself
+contain `!`). If there is no `!` at all, the whole of standard input is the program and its input is empty.
+
+Machine: a tape of 30000 byte cells, all 0 initially, and a data pointer at cell 0. The eight commands:
+`>` pointer + 1; `<` pointer - 1; `+` cell + 1 (255 wraps to 0); `-` cell - 1 (0 wraps to 255); `.` write the
+cell's byte to the output; `,` read the next byte of the program's input into the cell, or store 0 if the
+program's input is exhausted (every later `,` also stores 0); `[` if the cell is 0, jump to just after the
+matching `]`; `]` if the cell is not 0, jump back to just after the matching `[`. Every other byte of the program
+(letters, digits, spaces, newlines, any value) is a comment and is ignored.
+
+Brackets: before running anything, check that the program's `[` and `]` are balanced (every `]` closes an
+earlier unmatched `[`, and no `[` is left open). If they are not, print NOTHING and exit with status 1.
+Otherwise run the program to its end and exit with status 0 (the output is exactly the bytes written by `.`).
+
+Limits: the whole standard input is at most 65536 bytes; bracket nesting is at most 1000 deep; the test
+programs never move the pointer outside cells 0..29999, write at most 65536 output bytes, and execute at
+most 5000000 commands.
+
+Input and output (applies to this whole task):
+- The input is the complete contents of standard input (file descriptor 0). Read it with `read` until `read`
+  returns 0 (end of input). A `read` may return FEWER bytes than requested, at any position (in the middle of a
+  line, a token or a group of bytes), so keep calling it; only a return value of 0 means end of input.
+- Write the output to standard output (file descriptor 1). Only the bytes this task describes may appear on
+  standard output (standard error is ignored). Every output byte must be written before the program exits.
+- Finish with `exit` (or `exit_group`) and the exit status this task gives. The program must not run off the end
+  of its code or crash.
+
+Your previous attempt was:
+<previous>
+.globl _start
+
+.section .bss
+.align 16
+buffer:          .zero 65536          # input buffer (program + separator + input)
+tape:            .zero 30000          # brainfuck data tape
+jump_table:      .zero 65536*4        # 4‑byte jump targets per program byte
+bracket_stack:   .zero 1000*4         # stack for matching brackets
+
+.text
+_start:
+    # -------------------------------------------------
+    # Read whole stdin into buffer (max 65536 bytes)
+    # rbx = current write pointer
+    # rcx = total bytes read so far
+    # rdx = remaining capacity
+    # -------------------------------------------------
+    lea rbx, [rip + buffer]       # buffer start
+    xor rcx, rcx                  # total = 0
+    mov rdx, 65536                # remaining = max
+
+read_loop:
+    test rdx, rdx
+    jz read_done                  # no space left
+    mov rax, 0                    # sys_read
+    mov rdi, 0                    # fd = stdin
+    mov rsi, rbx                  # buf = current pointer
+    mov rdx, rdx                  # count = remaining
+    syscall
+    test rax, rax
+    jz read_done                  # EOF
+    add rcx, rax                  # total += bytes
+    add rbx, rax                  # advance buffer pointer
+    sub rdx, rax                  # remaining -= bytes
+    jmp read_loop
+read_done:
+    # rcx = total length of input
+    # rbx now points past the data read
+    # -------------------------------------------------
+    # Set up pointers for parsing
+    # rsi = program buffer start
+    # r8  = total length
+    # -------------------------------------------------
+    lea rsi, [rip + buffer]       # program buffer start
+    mov r8, rcx                   # total length
+
+    # -------------------------------------------------
+    # Find first '!' separator
+    # rbx = scan pointer (starts at program start)
+    # rdx = bytes left to scan
+    # r9  = prog_len (bytes before '!')
+    # r10 = input_ptr (first byte after '!')
+    # r11 = input_len
+    # -------------------------------------------------
+    mov rbx, rsi                  # scan pointer
+    mov rdx, r8                   # bytes left
+    xor r9, r9                    # prog_len = 0
+
+sep_loop:
+    test rdx, rdx
+    jz no_separator               # reached end without separator
+    mov al, byte ptr [rbx]
+    cmp al, 0x21                  # '!'
+    je separator_found
+    inc rbx
+    inc r9                        # prog_len++
+    dec rdx
+    jmp sep_loop
+
+separator_found:
+    # rbx points at '!'
+    lea r10, [rbx + 1]            # input_ptr = after '!'
+    mov r11, rdx                  # input_len = remaining bytes after '!'
+    jmp after_split
+
+no_separator:
+    # whole input is program, no input data
+    mov r9, r8                    # prog_len = total length
+    lea r10, [rsi + rdx]          # input_ptr = end (unused)
+    xor r11, r11                  # input_len = 0
+
+after_split:
+    # r9 = prog_len
+    # r10 = input_ptr
+    # r11 = input_len
+    # rsi still points at program start (buffer)
+
+    # -------------------------------------------------
+    # Build jump table (bracket matching)
+    # r12 = jump_table base
+    # r13 = bracket_stack base
+    # r14 = stack depth
+    # r15 = program index i
+    # -------------------------------------------------
+    lea r12, [rip + jump_table]
+    lea r13, [rip + bracket_stack]
+    xor r14, r14                  # depth = 0
+    xor r15, r15                  # i = 0
+
+match_loop:
+    cmp r15, r9
+    jae match_done
+
+    mov al, byte ptr [rsi + r15]
+
+    cmp al, '['
+    je push_bracket
+    cmp al, ']'
+    je pop_bracket
+    jmp inc_i
+
+push_bracket:
+    mov eax, r15d                 # store index (low 32 bits)
+    mov dword ptr [r13 + r14*4], eax
+    inc r14
+    jmp inc_i
+
+pop_bracket:
+    test r14, r14
+    jz bracket_error              # unmatched ']'
+
+    dec r14
+    mov eax, dword ptr [r13 + r14*4]   # matching '[' index
+    mov ebx, r15d                 # current index i (']')
+    # store i+1 at jump_table[matching '[']
+    lea edx, [rbx + 1]
+    mov dword ptr [r12 + rax*4], edx
+    # store matching '['+1 at jump_table[i]
+    lea edx, [rax + 1]
+    mov dword ptr [r12 + rbx*4], edx
+    jmp inc_i
+
+inc_i:
+    inc r15
+    jmp match_loop
+
+match_done:
+    test r14, r14
+    jnz bracket_error             # leftover '['
+
+    # -------------------------------------------------
+    # Execute program
+    # rbx = tape base
+    # rsi = program base
+    # r12 = jump_table base
+    # rdx = data pointer (dp) index
+    # rcx = program counter (pc) index
+    # r10 = input pointer
+    # r11 = input length
+    # -------------------------------------------------
+    lea rbx, [rip + tape]
+    xor rdx, rdx                  # dp = 0
+    xor rcx, rcx                  # pc = 0
+
+exec_loop:
+    cmp rcx, r9
+    jae exec_finish
+
+    mov al, byte ptr [rsi + rcx]
+
+    cmp al, '>'
+    je op_inc_ptr
+    cmp al, '<'
+    je op_dec_ptr
+    cmp al, '+'
+    je op_inc_cell
+    cmp al, '-'
+    je op_dec_cell
+    cmp al, '.'
+    je op_output
+    cmp al, ','
+    je op_input
+    cmp al, '['
+    je op_bracket_open
+    cmp al, ']'
+    je op_bracket_close
+    # ignore any other character
+    inc rcx
+    jmp exec_loop
+
+op_inc_ptr:
+    inc rdx
+    inc rcx
+    jmp exec_loop
+
+op_dec_ptr:
+    dec rdx
+    inc rcx
+    jmp exec_loop
+
+op_inc_cell:
+    inc byte ptr [rbx + rdx]
+    inc rcx
+    jmp exec_loop
+
+op_dec_cell:
+    dec byte ptr [rbx + rdx]
+    inc rcx
+    jmp exec_loop
+
+op_output:
+    mov rax, 1                    # sys_write
+    mov rdi, 1                    # stdout
+    lea rsi, [rbx + rdx]          # address of cell
+    mov rdx, 1
+    syscall
+    inc rcx
+    jmp exec_loop
+
+op_input:
+    test r11, r11
+    jz input_eof
+    mov al, byte ptr [r10]
+    inc r10
+    dec r11
+    jmp store_input
+input_eof:
+    xor al, al
+store_input:
+    mov byte ptr [rbx + rdx], al
+    inc rcx
+    jmp exec_loop
+
+op_bracket_open:
+    movzx eax, byte ptr [rbx + rdx]
+    test eax, eax
+    jne not_zero_open
+    # cell == 0, jump to after matching ']'
+    mov eax, dword ptr [r12 + rcx*4]
+    mov rcx, rax
+    jmp exec_loop
+not_zero_open:
+    inc rcx
+    jmp exec_loop
+
+op_bracket_close:
+    movzx eax, byte ptr [rbx + rdx]
+    test eax, eax
+    je not_nonzero_close
+    # cell != 0, jump back to after matching '['
+    mov eax, dword ptr [r12 + rcx*4]
+    mov rcx, rax
+    jmp exec_loop
+not_nonzero_close:
+    inc rcx
+    jmp exec_loop
+
+exec_finish:
+    mov rax, 60                   # sys_exit
+    xor rdi, rdi                  # status 0
+    syscall
+
+bracket_error:
+    mov rax, 60                   # sys_exit
+    mov rdi, 1                    # status 1
+    syscall
+</previous>
+It failed:
+<failure>
+Test `empty` failed (stdin delivered whole; test run 1 of 56; the runs before it passed).
+stdin (0 bytes): ""
+The program stopped with a fault (oob): 1-byte read of unmapped memory at 0x45a000, pc=0x400060 at pc 0x400060 [the faulting instruction is line 62: `mov al, byte ptr [rbx]`]
+exit status: expected 0, got none (the program did not exit)
+</failure>
+Write a corrected, complete version. Same output format; output only the code.

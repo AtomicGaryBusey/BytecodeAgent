@@ -1,0 +1,382 @@
+        .global _start
+        .text
+_start:
+        // address of input buffer in x19
+        adrp    x19, input_buf
+        add     x19, x19, :lo12:input_buf
+
+        // read pointer (x20) = start of buffer
+        mov     x20, x19
+        // total bytes read (x22) = 0
+        mov     x22, #0
+
+read_loop:
+        // syscall read(fd=0, buf=x20, count=65536)
+        mov     x0, #0
+        mov     x1, x20
+        mov     x2, #65536
+        mov     x8, #63
+        svc     #0
+        cmp     x0, #0
+        beq     read_done
+        // advance pointer and total length
+        add     x20, x20, x0
+        add     x22, x22, x0
+        b       read_loop
+
+read_done:
+        // x21 = end of input = start + total length
+        add     x21, x19, x22
+
+        // address of value stack in x25
+        adrp    x25, stack_vals
+        add     x25, x25, :lo12:stack_vals
+
+        // current pointer = start of input
+        mov     x20, x19
+
+line_loop:
+        // if cur >= end, exit
+        cmp     x20, x21
+        bge     exit_prog
+
+        // set line_end pointer (x24)
+        mov     x24, x20
+find_nl:
+        cmp     x24, x21
+        bge     no_newline
+        ldrb    w0, [x24]
+        cmp     w0, #0x0A          // '\n'
+        beq     nl_found
+        add     x24, x24, #1
+        b       find_nl
+nl_found:
+        // line_end points to newline (exclude)
+        b       line_prep
+no_newline:
+        // line_end = end (no newline)
+        // x24 already equals x21
+line_prep:
+        // reset stack size (x26) = 0
+        mov     x26, #0
+        // token pointer = cur (x20)
+        mov     x27, x20
+        // error flag = 0 (x28)
+        mov     x28, #0
+
+token_loop:
+        // skip separators (space or tab)
+skip_sep:
+        cmp     x27, x24
+        bge     token_done
+        ldrb    w0, [x27]
+        cmp     w0, #0x20          // space
+        beq     inc_ptr
+        cmp     w0, #0x09          // tab
+        beq     inc_ptr
+        b       token_start
+inc_ptr:
+        add     x27, x27, #1
+        b       skip_sep
+
+token_start:
+        // token_start = x27
+        mov     x10, x27           // save start
+        // find token end (x30)
+        mov     x30, x27
+tok_scan:
+        cmp     x30, x24
+        bge     tok_end
+        ldrb    w0, [x30]
+        cmp     w0, #0x20
+        beq     tok_end
+        cmp     w0, #0x09
+        beq     tok_end
+        add     x30, x30, #1
+        b       tok_scan
+tok_end:
+        // token_end = x30
+        // token length = x30 - x10
+        sub     x1, x30, x10      // token_len
+        mov     x9, x1            // save original length
+        // if error flag already set, skip processing
+        cmp     x28, #0
+        bne     skip_rest_of_line
+
+        // check for single-char operator
+        cmp     x1, #1
+        bne     check_number
+        ldrb    w0, [x10]
+        cmp     w0, #'+'
+        beq     do_op_add
+        cmp     w0, #'-'
+        beq     do_op_sub
+        cmp     w0, #'*'
+        beq     do_op_mul
+        cmp     w0, #'/'
+        beq     do_op_div
+        cmp     w0, #'%'
+        beq     do_op_mod
+        b       check_number
+
+check_number:
+        // parse integer literal
+        ldrb    w0, [x10]
+        mov     x3, #0            // sign flag 0=positive
+        mov     x11, x10          // digit pointer
+        mov     x12, #0           // digit count
+        cmp     w0, #'-'
+        bne     num_positive
+        // negative
+        mov     x3, #1
+        add     x11, x11, #1     // skip '-'
+        sub     x9, x9, #1        // reduce length
+        cmp     x9, #0
+        beq     invalid_token     // no digits
+num_positive:
+        // now x9 = remaining length = digit count
+        cmp     x9, #0
+        beq     invalid_token
+        cmp     x9, #18
+        bhi     invalid_token
+
+        // parse digits
+        mov     x2, #0            // accumulator
+num_digit_loop:
+        cmp     x12, x9
+        beq     num_parsed
+        ldrb    w0, [x11], #1
+        cmp     w0, #'0'
+        blt     invalid_token
+        cmp     w0, #'9'
+        bgt     invalid_token
+        sub     w0, w0, #'0'
+        // acc = acc*10 + digit
+        mov     x4, x2
+        mov     x5, #10
+        mul     x2, x4, x5
+        add     x2, x2, x0
+        add     x12, x12, #1
+        b       num_digit_loop
+num_parsed:
+        // apply sign
+        cmp     x3, #0
+        beq     push_number
+        neg     x2, x2
+push_number:
+        // push x2 onto stack
+        mov     x4, x26
+        lsl     x4, x4, #3
+        add     x5, x25, x4
+        str     x2, [x5]
+        add     x26, x26, #1
+        b       token_continue
+
+invalid_token:
+        // set error flag
+        mov     x28, #1
+        b       token_done
+
+skip_rest_of_line:
+        // error already set, skip to line end
+        b       token_done
+
+token_continue:
+        // advance token pointer to token_end (x30)
+        mov     x27, x30
+        b       token_loop
+
+do_op_add:
+        bl      pop_two
+        // x6 = a, x7 = b
+        add     x2, x6, x7
+        b       push_result
+do_op_sub:
+        bl      pop_two
+        sub     x2, x6, x7
+        b       push_result
+do_op_mul:
+        bl      pop_two
+        mul     x2, x6, x7
+        b       push_result
+do_op_div:
+        bl      pop_two
+        // check divisor zero
+        cmp     x7, #0
+        beq     op_error
+        // load INT64_MIN into x9
+        movz    x9, #0x8000, lsl #48
+        cmp     x6, x9
+        bne     not_min
+        cmp     x7, #-1
+        beq     op_error
+not_min:
+        sdiv    x2, x6, x7
+        b       push_result
+do_op_mod:
+        bl      pop_two
+        // check divisor zero
+        cmp     x7, #0
+        beq     op_error
+        // load INT64_MIN into x9
+        movz    x9, #0x8000, lsl #48
+        cmp     x6, x9
+        bne     not_min_mod
+        cmp     x7, #-1
+        beq     op_error
+not_min_mod:
+        sdiv    x10, x6, x7
+        mul     x11, x10, x7
+        sub     x2, x6, x11
+        b       push_result
+op_error:
+        mov     x28, #1
+        b       token_done
+
+push_result:
+        // push x2 onto stack
+        mov     x4, x26
+        lsl     x4, x4, #3
+        add     x5, x25, x4
+        str     x2, [x5]
+        add     x26, x26, #1
+        b       token_continue
+
+pop_two:
+        // ensure at least two items on stack
+        cmp     x26, #2
+        blt     op_error
+        // pop b
+        sub     x26, x26, #1
+        mov     x4, x26
+        lsl     x4, x4, #3
+        add     x5, x25, x4
+        ldr     x7, [x5]          // b
+        // pop a
+        sub     x26, x26, #1
+        mov     x4, x26
+        lsl     x4, x4, #3
+        add     x5, x25, x4
+        ldr     x6, [x5]          // a
+        ret
+
+token_done:
+        // line processing finished
+        // decide output
+        cmp     x28, #0
+        bne     output_error
+        // check stack size ==1
+        cmp     x26, #1
+        bne     output_error
+        // good result in stack[0]
+        ldr     x0, [x25]         // signed result
+        // convert to decimal string
+        // allocate temporary buffer on stack (64 bytes)
+        sub     sp, sp, #64
+        mov     x19, sp           // buffer start
+        add     x20, sp, #64      // buffer end pointer
+        // handle zero case
+        cmp     x0, #0
+        bne     convert_nonzero
+        // zero -> write "0\n"
+        sub     x20, x20, #2
+        mov     w1, #'0'
+        strb    w1, [x20]
+        mov     w1, #0x0A
+        strb    w1, [x20, #1]
+        mov     x2, #2
+        b       write_result
+convert_nonzero:
+        // store sign flag
+        mov     x21, #0
+        cmp     x0, #0
+        bge     conv_loop_start
+        mov     x21, #1          // negative
+conv_loop_start:
+        // loop: while x0 !=0
+        cmp     x0, #0
+        beq     conv_done
+        // q = x0 / 10 (signed)
+        mov     x5, #10
+        sdiv    x6, x0, x5
+        // r = x0 - q*10
+        mul     x7, x6, x5
+        sub     x8, x0, x7
+        // make remainder positive
+        cmp     x8, #0
+        bge     rem_positive
+        neg     x8, x8
+rem_positive:
+        // store digit char
+        sub     x20, x20, #1
+        add     w9, w8, #'0'
+        strb    w9, [x20]
+        // next iteration
+        mov     x0, x6
+        b       conv_loop_start
+conv_done:
+        // prepend sign if needed
+        cmp     x21, #0
+        beq     conv_prepare_write
+        sub     x20, x20, #1
+        mov     w9, #'-'
+        strb    w9, [x20]
+conv_prepare_write:
+        // store newline at the end
+        mov     x3, sp
+        add     x3, x3, #64
+        sub     x3, x3, #1
+        mov     w9, #0x0A
+        strb    w9, [x3]
+        // length = buffer_end - x20
+        mov     x3, sp
+        add     x3, x3, #64
+        sub     x2, x3, x20
+
+write_result:
+        // syscall write(fd=1, buf=x20, count=x2)
+        mov     x0, #1
+        mov     x1, x20
+        mov     x8, #64
+        svc     #0
+        // restore stack pointer
+        add     sp, sp, #64
+        b       advance_cur
+
+output_error:
+        // write "error\n"
+        mov     x0, #1
+        adrp    x1, err_msg
+        add     x1, x1, :lo12:err_msg
+        mov     x2, #6
+        mov     x8, #64
+        svc     #0
+        // fall through to advance_cur
+
+advance_cur:
+        // move cur pointer to after newline (or end)
+        cmp     x24, x21
+        beq     no_newline_end
+        // newline present, skip it
+        add     x20, x24, #1
+        b       line_loop
+no_newline_end:
+        mov     x20, x24
+        b       line_loop
+
+exit_prog:
+        // exit with status 0
+        mov     x0, #0
+        mov     x8, #93
+        svc     #0
+
+        .section .rodata
+err_msg:
+        .ascii  "error\n"
+
+        .section .bss
+        .align 3
+input_buf:
+        .zero   65536
+stack_vals:
+        .zero   8192        // space for 1024 int64 values

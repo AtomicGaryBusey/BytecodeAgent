@@ -1,0 +1,254 @@
+.text
+.global _start
+
+/*--------------------------------------------------------------------
+  Constants
+--------------------------------------------------------------------*/
+.equ SYS_READ,   63
+.equ SYS_WRITE,  64
+.equ SYS_EXIT,   93
+.equ STDIN,      0
+.equ STDOUT,     1
+
+/*--------------------------------------------------------------------
+  BSS Section
+--------------------------------------------------------------------*/
+.bss
+.align 8
+input_buf:      .zero 65536          // whole stdin buffer
+tape:           .zero 30000          // BF tape
+jump_table:     .zero 65536*4        // 4‑byte signed offsets per program byte
+bracket_stack:  .zero 1000*4         // bracket stack (max depth 1000)
+
+/*--------------------------------------------------------------------
+  Text Section
+--------------------------------------------------------------------*/
+.text
+_start:
+    /*------------------------------------------------------------
+      Read entire stdin into input_buf
+    ------------------------------------------------------------*/
+    mov     x0, #STDIN                 // fd
+    adr     x1, input_buf              // base address
+    mov     x2, #65536                // max size
+    mov     x3, #0                    // current offset
+
+read_loop:
+    mov     x0, #STDIN
+    adr     x1, input_buf
+    add     x1, x1, x3                // buf + offset
+    mov     x2, #65536
+    sub     x2, x2, x3                // remaining space
+    mov     x8, #SYS_READ
+    svc     #0
+    cbz     x0, read_done             // 0 = EOF
+    add     x3, x3, x0                // offset += bytes read
+    b       read_loop
+read_done:
+    mov     x4, x3                    // total_len = x4
+
+    /*------------------------------------------------------------
+      Locate first '!' separating program and input
+    ------------------------------------------------------------*/
+    mov     x5, #0                    // index i
+    mov     x11, #0                   // has_excl flag
+find_excl:
+    cmp     x5, x4
+    bge     no_excl
+    adr     x6, input_buf
+    add     x6, x6, x5
+    ldrb    w7, [x6]
+    cmp     w7, #'!'
+    bne     not_excl
+    mov     x11, #1                  // flag = 1
+    b       excl_found
+not_excl:
+    add     x5, x5, #1
+    b       find_excl
+no_excl:
+    mov     x5, x4                   // i = total_len (no '!'), flag already 0
+excl_found:
+    /* x5 = program_len, x11 = has_excl (0 or 1) */
+    mov     x9, x5                   // prog_len in x9
+
+    /*------------------------------------------------------------
+      Prepare pointers for later phases
+    ------------------------------------------------------------*/
+    adr     x20, input_buf           // x20 = program base (input_buf)
+    adr     x21, tape                // x21 = tape base
+    adr     x22, jump_table          // x22 = jump table base
+    adr     x28, bracket_stack       // x28 = stack base
+
+    /* input data start = program_base + prog_len + has_excl */
+    add     x23, x20, x9
+    add     x23, x23, x11            // x23 = input_ptr (current)
+    /* input remaining length = total_len - prog_len - has_excl */
+    sub     x24, x4, x9
+    sub     x24, x24, x11            // x24 = input_remaining
+
+    /*------------------------------------------------------------
+      Bracket pre‑processing: validation + jump table construction
+    ------------------------------------------------------------*/
+    mov     x7, #0                    // i = 0 (program index)
+    mov     x12, #0                   // stack_ptr = 0
+
+bracket_loop:
+    cmp     x7, x9
+    bge     brackets_done
+    ldrb    w13, [x20, x7]            // w13 = program[i]
+
+    cmp     w13, #'['
+    beq     bracket_open
+    cmp     w13, #']'
+    beq     bracket_close
+    /* other chars: ignore */
+    add     x7, x7, #1
+    b       bracket_loop
+
+bracket_open:
+    /* push i onto stack */
+    add     x15, x28, x12, lsl #2     // addr = stack + sp*4
+    str     w7, [x15]                 // store i
+    add     x12, x12, #1              // sp++
+    cmp     x12, #1000
+    bhs     error_unbalanced          // overflow -> too deep
+    add     x7, x7, #1
+    b       bracket_loop
+
+bracket_close:
+    /* pop matching '[' */
+    subs    x12, x12, #1              // sp--, sets flags
+    bmi     error_unbalanced          // pop empty -> unbalanced
+    add     x15, x28, x12, lsl #2     // addr = stack + sp*4
+    ldr     w16, [x15]                // w16 = matching '[' index (j)
+
+    /* compute offset = i - j (positive) */
+    sub     w17, w7, w16              // offset
+
+    /* store forward offset at j */
+    add     x18, x22, x16, lsl #2     // jump_table + j*4
+    str     w17, [x18]
+
+    /* store backward offset (negative) at i */
+    add     x19, x22, x7, lsl #2      // jump_table + i*4
+    neg     w17, w17                  // w17 = -offset
+    str     w17, [x19]
+
+    add     x7, x7, #1
+    b       bracket_loop
+
+brackets_done:
+    cmp     x12, #0
+    bne     error_unbalanced
+
+    /*------------------------------------------------------------
+      Interpreter
+    ------------------------------------------------------------*/
+    mov     x25, #0                   // data pointer offset (dp)
+
+interp_loop:
+    cmp     x7, x9
+    bge     interp_done
+
+    ldrb    w13, [x20, x7]            // command
+
+    cmp     w13, #'>'
+    beq     cmd_inc_ptr
+    cmp     w13, #'<'
+    beq     cmd_dec_ptr
+    cmp     w13, #'+'
+    beq     cmd_inc_cell
+    cmp     w13, #'-'
+    beq     cmd_dec_cell
+    cmp     w13, #'.'
+    beq     cmd_output
+    cmp     w13, #','
+    beq     cmd_input
+    cmp     w13, #'['
+    beq     cmd_bracket_open
+    cmp     w13, #']'
+    beq     cmd_bracket_close
+    /* ignore any other character */
+    b       inc_ip
+
+cmd_inc_ptr:
+    add     x25, x25, #1
+    b       inc_ip
+
+cmd_dec_ptr:
+    sub     x25, x25, #1
+    b       inc_ip
+
+cmd_inc_cell:
+    add     x26, x21, x25
+    ldrb    w0, [x26]
+    add     w0, w0, #1
+    and     w0, w0, #0xff
+    strb    w0, [x26]
+    b       inc_ip
+
+cmd_dec_cell:
+    add     x26, x21, x25
+    ldrb    w0, [x26]
+    sub     w0, w0, #1
+    and     w0, w0, #0xff
+    strb    w0, [x26]
+    b       inc_ip
+
+cmd_output:
+    add     x26, x21, x25
+    mov     x0, #STDOUT
+    mov     x1, x26
+    mov     x2, #1
+    mov     x8, #SYS_WRITE
+    svc     #0
+    b       inc_ip
+
+cmd_input:
+    cmp     x24, #0
+    beq     input_no_more
+    ldrb    w0, [x23]                 // read byte from input buffer
+    add     x26, x21, x25
+    strb    w0, [x26]
+    add     x23, x23, #1
+    sub     x24, x24, #1
+    b       inc_ip
+input_no_more:
+    add     x26, x21, x25
+    mov     w0, #0
+    strb    w0, [x26]
+    b       inc_ip
+
+cmd_bracket_open:
+    add     x26, x21, x25
+    ldrb    w0, [x26]
+    cbz     w0, bracket_jump_forward
+    b       inc_ip
+bracket_jump_forward:
+    ldr     w18, [x22, x7, lsl #2]    // signed offset
+    sxtw    x18, w18
+    add     x7, x7, x18               // move to matching ']'
+    b       inc_ip
+
+cmd_bracket_close:
+    add     x26, x21, x25
+    ldrb    w0, [x26]
+    cbz     w0, inc_ip                // if zero, continue
+    ldr     w18, [x22, x7, lsl #2]    // signed offset (negative)
+    sxtw    x18, w18
+    add     x7, x7, x18               // jump back to matching '['
+    b       inc_ip
+
+inc_ip:
+    add     x7, x7, #1
+    b       interp_loop
+
+interp_done:
+    mov     x0, #0
+    mov     x8, #SYS_EXIT
+    svc     #0
+
+error_unbalanced:
+    mov     x0, #1
+    mov     x8, #SYS_EXIT
+    svc     #0

@@ -1,0 +1,210 @@
+.equ SYSCALL_READ, 63
+.equ SYSCALL_WRITE, 64
+.equ SYSCALL_EXIT, 93
+.equ INPUT_BUF_SIZE, 65536
+.equ OUT_BUF_SIZE, 350000
+
+.globl _start
+.text
+_start:
+    // read entire input
+    bl read_input
+    // produce hexdump output
+    bl dump_output
+    // exit with status 0
+    mov     x0, #0
+    mov     x8, #SYSCALL_EXIT
+    svc     #0
+
+read_input:
+    // x3 will hold total length, start at 0
+    mov     x3, #0
+read_loop:
+    // read into buffer at input_buf + total_len
+    adr     x1, input_buf
+    add     x1, x1, x3
+    mov     x0, #0
+    mov     x2, #INPUT_BUF_SIZE
+    sub     x2, x2, x3            // remaining space
+    mov     x8, #SYSCALL_READ
+    svc     #0
+    cbz     x0, read_done
+    add     x3, x3, x0
+    b       read_loop
+read_done:
+    // store total length
+    adr     x9, total_len
+    str     x3, [x9]
+    ret
+
+dump_output:
+    // x10 = output pointer (out_buf)
+    adr     x10, out_buf
+    // load total length
+    adr     x9, total_len
+    ldr     x11, [x9]          // total_len
+    // offset = 0
+    mov     x12, #0            // offset iterator
+
+dump_loop:
+    cmp     x12, x11
+    b.ge    dump_final_offset
+    // remaining = total_len - offset
+    sub     x13, x11, x12
+    // n = min(16, remaining)
+    mov     x15, #16
+    cmp     x13, #16
+    csel    x15, x13, x15, lo
+
+    // ---------- write offset (8 hex digits) ----------
+    adr     x17, hex_digits
+    mov     x18, x12
+    mov     x19, #8            // count of hex digits
+write_off_loop:
+    sub     x20, x19, #1
+    lsl     x20, x20, #2
+    lsr     x21, x18, x20
+    and     x21, x21, #0xf
+    ldrb    w22, [x17, x21]
+    strb    w22, [x10], #1
+    subs    x19, x19, #1
+    b.ne    write_off_loop
+
+    // two spaces after offset
+    mov     w22, #' '
+    strb    w22, [x10], #1
+    strb    w22, [x10], #1
+
+    // ---------- write hex byte area ----------
+    mov     x23, #0                // i = 0
+hex_bytes_loop:
+    cmp     x23, #16
+    b.eq    hex_bytes_done
+    cmp     x23, x15
+    b.ge    hex_byte_spaces
+    // byte exists
+    adr     x24, input_buf
+    add     x25, x24, x12
+    add     x25, x25, x23
+    ldrb    w26, [x25]
+    // high nibble
+    lsr     x27, w26, #4
+    and     x27, x27, #0xf
+    ldrb    w28, [x17, x27]
+    strb    w28, [x10], #1
+    // low nibble
+    and     x27, w26, #0xf
+    ldrb    w28, [x17, x27]
+    strb    w28, [x10], #1
+    // space
+    mov     w28, #' '
+    strb    w28, [x10], #1
+    b       hex_byte_post
+hex_byte_spaces:
+    // three spaces for missing byte
+    mov     w28, #' '
+    strb    w28, [x10], #1
+    strb    w28, [x10], #1
+    strb    w28, [x10], #1
+hex_byte_post:
+    // extra space after the eighth byte
+    cmp     x23, #7
+    b.ne    hex_byte_continue
+    strb    w28, [x10], #1
+hex_byte_continue:
+    add     x23, x23, #1
+    b       hex_bytes_loop
+hex_bytes_done:
+
+    // space and '|'
+    mov     w22, #' '
+    strb    w22, [x10], #1
+    mov     w22, #'|'
+    strb    w22, [x10], #1
+
+    // ---------- write ASCII representation ----------
+    mov     x23, #0                // i = 0
+ascii_loop:
+    cmp     x23, x15
+    b.ge    ascii_done
+    adr     x24, input_buf
+    add     x25, x24, x12
+    add     x25, x25, x23
+    ldrb    w26, [x25]
+    // printable check 0x20 <= w26 <= 0x7e
+    cmp     w26, #0x20
+    b.lt    ascii_dot
+    cmp     w26, #0x7e
+    b.gt    ascii_dot
+    // printable
+    strb    w26, [x10], #1
+    b       ascii_next
+ascii_dot:
+    mov     w26, #'.'
+    strb    w26, [x10], #1
+ascii_next:
+    add     x23, x23, #1
+    b       ascii_loop
+ascii_done:
+    // closing '|' and newline
+    mov     w22, #'|'
+    strb    w22, [x10], #1
+    mov     w22, #'\n'
+    strb    w22, [x10], #1
+
+    // advance offset by 16
+    add     x12, x12, #16
+    b       dump_loop
+
+dump_final_offset:
+    // write total length as 8 hex digits
+    adr     x17, hex_digits
+    mov     x12, x11
+    mov     x19, #8
+write_total_loop:
+    sub     x20, x19, #1
+    lsl     x20, x20, #2
+    lsr     x21, x12, x20
+    and     x21, x21, #0xf
+    ldrb    w22, [x17, x21]
+    strb    w22, [x10], #1
+    subs    x19, x19, #1
+    b.ne    write_total_loop
+    // newline
+    mov     w22, #'\n'
+    strb    w22, [x10], #1
+
+    // ---------- write buffer to stdout ----------
+    adr     x5, out_buf          // current pointer
+    sub     x6, x10, x5          // remaining length
+write_loop:
+    cbz     x6, write_done
+    mov     x2, #65536
+    cmp     x6, x2
+    csel    x3, x6, x2, lo      // chunk size
+    mov     x0, #1
+    mov     x1, x5
+    mov     x8, #SYSCALL_WRITE
+    svc     #0
+    // x0 = bytes written (should equal x3)
+    add     x5, x5, x0
+    sub     x6, x6, x0
+    b       write_loop
+write_done:
+    // exit
+    mov     x0, #0
+    mov     x8, #SYSCALL_EXIT
+    svc     #0
+
+.section .rodata
+hex_digits:
+    .ascii  "0123456789abcdef"
+
+.bss
+    .align 8
+input_buf:
+    .space  INPUT_BUF_SIZE
+out_buf:
+    .space  OUT_BUF_SIZE
+total_len:
+    .zero   8

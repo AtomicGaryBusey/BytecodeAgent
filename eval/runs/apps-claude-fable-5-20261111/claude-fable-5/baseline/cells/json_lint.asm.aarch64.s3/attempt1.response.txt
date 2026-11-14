@@ -1,0 +1,441 @@
+// json_lint - AArch64 static Linux executable, no libc
+// Validates stdin as a single RFC 8259 JSON document.
+
+        .section .rodata
+msg_err:
+        .ascii  "error at "
+msg_err_len = . - msg_err
+msg_ok:
+        .ascii  "ok\n"
+msg_ok_len = . - msg_ok
+lit_true:
+        .ascii  "true"
+lit_false:
+        .ascii  "false"
+lit_null:
+        .ascii  "null"
+
+        .bss
+        .balign 8
+buf:
+        .space  65600
+numbuf:
+        .space  32
+
+        .text
+        .globl  _start
+
+// Global registers:
+//   x19 = buffer base
+//   x20 = input length
+//   x21 = current position
+
+_start:
+        adrp    x19, buf
+        add     x19, x19, :lo12:buf
+        mov     x20, #0
+.Lread_loop:
+        movz    x2, #0x0040            // 65600
+        movk    x2, #0x1, lsl #16
+        sub     x2, x2, x20
+        cbz     x2, .Lread_done
+        mov     x0, #0
+        add     x1, x19, x20
+        mov     x8, #63                 // read
+        svc     #0
+        cmp     x0, #0
+        ble     .Lread_done
+        add     x20, x20, x0
+        b       .Lread_loop
+.Lread_done:
+        mov     x21, #0
+        bl      skip_ws
+        bl      parse_value
+        bl      skip_ws
+        cmp     x21, x20
+        bne     err_at
+        // print "ok\n", exit 0
+        mov     x0, #1
+        adrp    x1, msg_ok
+        add     x1, x1, :lo12:msg_ok
+        mov     x2, #msg_ok_len
+        mov     x8, #64                 // write
+        svc     #0
+        mov     x0, #0
+        mov     x8, #93                 // exit
+        svc     #0
+
+// ---------------------------------------------------------------
+// skip whitespace (0x20, 0x09, 0x0a, 0x0d)
+skip_ws:
+.Lsw_loop:
+        cmp     x21, x20
+        bhs     .Lsw_done
+        ldrb    w0, [x19, x21]
+        cmp     w0, #0x20
+        beq     .Lsw_adv
+        cmp     w0, #0x09
+        beq     .Lsw_adv
+        cmp     w0, #0x0a
+        beq     .Lsw_adv
+        cmp     w0, #0x0d
+        beq     .Lsw_adv
+.Lsw_done:
+        ret
+.Lsw_adv:
+        add     x21, x21, #1
+        b       .Lsw_loop
+
+// ---------------------------------------------------------------
+// parse_value: pos at first byte of a value (no leading ws)
+parse_value:
+        stp     x29, x30, [sp, #-16]!
+        cmp     x21, x20
+        bhs     err_at
+        ldrb    w0, [x19, x21]
+        cmp     w0, #0x7b               // '{'
+        beq     .Lpv_obj
+        cmp     w0, #0x5b               // '['
+        beq     .Lpv_arr
+        cmp     w0, #0x22               // '"'
+        beq     .Lpv_str
+        cmp     w0, #0x74               // 't'
+        beq     .Lpv_true
+        cmp     w0, #0x66               // 'f'
+        beq     .Lpv_false
+        cmp     w0, #0x6e               // 'n'
+        beq     .Lpv_null
+        cmp     w0, #0x2d               // '-'
+        beq     .Lpv_num
+        cmp     w0, #0x30               // '0'
+        blo     err_at
+        cmp     w0, #0x39               // '9'
+        bls     .Lpv_num
+        b       err_at
+.Lpv_obj:
+        bl      parse_object
+        b       .Lpv_ret
+.Lpv_arr:
+        bl      parse_array
+        b       .Lpv_ret
+.Lpv_str:
+        bl      parse_string
+        b       .Lpv_ret
+.Lpv_true:
+        adrp    x0, lit_true
+        add     x0, x0, :lo12:lit_true
+        mov     x1, #4
+        bl      lit_check
+        b       .Lpv_ret
+.Lpv_false:
+        adrp    x0, lit_false
+        add     x0, x0, :lo12:lit_false
+        mov     x1, #5
+        bl      lit_check
+        b       .Lpv_ret
+.Lpv_null:
+        adrp    x0, lit_null
+        add     x0, x0, :lo12:lit_null
+        mov     x1, #4
+        bl      lit_check
+        b       .Lpv_ret
+.Lpv_num:
+        bl      parse_number
+.Lpv_ret:
+        ldp     x29, x30, [sp], #16
+        ret
+
+// ---------------------------------------------------------------
+// lit_check: x0 = literal ptr, x1 = length
+lit_check:
+.Llc_loop:
+        cbz     x1, .Llc_done
+        cmp     x21, x20
+        bhs     err_at
+        ldrb    w2, [x19, x21]
+        ldrb    w3, [x0], #1
+        cmp     w2, w3
+        bne     err_at
+        add     x21, x21, #1
+        sub     x1, x1, #1
+        b       .Llc_loop
+.Llc_done:
+        ret
+
+// ---------------------------------------------------------------
+// parse_string: pos at opening '"'
+parse_string:
+        add     x21, x21, #1
+.Lps_loop:
+        cmp     x21, x20
+        bhs     err_at
+        ldrb    w0, [x19, x21]
+        cmp     w0, #0x22               // '"'
+        beq     .Lps_end
+        cmp     w0, #0x5c               // '\'
+        beq     .Lps_esc
+        cmp     w0, #0x20
+        blo     err_at
+        add     x21, x21, #1
+        b       .Lps_loop
+.Lps_esc:
+        add     x21, x21, #1
+        cmp     x21, x20
+        bhs     err_at
+        ldrb    w0, [x19, x21]
+        cmp     w0, #0x75               // 'u'
+        beq     .Lps_u
+        cmp     w0, #0x22               // '"'
+        beq     .Lps_esc_ok
+        cmp     w0, #0x5c               // '\'
+        beq     .Lps_esc_ok
+        cmp     w0, #0x2f               // '/'
+        beq     .Lps_esc_ok
+        cmp     w0, #0x62               // 'b'
+        beq     .Lps_esc_ok
+        cmp     w0, #0x66               // 'f'
+        beq     .Lps_esc_ok
+        cmp     w0, #0x6e               // 'n'
+        beq     .Lps_esc_ok
+        cmp     w0, #0x72               // 'r'
+        beq     .Lps_esc_ok
+        cmp     w0, #0x74               // 't'
+        beq     .Lps_esc_ok
+        b       err_at
+.Lps_esc_ok:
+        add     x21, x21, #1
+        b       .Lps_loop
+.Lps_u:
+        add     x21, x21, #1
+        mov     x1, #4
+.Lps_hex:
+        cmp     x21, x20
+        bhs     err_at
+        ldrb    w0, [x19, x21]
+        cmp     w0, #0x30               // '0'
+        blo     err_at
+        cmp     w0, #0x39               // '9'
+        bls     .Lps_hex_ok
+        orr     w0, w0, #0x20           // lowercase
+        cmp     w0, #0x61               // 'a'
+        blo     err_at
+        cmp     w0, #0x66               // 'f'
+        bhi     err_at
+.Lps_hex_ok:
+        add     x21, x21, #1
+        subs    x1, x1, #1
+        bne     .Lps_hex
+        b       .Lps_loop
+.Lps_end:
+        add     x21, x21, #1
+        ret
+
+// ---------------------------------------------------------------
+// parse_number: pos at '-' or digit
+parse_number:
+        ldrb    w0, [x19, x21]
+        cmp     w0, #0x2d               // '-'
+        bne     .Lpn_int
+        add     x21, x21, #1
+        cmp     x21, x20
+        bhs     err_at
+        ldrb    w0, [x19, x21]
+        cmp     w0, #0x30
+        blo     err_at
+        cmp     w0, #0x39
+        bhi     err_at
+.Lpn_int:
+        cmp     w0, #0x30               // '0'
+        bne     .Lpn_digits
+        add     x21, x21, #1
+        b       .Lpn_frac
+.Lpn_digits:
+        add     x21, x21, #1
+.Lpn_dloop:
+        cmp     x21, x20
+        bhs     .Lpn_ret
+        ldrb    w0, [x19, x21]
+        cmp     w0, #0x30
+        blo     .Lpn_frac
+        cmp     w0, #0x39
+        bhi     .Lpn_frac
+        add     x21, x21, #1
+        b       .Lpn_dloop
+.Lpn_frac:
+        cmp     x21, x20
+        bhs     .Lpn_ret
+        ldrb    w0, [x19, x21]
+        cmp     w0, #0x2e               // '.'
+        bne     .Lpn_exp
+        add     x21, x21, #1
+        cmp     x21, x20
+        bhs     err_at
+        ldrb    w0, [x19, x21]
+        cmp     w0, #0x30
+        blo     err_at
+        cmp     w0, #0x39
+        bhi     err_at
+        add     x21, x21, #1
+.Lpn_floop:
+        cmp     x21, x20
+        bhs     .Lpn_ret
+        ldrb    w0, [x19, x21]
+        cmp     w0, #0x30
+        blo     .Lpn_exp
+        cmp     w0, #0x39
+        bhi     .Lpn_exp
+        add     x21, x21, #1
+        b       .Lpn_floop
+.Lpn_exp:
+        // w0 holds current byte, pos < len here
+        cmp     w0, #0x65               // 'e'
+        beq     .Lpn_exp1
+        cmp     w0, #0x45               // 'E'
+        bne     .Lpn_ret
+.Lpn_exp1:
+        add     x21, x21, #1
+        cmp     x21, x20
+        bhs     err_at
+        ldrb    w0, [x19, x21]
+        cmp     w0, #0x2b               // '+'
+        beq     .Lpn_sign
+        cmp     w0, #0x2d               // '-'
+        bne     .Lpn_edig
+.Lpn_sign:
+        add     x21, x21, #1
+        cmp     x21, x20
+        bhs     err_at
+        ldrb    w0, [x19, x21]
+.Lpn_edig:
+        cmp     w0, #0x30
+        blo     err_at
+        cmp     w0, #0x39
+        bhi     err_at
+        add     x21, x21, #1
+.Lpn_eloop:
+        cmp     x21, x20
+        bhs     .Lpn_ret
+        ldrb    w0, [x19, x21]
+        cmp     w0, #0x30
+        blo     .Lpn_ret
+        cmp     w0, #0x39
+        bhi     .Lpn_ret
+        add     x21, x21, #1
+        b       .Lpn_eloop
+.Lpn_ret:
+        ret
+
+// ---------------------------------------------------------------
+// parse_array: pos at '['
+parse_array:
+        stp     x29, x30, [sp, #-16]!
+        add     x21, x21, #1
+        bl      skip_ws
+        cmp     x21, x20
+        bhs     .Lpa_elem               // parse_value will report EOF
+        ldrb    w0, [x19, x21]
+        cmp     w0, #0x5d               // ']'
+        bne     .Lpa_elem
+        add     x21, x21, #1
+        b       .Lpa_done
+.Lpa_elem:
+        bl      parse_value
+        bl      skip_ws
+        cmp     x21, x20
+        bhs     err_at
+        ldrb    w0, [x19, x21]
+        cmp     w0, #0x5d               // ']'
+        beq     .Lpa_close
+        cmp     w0, #0x2c               // ','
+        bne     err_at
+        add     x21, x21, #1
+        bl      skip_ws
+        b       .Lpa_elem
+.Lpa_close:
+        add     x21, x21, #1
+.Lpa_done:
+        ldp     x29, x30, [sp], #16
+        ret
+
+// ---------------------------------------------------------------
+// parse_object: pos at '{'
+parse_object:
+        stp     x29, x30, [sp, #-16]!
+        add     x21, x21, #1
+        bl      skip_ws
+        cmp     x21, x20
+        bhs     err_at
+        ldrb    w0, [x19, x21]
+        cmp     w0, #0x7d               // '}'
+        bne     .Lpo_mem
+        add     x21, x21, #1
+        b       .Lpo_done
+.Lpo_mem:
+        cmp     x21, x20
+        bhs     err_at
+        ldrb    w0, [x19, x21]
+        cmp     w0, #0x22               // '"'
+        bne     err_at
+        bl      parse_string
+        bl      skip_ws
+        cmp     x21, x20
+        bhs     err_at
+        ldrb    w0, [x19, x21]
+        cmp     w0, #0x3a               // ':'
+        bne     err_at
+        add     x21, x21, #1
+        bl      skip_ws
+        bl      parse_value
+        bl      skip_ws
+        cmp     x21, x20
+        bhs     err_at
+        ldrb    w0, [x19, x21]
+        cmp     w0, #0x7d               // '}'
+        beq     .Lpo_close
+        cmp     w0, #0x2c               // ','
+        bne     err_at
+        add     x21, x21, #1
+        bl      skip_ws
+        b       .Lpo_mem
+.Lpo_close:
+        add     x21, x21, #1
+.Lpo_done:
+        ldp     x29, x30, [sp], #16
+        ret
+
+// ---------------------------------------------------------------
+// err_at: print "error at <x21>\n", exit 1 (never returns)
+err_at:
+        mov     x0, #1
+        adrp    x1, msg_err
+        add     x1, x1, :lo12:msg_err
+        mov     x2, #msg_err_len
+        mov     x8, #64                 // write
+        svc     #0
+        // build decimal number followed by '\n' at end of numbuf
+        adrp    x3, numbuf
+        add     x3, x3, :lo12:numbuf
+        add     x3, x3, #31
+        mov     w0, #0x0a               // '\n'
+        strb    w0, [x3]
+        mov     x4, x21
+        mov     x5, #10
+.Lea_conv:
+        udiv    x6, x4, x5
+        msub    x7, x6, x5, x4
+        add     w7, w7, #0x30
+        sub     x3, x3, #1
+        strb    w7, [x3]
+        mov     x4, x6
+        cbnz    x4, .Lea_conv
+        adrp    x1, numbuf
+        add     x1, x1, :lo12:numbuf
+        add     x1, x1, #32
+        sub     x2, x1, x3
+        mov     x1, x3
+        mov     x0, #1
+        mov     x8, #64                 // write
+        svc     #0
+        mov     x0, #1
+        mov     x8, #93                 // exit
+        svc     #0

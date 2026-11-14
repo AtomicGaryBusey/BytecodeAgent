@@ -1,0 +1,199 @@
+.globl _start
+
+.equ BUF_SIZE, 65536
+.equ TAPE_SIZE, 30000
+.equ MAX_NEST, 1000
+
+.text
+_start:
+    # read all of stdin into buf
+    xor ebx, ebx                # bytes read so far
+1:
+    mov eax, 0                  # SYS_read
+    xor edi, edi                # fd 0
+    lea rsi, [rip + buf]
+    add rsi, rbx
+    mov rdx, BUF_SIZE
+    sub rdx, rbx
+    syscall
+    test rax, rax
+    jle 2f
+    add rbx, rax
+    cmp rbx, BUF_SIZE
+    jb 1b
+2:
+    # rbx = total length
+    # find first '!'
+    lea rsi, [rip + buf]
+    mov rcx, rbx
+    xor edx, edx                # flag: found
+3:
+    test rcx, rcx
+    jz 4f
+    cmp byte ptr [rsi], 0x21    # '!'
+    je 5f
+    inc rsi
+    dec rcx
+    jmp 3b
+5:
+    mov edx, 1
+4:
+    # set up prog / input pointers
+    lea r12, [rip + buf]        # prog_base
+    test edx, edx
+    jz 6f
+    # found: prog_len = rsi - buf, input after !
+    mov r13, rsi
+    sub r13, r12                # prog_len
+    lea r14, [rsi + 1]          # input_base
+    mov r15, rbx
+    sub r15, r13
+    dec r15                     # input_len (may be 0 or wrap if ! last; clamp)
+    jns 7f
+    xor r15, r15
+    jmp 7f
+6:
+    # no '!': whole is program, input empty
+    mov r13, rbx                # prog_len
+    mov r14, r12                # dummy
+    xor r15, r15
+7:
+    # validate brackets + build jump table
+    xor ecx, ecx                # ip
+    xor edx, edx                # nest depth
+    lea r8, [rip + nest]        # nest stack base
+    lea r9, [rip + jmps]
+8:
+    cmp rcx, r13
+    jae 12f
+    movzx eax, byte ptr [r12 + rcx]
+    cmp al, 0x5b                # '['
+    je 9f
+    cmp al, 0x5d                # ']'
+    je 10f
+    inc rcx
+    jmp 8b
+9:
+    cmp edx, MAX_NEST
+    jae unbalanced
+    mov [r8 + rdx*8], rcx
+    inc edx
+    inc rcx
+    jmp 8b
+10:
+    test edx, edx
+    jz unbalanced
+    dec edx
+    mov rax, [r8 + rdx*8]       # open pos
+    lea rsi, [rcx + 1]
+    mov [r9 + rax*8], rsi       # [ -> after ]
+    lea rsi, [rax + 1]
+    mov [r9 + rcx*8], rsi       # ] -> after [
+    inc rcx
+    jmp 8b
+12:
+    test edx, edx
+    jnz unbalanced
+
+    # interpret
+    xor ebx, ebx                # data ptr
+    xor ecx, ecx                # ip
+    mov r8, r14                 # input_ptr
+    lea r10, [r14 + r15]        # input_end
+    lea r11, [rip + tape]
+    lea r9, [rip + jmps]
+interp:
+    cmp rcx, r13
+    jae done
+    movzx eax, byte ptr [r12 + rcx]
+    cmp al, 0x3e                # '>'
+    je c_gt
+    cmp al, 0x3c                # '<'
+    je c_lt
+    cmp al, 0x2b                # '+'
+    je c_plus
+    cmp al, 0x2d                # '-'
+    je c_minus
+    cmp al, 0x2e                # '.'
+    je c_dot
+    cmp al, 0x2c                # ','
+    je c_comma
+    cmp al, 0x5b                # '['
+    je c_open
+    cmp al, 0x5d                # ']'
+    je c_close
+    inc rcx
+    jmp interp
+c_gt:
+    inc ebx
+    inc rcx
+    jmp interp
+c_lt:
+    dec ebx
+    inc rcx
+    jmp interp
+c_plus:
+    inc byte ptr [r11 + rbx]
+    inc rcx
+    jmp interp
+c_minus:
+    dec byte ptr [r11 + rbx]
+    inc rcx
+    jmp interp
+c_dot:
+    push rcx
+    push r11
+    mov eax, 1                  # SYS_write
+    mov edi, 1
+    lea rsi, [r11 + rbx]
+    mov rdx, 1
+    syscall
+    pop r11
+    pop rcx
+    inc rcx
+    jmp interp
+c_comma:
+    cmp r8, r10
+    jae comma_eof
+    mov al, [r8]
+    mov [r11 + rbx], al
+    inc r8
+    jmp comma_done
+comma_eof:
+    mov byte ptr [r11 + rbx], 0
+comma_done:
+    inc rcx
+    jmp interp
+c_open:
+    cmp byte ptr [r11 + rbx], 0
+    jne open_next
+    mov rcx, [r9 + rcx*8]
+    jmp interp
+open_next:
+    inc rcx
+    jmp interp
+c_close:
+    cmp byte ptr [r11 + rbx], 0
+    je close_next
+    mov rcx, [r9 + rcx*8]
+    jmp interp
+close_next:
+    inc rcx
+    jmp interp
+
+done:
+    mov eax, 60                 # SYS_exit
+    xor edi, edi
+    syscall
+
+unbalanced:
+    mov eax, 60
+    mov edi, 1
+    syscall
+
+.bss
+.align 16
+buf:    .zero BUF_SIZE
+tape:   .zero TAPE_SIZE
+jmps:   .zero BUF_SIZE * 8
+nest:   .zero MAX_NEST * 8

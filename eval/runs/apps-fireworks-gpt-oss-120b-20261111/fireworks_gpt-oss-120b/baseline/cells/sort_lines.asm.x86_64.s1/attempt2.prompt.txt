@@ -1,0 +1,318 @@
+Write the complete program `sort_lines`: a static Linux executable for x86-64 (AMD64), written in assembly. There is no C library, no C runtime and no helper code: you write the entry point `_start`, every function, every table and string, and make the system calls yourself.
+
+Entry state (as the Linux kernel sets it up): execution starts at the label `_start`. rsp is 16-byte aligned and points at argc = 0, followed by the NULL terminators of an empty argv, an empty envp and an empty auxiliary vector: the program gets no arguments. Every other general-purpose register is zero, and the direction flag is clear. There is no return address: `_start` must never return with `ret`; the program ends only through the exit system call.
+
+System calls: the `syscall` instruction, with the system call number in rax and the arguments in rdi, rsi, rdx; the result comes back in rax. The kernel overwrites rcx and r11; every other register is preserved. Exactly these four are available:
+- read = 0: read(fd = 0, buf, count) reads up to count bytes of standard input into buf; returns the number of bytes read, 0 at end of input.
+- write = 1: write(fd, buf, count) with fd 1 (standard output) or 2 (standard error); returns count.
+- exit = 60: exit(status) ends the program; the exit status is the low 8 bits of status.
+- exit_group = 231: the same as exit.
+Any other system call number, another file descriptor, `int 0x80` or `sysenter` stops the program with an error, and so does a buffer that is not entirely inside the program's memory.
+
+Memory: the program's own sections plus a stack of 1 MiB below the entry sp. There is no heap (no brk, no mmap, no malloc): put working storage in `.bss` (zero-initialised), at most 1 MiB in total, or on the stack. Code is not writable. Any access outside these areas stops the program. Each test run may execute at most 200,000,000 instructions.
+
+Output format: one complete assembly source file in GNU assembler (GNU as) syntax, Intel flavour without register prefixes: the harness puts `.intel_syntax noprefix` in front of your text, so do not write it yourself. Examples: `mov rax, qword ptr [rbx + rcx*8]`, `movzx eax, byte ptr [rsi]`, `lea rsi, [rip + buffer]`. Comments start with `#`; do not use `;`.
+Allowed in the file:
+- Sections: `.text` (code), `.section .rodata` (read-only data), `.data` (initialised writable data), `.bss` (zero-initialised space: only `.zero`/`.space` and alignment). Instructions go in `.text` only.
+- Data directives: `.byte`, `.short`/`.2byte`, `.word` (2 bytes on this target), `.long`/`.int`/`.4byte`, `.quad`/`.8byte`, `.ascii`, `.asciz`/`.string`, `.zero`/`.space`, alignment with `.align`/`.balign`/`.p2align`, and `.globl`/`.global` (write `.globl _start`).
+- Labels `name:` in any section, and GNU local labels `1:` referenced as `1f` (next) / `1b` (previous).
+- Constants: `.equ name, value` (or `.set name, value`, or `name = value`), where value is a number or a difference of labels defined earlier in the same section (e.g. `msg_len = . - msg`). Define every constant before its first use.
+- Addressing data: rip-relative, `lea rdi, [rip + table]` or `mov al, byte ptr [rip + table + 3]`. The program is linked at fixed low addresses, so absolute forms (`mov esi, offset buffer`, `movzx eax, byte ptr [table + rcx]`) work as well.
+Not allowed: macros (`.macro`, `.rept`, `.irp`), conditional assembly (`.if`), `.include`, `.incbin`, `.fill`, `.org`, `.comm`/`.lcomm`, `.inst`, `.cfi_*` directives, section stacks (`.pushsection`) and any other section. No libc and no other library: there is nothing to link against, so every symbol you use must be defined in your file.
+Instruction set: x86-64 with SSE up to SSE4.2 (including SSSE3, SSE4.1 and crc32), POPCNT, LZCNT, BMI1/BMI2 (andn, bextr, blsi, blsr, tzcnt, bzhi, mulx, pdep, pext, rorx, sarx, shlx, shrx), MOVBE, AES-NI and PCLMULQDQ. Not supported (rejected): AVX, AVX2, AVX-512, FMA, F16C and every other VEX/EVEX vector instruction, ADX (adcx/adox; use adc) and SHA.
+Output ONLY the assembly source: no Markdown fences, no prose before or after it.
+
+Specification: Task `sort_lines`: print the lines of standard input sorted in ascending byte-wise order.
+
+- Lines are defined as follows: a line is a (possibly empty) sequence of bytes terminated by a newline 0x0A; if
+  the input does not end with a newline, the bytes after the last newline form one more, final line. Empty input
+  has no lines, and the empty remainder after a final newline is not a line.
+- Order: compare two lines byte by byte as UNSIGNED values 0x00-0xFF (like C `memcmp`); the first differing
+  byte decides. If one line is a prefix of the other, the shorter line comes first (so the empty line sorts
+  before every non-empty line). Equal lines are all printed (duplicates are kept).
+- Print every line followed by one newline 0x0A (the final line gets a newline even if it had none in the
+  input). Empty input prints nothing. A carriage return 0x0D and every other byte value are ordinary bytes.
+
+Example: `pear\napple\nPear\n\napple` prints `\nPear\napple\napple\npear\n`.
+
+Limits: the input is at most 32768 bytes and has at most 1000 lines. Exit status 0.
+
+Input and output (applies to this whole task):
+- The input is the complete contents of standard input (file descriptor 0). Read it with `read` until `read`
+  returns 0 (end of input). A `read` may return FEWER bytes than requested, at any position (in the middle of a
+  line, a token or a group of bytes), so keep calling it; only a return value of 0 means end of input.
+- Write the output to standard output (file descriptor 1). Only the bytes this task describes may appear on
+  standard output (standard error is ignored). Every output byte must be written before the program exits.
+- Finish with `exit` (or `exit_group`) and the exit status this task gives. The program must not run off the end
+  of its code or crash.
+
+Your previous attempt was:
+<previous>
+.globl _start
+
+.section .bss
+.align 16
+input_buffer:
+    .space 32768
+line_offsets:
+    .space 1000*4
+line_lengths:
+    .space 1000*4
+
+.section .rodata
+newline_char:
+    .byte 0x0A
+
+.text
+_start:
+    xor r8, r8                # total_read = 0
+
+read_loop:
+    mov rax, 0                # sys_read
+    mov rdi, 0                # fd = stdin
+    lea rsi, [rip + input_buffer]
+    add rsi, r8
+    mov rdx, 32768
+    sub rdx, r8               # remaining space
+    syscall
+    test rax, rax
+    jz read_done
+    cmp rax, 0
+    jl exit_err
+    add r8, rax               # total_read += rax
+    cmp r8, 32768
+    jae read_done
+    jmp read_loop
+
+read_done:
+    test r8, r8
+    jz exit_success
+
+    xor ebx, ebx              # line_count = 0
+    xor r9, r9                # src_offset = 0
+
+parse_loop:
+    cmp r9, r8
+    jae parse_done
+
+    mov r10, r9               # line_start = src_offset
+    lea rdi, [rip + input_buffer]
+    add rdi, r9               # rdi points to current byte
+    mov rcx, r8
+    sub rcx, r9               # remaining bytes
+
+scan_loop:
+    test rcx, rcx
+    jz no_newline
+    mov al, byte ptr [rdi]
+    cmp al, 0x0A
+    je found_newline
+    inc rdi
+    inc r9
+    dec rcx
+    jmp scan_loop
+
+found_newline:
+    mov rax, r9
+    sub rax, r10              # length = r9 - line_start
+    mov edx, ebx
+    lea rsi, [rip + line_offsets]
+    mov [rsi + rdx*4], r10d
+    lea rsi, [rip + line_lengths]
+    mov [rsi + rdx*4], eax
+    inc ebx
+    inc r9                     # skip newline
+    jmp parse_loop
+
+no_newline:
+    mov rax, r8
+    sub rax, r10               # length = end - line_start
+    mov edx, ebx
+    lea rsi, [rip + line_offsets]
+    mov [rsi + rdx*4], r10d
+    lea rsi, [rip + line_lengths]
+    mov [rsi + rdx*4], eax
+    inc ebx
+    mov r9, r8
+    jmp parse_loop
+
+parse_done:
+    # insertion sort
+    xor esi, esi               # i = 0
+
+ins_outer:
+    cmp esi, ebx
+    jge ins_done
+
+    mov edx, esi
+    lea rdi, [rip + line_offsets]
+    mov eax, [rdi + rdx*4]
+    mov r10d, eax              # key_offset
+    lea rdi, [rip + line_lengths]
+    mov eax, [rdi + rdx*4]
+    mov r11d, eax              # key_len
+
+    mov ecx, esi
+    dec ecx                    # j = i-1
+
+ins_inner:
+    cmp ecx, -1
+    jl ins_place_key
+
+    lea rdi, [rip + line_offsets]
+    mov eax, [rdi + rcx*4]
+    mov r12d, eax              # offset a
+    lea rdi, [rip + line_lengths]
+    mov eax, [rdi + rcx*4]
+    mov r13d, eax              # len a
+
+    push rcx
+    mov rdx, r12                # offset a
+    mov r8d, r13d               # len a
+    mov rcx, r10                # offset b (key)
+    mov r9d, r11d               # len b
+    call line_compare
+    pop rcx
+
+    cmp eax, 0
+    jle ins_shift               # if a > b (result >0) shift
+
+    jmp ins_place_key
+
+ins_shift:
+    mov edx, ecx
+    inc edx                     # dest = j+1
+    lea rdi, [rip + line_offsets]
+    mov eax, [rdi + rcx*4]
+    mov [rdi + rdx*4], eax
+    lea rdi, [rip + line_lengths]
+    mov eax, [rdi + rcx*4]
+    mov [rdi + rdx*4], eax
+    dec ecx
+    jmp ins_inner
+
+ins_place_key:
+    inc ecx                     # place at j+1
+    mov edx, ecx
+    lea rdi, [rip + line_offsets]
+    mov [rdi + rdx*4], r10d
+    lea rdi, [rip + line_lengths]
+    mov [rdi + rdx*4], r11d
+    inc esi
+    jmp ins_outer
+
+ins_done:
+    xor edi, edi                # output index i = 0
+
+output_loop:
+    cmp edi, ebx
+    jge output_done
+
+    lea rsi, [rip + line_offsets]
+    mov eax, [rsi + rdi*4]
+    mov r8d, eax                # offset
+    lea rsi, [rip + line_lengths]
+    mov eax, [rsi + rdi*4]
+    mov r9d, eax                # length
+
+    mov rax, 1                  # sys_write
+    mov rdi, 1                  # stdout
+    lea rsi, [rip + input_buffer]
+    add rsi, r8
+    mov rdx, r9
+    call write_all
+
+    mov rax, 1
+    mov rdi, 1
+    lea rsi, [rip + newline_char]
+    mov rdx, 1
+    call write_all
+
+    inc edi
+    jmp output_loop
+
+output_done:
+    mov rax, 60                 # sys_exit
+    xor rdi, rdi
+    syscall
+
+exit_success:
+    mov rax, 60
+    xor rdi, rdi
+    syscall
+
+exit_err:
+    mov rax, 60
+    mov rdi, 1
+    syscall
+
+# ------------------------------------------------------------
+# write_all: write full buffer (rdi=fd, rsi=ptr, rdx=count)
+write_all:
+    test rdx, rdx
+    jz .w_done
+    mov rax, 1
+    syscall
+    cmp rax, 0
+    je .w_error
+    sub rdx, rax
+    add rsi, rax
+    jnz write_all
+.w_done:
+    ret
+.w_error:
+    mov rax, 60
+    xor rdi, rdi
+    syscall
+
+# ------------------------------------------------------------
+# line_compare: compare two lines
+# rdx = offset_a, r8d = len_a
+# rcx = offset_b, r9d = len_b
+# return signed int in eax: <0 if a<b, 0 if equal, >0 if a>b
+line_compare:
+    mov r10d, r8d          # len_a_rem
+    mov r11d, r9d          # len_b_rem
+
+    lea rsi, [rip + input_buffer]
+    add rsi, rdx           # ptr_a
+    lea rdi, [rip + input_buffer]
+    add rdi, rcx           # ptr_b
+
+cmp_loop:
+    test r10d, r10d
+    jz cmp_end
+    test r11d, r11d
+    jz cmp_end
+    mov al, byte ptr [rsi]
+    mov bl, byte ptr [rdi]
+    cmp al, bl
+    jne cmp_diff
+    inc rsi
+    inc rdi
+    dec r10d
+    dec r11d
+    jmp cmp_loop
+
+cmp_end:
+    mov eax, r8d
+    sub eax, r9d
+    ret
+
+cmp_diff:
+    movzx eax, al
+    movzx ebx, bl
+    sub eax, ebx
+    ret
+</previous>
+It failed:
+<failure>
+Test `one_byte` failed (stdin delivered whole; test run 2 of 42; the runs before it passed).
+stdin (1 bytes): "x"
+The program stopped with a fault (oob): 4-byte read of unmapped memory at 0x400409ffc, pc=0x4000fe at pc 0x4000fe [the faulting instruction is `mov eax, dword ptr [rdi + rcx*4]` at 0x4000fe (ins_inner+0xc) (disassembly of the assembled program)]
+exit status: expected 0, got none (the program did not exit)
+stdout differs from byte 0 on (line 1, column 1 of the expected output); expected 2 bytes in total, got 0
+  expected from byte 0: "x\n"
+  actual from byte 0:   (end of output)
+</failure>
+Write a corrected, complete version. Same output format; output only the code.

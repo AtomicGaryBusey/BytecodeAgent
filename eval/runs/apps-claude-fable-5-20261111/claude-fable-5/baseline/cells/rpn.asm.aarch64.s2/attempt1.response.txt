@@ -1,0 +1,239 @@
+.text
+.globl _start
+
+_start:
+    adrp x24, inbuf
+    add x24, x24, :lo12:inbuf
+    mov x25, #0                     // total bytes read
+read_loop:
+    mov x2, #65536
+    subs x2, x2, x25
+    beq read_done
+    mov x8, #63                     // read
+    mov x0, #0
+    add x1, x24, x25
+    svc #0
+    cmp x0, #0
+    ble read_done
+    add x25, x25, x0
+    b read_loop
+read_done:
+    mov x19, x24                    // current pointer
+    add x20, x24, x25               // end pointer
+    adrp x21, vstack
+    add x21, x21, :lo12:vstack
+
+line_loop:
+    cmp x19, x20
+    bhs do_exit
+    mov x22, #0                     // value stack count
+
+token_loop:
+skip_ws:
+    cmp x19, x20
+    bhs end_line
+    ldrb w0, [x19]
+    cmp w0, #0x20
+    beq 1f
+    cmp w0, #0x09
+    bne 2f
+1:  add x19, x19, #1
+    b skip_ws
+2:
+    cmp w0, #0x0A
+    beq end_line
+    mov x4, x19                     // token start
+scan_tok:
+    add x19, x19, #1
+    cmp x19, x20
+    bhs tok_end
+    ldrb w0, [x19]
+    cmp w0, #0x20
+    beq tok_end
+    cmp w0, #0x09
+    beq tok_end
+    cmp w0, #0x0A
+    bne scan_tok
+tok_end:
+    mov x5, x19                     // token end
+    sub x6, x5, x4                  // length
+    cmp x6, #1
+    bne parse_num
+    ldrb w7, [x4]
+    cmp w7, #43                     // '+'
+    beq op_add
+    cmp w7, #45                     // '-'
+    beq op_sub
+    cmp w7, #42                     // '*'
+    beq op_mul
+    cmp w7, #47                     // '/'
+    beq op_div
+    cmp w7, #37                     // '%'
+    beq op_mod
+
+parse_num:
+    mov x7, x4
+    mov x9, #0                      // negative flag
+    ldrb w0, [x7]
+    cmp w0, #45                     // '-'
+    bne 3f
+    mov x9, #1
+    add x7, x7, #1
+3:
+    sub x10, x5, x7                 // digit count
+    cbz x10, line_error
+    cmp x10, #18
+    bhi line_error
+    mov x11, #0
+    mov x12, #10
+digit_loop:
+    ldrb w0, [x7], #1
+    sub w0, w0, #48                 // '0'
+    cmp w0, #9
+    bhi line_error
+    mul x11, x11, x12
+    add x11, x11, x0
+    cmp x7, x5
+    blo digit_loop
+    cbz x9, push_val
+    neg x11, x11
+push_val:
+    cmp x22, #511
+    bhs line_error
+    str x11, [x21, x22, lsl #3]
+    add x22, x22, #1
+    b token_loop
+
+op_add:
+    mov x13, #0
+    b do_binop
+op_sub:
+    mov x13, #1
+    b do_binop
+op_mul:
+    mov x13, #2
+    b do_binop
+op_div:
+    mov x13, #3
+    b do_binop
+op_mod:
+    mov x13, #4
+do_binop:
+    cmp x22, #2
+    blo line_error
+    sub x22, x22, #1
+    ldr x1, [x21, x22, lsl #3]      // b
+    sub x2, x22, #1
+    ldr x0, [x21, x2, lsl #3]       // a
+    cbz x13, bo_add
+    cmp x13, #1
+    beq bo_sub
+    cmp x13, #2
+    beq bo_mul
+    // division or modulo
+    cbz x1, line_error
+    movz x3, #0x8000, lsl #48       // INT64_MIN
+    cmp x0, x3
+    bne 4f
+    cmn x1, #1
+    beq line_error
+4:
+    sdiv x3, x0, x1
+    cmp x13, #3
+    bne 5f
+    mov x0, x3
+    b store_res
+5:
+    msub x0, x3, x1, x0
+    b store_res
+bo_add:
+    add x0, x0, x1
+    b store_res
+bo_sub:
+    sub x0, x0, x1
+    b store_res
+bo_mul:
+    mul x0, x0, x1
+store_res:
+    str x0, [x21, x2, lsl #3]
+    b token_loop
+
+line_error:
+skip_err:
+    cmp x19, x20
+    bhs print_error
+    ldrb w0, [x19]
+    cmp w0, #0x0A
+    beq 6f
+    add x19, x19, #1
+    b skip_err
+6:
+    add x19, x19, #1
+print_error:
+    adrp x1, errmsg
+    add x1, x1, :lo12:errmsg
+    mov x0, #1
+    mov x2, #6
+    mov x8, #64                     // write
+    svc #0
+    b line_loop
+
+end_line:
+    cmp x19, x20
+    bhs 8f
+    add x19, x19, #1                // consume newline
+8:
+    cmp x22, #1
+    bne print_error
+    // print decimal number
+    ldr x0, [x21]
+    adrp x3, numbuf
+    add x3, x3, :lo12:numbuf
+    add x3, x3, #32
+    mov w1, #0x0A
+    strb w1, [x3, #-1]!
+    mov x9, #0
+    tbz x0, #63, 9f
+    mov x9, #1
+    neg x0, x0                      // unsigned magnitude (INT64_MIN ok)
+9:
+    mov x12, #10
+num_loop:
+    udiv x2, x0, x12
+    msub x4, x2, x12, x0
+    add w4, w4, #48                 // '0'
+    strb w4, [x3, #-1]!
+    mov x0, x2
+    cbnz x0, num_loop
+    cbz x9, 10f
+    mov w4, #45                     // '-'
+    strb w4, [x3, #-1]!
+10:
+    mov x0, #1
+    mov x1, x3
+    adrp x2, numbuf
+    add x2, x2, :lo12:numbuf
+    add x2, x2, #32
+    sub x2, x2, x3
+    mov x8, #64                     // write
+    svc #0
+    b line_loop
+
+do_exit:
+    mov x0, #0
+    mov x8, #93                     // exit
+    svc #0
+    b do_exit
+
+.section .rodata
+errmsg:
+    .ascii "error\n"
+
+.bss
+.balign 8
+vstack:
+    .space 4096
+numbuf:
+    .space 32
+inbuf:
+    .space 65536

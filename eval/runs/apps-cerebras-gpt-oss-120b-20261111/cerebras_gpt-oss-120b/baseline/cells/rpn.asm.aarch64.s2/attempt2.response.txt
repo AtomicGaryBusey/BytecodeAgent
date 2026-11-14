@@ -1,0 +1,361 @@
+.globl	_start
+.text
+.align	2
+_start:
+	// ---- read entire input (max 65536 bytes) into input_buf ----
+	mov	x5, #0						// total bytes read so far
+read_loop:
+	// x5 = already read bytes
+	adrp	x0, input_buf
+	add	x0, x0, :lo12:input_buf
+	add	x0, x0, x5					// buffer address + offset
+	mov	x1, #65536
+	sub	x1, x1, x5					// remaining space
+	cmp	x1, #0
+	ble	read_done
+	mov	x2, #0						// fd = stdin
+	mov	x8, #63					// sys_read
+	svc	#0
+	cmp	x0, #0
+	beq	read_done
+	add	x5, x5, x0
+	b	read_loop
+read_done:
+	adrp	x6, input_len
+	add	x6, x6, :lo12:input_len
+	str	x5, [x6]					// store total length
+
+	// ---- set up pointers for processing ----
+	adrp	x9, input_buf
+	add	x9, x9, :lo12:input_buf		// x9 = current pointer
+	ldr	x10, [x6]					// x10 = remaining bytes
+
+	// ---- constant MIN = -2^63 ----
+	adrp	x5, min_const
+	add	x5, x5, :lo12:min_const		// x5 = MIN
+
+line_loop:
+	cmp	x10, #0
+	beq	exit
+
+	// ---- find newline in current line ----
+	mov	x11, x9					// line start
+	mov	x12, #0					// offset within remaining
+
+find_nl:
+	cmp	x12, x10
+	bge	no_newline
+	ldrb	w13, [x11, x12]
+	cmp	w13, #10					// '\n'
+	beq	have_newline
+	add	x12, x12, #1
+	b	find_nl
+have_newline:
+	mov	x15, #1					// newline present
+	b	line_len_known
+no_newline:
+	mov	x15, #0					// no newline
+line_len_known:
+	mov	x14, x12					// line length (bytes before newline)
+
+	// ---- evaluate line ----
+	adrp	x16, stack_buf
+	add	x16, x16, :lo12:stack_buf		// x16 = stack base
+	mov	x17, #0					// stack index (elements)
+	mov	x18, #0					// error flag = 0
+
+	// token offset within line
+	mov	x19, #0
+token_loop:
+	cmp	x19, x14
+	bge	tokens_done
+
+	// ---- skip separators (space and tab) ----
+skip_sep:
+	cmp	x19, x14
+	bge	tokens_done
+	ldrb	w20, [x11, x19]
+	cmp	w20, #' '
+	beq	inc_offset_skip
+	cmp	w20, #9					// tab
+	bne	after_skip
+inc_offset_skip:
+	add	x19, x19, #1
+	b	skip_sep
+after_skip:
+	cmp	x19, x14
+	bge	tokens_done
+
+	ldrb	w21, [x11, x19]			// first char of token
+
+	// ---- determine token type ----
+	cmp	w21, #'0'
+	blo	check_minus
+	cmp	w21, #'9'
+	ble	is_number_start
+check_minus:
+	cmp	w21, #'-'
+	bne	is_operator
+	// look ahead to see if digit follows
+	add	x23, x19, #1
+	cmp	x23, x14
+	bge	is_operator
+	ldrb	w24, [x11, x23]
+	cmp	w24, #'0'
+	blt	is_operator
+	cmp	w24, #'9'
+	ble	is_number_start
+is_operator:
+	// ---- handle operator ----
+	cmp	x17, #2
+	blt	op_error
+	// b = top of stack
+	sub	x22, x17, #1
+	ldr	x23, [x16, x22, LSL #3]		// x23 = b
+	// a = second
+	sub	x22, x17, #2
+	ldr	x0, [x16, x22, LSL #3]		// x0 = a
+
+	// dispatch based on operator character in w21
+	cmp	w21, #'+'
+	beq	op_add
+	cmp	w21, #'-'
+	beq	op_sub
+	cmp	w21, #'*'
+	beq	op_mul
+	cmp	w21, #'/'
+	beq	op_div
+	cmp	w21, #'%'
+	beq	op_mod
+	b	op_error
+
+op_add:
+	add	x0, x0, x23
+	b	push_result
+op_sub:
+	sub	x0, x0, x23
+	b	push_result
+op_mul:
+	mul	x0, x0, x23
+	b	push_result
+op_div:
+	cmp	x23, #0
+	beq	op_error
+	cmp	x0, x5					// a == MIN ?
+	bne	div_ok
+	cmp	x23, #-1
+	beq	op_error
+div_ok:
+	sdiv	x0, x0, x23
+	b	push_result
+op_mod:
+	cmp	x23, #0
+	beq	op_error
+	cmp	x0, x5					// a == MIN ?
+	bne	mod_ok
+	cmp	x23, #-1
+	beq	op_error
+mod_ok:
+	sdiv	x22, x0, x23			// quotient
+	mul	x23, x22, x23
+	sub	x0, x0, x23				// remainder
+	b	push_result
+
+op_error:
+	mov	x18, #1
+	// skip rest of line
+	mov	x19, x14
+	b	token_loop
+
+push_result:
+	// replace two top elements with result
+	sub	x17, x17, #1			// pop b
+	sub	x22, x17, #1
+	str	x0, [x16, x22, LSL #3]		// store result as new top
+	b	next_token
+
+is_number_start:
+	// ---- parse integer literal ----
+	mov	x25, #0				// accumulator
+	mov	x26, #0				// sign flag (0 = positive)
+	cmp	w21, #'-'
+	bne	number_digit_loop
+	mov	x26, #1
+	add	x19, x19, #1			// skip '-'
+	// fall through to digit loop
+number_digit_loop:
+	// count digits in x27
+	mov	x27, #0
+parse_digits:
+	cmp	x19, x14
+	bge	digits_done
+	ldrb	w28, [x11, x19]
+	cmp	w28, #'0'
+	blt	digits_done
+	cmp	w28, #'9'
+	bgt	digits_done
+	// digit found
+	add	x27, x27, #1
+	// value = value*10 + digit
+	mov	x29, x25
+	mov	x30, #10
+	mul	x25, x29, x30
+	sub	x30, w28, #'0'
+	add	x25, x25, x30
+	add	x19, x19, #1
+	b	parse_digits
+digits_done:
+	// validate digit count
+	cmp	x27, #0
+	beq	number_error
+	cmp	x27, #19
+	bge	number_error
+	// apply sign if needed
+	cbz	x26, push_number
+	sub	x25, xzr, x25
+push_number:
+	// push onto stack
+	str	x25, [x16, x17, LSL #3]
+	add	x17, x17, #1
+	b	next_token
+
+number_error:
+	mov	x18, #1
+	// skip rest of line
+	mov	x19, x14
+	b	next_token
+
+next_token:
+	b	token_loop
+
+tokens_done:
+	// ---- line finished ----
+	cmp	x18, #0
+	bne	output_error
+	cmp	x17, #1
+	bne	output_error
+	// get result
+	sub	x22, x17, #1
+	ldr	x0, [x16, x22, LSL #3]		// result in x0
+	// ---- output number ----
+	cmp	x0, #0
+	bne	convert_number
+	// output "0\n"
+	adrp	x1, zero_msg
+	add	x1, x1, :lo12:zero_msg
+	mov	x2, #2
+	mov	x8, #64
+	mov	x0, #1
+	svc	#0
+	b	advance_line
+
+convert_number:
+	// x0 = signed value
+	// sign handling
+	mov	x1, #0				// sign flag
+	tbnz	x0, #63, negative_value
+	b	abs_done
+negative_value:
+	mov	x1, #1
+	sub	x0, xzr, x0			// magnitude = -value (unsigned)
+abs_done:
+	// buffer for digits (num_buf) placed at end, fill backwards
+	adrp	x2, num_buf
+	add	x2, x2, :lo12:num_buf
+	add	x2, x2, #31			// point to last byte
+	mov	x3, #0				// digit count
+digit_loop:
+	cmp	x0, #0
+	beq	digit_done
+	mov	x4, #10
+	udiv	x5, x0, x4			// quotient
+	mul	x6, x5, x4
+	sub	x6, x0, x6			// remainder
+	add	x6, x6, #'0'
+	strb	w6, [x2]
+	sub	x2, x2, #1
+	mov	x0, x5
+	add	x3, x3, #1
+	b	digit_loop
+digit_done:
+	cmp	x3, #0
+	bne	nonzero_digits
+	// store single '0' (should not happen)
+	add	x2, x2, #1
+	mov	w6, #'0'
+	strb	w6, [x2]
+	add	x3, x3, #1
+nonzero_digits:
+	// prepend '-' if negative
+	cmp	x1, #0
+	beq	no_sign
+	sub	x2, x2, #1
+	mov	w6, #'-'
+	strb	w6, [x2]
+	add	x3, x3, #1
+no_sign:
+	// write number
+	mov	x8, #64
+	mov	x0, #1
+	mov	x1, x2
+	mov	x2, x3
+	svc	#0
+	// write newline
+	adrp	x1, newline_char
+	add	x1, x1, :lo12:newline_char
+	mov	x2, #1
+	mov	x8, #64
+	svc	#0
+	b	advance_line
+
+output_error:
+	adrp	x1, error_msg
+	add	x1, x1, :lo12:error_msg
+	adrp	x4, error_len
+	add	x4, x4, :lo12:error_len
+	ldr	x2, [x4]			// length = 6
+	mov	x8, #64
+	mov	x0, #1
+	svc	#0
+	b	advance_line
+
+advance_line:
+	// advance input pointer past this line
+	add	x12, x14, x15			// line_len + newline? (x15 = 1 if newline)
+	add	x9, x9, x12
+	sub	x10, x10, x12
+	b	line_loop
+
+exit:
+	mov	x0, #0
+	mov	x8, #93
+	svc	#0
+
+	// -------------------------------------------------
+	.bss
+	.align	3
+input_buf:
+	.space	65536
+input_len:
+	.zero	8
+stack_buf:
+	.space	8192				// 1024 * 8 bytes
+num_buf:
+	.space	32
+
+	// -------------------------------------------------
+	.section	.rodata
+	.align	3
+min_const:
+	.quad	0x8000000000000000
+
+error_msg:
+	.ascii	"error\n"
+error_len:
+	.quad	6
+
+zero_msg:
+	.ascii	"0\n"
+
+newline_char:
+	.ascii	"\n"

@@ -1,0 +1,484 @@
+.equ SYS_read, 63
+.equ SYS_write, 64
+.equ SYS_exit, 93
+.equ INPUT_MAX, 65536
+
+.section .text
+.globl _start
+_start:
+    adrp x19, input_buf
+    add x19, x19, :lo12:input_buf
+    mov x21, #0
+
+read_loop:
+    mov x0, #0
+    add x1, x19, x21
+    mov x2, #1
+    lsl x2, x2, #16
+    sub x2, x2, x21
+    cbz x2, read_done
+    mov x8, #SYS_read
+    svc #0
+    cbz x0, read_done
+    add x21, x21, x0
+    b read_loop
+
+read_done:
+    mov x20, x21
+    mov x0, #0
+    bl skip_ws
+    cmp x0, x20
+    b.eq report_error
+    bl parse_value
+    cbnz x1, report_error
+    bl skip_ws
+    cmp x0, x20
+    b.ne report_error
+
+report_ok:
+    mov x0, #1
+    adrp x1, ok_msg
+    add x1, x1, :lo12:ok_msg
+    mov x2, #3
+    mov x8, #SYS_write
+    svc #0
+    mov x0, #0
+    mov x8, #SYS_exit
+    svc #0
+
+report_error:
+    mov x22, x0
+
+    mov x0, #1
+    adrp x1, error_msg
+    add x1, x1, :lo12:error_msg
+    mov x2, #9
+    mov x8, #SYS_write
+    svc #0
+
+    adrp x3, output_buf
+    add x3, x3, :lo12:output_buf
+    add x4, x3, #32
+    mov w5, #10
+    strb w5, [x4, #-1]!
+    mov x6, x22
+    mov x7, #10
+
+    cbnz x6, decimal_loop
+    mov w5, #'0'
+    strb w5, [x4, #-1]!
+    b decimal_done
+
+decimal_loop:
+    udiv x9, x6, x7
+    msub x10, x9, x7, x6
+    add w10, w10, #'0'
+    strb w10, [x4, #-1]!
+    mov x6, x9
+    cbnz x6, decimal_loop
+
+decimal_done:
+    mov x0, #1
+    mov x1, x4
+    add x9, x3, #32
+    sub x2, x9, x4
+    mov x8, #SYS_write
+    svc #0
+
+    mov x0, #1
+    mov x8, #SYS_exit
+    svc #0
+
+skip_ws:
+    cmp x0, x20
+    b.hs skip_ws_done
+    ldrb w2, [x19, x0]
+    cmp w2, #0x20
+    b.eq skip_ws_advance
+    cmp w2, #0x09
+    b.eq skip_ws_advance
+    cmp w2, #0x0a
+    b.eq skip_ws_advance
+    cmp w2, #0x0d
+    b.eq skip_ws_advance
+skip_ws_done:
+    ret
+skip_ws_advance:
+    add x0, x0, #1
+    b skip_ws
+
+parse_value:
+    stp x29, x30, [sp, #-16]!
+    cmp x0, x20
+    b.hs parse_value_error
+    ldrb w2, [x19, x0]
+
+    cmp w2, #'{'
+    b.eq parse_value_object
+    cmp w2, #'['
+    b.eq parse_value_array
+    cmp w2, #'"'
+    b.eq parse_value_string
+    cmp w2, #'-'
+    b.eq parse_value_number
+    cmp w2, #'0'
+    b.lo parse_value_keywords
+    cmp w2, #'9'
+    b.ls parse_value_number
+
+parse_value_keywords:
+    cmp w2, #'t'
+    b.eq parse_value_true
+    cmp w2, #'f'
+    b.eq parse_value_false
+    cmp w2, #'n'
+    b.eq parse_value_null
+    b parse_value_error
+
+parse_value_object:
+    bl parse_object
+    b parse_value_return
+parse_value_array:
+    bl parse_array
+    b parse_value_return
+parse_value_string:
+    bl parse_string
+    b parse_value_return
+parse_value_number:
+    bl parse_number
+    b parse_value_return
+
+parse_value_true:
+    adrp x2, true_text
+    add x2, x2, :lo12:true_text
+    mov x3, #4
+    bl parse_literal
+    b parse_value_return
+
+parse_value_false:
+    adrp x2, false_text
+    add x2, x2, :lo12:false_text
+    mov x3, #5
+    bl parse_literal
+    b parse_value_return
+
+parse_value_null:
+    adrp x2, null_text
+    add x2, x2, :lo12:null_text
+    mov x3, #4
+    bl parse_literal
+    b parse_value_return
+
+parse_value_error:
+    mov x1, #1
+parse_value_return:
+    ldp x29, x30, [sp], #16
+    ret
+
+parse_literal:
+    mov x4, #0
+parse_literal_loop:
+    cmp x4, x3
+    b.eq parse_literal_success
+    cmp x0, x20
+    b.hs parse_literal_error
+    ldrb w5, [x19, x0]
+    ldrb w6, [x2, x4]
+    cmp w5, w6
+    b.ne parse_literal_error
+    add x0, x0, #1
+    add x4, x4, #1
+    b parse_literal_loop
+parse_literal_success:
+    mov x1, #0
+    ret
+parse_literal_error:
+    mov x1, #1
+    ret
+
+parse_string:
+    add x0, x0, #1
+parse_string_loop:
+    cmp x0, x20
+    b.hs parse_string_error
+    ldrb w2, [x19, x0]
+    cmp w2, #'"'
+    b.eq parse_string_close
+    cmp w2, #0x20
+    b.lo parse_string_error
+    cmp w2, #0x5c
+    b.eq parse_string_escape
+    add x0, x0, #1
+    b parse_string_loop
+
+parse_string_close:
+    add x0, x0, #1
+    mov x1, #0
+    ret
+
+parse_string_escape:
+    add x0, x0, #1
+    cmp x0, x20
+    b.hs parse_string_error
+    ldrb w2, [x19, x0]
+    cmp w2, #'"'
+    b.eq parse_string_escape_one
+    cmp w2, #0x5c
+    b.eq parse_string_escape_one
+    cmp w2, #'/'
+    b.eq parse_string_escape_one
+    cmp w2, #'b'
+    b.eq parse_string_escape_one
+    cmp w2, #'f'
+    b.eq parse_string_escape_one
+    cmp w2, #'n'
+    b.eq parse_string_escape_one
+    cmp w2, #'r'
+    b.eq parse_string_escape_one
+    cmp w2, #'t'
+    b.eq parse_string_escape_one
+    cmp w2, #'u'
+    b.eq parse_string_unicode
+    b parse_string_error
+
+parse_string_escape_one:
+    add x0, x0, #1
+    b parse_string_loop
+
+parse_string_unicode:
+    add x0, x0, #1
+    mov x3, #4
+parse_string_unicode_loop:
+    cmp x0, x20
+    b.hs parse_string_error
+    ldrb w2, [x19, x0]
+    cmp w2, #'0'
+    b.lo parse_string_error
+    cmp w2, #'9'
+    b.ls parse_string_unicode_digit
+    cmp w2, #'A'
+    b.lo parse_string_error
+    cmp w2, #'F'
+    b.ls parse_string_unicode_digit
+    cmp w2, #'a'
+    b.lo parse_string_error
+    cmp w2, #'f'
+    b.hi parse_string_error
+parse_string_unicode_digit:
+    add x0, x0, #1
+    subs x3, x3, #1
+    b.ne parse_string_unicode_loop
+    b parse_string_loop
+
+parse_string_error:
+    mov x1, #1
+    ret
+
+parse_number:
+    ldrb w2, [x19, x0]
+    cmp w2, #'-'
+    b.ne parse_number_integer
+    add x0, x0, #1
+    cmp x0, x20
+    b.hs parse_number_error
+
+parse_number_integer:
+    ldrb w2, [x19, x0]
+    cmp w2, #'0'
+    b.eq parse_number_zero
+    cmp w2, #'1'
+    b.lo parse_number_error
+    cmp w2, #'9'
+    b.hi parse_number_error
+    add x0, x0, #1
+
+parse_number_digits:
+    cmp x0, x20
+    b.hs parse_number_success
+    ldrb w2, [x19, x0]
+    cmp w2, #'0'
+    b.lo parse_number_fraction_check
+    cmp w2, #'9'
+    b.hi parse_number_fraction_check
+    add x0, x0, #1
+    b parse_number_digits
+
+parse_number_zero:
+    add x0, x0, #1
+
+parse_number_fraction_check:
+    cmp x0, x20
+    b.hs parse_number_success
+    ldrb w2, [x19, x0]
+    cmp w2, #'.'
+    b.ne parse_number_exponent_check
+    add x0, x0, #1
+    cmp x0, x20
+    b.hs parse_number_error
+    ldrb w2, [x19, x0]
+    cmp w2, #'0'
+    b.lo parse_number_error
+    cmp w2, #'9'
+    b.hi parse_number_error
+
+parse_number_fraction_digits:
+    add x0, x0, #1
+    cmp x0, x20
+    b.hs parse_number_success
+    ldrb w2, [x19, x0]
+    cmp w2, #'0'
+    b.lo parse_number_exponent_check
+    cmp w2, #'9'
+    b.ls parse_number_fraction_digits
+
+parse_number_exponent_check:
+    cmp x0, x20
+    b.hs parse_number_success
+    ldrb w2, [x19, x0]
+    cmp w2, #'e'
+    b.eq parse_number_exponent
+    cmp w2, #'E'
+    b.ne parse_number_success
+
+parse_number_exponent:
+    add x0, x0, #1
+    cmp x0, x20
+    b.hs parse_number_error
+    ldrb w2, [x19, x0]
+    cmp w2, #'+'
+    b.eq parse_number_exponent_sign
+    cmp w2, #'-'
+    b.ne parse_number_exponent_first
+
+parse_number_exponent_sign:
+    add x0, x0, #1
+    cmp x0, x20
+    b.hs parse_number_error
+    ldrb w2, [x19, x0]
+
+parse_number_exponent_first:
+    cmp w2, #'0'
+    b.lo parse_number_error
+    cmp w2, #'9'
+    b.hi parse_number_error
+
+parse_number_exponent_digits:
+    add x0, x0, #1
+    cmp x0, x20
+    b.hs parse_number_success
+    ldrb w2, [x19, x0]
+    cmp w2, #'0'
+    b.lo parse_number_success
+    cmp w2, #'9'
+    b.ls parse_number_exponent_digits
+
+parse_number_success:
+    mov x1, #0
+    ret
+parse_number_error:
+    mov x1, #1
+    ret
+
+parse_array:
+    stp x29, x30, [sp, #-16]!
+    add x0, x0, #1
+    bl skip_ws
+    cmp x0, x20
+    b.hs parse_array_error
+    ldrb w2, [x19, x0]
+    cmp w2, #']'
+    b.eq parse_array_close
+
+parse_array_value:
+    bl parse_value
+    cbnz x1, parse_array_return
+    bl skip_ws
+    cmp x0, x20
+    b.hs parse_array_error
+    ldrb w2, [x19, x0]
+    cmp w2, #']'
+    b.eq parse_array_close
+    cmp w2, #','
+    b.ne parse_array_error
+    add x0, x0, #1
+    bl skip_ws
+    b parse_array_value
+
+parse_array_close:
+    add x0, x0, #1
+    mov x1, #0
+    b parse_array_return
+parse_array_error:
+    mov x1, #1
+parse_array_return:
+    ldp x29, x30, [sp], #16
+    ret
+
+parse_object:
+    stp x29, x30, [sp, #-16]!
+    add x0, x0, #1
+    bl skip_ws
+    cmp x0, x20
+    b.hs parse_object_error
+    ldrb w2, [x19, x0]
+    cmp w2, #'}'
+    b.eq parse_object_close
+
+parse_object_member:
+    cmp x0, x20
+    b.hs parse_object_error
+    ldrb w2, [x19, x0]
+    cmp w2, #'"'
+    b.ne parse_object_error
+    bl parse_string
+    cbnz x1, parse_object_return
+    bl skip_ws
+    cmp x0, x20
+    b.hs parse_object_error
+    ldrb w2, [x19, x0]
+    cmp w2, #':'
+    b.ne parse_object_error
+    add x0, x0, #1
+    bl skip_ws
+    bl parse_value
+    cbnz x1, parse_object_return
+    bl skip_ws
+    cmp x0, x20
+    b.hs parse_object_error
+    ldrb w2, [x19, x0]
+    cmp w2, #'}'
+    b.eq parse_object_close
+    cmp w2, #','
+    b.ne parse_object_error
+    add x0, x0, #1
+    bl skip_ws
+    b parse_object_member
+
+parse_object_close:
+    add x0, x0, #1
+    mov x1, #0
+    b parse_object_return
+parse_object_error:
+    mov x1, #1
+parse_object_return:
+    ldp x29, x30, [sp], #16
+    ret
+
+.section .rodata
+ok_msg:
+    .ascii "ok\n"
+error_msg:
+    .ascii "error at "
+true_text:
+    .ascii "true"
+false_text:
+    .ascii "false"
+null_text:
+    .ascii "null"
+
+.bss
+.balign 16
+input_buf:
+    .zero 65536
+output_buf:
+    .zero 32

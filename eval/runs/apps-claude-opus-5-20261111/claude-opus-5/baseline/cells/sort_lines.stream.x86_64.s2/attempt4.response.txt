@@ -1,0 +1,240 @@
+.globl _start
+
+.text
+_start:
+    xor r12, r12                      # total bytes read
+read_loop:
+    mov rdx, 32768
+    sub rdx, r12
+    jz  read_done
+    lea rsi, [rip + buf]
+    add rsi, r12
+    xor eax, eax
+    xor edi, edi
+    syscall
+    test rax, rax
+    jle read_done
+    add r12, rax
+    jmp read_loop
+read_done:
+
+    # ---- parse lines into arr: entry = off | (len << 32) ----
+    xor rbx, rbx                      # n lines
+    xor rcx, rcx                      # start of current line
+    xor rdx, rdx                      # p
+    lea r8, [rip + buf]
+    lea r9, [rip + arr]
+parse_loop:
+    cmp rdx, r12
+    jae parse_tail
+    cmp byte ptr [r8 + rdx], 10
+    jne parse_next
+    mov rax, rdx
+    sub rax, rcx
+    shl rax, 32
+    or  rax, rcx
+    mov [r9 + rbx*8], rax
+    inc rbx
+    lea rcx, [rdx + 1]
+parse_next:
+    inc rdx
+    jmp parse_loop
+parse_tail:
+    cmp rcx, r12
+    jae parse_end
+    mov rax, r12
+    sub rax, rcx
+    shl rax, 32
+    or  rax, rcx
+    mov [r9 + rbx*8], rax
+    inc rbx
+parse_end:
+
+    # ---- bottom-up merge sort ----
+    sub rsp, 64
+    lea r13, [rip + arr]              # src
+    lea r14, [rip + tmp]              # dst
+    cmp rbx, 1
+    jbe sort_done
+    mov rbp, 1                        # width
+width_loop:
+    cmp rbp, rbx
+    jae sort_done
+    xor r15, r15                      # i
+block_loop:
+    cmp r15, rbx
+    jae block_done
+    mov rax, r15
+    add rax, rbp
+    cmp rax, rbx
+    cmova rax, rbx
+    mov [rsp + 16], rax               # lend
+    mov [rsp + 8], rax                # r
+    mov [rsp + 0], r15                # l
+    mov [rsp + 32], r15               # d
+    mov rax, r15
+    add rax, rbp
+    add rax, rbp
+    cmp rax, rbx
+    cmova rax, rbx
+    mov [rsp + 24], rax               # rend
+merge_loop:
+    mov rax, [rsp + 0]
+    cmp rax, [rsp + 16]
+    jae right_only
+    mov rcx, [rsp + 8]
+    cmp rcx, [rsp + 24]
+    jae left_only
+    mov rsi, [r13 + rax*8]
+    mov rdi, [r13 + rcx*8]
+    call cmpfun
+    test rax, rax
+    jle take_left
+take_right:
+    mov rcx, [rsp + 8]
+    mov rax, [r13 + rcx*8]
+    inc rcx
+    mov [rsp + 8], rcx
+    jmp store_one
+take_left:
+    mov rcx, [rsp + 0]
+    mov rax, [r13 + rcx*8]
+    inc rcx
+    mov [rsp + 0], rcx
+store_one:
+    mov rcx, [rsp + 32]
+    mov [r14 + rcx*8], rax
+    inc rcx
+    mov [rsp + 32], rcx
+    jmp merge_loop
+left_only:
+    mov rcx, [rsp + 0]
+    cmp rcx, [rsp + 16]
+    jae merge_done
+    mov rax, [r13 + rcx*8]
+    inc rcx
+    mov [rsp + 0], rcx
+    mov rcx, [rsp + 32]
+    mov [r14 + rcx*8], rax
+    inc rcx
+    mov [rsp + 32], rcx
+    jmp left_only
+right_only:
+    mov rcx, [rsp + 8]
+    cmp rcx, [rsp + 24]
+    jae merge_done
+    mov rax, [r13 + rcx*8]
+    inc rcx
+    mov [rsp + 8], rcx
+    mov rcx, [rsp + 32]
+    mov [r14 + rcx*8], rax
+    inc rcx
+    mov [rsp + 32], rcx
+    jmp right_only
+merge_done:
+    mov r15, [rsp + 24]
+    jmp block_loop
+block_done:
+    xchg r13, r14
+    add rbp, rbp
+    jmp width_loop
+sort_done:
+    add rsp, 64
+
+    # ---- build output ----
+    lea r8, [rip + buf]
+    lea r9, [rip + outbuf]
+    xor r10, r10                      # out length
+    xor r11, r11                      # i
+out_loop:
+    cmp r11, rbx
+    jae out_done
+    mov rax, [r13 + r11*8]
+    mov edx, eax                      # off
+    shr rax, 32                       # len
+    lea rsi, [r8 + rdx]
+    mov rcx, rax
+copy_loop:
+    test rcx, rcx
+    jz  copy_done
+    movzx eax, byte ptr [rsi]
+    mov byte ptr [r9 + r10], al
+    inc rsi
+    inc r10
+    dec rcx
+    jmp copy_loop
+copy_done:
+    mov byte ptr [r9 + r10], 10
+    inc r10
+    inc r11
+    jmp out_loop
+out_done:
+
+    xor rbx, rbx
+write_loop:
+    cmp rbx, r10
+    jae exit_prog
+    mov eax, 1
+    mov edi, 1
+    lea rsi, [rip + outbuf]
+    add rsi, rbx
+    mov rdx, r10
+    sub rdx, rbx
+    syscall
+    test rax, rax
+    jle exit_prog
+    add rbx, rax
+    jmp write_loop
+
+exit_prog:
+    mov eax, 60
+    xor edi, edi
+    syscall
+    hlt
+
+# cmpfun: rsi = entry a, rdi = entry b -> rax sign (<0 a<b, 0 equal, >0 a>b)
+cmpfun:
+    mov eax, esi
+    lea r8, [rip + buf]
+    add r8, rax
+    mov eax, edi
+    lea r9, [rip + buf]
+    add r9, rax
+    mov r10, rsi
+    shr r10, 32
+    mov r11, rdi
+    shr r11, 32
+    mov rcx, r10
+    cmp rcx, r11
+    cmova rcx, r11
+    xor edx, edx
+cmp_loop:
+    cmp rdx, rcx
+    jae cmp_eqlen
+    movzx eax, byte ptr [r8 + rdx]
+    movzx esi, byte ptr [r9 + rdx]
+    sub eax, esi
+    jne cmp_diff
+    inc rdx
+    jmp cmp_loop
+cmp_eqlen:
+    mov rax, r10
+    sub rax, r11
+    ret
+cmp_diff:
+    cdqe
+    ret
+
+.bss
+.p2align 3
+buf:
+    .zero 32776
+.p2align 3
+arr:
+    .zero 262144
+.p2align 3
+tmp:
+    .zero 262144
+.p2align 3
+outbuf:
+    .zero 65552

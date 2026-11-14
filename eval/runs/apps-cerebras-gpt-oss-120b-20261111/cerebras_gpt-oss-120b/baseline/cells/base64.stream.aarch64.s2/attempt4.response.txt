@@ -1,0 +1,202 @@
+	.global	_start
+	.text
+	.align	4
+
+	.equ	SYSCALL_READ,	63
+	.equ	SYSCALL_WRITE,	64
+	.equ	SYSCALL_EXIT,	93
+
+	.equ	BUF_SIZE,	65536
+	.equ	LINE_MAX,	76
+
+_start:
+	// load addresses of buffers
+	adrp	x14, input_buf
+	add	x14, x14, :lo12:input_buf		// x14 = input base
+	adrp	x10, line_buf
+	add	x10, x10, :lo12:line_buf		// x10 = line buffer pointer
+	adrp	x11, b64_table
+	add	x11, x11, :lo12:b64_table		// x11 = base64 table pointer
+
+	// total length = 0
+	mov	x13, #0				// x13 = total bytes read
+
+read_loop:
+	mov	x0, #0				// fd = stdin
+	add	x1, x14, x13			// buf = input_base + total
+	mov	x2, #BUF_SIZE
+	mov	x8, #SYSCALL_READ
+	svc	#0
+	cbz	x0, read_done
+	add	x13, x13, x0
+	b	read_loop
+
+read_done:
+	cbnz	x13, init_encode
+	// empty input, exit silently
+exit_success:
+	mov	w0, #0
+	mov	x8, #SYSCALL_EXIT
+	svc	#0
+
+init_encode:
+	// x12 = current input pointer
+	add	x12, x14, #0			// start at base
+	mov	x15, x13			// x15 = remaining bytes
+	mov	x9, #0				// line_len = 0
+
+encode_loop:
+	cmp	x15, #3
+	b.ge	encode_triplet
+	cmp	x15, #2
+	beq	encode_two
+	cmp	x15, #1
+	beq	encode_one
+	b	encode_finish
+
+encode_triplet:
+	ldrb	w4, [x12], #1			// b0
+	ldrb	w5, [x12], #1			// b1
+	ldrb	w6, [x12], #1			// b2
+	sub	x15, x15, #3
+
+	// idx0 = b0 >> 2
+	lsr	w7, w4, #2
+
+	// idx1 = ((b0 & 3) << 4) | (b1 >> 4)
+	and	w8, w4, #3
+	lsl	w8, w8, #4
+	lsr	w9, w5, #4
+	orr	w8, w8, w9
+
+	// idx2 = ((b1 & 0xF) << 2) | (b2 >> 6)
+	and	w9, w5, #0xF
+	lsl	w9, w9, #2
+	lsr	w10, w6, #6
+	orr	w9, w9, w10
+
+	// idx3 = b2 & 0x3F
+	and	w10, w6, #0x3F
+
+	// output idx0
+	uxtw	x0, w7
+	ldrb	w0, [x11, x0]
+	bl	store_char
+	// output idx1
+	uxtw	x0, w8
+	ldrb	w0, [x11, x0]
+	bl	store_char
+	// output idx2
+	uxtw	x0, w9
+	ldrb	w0, [x11, x0]
+	bl	store_char
+	// output idx3
+	uxtw	x0, w10
+	ldrb	w0, [x11, x0]
+	bl	store_char
+	b	encode_loop
+
+encode_two:
+	ldrb	w4, [x12], #1			// b0
+	ldrb	w5, [x12], #1			// b1
+	sub	x15, x15, #2
+
+	// idx0 = b0 >> 2
+	lsr	w7, w4, #2
+
+	// idx1 = ((b0 & 3) << 4) | (b1 >> 4)
+	and	w8, w4, #3
+	lsl	w8, w8, #4
+	lsr	w9, w5, #4
+	orr	w8, w8, w9
+
+	// idx2 = ((b1 & 0xF) << 2)
+	and	w9, w5, #0xF
+	lsl	w9, w9, #2
+
+	// output idx0
+	uxtw	x0, w7
+	ldrb	w0, [x11, x0]
+	bl	store_char
+	// output idx1
+	uxtw	x0, w8
+	ldrb	w0, [x11, x0]
+	bl	store_char
+	// output idx2
+	uxtw	x0, w9
+	ldrb	w0, [x11, x0]
+	bl	store_char
+	// padding '='
+	mov	w0, #'='
+	bl	store_char
+	b	encode_loop
+
+encode_one:
+	ldrb	w4, [x12], #1			// b0
+	sub	x15, x15, #1
+
+	// idx0 = b0 >> 2
+	lsr	w7, w4, #2
+
+	// idx1 = ((b0 & 3) << 4)
+	and	w8, w4, #3
+	lsl	w8, w8, #4
+
+	// output idx0
+	uxtw	x0, w7
+	ldrb	w0, [x11, x0]
+	bl	store_char
+	// output idx1
+	uxtw	x0, w8
+	ldrb	w0, [x11, x0]
+	bl	store_char
+	// padding '=' twice
+	mov	w0, #'='
+	bl	store_char
+	bl	store_char
+	b	encode_loop
+
+encode_finish:
+	cmp	x9, #0
+	beq	exit_success
+
+	// store final newline
+	mov	w0, #10
+	strb	w0, [x10, x9]
+	add	x2, x9, #1
+	mov	w0, #1
+	mov	x1, x10
+	mov	x8, #SYSCALL_WRITE
+	svc	#0
+	b	exit_success
+
+// ------------------------------------------------------------
+store_char:
+	// x0 = character to store (in w0)
+	// x10 = line buffer pointer, x9 = line_len
+	strb	w0, [x10, x9]
+	add	x9, x9, #1
+	cmp	x9, #LINE_MAX
+	b.ne	1f
+	// line full: write line with newline
+	mov	w0, #10
+	strb	w0, [x10, x9]		// store newline at index 76
+	add	x2, x9, #1			// count = 77
+	mov	w0, #1
+	mov	x1, x10
+	mov	x8, #SYSCALL_WRITE
+	svc	#0
+	mov	x9, #0
+1:
+	ret
+
+	.section	.rodata
+b64_table:
+	.ascii	"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/"
+
+	.bss
+	.align	4
+line_buf:
+	.space	77
+input_buf:
+	.space	65536

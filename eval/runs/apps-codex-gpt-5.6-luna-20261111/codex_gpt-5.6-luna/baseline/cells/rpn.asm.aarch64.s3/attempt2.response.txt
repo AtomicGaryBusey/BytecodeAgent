@@ -1,0 +1,311 @@
+.equ SYS_READ, 63
+.equ SYS_WRITE, 64
+.equ SYS_EXIT, 93
+.equ INPUT_SIZE, 65536
+
+.section .rodata
+error_msg:
+    .ascii "error\n"
+error_len = . - error_msg
+
+.section .bss
+    .align 4
+input_buf:
+    .zero INPUT_SIZE
+eval_stack:
+    .zero 8192
+out_buf:
+    .zero 32
+
+.text
+.globl _start
+_start:
+    adrp x19, input_buf
+    add x19, x19, :lo12:input_buf
+    adrp x28, eval_stack
+    add x28, x28, :lo12:eval_stack
+    mov x20, #0
+
+read_more:
+    mov x0, #0
+    add x1, x19, x20
+    mov x2, #INPUT_SIZE
+    sub x2, x2, x20
+    mov x8, #SYS_READ
+    svc #0
+    cbz x0, input_done
+    add x20, x20, x0
+    b read_more
+
+input_done:
+    mov x24, #0
+    mov x25, #0
+
+scan_input:
+    cmp x24, x20
+    beq final_remainder
+    ldrb w0, [x19, x24]
+    cmp w0, #10
+    beq found_newline
+    add x24, x24, #1
+    b scan_input
+
+found_newline:
+    add x0, x19, x25
+    sub x1, x24, x25
+    bl process_line
+    add x24, x24, #1
+    mov x25, x24
+    b scan_input
+
+final_remainder:
+    cmp x24, x25
+    beq program_exit
+    add x0, x19, x25
+    sub x1, x24, x25
+    bl process_line
+
+program_exit:
+    mov x0, #0
+    mov x8, #SYS_EXIT
+    svc #0
+
+write_all:
+    cbz x1, write_done
+write_loop:
+    mov x2, x1
+    mov x1, x0
+    mov x0, #1
+    mov x8, #SYS_WRITE
+    svc #0
+    add x1, x1, x0
+    sub x2, x2, x0
+    mov x0, x1
+    mov x1, x2
+    cbnz x1, write_loop
+write_done:
+    ret
+
+process_line:
+    stp x19, x20, [sp, #-16]!
+    stp x21, x22, [sp, #-16]!
+    stp x23, x24, [sp, #-16]!
+    stp x25, x26, [sp, #-16]!
+    stp x27, x28, [sp, #-16]!
+    stp x29, x30, [sp, #-16]!
+
+    add x19, x0, x1
+    mov x20, x0
+    mov x22, #0
+
+next_token:
+    cmp x20, x19
+    beq line_finish
+    ldrb w26, [x20]
+    cmp w26, #32
+    beq skip_separator
+    cmp w26, #9
+    beq skip_separator
+
+    mov x21, x20
+
+find_token_end:
+    cmp x20, x19
+    beq token_ended
+    ldrb w26, [x20]
+    cmp w26, #32
+    beq token_ended
+    cmp w26, #9
+    beq token_ended
+    add x20, x20, #1
+    b find_token_end
+
+token_ended:
+    sub x23, x20, x21
+    ldrb w26, [x21]
+
+    cmp x23, #1
+    bne not_operator
+    cmp w26, #43
+    beq operator_ready
+    cmp w26, #45
+    beq operator_ready
+    cmp w26, #42
+    beq operator_ready
+    cmp w26, #47
+    beq operator_ready
+    cmp w26, #37
+    beq operator_ready
+
+not_operator:
+    cmp w26, #45
+    beq negative_literal
+    cmp x23, #18
+    bhi token_error
+    mov x24, #0
+    mov x26, #0
+
+parse_positive:
+    cmp x26, x23
+    beq positive_done
+    ldrb w0, [x21, x26]
+    cmp w0, #48
+    blo token_error
+    cmp w0, #57
+    bhi token_error
+    sub w0, w0, #48
+    add x24, x24, x24, lsl #3
+    add x24, x24, x24
+    add x24, x24, x0
+    add x26, x26, #1
+    b parse_positive
+
+positive_done:
+    str x24, [x28, x22, lsl #3]
+    add x22, x22, #1
+    b next_token
+
+negative_literal:
+    cmp x23, #1
+    beq operator_ready
+    sub x26, x23, #1
+    cmp x26, #18
+    bhi token_error
+    add x21, x21, #1
+    mov x24, #0
+
+parse_negative:
+    cbz x26, negative_done
+    ldrb w0, [x21]
+    cmp w0, #48
+    blo token_error
+    cmp w0, #57
+    bhi token_error
+    sub w0, w0, #48
+    add x24, x24, x24, lsl #3
+    add x24, x24, x24
+    add x24, x24, x0
+    add x21, x21, #1
+    sub x26, x26, #1
+    b parse_negative
+
+negative_done:
+    neg x24, x24
+    str x24, [x28, x22, lsl #3]
+    add x22, x22, #1
+    b next_token
+
+operator_ready:
+    cmp x22, #2
+    blo token_error
+    sub x0, x22, #1
+    ldr x1, [x28, x0, lsl #3]
+    sub x0, x22, #2
+    ldr x2, [x28, x0, lsl #3]
+
+    cmp w26, #43
+    beq do_add
+    cmp w26, #45
+    beq do_sub
+    cmp w26, #42
+    beq do_mul
+    cmp w26, #47
+    beq do_div
+
+    cbz x1, token_error
+    mov x3, x2
+    sdiv x0, x2, x1
+    msub x0, x0, x1, x3
+    b store_operation
+
+do_add:
+    add x0, x2, x1
+    b store_operation
+
+do_sub:
+    sub x0, x2, x1
+    b store_operation
+
+do_mul:
+    mul x0, x2, x1
+    b store_operation
+
+do_div:
+    cbz x1, token_error
+    movz x3, #0
+    movk x3, #0x8000, lsl #48
+    cmp x2, x3
+    bne division_safe
+    cmn x1, #1
+    beq token_error
+
+division_safe:
+    sdiv x0, x2, x1
+
+store_operation:
+    sub x3, x22, #2
+    str x0, [x28, x3, lsl #3]
+    sub x22, x22, #1
+    b next_token
+
+skip_separator:
+    add x20, x20, #1
+    b next_token
+
+line_finish:
+    cmp x22, #1
+    bne token_error
+
+    ldr x24, [x28]
+    adrp x27, out_buf
+    add x27, x27, :lo12:out_buf
+    add x25, x27, #32
+    sub x26, x25, #1
+    mov w0, #10
+    strb w0, [x26]
+
+    mov x0, x24
+    mov x1, #0
+    cmp x0, #0
+    bge magnitude_ready
+    mov x1, #1
+    neg x0, x0
+
+magnitude_ready:
+    mov x24, x0
+    mov x27, #10
+
+decimal_loop:
+    udiv x0, x24, x27
+    msub x3, x0, x27, x24
+    add w3, w3, #48
+    sub x26, x26, #1
+    strb w3, [x26]
+    mov x24, x0
+    cbnz x24, decimal_loop
+
+    cbz x1, sign_done
+    sub x26, x26, #1
+    mov w0, #45
+    strb w0, [x26]
+
+sign_done:
+    mov x0, x26
+    sub x1, x25, x26
+    bl write_all
+    b process_return
+
+token_error:
+    adrp x0, error_msg
+    add x0, x0, :lo12:error_msg
+    mov x1, #error_len
+    bl write_all
+
+process_return:
+    ldp x29, x30, [sp], #16
+    ldp x27, x28, [sp], #16
+    ldp x25, x26, [sp], #16
+    ldp x23, x24, [sp], #16
+    ldp x21, x22, [sp], #16
+    ldp x19, x20, [sp], #16
+    ret

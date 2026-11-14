@@ -1,0 +1,218 @@
+        .global _start
+        .section .bss
+        .align 8
+buf:            .zero   65536          // input buffer
+linebuf:        .space  80             // line construction buffer
+
+        .section .rodata
+hex_digits:     .ascii  "0123456789abcdef"
+
+        .section .text
+        .p2align 2
+_start:
+        // x19 = address of buf
+        adrp    x19, buf
+        add     x19, x19, :lo12:buf
+        mov     x20, xzr               // x20 = total length read
+
+read_loop:
+        // x1 = remaining space = 65536 - x20
+        mov     x1, #65536
+        sub     x2, x1, x20
+        cbz     x2, read_done          // no space left
+
+        // read(fd=0, buf+x20, remaining)
+        mov     x0, #0
+        add     x1, x19, x20
+        mov     x8, #63                // sys_read
+        svc     #0
+        // x0 = bytes read
+        cbz     x0, read_done
+        add     x20, x20, x0
+        b       read_loop
+
+read_done:
+        // x21 = offset for printing rows
+        mov     x21, xzr
+
+print_loop:
+        cmp     x21, x20
+        bcs     final_len
+
+        // x22 = bytes left = x20 - x21
+        sub     x22, x20, x21
+        // x23 = n = min(16, bytes left)
+        mov     x23, #16
+        cmp     x22, x23
+        csel    x23, x22, x23, lt      // x23 = n
+
+        // linebuf pointers
+        adrp    x24, linebuf
+        add     x24, x24, :lo12:linebuf   // x24 = linebuf start
+        mov     x25, x24                  // x25 = current write pointer
+
+        // ---- print offset (8 hex digits) ----
+        mov     x26, #8                // count
+        mov     x27, x21               // offset value
+offset_hex_loop:
+        sub     x28, x26, #1
+        lsl     x28, x28, #2           // shift = (count-1)*4
+        lsr     x29, x27, x28
+        and     x29, x29, #0xf
+        adrp    x30, hex_digits
+        add     x30, x30, :lo12:hex_digits
+        add     x30, x30, x29
+        ldrb    w0, [x30]
+        strb    w0, [x25], #1
+        subs    x26, x26, #1
+        bne     offset_hex_loop
+
+        // two spaces after offset
+        mov     w0, #' '
+        strb    w0, [x25], #1
+        strb    w0, [x25], #1
+
+        // ---- hex bytes slots ----
+        mov     x26, #0                // i = 0
+hex_loop:
+        cmp     x26, #16
+        bge     after_hex
+
+        cmp     x26, x23
+        bge     hex_spaces
+
+        // load byte from input
+        add     x0, x19, x21
+        add     x0, x0, x26
+        ldrb    w0, [x0]
+
+        // high nibble
+        and     x1, x0, #0xf0
+        lsr     x1, x1, #4
+        // low nibble
+        and     x2, x0, #0x0f
+
+        // high char
+        adrp    x3, hex_digits
+        add     x3, x3, :lo12:hex_digits
+        add     x3, x3, x1
+        ldrb    w3, [x3]
+        strb    w3, [x25], #1
+
+        // low char
+        adrp    x4, hex_digits
+        add     x4, x4, :lo12:hex_digits
+        add     x4, x4, x2
+        ldrb    w4, [x4]
+        strb    w4, [x25], #1
+
+        // trailing space
+        mov     w5, #' '
+        strb    w5, [x25], #1
+        b       hex_next
+
+hex_spaces:
+        // three spaces for missing byte
+        mov     w0, #' '
+        strb    w0, [x25], #1
+        strb    w0, [x25], #1
+        strb    w0, [x25], #1
+
+hex_next:
+        add     x26, x26, #1
+        // extra space after 8th slot
+        cmp     x26, #8
+        bne     hex_loop
+        mov     w0, #' '
+        strb    w0, [x25], #1
+        b       hex_loop
+
+after_hex:
+        // space then '|'
+        mov     w0, #' '
+        strb    w0, [x25], #1
+        mov     w0, #'|'
+        strb    w0, [x25], #1
+
+        // ---- ASCII representation ----
+        mov     x26, #0                // i = 0
+ascii_loop:
+        cmp     x26, x23
+        bge     after_ascii
+
+        add     x0, x19, x21
+        add     x0, x0, x26
+        ldrb    w0, [x0]
+
+        // printable check 0x20..0x7e
+        cmp     w0, #0x20
+        blt     ascii_dot
+        cmp     w0, #0x7e
+        bgt     ascii_dot
+        // printable
+        strb    w0, [x25], #1
+        b       ascii_next
+
+ascii_dot:
+        mov     w0, #'.'
+        strb    w0, [x25], #1
+
+ascii_next:
+        add     x26, x26, #1
+        b       ascii_loop
+
+after_ascii:
+        // closing '|' and newline
+        mov     w0, #'|'
+        strb    w0, [x25], #1
+        mov     w0, #10
+        strb    w0, [x25], #1
+
+        // write the line
+        mov     x0, #1                // stdout
+        mov     x1, x24               // linebuf base
+        sub     x2, x25, x24          // length
+        mov     x8, #64               // sys_write
+        svc     #0
+
+        // next offset
+        add     x21, x21, #16
+        b       print_loop
+
+final_len:
+        // linebuf pointers for final length line
+        adrp    x24, linebuf
+        add     x24, x24, :lo12:linebuf
+        mov     x25, x24
+
+        // ---- print total length (8 hex digits) ----
+        mov     x26, #8
+        mov     x27, x20               // total length
+len_hex_loop:
+        sub     x28, x26, #1
+        lsl     x28, x28, #2
+        lsr     x29, x27, x28
+        and     x29, x29, #0xf
+        adrp    x30, hex_digits
+        add     x30, x30, :lo12:hex_digits
+        add     x30, x30, x29
+        ldrb    w0, [x30]
+        strb    w0, [x25], #1
+        subs    x26, x26, #1
+        bne     len_hex_loop
+
+        // newline
+        mov     w0, #10
+        strb    w0, [x25], #1
+
+        // write final length line
+        mov     x0, #1
+        mov     x1, x24
+        sub     x2, x25, x24
+        mov     x8, #64
+        svc     #0
+
+        // exit 0
+        mov     x0, #0
+        mov     x8, #93
+        svc     #0

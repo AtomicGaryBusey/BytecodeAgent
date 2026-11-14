@@ -1,0 +1,225 @@
+	.global _start
+	.text
+	.align 2
+
+	.equ SYS_READ,   63
+	.equ SYS_WRITE,  64
+	.equ SYS_EXIT,   93
+	.equ BUF_SIZE,   65536
+
+	// hex digits table
+	.section .rodata
+hex_table:
+	.ascii "0123456789abcdef"
+
+	// buffers
+	.bss
+	.align 4
+buf:        .skip 65536
+rowbuf:     .skip 80
+
+	.text
+_start:
+	// x19 = total length = 0
+	mov	x19, #0
+
+	// load addresses
+	adrp	x20, buf                // x20 = &buf
+	add	x20, x20, :lo12:buf
+
+	adrp	x10, hex_table          // x10 = &hex_table
+	add	x10, x10, :lo12:hex_table
+
+	adrp	x11, rowbuf             // x11 = &rowbuf
+
+read_loop:
+	// read(fd=0, buf+total_len, BUF_SIZE)
+	mov	x0, #0
+	add	x1, x20, x19            // dest = buf + total_len
+	mov	x2, #BUF_SIZE
+	mov	x8, #SYS_READ
+	svc	#0
+	cbnz	x0, read_continue
+	b	read_done
+read_continue:
+	add	x19, x19, x0            // total_len += bytes read
+	b	read_loop
+
+read_done:
+	// offset = 0
+	mov	x21, #0                 // x21 = offset
+
+row_loop:
+	cmp	x21, x19
+	b.ge	rows_done
+
+	// remaining = total_len - offset
+	sub	x22, x19, x21           // x22 = remaining
+	// row_len = min(16, remaining)
+	mov	x24, #16
+	mov	x23, x22                // assume row_len = remaining
+	cmp	x22, #16
+	csel	x23, x23, x24, hi       // if remaining > 16 then row_len = 16
+
+	// p = rowbuf, start = rowbuf
+	mov	x25, x11                // x25 = ptr (write position)
+	mov	x9,  x11                // x9 = start of rowbuf
+
+	// ---- offset 8 hex digits (high to low)
+	mov	x26, x21                // value to convert
+	mov	x28, #8                 // digit count
+offset_loop:
+	subs	x28, x28, #1
+	lsl	x0, x28, #2             // shift = (digit)*4
+	lsr	x1, x26, x0
+	and	x1, x1, #0xF
+	add	x2, x10, x1
+	ldrb	w3, [x2]
+	strb	w3, [x25], #1
+	cbnz	x28, offset_loop
+
+	// two spaces
+	mov	w3, #' '
+	strb	w3, [x25], #1
+	strb	w3, [x25], #1
+
+	// ---- hex bytes (0..15)
+	mov	x28, #0                 // i = 0
+hex_byte_loop:
+	cmp	x28, #16
+	b.eq	hex_bytes_done
+
+	// if i < row_len ?
+	cmp	x28, x23
+	b.ge	hex_blank
+
+	// load byte = buf[offset + i]
+	add	x0, x20, x21
+	add	x0, x0, x28
+	ldrb	w1, [x0]
+
+	// high nibble
+	ubfx	x2, x1, #4, #4
+	// low nibble
+	and	x4, x1, #0xF
+
+	// high char
+	add	x5, x10, x2
+	ldrb	w6, [x5]
+	strb	w6, [x25], #1
+	// low char
+	add	x5, x10, x4
+	ldrb	w6, [x5]
+	strb	w6, [x25], #1
+	// space
+	mov	w6, #' '
+	strb	w6, [x25], #1
+	b	hex_next
+
+hex_blank:
+	// three spaces
+	mov	w6, #' '
+	strb	w6, [x25], #1
+	strb	w6, [x25], #1
+	strb	w6, [x25], #1
+
+hex_next:
+	// extra space after 8th byte
+	cmp	x28, #7
+	b.ne	hex_cont
+	mov	w6, #' '
+	strb	w6, [x25], #1
+hex_cont:
+	add	x28, x28, #1
+	b	hex_byte_loop
+
+hex_bytes_done:
+	// space and '|'
+	mov	w6, #' '
+	strb	w6, [x25], #1
+	mov	w6, #'|'
+	strb	w6, [x25], #1
+
+	// ---- ASCII representation
+	mov	x28, #0                 // i = 0
+ascii_loop:
+	cmp	x28, x23
+	b.ge	ascii_done
+
+	// load byte
+	add	x0, x20, x21
+	add	x0, x0, x28
+	ldrb	w1, [x0]
+
+	// printable?
+	cmp	w1, #0x20
+	blt	print_dot
+	cmp	w1, #0x7e
+	bgt	print_dot
+	// printable
+	strb	w1, [x25], #1
+	b	ascii_next
+
+print_dot:
+	mov	w1, #'.'
+	strb	w1, [x25], #1
+
+ascii_next:
+	add	x28, x28, #1
+	b	ascii_loop
+
+ascii_done:
+	// trailing '|' and newline
+	mov	w6, #'|'
+	strb	w6, [x25], #1
+	mov	w6, #'\n'
+	strb	w6, [x25], #1
+
+	// length = 63 + row_len
+	add	x0, x23, #63           // x0 = count
+	// write(fd=1, rowbuf, count)
+	mov	x1, x9
+	mov	x2, x0
+	mov	x0, #1
+	mov	x8, #SYS_WRITE
+	svc	#0
+
+	// advance offset
+	add	x21, x21, x23
+	b	row_loop
+
+rows_done:
+	// ---- final total length line: 8 hex digits + newline
+	// use rowbuf again
+	mov	x25, x11                // ptr
+	mov	x9,  x11                // start
+
+	mov	x26, x19                // total_len
+
+	mov	x28, #8                 // digit count
+offset2_loop:
+	subs	x28, x28, #1
+	lsl	x0, x28, #2
+	lsr	x1, x26, x0
+	and	x1, x1, #0xF
+	add	x2, x10, x1
+	ldrb	w3, [x2]
+	strb	w3, [x25], #1
+	cbnz	x28, offset2_loop
+
+	// newline
+	mov	w3, #'\n'
+	strb	w3, [x25], #1
+
+	// write total length line (9 bytes)
+	mov	x0, #9
+	mov	x1, x9
+	mov	x2, x0
+	mov	x0, #1
+	mov	x8, #SYS_WRITE
+	svc	#0
+
+	// exit(0)
+	mov	x0, #0
+	mov	x8, #SYS_EXIT
+	svc	#0

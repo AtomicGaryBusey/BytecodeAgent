@@ -1,0 +1,338 @@
+.globl _start
+
+.section .bss
+.align 16
+input_buf:
+    .zero 65536
+stack:
+    .zero 8192          # 1024 * 8 bytes
+out_buf:
+    .zero 32
+
+.section .rodata
+error_msg:
+    .ascii "error\n"
+error_len = . - error_msg
+
+.section .text
+
+_start:
+    xor     rbx, rbx                     # total bytes read
+read_loop:
+    mov     rax, 0                       # sys_read
+    mov     rdi, 0                       # stdin
+    lea     rsi, [rip + input_buf]
+    add     rsi, rbx
+    mov     rdx, 65536
+    sub     rdx, rbx                     # remaining space
+    syscall
+    test    rax, rax
+    jz      read_done
+    add     rbx, rax
+    cmp     rbx, 65536
+    jl      read_loop
+    jmp     read_loop                    # input guaranteed <=65536
+read_done:
+    lea     rsi, [rip + input_buf]       # rsi = current pointer
+    lea     rdi, [rsi + rbx]              # rdi = end pointer
+    xor     r8, r8                       # stack size (number of 8‑byte entries)
+    xor     r9, r9                       # error flag
+
+process_loop:
+    cmp     rsi, rdi
+    jae     exit_program
+
+    # skip spaces and tabs
+    mov     al, byte ptr [rsi]
+    cmp     al, 0x20
+    je      inc_ptr
+    cmp     al, 0x09
+    je      inc_ptr
+    cmp     al, 0x0A                     # newline
+    je      handle_newline
+    # token start
+    mov     rdx, rsi                     # token start
+    xor     rcx, rcx                     # token length
+token_len_loop:
+    cmp     rsi, rdi
+    jae     token_len_done
+    mov     al, byte ptr [rsi]
+    cmp     al, 0x20
+    je      token_len_done
+    cmp     al, 0x09
+    je      token_len_done
+    cmp     al, 0x0A
+    je      token_len_done
+    inc     rcx
+    inc     rsi
+    jmp     token_len_loop
+token_len_done:
+    cmp     rcx, 0
+    je      process_loop                 # should not happen
+
+    # check if single‑char operator
+    cmp     rcx, 1
+    jne     maybe_number
+    movzx   eax, byte ptr [rdx]          # operator char
+    cmp     al, '+'
+    je      handle_operator
+    cmp     al, '-'
+    je      handle_operator
+    cmp     al, '*'
+    je      handle_operator
+    cmp     al, '/'
+    je      handle_operator
+    cmp     al, '%'
+    je      handle_operator
+maybe_number:
+    # parse optional sign
+    mov     r10, rdx                     # pointer for digit scan
+    xor     r11, r11                     # digit count
+    xor     r12, r12                     # sign flag 0=positive,1=negative
+    mov     al, byte ptr [r10]
+    cmp     al, '-'
+    jne     scan_digits
+    inc     r12
+    inc     r10
+scan_digits:
+    cmp     r11, rcx
+    je      after_digits
+    mov     al, byte ptr [r10]
+    cmp     al, '0'
+    jb      token_invalid
+    cmp     al, '9'
+    ja      token_invalid
+    inc     r11
+    inc     r10
+    jmp     scan_digits
+after_digits:
+    # must have at least one digit and at most 18
+    cmp     r11, 0
+    je      token_invalid
+    cmp     r11, 18
+    ja      token_invalid
+    # ensure token length matches sign+digits
+    mov     rax, r11
+    add     rax, r12
+    cmp     rax, rcx
+    jne     token_invalid
+
+    # convert digits to integer (unsigned)
+    mov     rax, 0
+    mov     r10, rdx                     # start again
+    test    r12, r12
+    je      conv_loop
+    inc     r10                          # skip '-'
+conv_loop:
+    mov     al, byte ptr [r10]
+    cmp     al, '0'
+    jb      token_invalid
+    cmp     al, '9'
+    ja      token_invalid
+    sub     al, '0'
+    movzx   rbx, al
+    mov     rcx, rax
+    shl     rax, 3
+    add     rax, rcx
+    add     rax, rcx                     # *10
+    add     rax, rbx
+    inc     r10
+    dec     r11
+    jnz     conv_loop
+
+    test    r12, r12
+    je      push_literal
+    neg     rax                          # two‑s complement, works for INT64_MIN
+push_literal:
+    lea     rcx, [r8*8]                  # offset in stack
+    lea     rbx, [rip + stack]
+    mov     [rbx + rcx], rax
+    inc     r8                           # stack size++
+    jmp     process_loop
+
+token_invalid:
+    inc     r9                           # set error flag
+    # skip to end of line
+skip_to_newline:
+    cmp     rsi, rdi
+    jae     handle_newline
+    mov     al, byte ptr [rsi]
+    cmp     al, 0x0A
+    je      inc_ptr_newline
+    inc     rsi
+    jmp     skip_to_newline
+
+inc_ptr:
+    inc     rsi
+    jmp     process_loop
+
+inc_ptr_newline:
+    inc     rsi
+    jmp     handle_newline
+
+handle_newline:
+    # line finished: output result or error
+    cmp     r9, 0
+    jne     output_error
+    cmp     r8, 1
+    jne     output_error
+    # exactly one value on stack
+    lea     rbx, [rip + stack]
+    mov     rax, [rbx]                   # result
+    call    print_int
+    jmp     line_cleanup
+
+output_error:
+    mov     rax, 1                       # sys_write
+    mov     rdi, 1
+    lea     rsi, [rip + error_msg]
+    mov     rdx, error_len
+    syscall
+
+line_cleanup:
+    xor     r8, r8                       # reset stack
+    xor     r9, r9                       # reset error flag
+    jmp     process_loop
+
+handle_operator:
+    # need at least two values
+    cmp     r8, 2
+    jb      op_error
+    # pop b
+    dec     r8
+    lea     rcx, [r8*8]
+    lea     rbx, [rip + stack]
+    mov     rbx, [rbx + rcx]            # b in rbx
+    # pop a
+    dec     r8
+    lea     rcx, [r8*8]
+    lea     rax, [rip + stack]
+    mov     rax, [rax + rcx]            # a in rax
+
+    movzx   edx, byte ptr [rdx]        # operator char (rdx still points to token start)
+    cmp     dl, '+'
+    je      op_add
+    cmp     dl, '-'
+    je      op_sub
+    cmp     dl, '*'
+    je      op_mul
+    cmp     dl, '/'
+    je      op_div
+    cmp     dl, '%'
+    je      op_mod
+    jmp     op_error
+
+op_add:
+    add     rax, rbx
+    jmp     op_push
+op_sub:
+    sub     rax, rbx
+    jmp     op_push
+op_mul:
+    imul    rax, rbx
+    jmp     op_push
+op_div:
+    cmp     rbx, 0
+    je      op_error
+    mov     rcx, rax
+    mov     rdx, -9223372036854775808
+    cmp     rcx, rdx
+    jne     div_ok
+    cmp     rbx, -1
+    je      op_error
+div_ok:
+    cqo
+    idiv    rbx
+    jmp     op_push
+op_mod:
+    cmp     rbx, 0
+    je      op_error
+    mov     rcx, rax
+    mov     rdx, -9223372036854775808
+    cmp     rcx, rdx
+    jne     mod_ok
+    cmp     rbx, -1
+    je      op_error
+mod_ok:
+    cqo
+    idiv    rbx
+    mov     rax, rdx
+    jmp     op_push
+op_error:
+    inc     r9          # set error flag
+    # discard remaining operator processing, continue skipping to line end
+    jmp     skip_to_newline
+
+op_push:
+    lea     rcx, [r8*8]
+    lea     rdx, [rip + stack]
+    mov     [rdx + rcx], rax
+    inc     r8
+    jmp     process_loop
+
+# -------------------------------------------------
+# print_int: rax = signed int64 to print. Clobbers rbx,rcx,rdx,r8,r9,r10,r11
+print_int:
+    push    rbx
+    push    rcx
+    push    rdx
+    push    r8
+    push    r9
+    push    r10
+    push    r11
+
+    lea     rbx, [rip + out_buf]        # buffer start
+    mov     r9, rbx                     # write pointer (will move backwards)
+    xor     rcx, rcx                    # digit count
+
+    mov     r8, 0                       # sign flag 0=positive
+    test    rax, rax
+    jge     .abs_loop
+    inc     r8
+    neg     rax                         # works for INT64_MIN (wraps to same bit pattern)
+
+.abs_loop:
+    xor     rdx, rdx
+    mov     r10, 10
+    div     r10                         # unsigned divide
+    add     dl, '0'
+    dec     r9
+    mov     byte ptr [r9], dl
+    inc     rcx
+    test    rax, rax
+    jne     .abs_loop
+
+    cmp     r8, 0
+    je      .write_number
+    dec     r9
+    mov     byte ptr [r9], '-'
+    inc     rcx
+
+.write_number:
+    mov     rax, 1                      # sys_write
+    mov     rdi, 1
+    mov     rsi, r9
+    mov     rdx, rcx
+    syscall
+
+    # write trailing newline
+    mov     rax, 1
+    mov     rdi, 1
+    lea     rsi, [rip + nl_char]
+    mov     rdx, 1
+    syscall
+
+    pop     r11
+    pop     r10
+    pop     r9
+    pop     r8
+    pop     rdx
+    pop     rcx
+    pop     rbx
+    ret
+
+.section .rodata
+nl_char:
+    .byte 0x0A
+
+exit_program:

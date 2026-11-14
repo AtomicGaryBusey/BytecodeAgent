@@ -1,0 +1,242 @@
+.text
+.globl _start
+
+_start:
+	# ---- read all of stdin into inbuf ----
+	xor	r14d, r14d		# total bytes read
+read_loop:
+	xor	eax, eax		# sys_read
+	xor	edi, edi		# fd 0
+	lea	rsi, [rip + inbuf]
+	add	rsi, r14
+	mov	edx, 65537
+	sub	rdx, r14
+	jle	read_done
+	syscall
+	test	rax, rax
+	jle	read_done
+	add	r14, rax
+	jmp	read_loop
+read_done:
+	lea	rbx, [rip + inbuf]	# rbx = current position
+	lea	r15, [rbx + r14]	# r15 = end of input
+	lea	r13, [rip + outbuf]	# r13 = output write pointer
+
+# ---- per-line loop ----
+line_loop:
+	cmp	rbx, r15
+	jae	all_done
+	mov	rsi, rbx		# line start
+	mov	r8, rsi			# scan for newline
+find_nl:
+	cmp	r8, r15
+	jae	no_nl
+	cmp	byte ptr [r8], 10
+	je	got_nl
+	inc	r8
+	jmp	find_nl
+got_nl:
+	lea	rbx, [r8 + 1]		# next line start
+	jmp	eval_line
+no_nl:
+	mov	rbx, r15
+eval_line:
+	xor	r12d, r12d		# value stack count
+
+token_loop:
+	cmp	rsi, r8
+	jae	line_end
+	movzx	eax, byte ptr [rsi]
+	cmp	al, 0x20
+	je	1f
+	cmp	al, 0x09
+	jne	2f
+1:	inc	rsi
+	jmp	token_loop
+2:	mov	rdi, rsi		# token start
+scan_tok:
+	inc	rsi
+	cmp	rsi, r8
+	jae	tok_done
+	movzx	eax, byte ptr [rsi]
+	cmp	al, 0x20
+	je	tok_done
+	cmp	al, 0x09
+	jne	scan_tok
+tok_done:
+	mov	rcx, rsi
+	sub	rcx, rdi		# token length
+	cmp	rcx, 1
+	jne	parse_num
+	movzx	eax, byte ptr [rdi]
+	cmp	al, '+'
+	je	op_add
+	cmp	al, '-'
+	je	op_sub
+	cmp	al, '*'
+	je	op_mul
+	cmp	al, '/'
+	je	op_div
+	cmp	al, '%'
+	je	op_mod
+	# fall through: single char, maybe a digit
+
+# ---- integer literal: rdi = start, rsi = end (exclusive) ----
+parse_num:
+	mov	r10, rdi
+	xor	r9d, r9d
+	cmp	byte ptr [r10], '-'
+	jne	1f
+	inc	r9d
+	inc	r10
+1:	mov	rcx, rsi
+	sub	rcx, r10
+	test	rcx, rcx
+	jz	line_error
+	cmp	rcx, 18
+	ja	line_error
+	xor	eax, eax
+2:	movzx	edx, byte ptr [r10]
+	sub	edx, '0'
+	cmp	edx, 9
+	ja	line_error
+	lea	rax, [rax + rax*4]
+	lea	rax, [rdx + rax*2]
+	inc	r10
+	cmp	r10, rsi
+	jb	2b
+	test	r9d, r9d
+	jz	3f
+	neg	rax
+3:	mov	qword ptr [vstack + r12*8], rax
+	inc	r12
+	jmp	token_loop
+
+# ---- operators ----
+op_add:
+	cmp	r12, 2
+	jb	line_error
+	mov	rax, qword ptr [vstack + r12*8 - 16]
+	mov	rcx, qword ptr [vstack + r12*8 - 8]
+	add	rax, rcx
+	jmp	op_store
+op_sub:
+	cmp	r12, 2
+	jb	line_error
+	mov	rax, qword ptr [vstack + r12*8 - 16]
+	mov	rcx, qword ptr [vstack + r12*8 - 8]
+	sub	rax, rcx
+	jmp	op_store
+op_mul:
+	cmp	r12, 2
+	jb	line_error
+	mov	rax, qword ptr [vstack + r12*8 - 16]
+	mov	rcx, qword ptr [vstack + r12*8 - 8]
+	imul	rax, rcx
+	jmp	op_store
+op_div:
+	cmp	r12, 2
+	jb	line_error
+	mov	rax, qword ptr [vstack + r12*8 - 16]
+	mov	rcx, qword ptr [vstack + r12*8 - 8]
+	test	rcx, rcx
+	jz	line_error
+	cmp	rcx, -1
+	jne	1f
+	mov	rdx, 0x8000000000000000
+	cmp	rax, rdx
+	je	line_error
+1:	cqo
+	idiv	rcx
+	jmp	op_store
+op_mod:
+	cmp	r12, 2
+	jb	line_error
+	mov	rax, qword ptr [vstack + r12*8 - 16]
+	mov	rcx, qword ptr [vstack + r12*8 - 8]
+	test	rcx, rcx
+	jz	line_error
+	cmp	rcx, -1
+	jne	1f
+	mov	rdx, 0x8000000000000000
+	cmp	rax, rdx
+	je	line_error
+1:	cqo
+	idiv	rcx
+	mov	rax, rdx
+	jmp	op_store
+op_store:
+	dec	r12
+	mov	qword ptr [vstack + r12*8 - 8], rax
+	jmp	token_loop
+
+# ---- end of line: must have exactly one value ----
+line_end:
+	cmp	r12, 1
+	jne	line_error
+	mov	rax, qword ptr [rip + vstack]
+	test	rax, rax
+	jns	1f
+	mov	byte ptr [r13], '-'
+	inc	r13
+	neg	rax
+1:	lea	r10, [rip + numbuf + 32]
+2:	xor	edx, edx
+	mov	ecx, 10
+	div	rcx
+	add	dl, '0'
+	dec	r10
+	mov	byte ptr [r10], dl
+	test	rax, rax
+	jnz	2b
+	lea	r11, [rip + numbuf + 32]
+3:	cmp	r10, r11
+	jae	4f
+	mov	al, byte ptr [r10]
+	mov	byte ptr [r13], al
+	inc	r10
+	inc	r13
+	jmp	3b
+4:	mov	byte ptr [r13], 10
+	inc	r13
+	jmp	line_loop
+
+line_error:
+	mov	dword ptr [r13], 0x6f727265	# "erro"
+	mov	word ptr [r13 + 4], 0x0a72	# "r\n"
+	add	r13, 6
+	jmp	line_loop
+
+# ---- flush output and exit ----
+all_done:
+	lea	rsi, [rip + outbuf]
+	mov	rdx, r13
+	sub	rdx, rsi
+write_loop:
+	test	rdx, rdx
+	jle	exit_ok
+	mov	eax, 1			# sys_write
+	mov	edi, 1
+	syscall
+	test	rax, rax
+	jle	exit_ok
+	add	rsi, rax
+	sub	rdx, rax
+	jmp	write_loop
+exit_ok:
+	mov	eax, 60			# sys_exit
+	xor	edi, edi
+	syscall
+
+.bss
+	.balign 8
+inbuf:
+	.space 65537
+	.balign 8
+outbuf:
+	.space 393280
+	.balign 8
+vstack:
+	.space 8192
+numbuf:
+	.space 32

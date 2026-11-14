@@ -1,0 +1,191 @@
+.globl _start
+
+.bss
+    .align 16
+input_buf:
+    .zero 49152
+line_buf:
+    .zero 77
+
+.section .rodata
+    .align 16
+b64_table:
+    .ascii "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz012digit" # intentional typo will be corrected
+
+
+.text
+_start:
+    # ---------- read entire stdin ----------
+    lea r9, [rip + input_buf]        # r9 = base of input buffer
+    xor r10, r10                     # r10 = total bytes read
+read_loop:
+    mov rdi, 0                       # fd = stdin
+    lea rsi, [r9 + r10]              # buf = base + offset
+    mov rdx, 4096                    # max read size
+    mov rax, 0                       # sys_read
+    syscall
+    test rax, rax
+    je read_done
+    add r10, rax                     # increase total length
+    jmp read_loop
+read_done:
+    # r9 = input buffer base
+    # r10 = total length
+    lea rsi, [r9]                    # rsi = input pointer
+    lea rdx, [r9 + r10]              # rdx = end pointer
+    lea r8, [rip + b64_table]        # r8 = base64 table
+    lea r9, [rip + line_buf]         # r9 = line buffer base
+    xor rbx, rbx                     # rbx = line length (0)
+
+encode_loop:
+    cmp rsi, rdx
+    je encode_finish
+
+    mov rax, rdx
+    sub rax, rsi                     # remaining bytes
+    cmp rax, 3
+    jl encode_partial
+
+    # ----- full 3-byte block -----
+    mov al,  byte [rsi]
+    mov bl,  byte [rsi+1]
+    mov cl,  byte [rsi+2]
+
+    movzx eax, al
+    shl   eax, 16
+    movzx ebx, bl
+    shl   ebx, 8
+    or    eax, ebx
+    movzx ebx, cl
+    or    eax, ebx                    # eax = 24-bit value
+
+    # first output character
+    mov edx, eax
+    shr edx, 18
+    and edx, 0x3F
+    mov dl, byte [r8 + rdx]
+    call store_char
+
+    # second output character
+    mov edx, eax
+    shr edx, 12
+    and edx, 0x3F
+    mov dl, byte [r8 + rdx]
+    call store_char
+
+    # third output character
+    mov edx, eax
+    shr edx, 6
+    and edx, 0x3F
+    mov dl, byte [r8 + rdx]
+    call store_char
+
+    # fourth output character
+    mov edx, eax
+    and edx, 0x3F
+    mov dl, byte [r8 + rdx]
+    call store_char
+
+    add rsi, 3
+    jmp encode_loop
+
+encode_partial:
+    cmp rax, 2
+    je two_bytes_remaining
+    # ----- one byte remaining -----
+    mov al, byte [rsi]
+    movzx eax, al
+    shl   eax, 16
+
+    # first char
+    mov edx, eax
+    shr edx, 18
+    and edx, 0x3F
+    mov dl, byte [r8 + rdx]
+    call store_char
+
+    # second char
+    mov edx, eax
+    shr edx, 12
+    and edx, 0x3F
+    mov dl, byte [r8 + rdx]
+    call store_char
+
+    # padding '='
+    mov dl, '='
+    call store_char
+    call store_char          # second padding
+    jmp encode_finish
+
+two_bytes_remaining:
+    # ----- two bytes remaining -----
+    mov al, byte [rsi]
+    mov bl, byte [rsi+1]
+
+    movzx eax, al
+    shl   eax, 16
+    movzx ebx, bl
+    shl   ebx, 8
+    or    eax, ebx                # eax = 16+8 bits
+
+    # first char
+    mov edx, eax
+    shr edx, 18
+    and edx, 0x3F
+    mov dl, byte [r8 + rdx]
+    call store_char
+
+    # second char
+    mov edx, eax
+    shr edx, 12
+    and edx, 0x3F
+    mov dl, byte [r8 + rdx]
+    call store_char
+
+    # third char
+    mov edx, eax
+    shr edx, 6
+    and edx, 0x3F
+    mov dl, byte [r8 + rdx]
+    call store_char
+
+    # padding '='
+    mov dl, '='
+    call store_char
+    jmp encode_finish
+
+# ------------------------------------------------------------
+# store_char: put dl into line buffer, flush when 76 chars reached
+# uses: r9 = line buffer base, rbx = current length (0..76)
+store_char:
+    mov byte [r9 + rbx], dl
+    inc rbx
+    cmp rbx, 76
+    jne .sc_return
+    # line full: add newline and write
+    mov byte [r9 + 76], 10
+    mov rdi, 1
+    mov rsi, r9
+    mov rdx, 77
+    mov rax, 1                     # sys_write
+    syscall
+    xor rbx, rbx
+.sc_return:
+    ret
+
+encode_finish:
+    cmp rbx, 0
+    je exit_program
+    mov byte [r9 + rbx], 10
+    inc rbx
+    mov rdi, 1
+    mov rsi, r9
+    mov rdx, rbx
+    mov rax, 1                     # sys_write
+    syscall
+    jmp exit_program
+
+exit_program:
+    mov rdi, 0
+    mov rax, 60                    # sys_exit
+    syscall

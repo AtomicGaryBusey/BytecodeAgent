@@ -1,0 +1,297 @@
+	.text
+	.globl	_start
+_start:
+	// ------------------------------------------------------------
+	// Read entire stdin into buf (max 65536 bytes)
+	// ------------------------------------------------------------
+	adrp	x9, buf            // x9 = base address of buffer (page aligned)
+	add	x9, x9, :lo12:buf
+	mov	x10, #0            // total bytes read = 0
+read_loop:
+	mov	x0, #0            // fd = stdin
+	mov	x1, x9            // buffer
+	add	x2, x10, #65536   // count = 65536 - already read
+	svc	#0                // sys_read
+	cmp	x0, #0
+	beq	read_done          // EOF
+	cmp	x0, #0
+	blt	error_exit         // error (negative)
+	add	x10, x10, x0       // total += read
+	cmp	x10, #65536
+	bge	read_done          // buffer full -> stop reading
+	b	read_loop
+read_done:
+	// x10 = input length
+	// ------------------------------------------------------------
+	// If length == 0 -> error at 0
+	// ------------------------------------------------------------
+	cmp	x10, #0
+	bne	parse_input
+	// empty input error
+	adrp	x0, err_msg
+	add	x0, x0, :lo12:err_msg
+	mov	x1, #10           // length of "error at 0\n"
+	b	write_and_exit
+
+	// ------------------------------------------------------------
+	// Parse input
+	// ------------------------------------------------------------
+parse_input:
+	// x9 = buffer start
+	// x10 = length
+	// Use x11 as current offset (byte index)
+	mov	x11, #0
+	// Skip leading whitespace
+	bl	skip_ws
+	// Parse value
+	bl	parse_value
+	cbnz	w0, parse_success // w0 == 0 -> error
+	// error: error offset already in x12
+	// convert offset (x12) to decimal string
+	// (simple routine, max 5 digits for 65536)
+	adrp	x0, err_prefix
+	add	x0, x0, :lo12:err_prefix
+	bl	write_string
+	mov	x0, x12          // offset
+	bl	decimal_to_string // x0 = ptr to string, x1 = length
+	mov	x1, x0
+	bl	write_string
+	adrp	x0, err_suffix
+	add	x0, x0, :lo12:err_suffix
+	mov	x1, #1           // "\n"
+	bl	write_string
+	mov	x0, #1           // exit status 1
+	b	exit
+
+parse_success:
+	// After value, skip trailing whitespace
+	bl	skip_ws
+	// If not at end, extra data -> error at current offset
+	cmp	x11, x10
+	beq	ok_success
+	// error at current offset (x11)
+	mov	x12, x11
+	adrp	x0, err_prefix
+	add	x0, x0, :lo12:err_prefix
+	bl	write_string
+	mov	x0, x12
+	bl	decimal_to_string
+	mov	x1, x0
+	bl	write_string
+	adrp	x0, err_suffix
+	add	x0, x0, :lo12:err_suffix
+	mov	x1, #1
+	bl	write_string
+	mov	x0, #1
+	b	exit
+
+ok_success:
+	adrp	x0, ok_msg
+	add	x0, x0, :lo12:ok_msg
+	mov	x1, #3
+write_and_exit:
+	bl	write_string
+	mov	x0, #0
+exit:
+	mov	x8, #93          // sys_exit
+	svc	#0
+
+error_exit:
+	// unexpected read error -> exit 1
+	mov	x0, #1
+	b	exit
+
+	// ------------------------------------------------------------
+	// Helper: write_string (x0 = pointer, x1 = length)
+	// ------------------------------------------------------------
+write_string:
+	// x0 = addr, x1 = len
+	mov	x2, x1
+	mov	x0, #1           // fd = stdout
+	mov	x8, #64          // sys_write
+	svc	#0
+	ret
+
+	// ------------------------------------------------------------
+	// Helper: skip_ws
+	// Skips spaces (0x20), tab (0x09), newline (0x0A), carriage return (0x0D)
+	// Updates x11 (offset) to first non-ws character
+	// Returns with x0 = ignored
+	// ------------------------------------------------------------
+skip_ws:
+	// x9 = buffer base, x10 = length, x11 = offset
+skip_ws_loop:
+	cmp	x11, x10
+	bge	skip_ws_done
+	ldrb	w2, [x9, x11]
+	cmp	w2, #0x20
+	beq	skip_ws_inc
+	cmp	w2, #0x09
+	beq	skip_ws_inc
+	cmp	w2, #0x0A
+	beq	skip_ws_inc
+	cmp	w2, #0x0D
+	beq	skip_ws_inc
+	b	skip_ws_done
+skip_ws_inc:
+	add	x11, x11, #1
+	b	skip_ws_loop
+skip_ws_done:
+	ret
+
+	// ------------------------------------------------------------
+	// parse_value:
+	// Returns w0 = 1 if success, 0 if error.
+	// On error, x12 = error offset.
+	// ------------------------------------------------------------
+parse_value:
+	// Ensure we have at least one byte
+	cmp	x11, x10
+	bge	value_error
+	ldrb	w2, [x9, x11]     // current char
+	// Check first char for each value type
+	cmp	w2, #'"'
+	beq	parse_string
+	cmp	w2, #'['
+	beq	parse_array
+	cmp	w2, #'{'
+	beq	parse_object
+	cmp	w2, #'t'          // true
+	beq	parse_true
+	cmp	w2, #'f'          // false
+	beq	parse_false
+	cmp	w2, #'n'          // null
+	beq	parse_null
+	// number: digit or '-'
+	cmp	w2, #'-'
+	beq	parse_number
+	cmp	w2, #'0'
+	beq	parse_number
+	cmp	w2, #'1'
+	bhs	parse_number_check_digit // >='1'
+	cmp	w2, #'9'
+	bls	parse_number
+	// not a value
+	b	value_error
+
+parse_number_check_digit:
+	cmp	w2, #'9'
+	bls	parse_number
+	// not a digit
+	b	value_error
+
+value_error:
+	// set error offset = current offset
+	mov	x12, x11
+	mov	w0, #0
+	ret
+
+	// ------------------------------------------------------------
+	// parse_string
+	// ------------------------------------------------------------
+parse_string:
+	// Assume current char == '"'
+	add	x11, x11, #1       // skip opening quote
+string_loop:
+	cmp	x11, x10
+	bge	string_error_unclosed
+	ldrb	w2, [x9, x11]
+	cmp	w2, #'"'          // terminating quote?
+	beq	string_done
+	cmp	w2, #0x5C         // backslash?
+	beq	string_escape
+	// check for control chars (0x00-0x1F)
+	cmp	w2, #0x20
+	bhs	string_continue
+	// error: control char inside string
+	b	string_error
+string_continue:
+	add	x11, x11, #1
+	b	string_loop
+string_escape:
+	// handle escaped char
+	add	x11, x11, #1
+	cmp	x11, x10
+	bge	string_error_unclosed
+	ldrb	w2, [x9, x11]
+	// allowed single-char escapes: "\""/"\\""/"/"/"b"/"f"/"n"/"r"/"t"
+	cmp	w2, #'"'
+	beq	escape_ok
+	cmp	w2, #'\\'
+	beq	escape_ok
+	cmp	w2, #'/'
+	beq	escape_ok
+	cmp	w2, #'b'
+	beq	escape_ok
+	cmp	w2, #'f'
+	beq	escape_ok
+	cmp	w2, #'n'
+	beq	escape_ok
+	cmp	w2, #'r'
+	beq	escape_ok
+	cmp	w2, #'t'
+	beq	escape_ok
+	cmp	w2, #'u'
+	bne	string_error
+	// Unicode escape \uXXXX
+	add	x11, x11, #1
+	// Need exactly 4 hex digits
+	mov	x5, #4
+unicode_hex_loop:
+	cmp	x5, #0
+	beq	unicode_ok
+	cmp	x11, x10
+	bge	string_error_unclosed
+	ldrb	w2, [x9, x11]
+	// check hex digit
+	// '0'-'9'
+	cmp	w2, #'0'
+	blt	string_error
+	cmp	w2, #'9'
+	ble	hex_ok
+	// 'A'-'F'
+	cmp	w2, #'A'
+	blt	string_error
+	cmp	w2, #'F'
+	ble	hex_ok
+	// 'a'-'f'
+	cmp	w2, #'a'
+	blt	string_error
+	cmp	w2, #'f'
+	ble	hex_ok
+	// not hex
+	b	string_error
+hex_ok:
+	add	x11, x11, #1
+	sub	x5, x5, #1
+	b	unicode_hex_loop
+unicode_ok:
+	b	string_loop
+
+string_done:
+	// closing quote consumed
+	add	x11, x11, #1
+	mov	w0, #1
+	ret
+
+string_error_unclosed:
+	// Unterminated string
+	b	string_error
+string_error:
+	// set error offset = current offset
+	mov	x12, x11
+	mov	w0, #0
+	ret
+
+	// ------------------------------------------------------------
+	// parse_true: expects "true"
+	// ------------------------------------------------------------
+parse_true:
+	// we have 't' at current offset
+	// check "true"
+	add	x5, x9, x11        // ptr to current
+	ldr	w2, [x5]           // load up to 4 bytes (little endian)
+	// compare with "true"
+	// 0x65727574 == 't','r','u','e' in little endian -> 0x65727574
+	cmp	w2, #0x65727574
+	bne	value_error

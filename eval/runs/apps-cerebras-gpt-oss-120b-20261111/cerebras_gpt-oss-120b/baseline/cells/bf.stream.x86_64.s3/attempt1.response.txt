@@ -1,0 +1,172 @@
+.globl _start
+.section .bss
+buf:        .space 65536
+stack:      .space 1000*4
+match_table:.space 65536*4
+tape:       .space 30000
+
+.text
+_start:
+    xor     rbx, rbx                # total_len = 0
+
+read_loop:
+    mov     eax, 0                  # sys_read
+    mov     edi, 0
+    lea     rsi, [rip + buf]
+    add     rsi, rbx                # offset = total_len
+    mov     rdx, 65536
+    syscall
+    test    rax, rax
+    jz      read_done
+    add     rbx, rax                # total_len += bytes_read
+    jmp     read_loop
+read_done:
+    mov     rcx, rbx                # rcx = total_len
+    lea     r13, [rip + buf]        # r13 = prog_ptr (base of buffer)
+    xor     rdx, rdx                # rdx = index = 0
+
+find_exclam_loop:
+    cmp     rdx, rcx
+    je      no_exclam
+    mov     al, byte ptr [r13 + rdx]
+    cmp     al, 0x21                # '!'
+    je      exclam_found
+    inc     rdx
+    jmp     find_exclam_loop
+exclam_found:
+    mov     r9, rdx                 # r9 = prog_len
+    lea     r10, [r13 + rdx + 1]    # r10 = input_ptr (first byte after '!')
+    mov     rax, rbx                # rax = total_len
+    sub     rax, rdx
+    dec     rax                     # rax = total_len - prog_len - 1
+    mov     r11, rax                # r11 = input_len
+    jmp     after_split
+no_exclam:
+    mov     r9, rbx                 # prog_len = total_len
+    lea     r10, [r13 + rbx]        # input_ptr = end of buffer
+    xor     r11, r11                # input_len = 0
+after_split:
+    lea     r14, [r13 + r9]         # r14 = prog_end (prog_ptr + prog_len)
+
+    # ---------- Bracket parsing ----------
+    lea     r8, [rip + stack]       # r8 = stack base
+    xor     rdx, rdx                # rdx = stack depth = 0
+    xor     rax, rax                # rax = i = 0
+
+bracket_loop:
+    cmp     rax, r9
+    jae     brackets_done
+    mov     al, byte ptr [r13 + rax]
+    cmp     al, '['
+    je      bracket_push
+    cmp     al, ']'
+    je      bracket_pop
+    jmp     bracket_next
+bracket_push:
+    mov     [r8 + rdx*4], eax       # push index
+    inc     rdx
+    jmp     bracket_next
+bracket_pop:
+    cmp     rdx, 0
+    je      unbalanced
+    dec     rdx
+    mov     edx, [r8 + rdx*4]       # edx = matching '[' index
+    lea     rsi, [rip + match_table]
+    mov     [rsi + rax*4], edx      # match_table[i] = j
+    mov     [rsi + rdx*4], eax      # match_table[j] = i
+    jmp     bracket_next
+bracket_next:
+    inc     rax
+    jmp     bracket_loop
+brackets_done:
+    cmp     rdx, 0
+    jne     unbalanced
+
+    # ---------- Execution ----------
+    lea     r12, [rip + tape]       # r12 = data pointer (initially tape base)
+    mov     rbx, r13                # rbx = pc (program counter)
+exec_loop:
+    cmp     rbx, r14
+    jae     exec_done
+    mov     al, byte ptr [rbx]
+    inc     rbx                     # pc points to next instruction
+
+    cmp     al, '>'
+    je      inc_ptr
+    cmp     al, '<'
+    je      dec_ptr
+    cmp     al, '+'
+    je      inc_cell
+    cmp     al, '-'
+    je      dec_cell
+    cmp     al, '.'
+    je      out_cell
+    cmp     al, ','
+    je      in_cell
+    cmp     al, '['
+    je      branch_zero
+    cmp     al, ']'
+    je      branch_nonzero
+    jmp     exec_loop
+
+inc_ptr:
+    inc     r12
+    jmp     exec_loop
+dec_ptr:
+    dec     r12
+    jmp     exec_loop
+inc_cell:
+    inc     byte ptr [r12]
+    jmp     exec_loop
+dec_cell:
+    dec     byte ptr [r12]
+    jmp     exec_loop
+out_cell:
+    mov     edi, 1                  # fd = stdout
+    mov     rsi, r12                # buffer = data cell
+    mov     rdx, 1                  # count = 1
+    mov     eax, 1                  # sys_write
+    syscall
+    jmp     exec_loop
+in_cell:
+    cmp     r11, 0
+    je      in_zero
+    mov     al, byte ptr [r10]
+    mov     byte ptr [r12], al
+    inc     r10
+    dec     r11
+    jmp     exec_loop
+in_zero:
+    mov     byte ptr [r12], 0
+    jmp     exec_loop
+branch_zero:
+    # index of '[' = (pc - 1) - prog_ptr
+    mov     rdx, rbx
+    sub     rdx, r13
+    dec     rdx
+    cmp     byte ptr [r12], 0
+    jne     exec_loop
+    lea     rsi, [rip + match_table]
+    mov     eax, dword ptr [rsi + rdx*4]   # partner ']'
+    lea     rbx, [r13 + rax + 1]            # pc = after ']'
+    jmp     exec_loop
+branch_nonzero:
+    mov     rdx, rbx
+    sub     rdx, r13
+    dec     rdx
+    cmp     byte ptr [r12], 0
+    je      exec_loop
+    lea     rsi, [rip + match_table]
+    mov     eax, dword ptr [rsi + rdx*4]   # partner '['
+    lea     rbx, [r13 + rax + 1]            # pc = after '['
+    jmp     exec_loop
+
+exec_done:
+    mov     edi, 0
+    mov     eax, 60                 # sys_exit
+    syscall
+
+unbalanced:
+    mov     edi, 1
+    mov     eax, 60                 # sys_exit
+    syscall

@@ -1,0 +1,189 @@
+.globl _start
+.equ outbuf_flush_thresh, 8112
+
+.section .text
+_start:
+    xor rcx, rcx                        # total bytes read = 0
+    lea rsi, [rel input_buf]            # buffer start
+
+read_loop:
+    mov rax, 0                          # sys_read
+    mov rdi, 0                          # fd = stdin
+    lea rsi, [rel input_buf]            # base of buffer
+    add rsi, rcx                        # buffer + offset
+    mov rdx, 65536                      # max read size
+    sub rdx, rcx                        # remaining space
+    syscall
+    cmp rax, 0
+    je read_done
+    test rax, rax
+    jle read_done
+    add rcx, rax                        # total += bytes read
+    jmp read_loop
+
+read_done:
+    test rcx, rcx
+    je exit_success                     # empty input, no output
+
+    # set up encoding
+    lea rsi, [rel input_buf]            # input pointer
+    mov rdx, rcx                        # remaining input bytes
+    lea r12, [rel out_buf]              # outbuf base
+    mov rdi, r12                        # output pointer
+    xor r9, r9                          # line_len = 0
+    xor r8, r8                          # output flag = 0
+    lea r10, [rel b64_alphabet]         # alphabet pointer
+
+encode_loop:
+    cmp rdx, 3
+    jl encode_remainder
+
+    movzx rax, byte ptr [rsi]           # b0
+    movzx rbx, byte ptr [rsi+1]         # b1
+    movzx rcx, byte ptr [rsi+2]         # b2 (temporary)
+    shl rax, 16
+    shl rbx, 8
+    or rax, rbx
+    or rax, rcx                         # 24-bit value in rax
+
+    mov rbx, rax
+    shr rbx, 18
+    and rbx, 63
+    call store_char
+
+    mov rbx, rax
+    shr rbx, 12
+    and rbx, 63
+    call store_char
+
+    mov rbx, rax
+    shr rbx, 6
+    and rbx, 63
+    call store_char
+
+    mov rbx, rax
+    and rbx, 63
+    call store_char
+
+    add rsi, 3
+    sub rdx, 3
+    jmp encode_loop
+
+encode_remainder:
+    cmp rdx, 0
+    je finish_encode
+    cmp rdx, 1
+    je encode_one
+    # rdx == 2
+    movzx rax, byte ptr [rsi]           # b0
+    movzx rbx, byte ptr [rsi+1]         # b1
+    shl rax, 16
+    shl rbx, 8
+    or rax, rbx                         # 24-bit value with low 8 bits zero
+
+    mov rbx, rax
+    shr rbx, 18
+    and rbx, 63
+    call store_char
+
+    mov rbx, rax
+    shr rbx, 12
+    and rbx, 63
+    call store_char
+
+    mov rbx, rax
+    shr rbx, 6
+    and rbx, 63
+    call store_char
+
+    mov al, '='
+    call store_char_no_map
+    jmp finish_encode
+
+encode_one:
+    movzx rax, byte ptr [rsi]           # b0
+    shl rax, 16
+
+    mov rbx, rax
+    shr rbx, 18
+    and rbx, 63
+    call store_char
+
+    mov rbx, rax
+    shr rbx, 12
+    and rbx, 63
+    call store_char
+
+    mov al, '='
+    call store_char_no_map
+    call store_char_no_map
+    jmp finish_encode
+
+finish_encode:
+    cmp r8, 0
+    je exit_flush
+    cmp r9, 0
+    je exit_flush
+    mov al, 0x0A
+    call store_char_no_map
+    jmp exit_flush
+
+#-------------------------------------------------
+store_char:
+    movzx rax, byte ptr [r10 + rbx]     # map index to character
+    # fall through
+
+store_char_no_map:
+    mov byte ptr [rdi], al
+    inc rdi
+    inc r9                               # line_len++
+    mov r8, 1                            # output produced flag
+
+    cmp r9, 76
+    jne .no_newline
+    mov byte ptr [rdi], 0x0A
+    inc rdi
+    xor r9, r9
+.no_newline:
+    mov rax, rdi
+    sub rax, r12
+    cmp rax, outbuf_flush_thresh
+    jb .no_flush
+    mov rdx, rax
+    mov rax, 1                          # sys_write
+    mov rdi, 1                          # fd = stdout
+    syscall
+    mov rdi, r12
+.no_flush:
+    ret
+
+#-------------------------------------------------
+exit_flush:
+    mov rax, rdi
+    sub rax, r12
+    test rax, rax
+    je do_exit
+    mov rdx, rax
+    mov rax, 1
+    mov rdi, 1
+    syscall
+do_exit:
+    mov rax, 60                         # sys_exit
+    xor rdi, rdi
+    syscall
+
+exit_success:
+    mov rax, 60
+    xor rdi, rdi
+    syscall
+
+.section .rodata
+b64_alphabet:
+    .ascii "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/"
+
+.section .bss
+    .align 16
+input_buf:
+    .space 65536
+out_buf:
+    .space 8192

@@ -1,0 +1,204 @@
+.globl _start
+
+.section .bss
+.align 3
+input_buf:
+    .zero 32768
+.align 3
+line_starts:
+    .zero 8000
+.align 3
+line_lens:
+    .zero 8000
+
+.section .rodata
+newline_byte:
+    .byte 0x0A
+
+.text
+
+_start:
+    // Phase 1: Read all of stdin into input_buf
+    // x19 = total bytes read
+    mov x19, #0
+
+read_loop:
+    adrp x1, input_buf
+    add x1, x1, :lo12:input_buf
+    add x1, x1, x19
+    mov x0, #0
+    mov x2, #32768
+    sub x2, x2, x19
+    cbz x2, parse_start
+    mov x8, #63
+    svc #0
+    cbz x0, parse_start
+    add x19, x19, x0
+    b read_loop
+
+parse_start:
+    // Phase 2: Split into lines
+    // x20 = input_buf base
+    // x21 = line count
+    // x22 = offset of current line start
+    // x23 = current scan offset
+    adrp x20, input_buf
+    add x20, x20, :lo12:input_buf
+    mov x21, #0
+    mov x22, #0
+    mov x23, #0
+
+parse_loop:
+    cmp x23, x19
+    bge parse_end
+    ldrb w24, [x20, x23]
+    cmp w24, #10
+    bne parse_no_newline
+    // Store line [x22, x23)
+    adrp x25, line_starts
+    add x25, x25, :lo12:line_starts
+    add x26, x20, x22
+    str x26, [x25, x21, lsl #3]
+    adrp x25, line_lens
+    add x25, x25, :lo12:line_lens
+    sub x26, x23, x22
+    str x26, [x25, x21, lsl #3]
+    add x21, x21, #1
+    add x23, x23, #1
+    mov x22, x23
+    b parse_loop
+
+parse_no_newline:
+    add x23, x23, #1
+    b parse_loop
+
+parse_end:
+    // Handle final line with no trailing newline
+    cmp x22, x19
+    bge sort_start
+    adrp x25, line_starts
+    add x25, x25, :lo12:line_starts
+    add x26, x20, x22
+    str x26, [x25, x21, lsl #3]
+    adrp x25, line_lens
+    add x25, x25, :lo12:line_lens
+    sub x26, x19, x22
+    str x26, [x25, x21, lsl #3]
+    add x21, x21, #1
+
+sort_start:
+    // Phase 3: Insertion sort
+    // x21 = number of lines
+    // x22 = outer loop index i
+    cmp x21, #2
+    blt output_start
+    mov x22, #1
+
+sort_outer:
+    cmp x22, x21
+    bge output_start
+    // Load key: line_starts[i] into x23, line_lens[i] into x24
+    adrp x0, line_starts
+    add x0, x0, :lo12:line_starts
+    ldr x23, [x0, x22, lsl #3]
+    adrp x0, line_lens
+    add x0, x0, :lo12:line_lens
+    ldr x24, [x0, x22, lsl #3]
+    // j = i - 1 in x25
+    sub x25, x22, #1
+
+sort_inner:
+    cmp x25, #0
+    blt sort_insert
+    // Load line[j]: ptr in x26, len in x27
+    adrp x0, line_starts
+    add x0, x0, :lo12:line_starts
+    ldr x26, [x0, x25, lsl #3]
+    adrp x0, line_lens
+    add x0, x0, :lo12:line_lens
+    ldr x27, [x0, x25, lsl #3]
+    // Compute min(x27, x24) into x28
+    cmp x27, x24
+    csel x28, x27, x24, ls
+    // Compare byte by byte; k in x29
+    mov x29, #0
+
+cmp_loop:
+    cmp x29, x28
+    bge cmp_end
+    ldrb w0, [x26, x29]
+    ldrb w1, [x23, x29]
+    cmp w0, w1
+    bhi do_shift
+    blo sort_insert
+    add x29, x29, #1
+    b cmp_loop
+
+cmp_end:
+    // All min_len bytes equal: compare lengths
+    cmp x27, x24
+    bhi do_shift
+    b sort_insert
+
+do_shift:
+    // line[j+1] = line[j]
+    add x28, x25, #1
+    adrp x0, line_starts
+    add x0, x0, :lo12:line_starts
+    ldr x1, [x0, x25, lsl #3]
+    str x1, [x0, x28, lsl #3]
+    adrp x0, line_lens
+    add x0, x0, :lo12:line_lens
+    ldr x1, [x0, x25, lsl #3]
+    str x1, [x0, x28, lsl #3]
+    sub x25, x25, #1
+    b sort_inner
+
+sort_insert:
+    // Insert key at position j+1
+    add x28, x25, #1
+    adrp x0, line_starts
+    add x0, x0, :lo12:line_starts
+    str x23, [x0, x28, lsl #3]
+    adrp x0, line_lens
+    add x0, x0, :lo12:line_lens
+    str x24, [x0, x28, lsl #3]
+    add x22, x22, #1
+    b sort_outer
+
+output_start:
+    // Phase 4: Write sorted lines to stdout
+    // x22 = output index i
+    mov x22, #0
+
+output_loop:
+    cmp x22, x21
+    bge do_exit
+    adrp x0, line_starts
+    add x0, x0, :lo12:line_starts
+    ldr x23, [x0, x22, lsl #3]
+    adrp x0, line_lens
+    add x0, x0, :lo12:line_lens
+    ldr x24, [x0, x22, lsl #3]
+    // Write line content if non-empty
+    cbz x24, write_nl
+    mov x0, #1
+    mov x1, x23
+    mov x2, x24
+    mov x8, #64
+    svc #0
+
+write_nl:
+    adrp x1, newline_byte
+    add x1, x1, :lo12:newline_byte
+    mov x0, #1
+    mov x2, #1
+    mov x8, #64
+    svc #0
+    add x22, x22, #1
+    b output_loop
+
+do_exit:
+    mov x0, #0
+    mov x8, #93
+    svc #0

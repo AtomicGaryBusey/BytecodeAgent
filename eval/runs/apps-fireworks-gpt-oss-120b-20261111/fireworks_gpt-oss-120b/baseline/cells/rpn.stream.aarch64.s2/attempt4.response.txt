@@ -1,0 +1,372 @@
+.global _start
+.text
+.align 3
+
+.equ SYS_READ,   63
+.equ SYS_WRITE,  64
+.equ SYS_EXIT,   93
+.equ FD_STDIN,   0
+.equ FD_STDOUT,  1
+.equ MAX_INPUT,  65536
+.equ STACK_MAX,  1024          // entries, enough for a line
+.equ NEG_FLAG,    1
+
+_start:
+    // read entire input
+    adr     x19, input_buf          // buffer pointer
+    mov     x20, #0                 // total bytes read
+read_loop:
+    mov     x8, #SYS_READ
+    mov     x0, #FD_STDIN
+    mov     x1, x19
+    mov     x2, #MAX_INPUT
+    svc     #0
+    cmp     x0, #0
+    beq     read_done
+    add     x20, x20, x0            // total += bytes read
+    add     x19, x19, x0            // advance buffer pointer
+    b       read_loop
+read_done:
+    // x20 = total input length
+    adr     x21, input_buf          // current pointer
+    mov     x22, x20                // remaining length
+
+line_loop:
+    cbz     x22, exit_success       // no more data
+
+    // per‑line init
+    adr     x23, stack_buf          // stack base
+    mov     x24, #0                 // stack count
+    mov     w25, #0                 // error flag
+
+line_process:
+    // end of line?
+    cbz     x22, line_end
+    ldrb    w0, [x21]
+    cmp     w0, #0x0A
+    beq     line_end
+
+    // if error already, skip token
+    cmp     w25, #0
+    bne     skip_token
+
+    // skip separators
+    cmp     w0, #0x20
+    beq     advance_char
+    cmp     w0, #0x09
+    beq     advance_char
+
+    // token start: check for operators or numbers
+    cmp     w0, #0x2D        // '-'
+    beq     maybe_negative
+    cmp     w0, #0x2B        // '+'
+    beq     operator_plus
+    cmp     w0, #0x2A        // '*'
+    beq     operator_mul
+    cmp     w0, #0x2F        // '/'
+    beq     operator_div
+    cmp     w0, #0x25        // '%'
+    beq     operator_mod
+
+    // digit start -> positive number
+    cmp     w0, #0x30
+    blt     token_invalid
+    cmp     w0, #0x39
+    bgt     token_invalid
+    // parse positive number
+    mov     w28, #0          // not negative
+    bl      parse_number
+    b       push_parsed_value
+
+maybe_negative:
+    // look ahead to decide if number or operator
+    cmp     x22, #1
+    beq     token_operator_minus
+    ldrb    w1, [x21, #1]
+    cmp     w1, #0x30
+    blt     token_operator_minus
+    cmp     w1, #0x39
+    bgt     token_operator_minus
+    // negative number
+    // consume '-'
+    add     x21, x21, #1
+    sub     x22, x22, #1
+    mov     w28, #1          // negative flag
+    bl      parse_number
+    // apply sign
+    sub     x26, xzr, x26    // x26 = -x26 (two's complement)
+    b       push_parsed_value
+
+token_operator_minus:
+    mov     w0, #0x2D
+    b       operator_common
+
+operator_plus:
+    mov     w0, #0x2B
+    b       operator_common
+
+operator_mul:
+    mov     w0, #0x2A
+    b       operator_common
+
+operator_div:
+    mov     w0, #0x2F
+    b       operator_common
+
+operator_mod:
+    mov     w0, #0x25
+    b       operator_common
+
+token_invalid:
+    b       set_error
+
+advance_char:
+    // skip separator character
+    add     x21, x21, #1
+    sub     x22, x22, #1
+    b       line_process
+
+skip_token:
+    // skip until newline or end of input
+    cbz     x22, line_end
+    ldrb    w0, [x21]
+    cmp     w0, #0x0A
+    beq     line_end
+    add     x21, x21, #1
+    sub     x22, x22, #1
+    b       skip_token
+
+// ---------- number parsing ----------
+parse_number:
+    mov     x26, #0          // accumulator
+    mov     w27, #0          // digit count
+parse_digit_loop:
+    cbz     x22, parse_digit_done
+    ldrb    w0, [x21]
+    cmp     w0, #0x30
+    blt     parse_digit_done
+    cmp     w0, #0x39
+    bgt     parse_digit_done
+    // digit
+    sub     w0, w0, #0x30
+    mov     x9, #10
+    mul     x26, x26, x9
+    add     x26, x26, x0
+    add     x21, x21, #1
+    sub     x22, x22, #1
+    add     w27, w27, #1
+    b       parse_digit_loop
+parse_digit_done:
+    // need at least one digit
+    cmp     w27, #0
+    beq     set_error
+    // too many digits?
+    cmp     w27, #19
+    bge     set_error
+    ret
+
+push_parsed_value:
+    // push x26 onto stack
+    lsl     x0, x24, #3
+    add     x1, x23, x0
+    str     x26, [x1]
+    add     x24, x24, #1
+    b       line_process
+
+// ---------- operator handling ----------
+operator_common:
+    // need at least two values on stack
+    cmp     x24, #2
+    blt     set_error
+
+    // pop b
+    sub     x24, x24, #1
+    lsl     x0, x24, #3
+    add     x1, x23, x0
+    ldr     x9, [x1]          // b
+
+    // pop a
+    sub     x24, x24, #1
+    lsl     x0, x24, #3
+    add     x1, x23, x0
+    ldr     x10, [x1]         // a
+
+    // dispatch
+    cmp     w0, #0x2B
+    beq     op_add
+    cmp     w0, #0x2D
+    beq     op_sub
+    cmp     w0, #0x2A
+    beq     op_mul
+    cmp     w0, #0x2F
+    beq     op_div
+    cmp     w0, #0x25
+    beq     op_mod
+    b       set_error
+
+op_add:
+    add     x11, x10, x9
+    b       push_result
+op_sub:
+    sub     x11, x10, x9
+    b       push_result
+op_mul:
+    mul     x11, x10, x9
+    b       push_result
+op_div:
+    // divisor zero?
+    cmp     x9, #0
+    beq     set_error
+    // overflow check: a == INT64_MIN && b == -1
+    mov     x12, #0x8000000000000000
+    cmp     x10, x12
+    bne     div_ok
+    cmp     x9, #-1
+    beq     set_error
+div_ok:
+    sdiv    x11, x10, x9
+    b       push_result
+op_mod:
+    // divisor zero?
+    cmp     x9, #0
+    beq     set_error
+    // overflow check
+    mov     x12, #0x8000000000000000
+    cmp     x10, x12
+    bne     mod_ok
+    cmp     x9, #-1
+    beq     set_error
+mod_ok:
+    sdiv    x12, x10, x9          // quotient
+    mul     x12, x12, x9          // quotient * b
+    sub     x11, x10, x12         // remainder
+    b       push_result
+
+push_result:
+    // push x11 onto stack
+    lsl     x0, x24, #3
+    add     x1, x23, x0
+    str     x11, [x1]
+    add     x24, x24, #1
+    b       line_process
+
+set_error:
+    mov     w25, #1
+    // skip rest of line
+    b       skip_token
+
+line_end:
+    // consume newline if present
+    cbz     x22, line_finish
+    ldrb    w0, [x21]
+    cmp     w0, #0x0A
+    bne     line_finish
+    add     x21, x21, #1
+    sub     x22, x22, #1
+
+line_finish:
+    // output result or error
+    cmp     w25, #0
+    beq     output_value
+    // error output
+    adr     x1, err_msg
+    mov     x2, #6
+    bl      sys_write
+    b       line_loop
+
+output_value:
+    // need exactly one value on stack
+    cmp     x24, #1
+    bne     output_error
+    // pop result
+    sub     x24, x24, #1
+    lsl     x0, x24, #3
+    add     x1, x23, x0
+    ldr     x0, [x1]            // result in x0
+    bl      print_int
+    b       line_loop
+
+output_error:
+    // treat as error
+    adr     x1, err_msg
+    mov     x2, #6
+    bl      sys_write
+    b       line_loop
+
+exit_success:
+    mov     x0, #0
+    mov     x8, #SYS_EXIT
+    svc     #0
+
+// ---------- sys_write ----------
+sys_write:
+    mov     x8, #SYS_WRITE
+    mov     x0, #FD_STDOUT
+    svc     #0
+    ret
+
+// ---------- print_int ----------
+print_int:
+    // buffer: outbuf ... outbuf_end (32 bytes)
+    adr     x3, outbuf_end      // x3 points just after buffer
+    mov     x4, x0              // value copy
+    // sign handling
+    tst     x4, x4
+    bge     .pos_val
+    mov     w5, #1              // sign flag
+    sub     x4, xzr, x4         // absolute value (works for INT64_MIN)
+    b       .conv_loop
+.pos_val:
+    mov     w5, #0
+.conv_loop:
+    // if value is zero we still need one digit
+    cmp     x4, #0
+    bne     .conv_loop_start
+    sub     x3, x3, #1
+    mov     w0, #0x30
+    strb    w0, [x3]
+    b       .after_digits
+.conv_loop_start:
+    // divide by 10
+    mov     x6, #10
+    udiv    x7, x4, x6          // quotient
+    msub    x8, x7, x6, x4      // remainder = x4 - x7*10
+    add     w0, w8, #0x30
+    sub     x3, x3, #1
+    strb    w0, [x3]
+    mov     x4, x7
+    cmp     x4, #0
+    bne     .conv_loop_start
+.after_digits:
+    // add sign if needed
+    cmp     w5, #0
+    beq     .no_sign
+    sub     x3, x3, #1
+    mov     w0, #0x2D
+    strb    w0, [x3]
+.no_sign:
+    // length = outbuf_end - x3
+    adr     x1, outbuf_end
+    sub     x2, x1, x3
+    // write string
+    mov     x0, x3
+    bl      sys_write
+    ret
+
+// ---------- data ----------
+.section .rodata
+err_msg:
+    .ascii "error\n"
+
+.bss
+.align 8
+input_buf:
+    .skip MAX_INPUT
+stack_buf:
+    .skip STACK_MAX*8
+outbuf:
+    .skip 32
+outbuf_end: // label after buffer
+
+.coeff
+

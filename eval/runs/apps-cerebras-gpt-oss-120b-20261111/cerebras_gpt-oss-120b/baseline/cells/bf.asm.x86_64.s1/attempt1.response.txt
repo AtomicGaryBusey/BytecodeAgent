@@ -1,0 +1,204 @@
+.text
+.global _start
+_start:
+    xor     rbx, rbx                 # rbx = total bytes read so far
+
+read_loop:
+    mov     rax, 0                  # sys_read
+    mov     rdi, 0                  # fd = stdin
+    lea     rsi, [rip + buf]
+    add     rsi, rbx                # buf + offset
+    mov     rdx, BUF_SIZE
+    sub     rdx, rbx                # space left
+    cmp     rdx, 0
+    jle     read_done
+    syscall
+    cmp     rax, 0
+    je      read_done
+    add     rbx, rax                # accumulate length
+    jmp     read_loop
+
+read_done:
+    mov     rcx, rbx                # total_len -> rcx
+    xor     rsi, rsi                # i = 0
+find_excl:
+    cmp     rsi, rcx
+    jae     no_excl
+    mov     al, byte ptr [rip + buf + rsi]
+    cmp     al, 0x21                # '!'
+    je      found_excl
+    inc     rsi
+    jmp     find_excl
+found_excl:
+    mov     r14, rsi                # prog_len = i
+    mov     r15, rcx                # total_len
+    sub     r15, r14                # remaining = total_len - prog_len
+    dec     r15                     # input_len = total_len - prog_len - 1
+    lea     r11, [r14 + 1]          # input_offset = prog_len + 1
+    jmp     after_split
+no_excl:
+    mov     r14, rcx                # prog_len = total_len
+    xor     r15, r15                # input_len = 0
+    xor     r11, r11                # input_offset = 0
+after_split:
+    # bracket checking
+    xor     rsi, rsi                # stack_ptr = 0
+    xor     rax, rax                # i = 0
+bracket_loop:
+    cmp     rax, r14
+    jae     bracket_done
+    mov     dl, byte ptr [rip + buf + rax]
+    cmp     dl, '['
+    je      bracket_push
+    cmp     dl, ']'
+    je      bracket_pop
+    jmp     bracket_next
+bracket_push:
+    mov     rcx, rsi
+    shl     rcx, 2                  # *4
+    lea     rdx, [rip + stack]
+    add     rdx, rcx
+    mov     dword ptr [rdx], eax   # store i
+    inc     rsi                     # stack_ptr++
+    jmp     bracket_next
+bracket_pop:
+    test    rsi, rsi
+    jz      unbalanced
+    dec     rsi                     # pop
+    mov     rcx, rsi
+    shl     rcx, 2
+    lea     rdx, [rip + stack]
+    add     rdx, rcx
+    mov     ecx, dword ptr [rdx]   # matching '[' index
+    # store jump for '['
+    mov     rcx, rax                # i = ']'
+    shl     rcx, 2
+    lea     rdx, [rip + jump_table]
+    add     rdx, rcx
+    mov     dword ptr [rdx], ecx   # jump_table[']'] = '['
+    # store jump for '['
+    mov     rcx, ecx                # '[' index
+    shl     rcx, 2
+    lea     rdx, [rip + jump_table]
+    add     rdx, rcx
+    mov     dword ptr [rdx], eax   # jump_table['['] = ']'
+    jmp     bracket_next
+unbalanced:
+    mov     rax, 60
+    mov     rdi, 1
+    syscall
+bracket_next:
+    inc     rax
+    jmp     bracket_loop
+bracket_done:
+    test    rsi, rsi
+    jnz     unbalanced
+
+    # execution start
+    xor     rbx, rbx                # pc = 0
+    xor     r8, r8                  # data pointer = 0
+    xor     r12, r12                # input_ptr = 0
+    mov     r13, r15                # input_remaining = input_len
+
+exec_loop:
+    cmp     rbx, r14                # pc vs prog_len
+    jae     exit_ok
+    mov     al, byte ptr [rip + buf + rbx]
+
+    cmp     al, '>'
+    je      cmd_inc_dp
+    cmp     al, '<'
+    je      cmd_dec_dp
+    cmp     al, '+'
+    je      cmd_inc_cell
+    cmp     al, '-'
+    je      cmd_dec_cell
+    cmp     al, '.'
+    je      cmd_output
+    cmp     al, ','
+    je      cmd_input
+    cmp     al, '['
+    je      cmd_bracket_open
+    cmp     al, ']'
+    je      cmd_bracket_close
+    # any other char: ignore
+    inc     rbx
+    jmp     exec_loop
+
+cmd_inc_dp:
+    inc     r8
+    inc     rbx
+    jmp     exec_loop
+cmd_dec_dp:
+    dec     r8
+    inc     rbx
+    jmp     exec_loop
+cmd_inc_cell:
+    inc     byte ptr [rip + tape + r8]
+    inc     rbx
+    jmp     exec_loop
+cmd_dec_cell:
+    dec     byte ptr [rip + tape + r8]
+    inc     rbx
+    jmp     exec_loop
+cmd_output:
+    mov     rax, 1                 # sys_write
+    mov     rdi, 1                 # fd = stdout
+    lea     rsi, [rip + tape]
+    add     rsi, r8                # address of cell
+    mov     rdx, 1
+    syscall
+    inc     rbx
+    jmp     exec_loop
+cmd_input:
+    cmp     r13, 0
+    je      input_eof
+    mov     al, byte ptr [rip + buf + r11 + r12]
+    mov     byte ptr [rip + tape + r8], al
+    inc     r12
+    dec     r13
+    jmp     input_done
+input_eof:
+    mov     byte ptr [rip + tape + r8], 0
+input_done:
+    inc     rbx
+    jmp     exec_loop
+cmd_bracket_open:
+    movzx   eax, byte ptr [rip + tape + r8]
+    test    al, al
+    jne     bracket_open_continue
+    # jump forward to after matching ']'
+    mov     ecx, dword ptr [rip + jump_table + rbx*4]
+    lea     rbx, [rcx + 1]
+    jmp     exec_loop
+bracket_open_continue:
+    inc     rbx
+    jmp     exec_loop
+cmd_bracket_close:
+    movzx   eax, byte ptr [rip + tape + r8]
+    test    al, al
+    je      bracket_close_continue
+    # jump back to after matching '['
+    mov     ecx, dword ptr [rip + jump_table + rbx*4]
+    lea     rbx, [rcx + 1]
+    jmp     exec_loop
+bracket_close_continue:
+    inc     rbx
+    jmp     exec_loop
+
+exit_ok:
+    mov     rax, 60
+    xor     rdi, rdi
+    syscall
+
+# -------------------------------------------------
+.section .rodata
+.equ BUF_SIZE, 65536
+.equ TAPE_SIZE, 30000
+.equ STACK_MAX, 1000
+
+.bss
+buf:                .zero BUF_SIZE
+jump_table:         .zero BUF_SIZE*4
+stack:              .zero STACK_MAX*4
+tape:               .zero TAPE_SIZE

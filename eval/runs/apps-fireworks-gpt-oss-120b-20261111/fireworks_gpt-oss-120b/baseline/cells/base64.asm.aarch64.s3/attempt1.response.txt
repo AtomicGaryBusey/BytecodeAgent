@@ -1,0 +1,212 @@
+.globl _start
+.text
+_start:
+    // ----- read all input into inbuf -----
+    adr     x1, inbuf          // buffer pointer
+    mov     x2, #49152         // buffer size
+    mov     x0, #0             // fd = stdin
+    mov     x8, #63            // sys_read
+    svc     #0
+    // x0 = bytes read
+    mov     x9, x0             // total bytes read
+read_loop:
+    // remaining buffer space = 49152 - x9
+    mov     x3, #49152
+    sub     x3, x3, x9
+    cbz     x3, read_done
+    // destination = inbuf + x9
+    adr     x1, inbuf
+    add     x1, x1, x9
+    mov     x0, #0
+    mov     x2, x3
+    mov     x8, #63
+    svc     #0
+    cbz     x0, read_done
+    add     x9, x9, x0
+    b       read_loop
+read_done:
+    cbz     x9, exit_success    // empty input -> no output
+
+    // ----- encode input -----
+    adr     x10, inbuf          // src pointer
+    adr     x11, outbuf         // dst pointer
+    mov     x12, #0             // line_pos (chars in current line)
+    mov     x13, x9             // remaining input bytes
+    adr     x14, base64_table   // base64 table base address
+
+encode_loop:
+    cmp     x13, #3
+    b.lt    encode_partial
+
+    // load 3 bytes
+    ldrb    w0, [x10], #1
+    ldrb    w1, [x10], #1
+    ldrb    w2, [x10], #1
+    // combine into 24‑bit value in w3
+    mov     w3, w0
+    lsl     w3, w3, #16
+    mov     w4, w1
+    lsl     w4, w4, #8
+    orr     w3, w3, w4
+    orr     w3, w3, w2
+
+    // idx0 = (w3 >> 18) & 0x3F
+    mov     w4, w3, lsr #18
+    and     w4, w4, #0x3F
+    // idx1 = (w3 >> 12) & 0x3F
+    mov     w5, w3, lsr #12
+    and     w5, w5, #0x3F
+    // idx2 = (w3 >> 6) & 0x3F
+    mov     w6, w3, lsr #6
+    and     w6, w6, #0x3F
+    // idx3 = w3 & 0x3F
+    and     w7, w3, #0x3F
+
+    // store four output chars
+    add     x15, x14, w4
+    ldrb    w8, [x15]
+    strb    w8, [x11], #1
+    add     x15, x14, w5
+    ldrb    w8, [x15]
+    strb    w8, [x11], #1
+    add     x15, x14, w6
+    ldrb    w8, [x15]
+    strb    w8, [x11], #1
+    add     x15, x14, w7
+    ldrb    w8, [x15]
+    strb    w8, [x11], #1
+
+    // line handling
+    add     x12, x12, #4
+    mov     x15, #76
+    cmp     x12, x15
+    b.ne    enc_continue
+    mov     w8, #0x0A
+    strb    w8, [x11], #1
+    mov     x12, #0
+enc_continue:
+    sub     x13, x13, #3
+    b       encode_loop
+
+encode_partial:
+    cbz     x13, encode_done        // should not happen
+
+    // load first byte
+    ldrb    w0, [x10], #1
+    mov     w3, w0
+    lsl     w3, w3, #16
+
+    // idx0 and idx1 from first byte
+    mov     w4, w3, lsr #18
+    and     w4, w4, #0x3F
+    mov     w5, w3, lsr #12
+    and     w5, w5, #0x3F
+
+    cmp     x13, #2
+    b.lt    one_byte_case
+
+    // have second byte
+    ldrb    w1, [x10], #0          // read without advancing
+    mov     w6, w1
+    lsl     w6, w6, #8
+    orr     w3, w3, w6
+
+    // recompute idx1, idx2
+    mov     w5, w3, lsr #12
+    and     w5, w5, #0x3F
+    mov     w6, w3, lsr #6
+    and     w6, w6, #0x3F
+
+    // output 3 chars + '='
+    add     x15, x14, w4
+    ldrb    w8, [x15]
+    strb    w8, [x11], #1
+    add     x15, x14, w5
+    ldrb    w8, [x15]
+    strb    w8, [x11], #1
+    add     x15, x14, w6
+    ldrb    w8, [x15]
+    strb    w8, [x11], #1
+    mov     w8, #'='
+    strb    w8, [x11], #1
+
+    // line handling
+    add     x12, x12, #4
+    mov     x15, #76
+    cmp     x12, x15
+    b.ne    encode_done
+    mov     w8, #0x0A
+    strb    w8, [x11], #1
+    mov     x12, #0
+    b       encode_done
+
+one_byte_case:
+    // output 2 chars + "=="
+    add     x15, x14, w4
+    ldrb    w8, [x15]
+    strb    w8, [x11], #1
+    add     x15, x14, w5
+    ldrb    w8, [x15]
+    strb    w8, [x11], #1
+    mov     w8, #'='
+    strb    w8, [x11], #1
+    strb    w8, [x11], #1
+
+    // line handling
+    add     x12, x12, #4
+    mov     x15, #76
+    cmp     x12, x15
+    b.ne    encode_done
+    mov     w8, #0x0A
+    strb    w8, [x11], #1
+    mov     x12, #0
+
+encode_done:
+    // all input processed
+    mov     x13, #0
+    // fall through
+
+    // ----- final newline if needed -----
+    cmp     x12, #0
+    beq     write_prepare
+    mov     w8, #0x0A
+    strb    w8, [x11], #1
+
+write_prepare:
+    // compute out_len = dst - outbuf
+    adr     x14, outbuf
+    sub     x0, x11, x14          // x0 = out_len
+    // ----- write all output -----
+    mov     x1, x14               // ptr
+    mov     x2, x0                // remaining
+write_loop:
+    cbz     x2, write_done
+    mov     x0, #1                // fd = stdout
+    mov     x8, #64               // sys_write
+    svc     #0
+    // x0 = bytes written
+    add     x1, x1, x0
+    sub     x2, x2, x0
+    b       write_loop
+write_done:
+    // ----- exit -----
+    mov     x0, #0                // status
+    mov     x8, #93               // sys_exit
+    svc     #0
+
+exit_success:
+    mov     x0, #0
+    mov     x8, #93
+    svc     #0
+
+    // ----- data -----
+    .section .rodata
+base64_table:
+    .ascii  "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/"
+
+    .bss
+    .align 8
+inbuf:
+    .space 49152
+outbuf:
+    .space 70000

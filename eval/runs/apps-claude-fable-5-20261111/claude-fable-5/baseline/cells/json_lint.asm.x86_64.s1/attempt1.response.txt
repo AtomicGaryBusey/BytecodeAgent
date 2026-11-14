@@ -1,0 +1,378 @@
+.text
+.globl _start
+
+_start:
+    lea r12, [rip + buf]        # buffer base
+    mov rbx, r12                # write pointer
+.Lread:
+    lea rdx, [r12 + 65600]
+    sub rdx, rbx                # remaining space
+    jz  .Lreaddone
+    xor eax, eax                # read
+    xor edi, edi                # fd 0
+    mov rsi, rbx
+    syscall
+    test rax, rax
+    jle .Lreaddone
+    add rbx, rax
+    jmp .Lread
+.Lreaddone:
+    mov r13, rbx                # end pointer
+    mov rbx, r12                # cur pointer
+
+    call skipws
+    call parse_value
+    call skipws
+    cmp rbx, r13
+    jne fail
+    # valid
+    mov eax, 1
+    mov edi, 1
+    lea rsi, [rip + okmsg]
+    mov edx, 3
+    syscall
+    xor edi, edi
+    mov eax, 60
+    syscall
+
+# ---------- whitespace ----------
+skipws:
+1:
+    cmp rbx, r13
+    jae 2f
+    movzx eax, byte ptr [rbx]
+    cmp al, 0x20
+    je 3f
+    cmp al, 0x09
+    je 3f
+    cmp al, 0x0A
+    je 3f
+    cmp al, 0x0D
+    je 3f
+2:
+    ret
+3:
+    inc rbx
+    jmp 1b
+
+# ---------- value dispatch ----------
+parse_value:
+    cmp rbx, r13
+    jae fail
+    movzx eax, byte ptr [rbx]
+    cmp al, 0x22                # "
+    je parse_string
+    cmp al, 0x7B                # {
+    je parse_object
+    cmp al, 0x5B                # [
+    je parse_array
+    cmp al, 0x74                # t
+    je .Lvtrue
+    cmp al, 0x66                # f
+    je .Lvfalse
+    cmp al, 0x6E                # n
+    je .Lvnull
+    cmp al, 0x2D                # -
+    je parse_number
+    cmp al, 0x30
+    jb fail
+    cmp al, 0x39
+    ja fail
+    jmp parse_number
+.Lvtrue:
+    lea rsi, [rip + str_true]
+    mov edx, 4
+    jmp match_lit
+.Lvfalse:
+    lea rsi, [rip + str_false]
+    mov edx, 5
+    jmp match_lit
+.Lvnull:
+    lea rsi, [rip + str_null]
+    mov edx, 4
+match_lit:
+1:
+    test edx, edx
+    jz 2f
+    cmp rbx, r13
+    jae fail
+    movzx eax, byte ptr [rbx]
+    cmp al, byte ptr [rsi]
+    jne fail
+    inc rbx
+    inc rsi
+    dec edx
+    jmp 1b
+2:
+    ret
+
+# ---------- string ----------
+parse_string:
+    inc rbx                     # skip opening quote
+.Lsloop:
+    cmp rbx, r13
+    jae fail
+    movzx eax, byte ptr [rbx]
+    cmp al, 0x22                # closing quote
+    je .Lsend
+    cmp al, 0x5C                # backslash
+    je .Lsesc
+    cmp al, 0x20
+    jb fail
+    inc rbx
+    jmp .Lsloop
+.Lsend:
+    inc rbx
+    ret
+.Lsesc:
+    inc rbx
+    cmp rbx, r13
+    jae fail
+    movzx eax, byte ptr [rbx]
+    cmp al, 0x75                # u
+    je .Lsuni
+    cmp al, 0x22
+    je .Lsescok
+    cmp al, 0x5C
+    je .Lsescok
+    cmp al, 0x2F
+    je .Lsescok
+    cmp al, 0x62                # b
+    je .Lsescok
+    cmp al, 0x66                # f
+    je .Lsescok
+    cmp al, 0x6E                # n
+    je .Lsescok
+    cmp al, 0x72                # r
+    je .Lsescok
+    cmp al, 0x74                # t
+    jne fail
+.Lsescok:
+    inc rbx
+    jmp .Lsloop
+.Lsuni:
+    inc rbx
+    mov ecx, 4
+.Lshex:
+    cmp rbx, r13
+    jae fail
+    movzx eax, byte ptr [rbx]
+    cmp al, 0x39
+    ja 1f
+    cmp al, 0x30
+    jb fail
+    jmp 2f
+1:
+    or al, 0x20
+    cmp al, 0x61                # a
+    jb fail
+    cmp al, 0x66                # f
+    ja fail
+2:
+    inc rbx
+    dec ecx
+    jnz .Lshex
+    jmp .Lsloop
+
+# ---------- number ----------
+parse_number:
+    cmp byte ptr [rbx], 0x2D    # -
+    jne 1f
+    inc rbx
+1:
+    cmp rbx, r13
+    jae fail
+    movzx eax, byte ptr [rbx]
+    cmp al, 0x30                # 0
+    jne 2f
+    inc rbx
+    jmp .Lnfrac
+2:
+    cmp al, 0x31
+    jb fail
+    cmp al, 0x39
+    ja fail
+    inc rbx
+3:                              # more int digits
+    cmp rbx, r13
+    jae .Lndone
+    movzx eax, byte ptr [rbx]
+    cmp al, 0x30
+    jb .Lnfrac
+    cmp al, 0x39
+    ja .Lnfrac
+    inc rbx
+    jmp 3b
+.Lnfrac:
+    cmp rbx, r13
+    jae .Lndone
+    movzx eax, byte ptr [rbx]
+    cmp al, 0x2E                # .
+    jne .Lnexp
+    inc rbx
+    cmp rbx, r13
+    jae fail
+    movzx eax, byte ptr [rbx]
+    cmp al, 0x30
+    jb fail
+    cmp al, 0x39
+    ja fail
+    inc rbx
+4:                              # more frac digits
+    cmp rbx, r13
+    jae .Lndone
+    movzx eax, byte ptr [rbx]
+    cmp al, 0x30
+    jb .Lnexp
+    cmp al, 0x39
+    ja .Lnexp
+    inc rbx
+    jmp 4b
+.Lnexp:                         # al = current byte, rbx < r13
+    cmp al, 0x65                # e
+    je 5f
+    cmp al, 0x45                # E
+    jne .Lndone
+5:
+    inc rbx
+    cmp rbx, r13
+    jae fail
+    movzx eax, byte ptr [rbx]
+    cmp al, 0x2B                # +
+    je 6f
+    cmp al, 0x2D                # -
+    jne 7f
+6:
+    inc rbx
+    cmp rbx, r13
+    jae fail
+    movzx eax, byte ptr [rbx]
+7:
+    cmp al, 0x30
+    jb fail
+    cmp al, 0x39
+    ja fail
+    inc rbx
+8:                              # more exp digits
+    cmp rbx, r13
+    jae .Lndone
+    movzx eax, byte ptr [rbx]
+    cmp al, 0x30
+    jb .Lndone
+    cmp al, 0x39
+    ja .Lndone
+    inc rbx
+    jmp 8b
+.Lndone:
+    ret
+
+# ---------- array ----------
+parse_array:
+    inc rbx                     # skip [
+    call skipws
+    cmp rbx, r13
+    jae fail
+    cmp byte ptr [rbx], 0x5D    # ]
+    jne .Laelem
+    inc rbx
+    ret
+.Laelem:
+    call parse_value
+    call skipws
+    cmp rbx, r13
+    jae fail
+    movzx eax, byte ptr [rbx]
+    cmp al, 0x5D                # ]
+    je .Laend
+    cmp al, 0x2C                # ,
+    jne fail
+    inc rbx
+    call skipws
+    jmp .Laelem
+.Laend:
+    inc rbx
+    ret
+
+# ---------- object ----------
+parse_object:
+    inc rbx                     # skip {
+    call skipws
+    cmp rbx, r13
+    jae fail
+    cmp byte ptr [rbx], 0x7D    # }
+    jne .Lomem
+    inc rbx
+    ret
+.Lomem:
+    cmp byte ptr [rbx], 0x22    # member must start with "
+    jne fail
+    call parse_string
+    call skipws
+    cmp rbx, r13
+    jae fail
+    cmp byte ptr [rbx], 0x3A    # :
+    jne fail
+    inc rbx
+    call skipws
+    call parse_value
+    call skipws
+    cmp rbx, r13
+    jae fail
+    movzx eax, byte ptr [rbx]
+    cmp al, 0x7D                # }
+    je .Loend
+    cmp al, 0x2C                # ,
+    jne fail
+    inc rbx
+    call skipws
+    cmp rbx, r13
+    jae fail
+    jmp .Lomem
+.Loend:
+    inc rbx
+    ret
+
+# ---------- error exit ----------
+fail:
+    mov rax, rbx
+    sub rax, r12                # offset
+    lea rdi, [rip + numbuf]
+    add rdi, 31
+    mov byte ptr [rdi], 10      # newline
+    mov rcx, 10
+1:
+    xor edx, edx
+    div rcx
+    add dl, 0x30
+    dec rdi
+    mov byte ptr [rdi], dl
+    test rax, rax
+    jnz 1b
+    mov r14, rdi                # start of digits
+    mov eax, 1
+    mov edi, 1
+    lea rsi, [rip + errmsg]
+    mov edx, 9
+    syscall
+    mov eax, 1
+    mov edi, 1
+    mov rsi, r14
+    lea rdx, [rip + numbuf]
+    add rdx, 32
+    sub rdx, r14
+    syscall
+    mov edi, 1
+    mov eax, 60
+    syscall
+
+.section .rodata
+okmsg:   .ascii "ok\n"
+errmsg:  .ascii "error at "
+str_true:  .ascii "true"
+str_false: .ascii "false"
+str_null:  .ascii "null"
+
+.bss
+.balign 8
+buf:    .space 65600
+numbuf: .space 32

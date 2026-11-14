@@ -1,0 +1,325 @@
+.globl _start
+.equ INPUT_BUF_SIZE, 65536
+.equ STACK_SIZE, 8192          # 1024 entries * 8 bytes
+.equ OUT_BUF_SIZE, 32
+
+.section .rodata
+err_msg:
+    .ascii "error\n"
+err_len = . - err_msg
+nl_char:
+    .byte 0x0A
+
+.section .bss
+.align 16
+input_buf:
+    .zero INPUT_BUF_SIZE
+.align 16
+stack_base:
+    .zero STACK_SIZE
+.align 16
+out_buf:
+    .zero OUT_BUF_SIZE
+
+.section .text
+_start:
+    xor    rcx, rcx                 # total bytes read = 0
+read_loop:
+    mov    rax, 0                   # sys_read
+    mov    rdi, 0                   # fd = stdin
+    lea    rsi, [rip + input_buf + rcx]
+    mov    rdx, INPUT_BUF_SIZE
+    sub    rdx, rcx                 # space left
+    syscall
+    test   rax, rax
+    je     read_done
+    add    rcx, rax
+    cmp    rcx, INPUT_BUF_SIZE
+    jae    read_done
+    jmp    read_loop
+read_done:
+    lea    rsi, [rip + input_buf]   # current pointer
+    lea    r15, [rip + input_buf + rcx]   # end pointer (fixed)
+
+line_loop:
+    cmp    rsi, r15
+    je     exit_prog
+
+    # find end of line
+    mov    rbx, rsi                 # line start
+    mov    rdi, rsi                 # scan pointer
+find_nl:
+    cmp    rdi, r15
+    je     no_nl
+    mov    al, byte ptr [rdi]
+    cmp    al, 0x0A
+    je     have_nl
+    inc    rdi
+    jmp    find_nl
+have_nl:
+    mov    r8, rdi                  # line_end (exclusive)
+    inc    rdi                      # pointer after newline
+    mov    r10, rdi                 # next line start
+    jmp    line_ready
+no_nl:
+    mov    r8, r15                  # line_end = end
+    mov    r10, r15                 # next line start = end
+line_ready:
+    xor    r12, r12                 # stack size
+    xor    r13, r13                 # error flag = 0
+
+    mov    r9, rbx                  # token pointer = line start
+token_loop:
+    # skip separators (space or tab)
+skip_sep:
+    cmp    r9, r8
+    je     after_tokens
+    mov    al, byte ptr [r9]
+    cmp    al, 0x20
+    je     inc_sep
+    cmp    al, 0x09
+    je     inc_sep
+    jmp    token_start
+inc_sep:
+    inc    r9
+    jmp    skip_sep
+
+token_start:
+    mov    r10_start, r9            # token start
+    mov    r11, r9                  # scan end
+token_end_scan:
+    cmp    r11, r8
+    je     token_end
+    mov    al, byte ptr [r11]
+    cmp    al, 0x20
+    je     token_end
+    cmp    al, 0x09
+    je     token_end
+    inc    r11
+    jmp    token_end_scan
+token_end:
+    mov    rax, r11
+    sub    rax, r10_start           # token_len
+    mov    r14, rax                 # token_len
+    mov    r9, r11                  # advance token pointer
+
+    test   r13, r13
+    jne    token_loop               # ignore if error already set
+
+    # operator check
+    cmp    r14, 1
+    jne    parse_number
+    mov    al, byte ptr [r10_start]
+    cmp    al, '+'
+    je     op_add
+    cmp    al, '-'
+    je     op_sub
+    cmp    al, '*'
+    je     op_mul
+    cmp    al, '/'
+    je     op_div
+    cmp    al, '%'
+    je     op_mod
+    jmp    parse_number
+
+op_add:
+    cmp    r12, 2
+    jb     set_error
+    dec    r12
+    mov    rcx, [rip + stack_base + r12*8]   # b
+    dec    r12
+    mov    rdx, [rip + stack_base + r12*8]   # a
+    add    rdx, rcx
+    mov    [rip + stack_base + r12*8], rdx
+    inc    r12
+    jmp    token_loop
+
+op_sub:
+    cmp    r12, 2
+    jb     set_error
+    dec    r12
+    mov    rcx, [rip + stack_base + r12*8]   # b
+    dec    r12
+    mov    rdx, [rip + stack_base + r12*8]   # a
+    sub    rdx, rcx
+    mov    [rip + stack_base + r12*8], rdx
+    inc    r12
+    jmp    token_loop
+
+op_mul:
+    cmp    r12, 2
+    jb     set_error
+    dec    r12
+    mov    rcx, [rip + stack_base + r12*8]   # b
+    dec    r12
+    mov    rdx, [rip + stack_base + r12*8]   # a
+    imul   rdx, rcx
+    mov    [rip + stack_base + r12*8], rdx
+    inc    r12
+    jmp    token_loop
+
+op_div:
+    cmp    r12, 2
+    jb     set_error
+    dec    r12
+    mov    rcx, [rip + stack_base + r12*8]   # b
+    dec    r12
+    mov    rdx, [rip + stack_base + r12*8]   # a
+    test   rcx, rcx
+    je     set_error
+    mov    rax, rdx
+    cqo
+    cmp    rax, 0x8000000000000000
+    jne    do_div
+    cmp    rcx, -1
+    jne    do_div
+    jmp    set_error
+do_div:
+    idiv   rcx
+    mov    [rip + stack_base + r12*8], rax
+    inc    r12
+    jmp    token_loop
+
+op_mod:
+    cmp    r12, 2
+    jb     set_error
+    dec    r12
+    mov    rcx, [rip + stack_base + r12*8]   # b
+    dec    r12
+    mov    rdx, [rip + stack_base + r12*8]   # a
+    test   rcx, rcx
+    je     set_error
+    mov    rax, rdx
+    cqo
+    cmp    rax, 0x8000000000000000
+    jne    do_mod
+    cmp    rcx, -1
+    jne    do_mod
+    jmp    set_error
+do_mod:
+    idiv   rcx
+    mov    [rip + stack_base + r12*8], rdx
+    inc    r12
+    jmp    token_loop
+
+set_error:
+    mov    r13, 1
+    jmp    token_loop
+
+parse_number:
+    mov    rax, r14                 # token_len
+    mov    rbx, r10_start           # pointer into token
+    xor    rsi, rsi                 # sign flag 0=pos,1=neg
+    mov    al, byte ptr [rbx]
+    cmp    al, '-'
+    jne    num_no_sign
+    inc    rsi
+    inc    rbx
+    dec    rax
+num_no_sign:
+    cmp    rax, 1
+    jl     set_error
+    cmp    rax, 18
+    jg     set_error
+    xor    rdx, rdx                 # accumulator
+num_digit_loop:
+    cmp    rax, 0
+    je     num_digits_done
+    mov    al, byte ptr [rbx]
+    sub    al, '0'
+    cmp    al, 9
+    ja     set_error
+    mov    rcx, rdx
+    imul   rcx, 10
+    add    rcx, rax
+    mov    rdx, rcx
+    inc    rbx
+    dec    rax
+    jmp    num_digit_loop
+num_digits_done:
+    test   rsi, rsi
+    je     push_number
+    neg    rdx
+push_number:
+    mov    [rip + stack_base + r12*8], rdx
+    inc    r12
+    jmp    token_loop
+
+after_tokens:
+    cmp    r13, 1
+    je     output_error
+    cmp    r12, 1
+    jne    output_error
+    mov    rax, [rip + stack_base]   # result
+    jmp    output_number
+
+output_error:
+    mov    rax, 1
+    mov    rdi, 1
+    lea    rsi, [rip + err_msg]
+    mov    rdx, err_len
+    syscall
+    mov    rsi, r10               # next line start
+    jmp    line_loop
+
+output_number:
+    # rax = signed value
+    mov    rcx, rax
+    sar    rcx, 63                 # sign mask
+    mov    rdx, rax
+    xor    rdx, rcx
+    sub    rdx, rcx                # magnitude in rdx
+    lea    rbx, [rip + out_buf + OUT_BUF_SIZE]
+    mov    rdi, rbx                # construction pointer
+    mov    r8, rcx                 # sign mask saved
+    mov    rax, rdx                # value to convert
+    xor    r9, r9                  # digit count
+conv_loop:
+    test   rax, rax
+    je     conv_done
+    xor    rdx, rdx
+    mov    rcx, 10
+    div    rcx
+    add    dl, '0'
+    dec    rdi
+    mov    byte ptr [rdi], dl
+    inc    r9
+    jmp    conv_loop
+conv_done:
+    cmp    r9, 0
+    jne    after_zero
+    dec    rdi
+    mov    byte ptr [rdi], '0'
+    inc    r9
+after_zero:
+    cmp    r8, 0
+    je     no_sign2
+    dec    rdi
+    mov    byte ptr [rdi], '-'
+    inc    r9
+no_sign2:
+    mov    rbx, rdi                # start pointer
+    mov    rax, 1
+    mov    rdi, 1
+    mov    rsi, rbx
+    mov    rdx, r9
+    syscall
+    # write newline
+    mov    rax, 1
+    mov    rdi, 1
+    lea    rsi, [rip + nl_char]
+    mov    rdx, 1
+    syscall
+    mov    rsi, r10                # next line start
+    jmp    line_loop
+
+exit_prog:
+    mov    rax, 60
+    xor    rdi, rdi
+    syscall
+
+# temporary labels
+.r10_start:
+    .space 0
+.r10:
+    .space 0

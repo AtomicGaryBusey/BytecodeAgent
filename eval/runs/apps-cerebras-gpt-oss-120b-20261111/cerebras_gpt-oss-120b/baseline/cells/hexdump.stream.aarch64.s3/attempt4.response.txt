@@ -1,0 +1,254 @@
+.globl _start
+.text
+.align 4
+
+.equ    SYS_READ,       63
+.equ    SYS_WRITE,      64
+.equ    SYS_EXIT,       93
+.equ    STDIN,          0
+.equ    STDOUT,         1
+.equ    MAX_INPUT,      65536
+.equ    LINEBUF_SIZE,   80
+
+.section .rodata
+hex_digits:
+    .ascii "0123456789abcdef"
+
+.section .bss
+.align 8
+input_buf:
+    .zero   MAX_INPUT
+linebuf:
+    .zero   LINEBUF_SIZE
+
+.text
+_start:
+    // pointers to buffers
+    adrp    x19, input_buf
+    add     x19, x19, :lo12:input_buf          // x19 = input_buf
+    adrp    x22, linebuf
+    add     x22, x22, :lo12:linebuf           // x22 = linebuf
+    adrp    x23, hex_digits
+    add     x23, x23, :lo12:hex_digits        // x23 = hex_digits
+
+    mov     x20, #0            // total_len = 0
+
+read_loop:
+    mov     x0, #STDIN
+    add     x1, x19, x20      // buf = input_buf + total_len
+    mov     x2, #MAX_INPUT
+    sub     x2, x2, x20       // count = MAX_INPUT - total_len
+    mov     x8, #SYS_READ
+    svc     #0
+    cbz     x0, read_done
+    add     x20, x20, x0      // total_len += bytes read
+    cmp     x20, #MAX_INPUT
+    bgt     read_done
+    b       read_loop
+
+read_done:
+    // if total_len == 0, just print final offset line
+    cbz     x20, print_final_offset
+
+    mov     x21, #0           // offset = 0
+
+dump_loop:
+    sub     x24, x20, x21    // remaining = total_len - offset
+    mov     x25, #16
+    cmp     x24, x25
+    csel    x26, x24, x25, lo   // n = min(remaining,16)
+
+    // build line in linebuf, x27 = pos
+    mov     x27, #0
+
+    // ----- offset hex (8 nibbles) -----
+    mov     x28, #7
+offset_nib_loop:
+    mov     x29, x28
+    lsl     x29, x29, #2          // shift = nibble*4
+    lsr     x30, x21, x29
+    and     x30, x30, #0xf
+    add     x12, x23, x30, uxtw  // addr = hex_digits + nibble
+    ldrb    w0, [x12]
+    add     x1, x22, x27
+    strb    w0, [x1]
+    add     x27, x27, #1
+    subs    x28, x28, #1
+    bge     offset_nib_loop
+
+    // two spaces
+    mov     w0, #' '
+    add     x1, x22, x27
+    strb    w0, [x1]
+    add     x27, x27, #1
+    add     x1, x22, x27
+    strb    w0, [x1]
+    add     x27, x27, #1
+
+    // ----- hex byte slots -----
+    mov     x28, #0          // i = 0
+hex_loop:
+    cmp     x28, #16
+    beq     hex_done
+
+    cmp     x28, x26
+    bge     hex_missing
+
+    // load byte
+    add     x4, x19, x21
+    add     x4, x4, x28
+    ldrb    w1, [x4]
+
+    // high nibble
+    mov     w2, w1, lsr #4
+    and     w2, w2, #0xf
+    add     x12, x23, x2, uxtw
+    ldrb    w2, [x12]
+    add     x1, x22, x27
+    strb    w2, [x1]
+    add     x27, x27, #1
+
+    // low nibble
+    and     w2, w1, #0xf
+    add     x12, x23, w2, uxtw
+    ldrb    w2, [x12]
+    add     x1, x22, x27
+    strb    w2, [x1]
+    add     x27, x27, #1
+
+    // space after byte
+    mov     w2, #' '
+    add     x1, x22, x27
+    strb    w2, [x1]
+    add     x27, x27, #1
+
+    // extra space after 8th byte
+    cmp     x28, #7
+    bne     after_extra_space
+    mov     w2, #' '
+    add     x1, x22, x27
+    strb    w2, [x1]
+    add     x27, x27, #1
+after_extra_space:
+    add     x28, x28, #1
+    b       hex_loop
+
+hex_missing:
+    // three spaces for missing slot
+    mov     w2, #' '
+    add     x1, x22, x27
+    strb    w2, [x1]
+    add     x27, x27, #1
+    strb    w2, [x1, #1]
+    add     x27, x27, #1
+    strb    w2, [x1, #2]
+    add     x27, x27, #1
+    // extra space after 8th slot as usual
+    cmp     x28, #7
+    bne     after_missing_extra
+    mov     w2, #' '
+    add     x1, x22, x27
+    strb    w2, [x1]
+    add     x27, x27, #1
+after_missing_extra:
+    add     x28, x28, #1
+    b       hex_loop
+
+hex_done:
+    // ----- ASCII column -----
+    // space before '|'
+    mov     w0, #' '
+    add     x1, x22, x27
+    strb    w0, [x1]
+    add     x27, x27, #1
+    // '|'
+    mov     w0, #'|'
+    add     x1, x22, x27
+    strb    w0, [x1]
+    add     x27, x27, #1
+
+    // characters
+    mov     x28, #0
+ascii_loop:
+    cmp     x28, x26
+    beq     ascii_done
+    add     x4, x19, x21
+    add     x4, x4, x28
+    ldrb    w1, [x4]            // byte
+    // check printable
+    mov     w2, w1
+    cmp     w2, #0x20
+    blt     ascii_dot
+    cmp     w2, #0x7f
+    bge     ascii_dot
+    // printable
+    mov     w0, w1
+    b       ascii_store
+ascii_dot:
+    mov     w0, #'.'
+ascii_store:
+    add     x1, x22, x27
+    strb    w0, [x1]
+    add     x27, x27, #1
+    add     x28, x28, #1
+    b       ascii_loop
+
+ascii_done:
+    // closing '|'
+    mov     w0, #'|'
+    add     x1, x22, x27
+    strb    w0, [x1]
+    add     x27, x27, #1
+    // newline
+    mov     w0, #10
+    add     x1, x22, x27
+    strb    w0, [x1]
+    add     x27, x27, #1
+
+    // ----- write line -----
+    mov     x0, #STDOUT
+    mov     x1, x22
+    mov     x2, x27          // length
+    mov     x8, #SYS_WRITE
+    svc     #0
+
+    // advance offset
+    add     x21, x21, x26
+    cmp     x21, x20
+    blt     dump_loop
+
+    // after all rows, print final offset line
+print_final_offset:
+    // build line: only offset hex and newline
+    mov     x27, #0
+    mov     x28, #7
+offset2_nib_loop:
+    mov     x29, x28
+    lsl     x29, x29, #2
+    lsr     x30, x20, x29
+    and     x30, x30, #0xf
+    add     x12, x23, x30, uxtw
+    ldrb    w0, [x12]
+    add     x1, x22, x27
+    strb    w0, [x1]
+    add     x27, x27, #1
+    subs    x28, x28, #1
+    bge     offset2_nib_loop
+
+    // newline
+    mov     w0, #10
+    add     x1, x22, x27
+    strb    w0, [x1]
+    add     x27, x27, #1
+
+    // write final line
+    mov     x0, #STDOUT
+    mov     x1, x22
+    mov     x2, x27
+    mov     x8, #SYS_WRITE
+    svc     #0
+
+    // exit
+    mov     x0, #0
+    mov     x8, #SYS_EXIT
+    svc     #0

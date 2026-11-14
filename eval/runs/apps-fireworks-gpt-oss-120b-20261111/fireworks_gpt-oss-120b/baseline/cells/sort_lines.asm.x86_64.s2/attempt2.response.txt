@@ -1,0 +1,221 @@
+.globl _start
+.text
+_start:
+    # ---------- read input ----------
+    xor rbx, rbx                # total_len = 0
+read_loop:
+    mov rax, 0                  # sys_read
+    mov rdi, 0                  # fd = stdin
+    lea rsi, [rip + input_buffer]
+    mov rdx, BUF_SIZE
+    sub rdx, rbx                # remaining space
+    test rdx, rdx
+    jz read_done
+    syscall
+    cmp rax, 0
+    je read_done
+    add rbx, rax
+    jmp read_loop
+read_done:
+    mov [total_len], rbx
+
+    # ---------- parse lines ----------
+    xor rcx, rcx                # line count = 0
+    xor rsi, rsi                # offset = 0
+    xor rdi, rdi                # start = 0
+parse_loop:
+    mov rax, [total_len]
+    cmp rsi, rax
+    jae parse_end
+    lea rdx, [rip + input_buffer]
+    mov bl, byte ptr [rdx + rsi]
+    cmp bl, 0x0A
+    jne not_newline
+    # newline found
+    mov rax, rsi
+    sub rax, rdi                # length
+    lea rdx, [rip + input_buffer]
+    lea r8, [rdx + rdi]         # pointer to start
+    mov r9, rcx                 # line index
+    lea rdx, [rip + line_ptrs]
+    mov [rdx + r9*8], r8
+    lea rdx, [rip + line_lens]
+    mov [rdx + r9*4], eax
+    inc rcx                     # line count++
+    inc rsi                     # skip newline
+    mov rdi, rsi                # new start
+    jmp parse_loop
+not_newline:
+    inc rsi
+    jmp parse_loop
+parse_end:
+    mov rax, [total_len]
+    cmp rdi, rax
+    jae no_final_line
+    mov rax, rsi                # rsi == total_len
+    sub rax, rdi                # length
+    lea rdx, [rip + input_buffer]
+    lea r8, [rdx + rdi]
+    mov r9, rcx
+    lea rdx, [rip + line_ptrs]
+    mov [rdx + r9*8], r8
+    lea rdx, [rip + line_lens]
+    mov [rdx + r9*4], eax
+    inc rcx
+no_final_line:
+    mov [line_count], rcx
+
+    # ---------- sort lines (insertion sort) ----------
+    mov rbx, [line_count]       # total lines
+    cmp rbx, 1
+    jl sort_done
+    mov r8, 1                   # i = 1
+sort_outer:
+    cmp r8, rbx
+    jge sort_done
+    # load key
+    lea rsi, [rip + line_ptrs]
+    mov r10, [rsi + r8*8]       # key ptr
+    lea rdx, [rip + line_lens]
+    mov r11d, [rdx + r8*4]      # key len
+    mov r9, r8
+    dec r9                      # j = i-1
+sort_inner:
+    cmp r9, -1
+    jl insert_key
+    # load line j
+    lea rsi, [rip + line_ptrs]
+    mov r12, [rsi + r9*8]       # ptr_j
+    lea rdx, [rip + line_lens]
+    mov r13d, [rdx + r9*4]      # len_j
+    # compare ptr_j vs key
+    mov rdi, r12                # a ptr
+    mov rsi, r13                # a len
+    mov rdx, r10                # b ptr
+    mov rcx, r11                # b len
+    call cmp_lines
+    cmp rax, 0
+    jle insert_key              # if a <= b, stop
+    # shift line j to j+1
+    lea rax, [r9+1]             # dest = j+1
+    lea rsi, [rip + line_ptrs]
+    mov [rsi + rax*8], r12
+    lea rdx, [rip + line_lens]
+    mov [rdx + rax*4], r13d
+    dec r9
+    jmp sort_inner
+insert_key:
+    lea rax, [r9+1]             # dest = j+1
+    lea rsi, [rip + line_ptrs]
+    mov [rsi + rax*8], r10
+    lea rdx, [rip + line_lens]
+    mov [rdx + rax*4], r11d
+    inc r8
+    jmp sort_outer
+sort_done:
+
+    # ---------- output sorted lines ----------
+    xor r8, r8                  # index = 0
+    mov rcx, rbx                # line count
+out_loop:
+    cmp r8, rcx
+    jge out_done
+    # load pointer and length
+    lea rsi, [rip + line_ptrs]
+    mov r9, [rsi + r8*8]        # ptr
+    lea rdx, [rip + line_lens]
+    mov r10d, [rdx + r8*4]      # len
+    # write the line
+    mov rax, 1                  # sys_write
+    mov rdi, 1                  # stdout
+    mov rsi, r9
+    mov rdx, r10
+    syscall
+    mov r11, rax
+    cmp r11, r10
+    je write_newline
+    # partial write loop
+    mov r12, r10
+    sub r12, r11
+    add r9, r11
+partial_write:
+    mov rax, 1
+    mov rdi, 1
+    mov rsi, r9
+    mov rdx, r12
+    syscall
+    add r9, rax
+    sub r12, rax
+    test r12, r12
+    jne partial_write
+write_newline:
+    # write newline
+    mov rax, 1
+    mov rdi, 1
+    lea rsi, [rip + newline_char]
+    mov rdx, 1
+    syscall
+    inc r8
+    jmp out_loop
+out_done:
+    # ---------- exit ----------
+    mov rax, 60
+    xor rdi, rdi
+    syscall
+
+# ---------- compare two lines ----------
+# Input: rdi = ptr_a, rsi = len_a, rdx = ptr_b, rcx = len_b
+# Returns: rax = 1 if a > b, -1 if a < b, 0 if equal
+cmp_lines:
+    mov r8, rsi
+    cmp r8, rcx
+    cmova r8, rcx        # r8 = min(len_a, len_b)
+    xor r9, r9           # index = 0
+.cmp_loop:
+    cmp r9, r8
+    je .cmp_equal_len
+    mov al, byte ptr [rdi + r9]
+    mov bl, byte ptr [rdx + r9]
+    cmp al, bl
+    ja .a_greater
+    jb .b_greater
+    inc r9
+    jmp .cmp_loop
+.a_greater:
+    mov eax, 1
+    ret
+.b_greater:
+    mov eax, -1
+    ret
+.cmp_equal_len:
+    cmp rsi, rcx
+    ja .a_greater_len
+    jb .b_greater_len
+    xor eax, eax
+    ret
+.a_greater_len:
+    mov eax, 1
+    ret
+.b_greater_len:
+    mov eax, -1
+    ret
+
+.bss
+    .align 8
+input_buffer:
+    .space BUF_SIZE
+total_len:
+    .zero 8
+line_count:
+    .zero 8
+line_ptrs:
+    .space MAX_LINES*8
+line_lens:
+    .space MAX_LINES*4
+
+.section .rodata
+newline_char:
+    .byte 0x0A
+
+.equ BUF_SIZE, 32768
+.equ MAX_LINES, 1000

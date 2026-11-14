@@ -1,0 +1,205 @@
+.globl _start
+.text
+
+# --------------------------------------------------------------
+# Constants
+# --------------------------------------------------------------
+BUF_SIZE   = 65536
+TAPE_SIZE  = 30000
+STACK_MAX  = 1000          # bracket stack depth
+# Syscall numbers
+SYS_READ   = 0
+SYS_WRITE  = 1
+SYS_EXIT   = 60
+
+# --------------------------------------------------------------
+_start:
+    # ---------------------------------------------------------
+    # r12 = buffer address
+    # r13 = total bytes read
+    # ---------------------------------------------------------
+    lea r12, [rip + buf]          # buffer pointer
+    xor r13, r13                  # bytes read = 0
+
+read_loop:
+    mov rax, SYS_READ             # sys_read
+    xor rdi, rdi                  # fd = 0
+    lea rsi, [r12 + r13]          # dst = buf + bytes_read
+    mov rdx, BUF_SIZE
+    sub rdx, r13                  # remaining space
+    syscall
+    test rax, rax
+    je read_done
+    add r13, rax                  # bytes_read += ret
+    cmp r13, BUF_SIZE
+    jae read_done
+    jmp read_loop
+
+read_done:
+    # ---------------------------------------------------------
+    # Find first '!' separator
+    # rcx = index while scanning
+    # r14 = program length
+    # r15 = input pointer
+    # r10 = input remaining length
+    # ---------------------------------------------------------
+    xor rcx, rcx
+scan_sep:
+    cmp rcx, r13
+    jae no_excl
+    mov al, byte ptr [r12 + rcx]
+    cmp al, 0x21                  # '!'
+    je have_excl
+    inc rcx
+    jmp scan_sep
+have_excl:
+    mov r14, rcx                 # program length = index
+    lea r15, [r12 + rcx + 1]     # input pointer = buf + idx + 1
+    mov rax, r13
+    sub rax, rcx
+    dec rax                      # input length = total - idx - 1
+    mov r10, rax
+    jmp after_split
+no_excl:
+    mov r14, r13                 # program length = total
+    xor r10, r10                 # input length = 0
+    lea r15, [r12 + r13]         # input pointer (unused)
+after_split:
+
+    # ---------------------------------------------------------
+    # Bracket matching check and build jump table
+    # rsi = address of bracket_stack
+    # rdx = stack depth (uint32)
+    # rcx = program counter (index)
+    # rdi = address of jump_table
+    # ---------------------------------------------------------
+    lea rsi, [rip + bracket_stack]
+    lea rdi, [rip + jump_table]
+    xor rdx, rdx                 # stack depth = 0
+    xor rcx, rcx                 # pc = 0
+
+bracket_loop:
+    cmp rcx, r14
+    jae bracket_done
+    mov al, byte ptr [r12 + rcx]
+    cmp al, '['
+    je bracket_push
+    cmp al, ']'
+    je bracket_pop
+    inc rcx
+    jmp bracket_loop
+
+bracket_push:
+    mov [rsi + rdx*4], ecx       # push index
+    inc rdx
+    inc rcx
+    jmp bracket_loop
+
+bracket_pop:
+    cmp rdx, 0
+    je bracket_mismatch
+    dec rdx
+    mov ebx, [rsi + rdx*4]       # matching '[' index
+    mov dword ptr [rdi + rbx*4], ecx   # forward jump
+    mov dword ptr [rdi + rcx*4], ebx   # backward jump
+    inc rcx
+    jmp bracket_loop
+
+bracket_done:
+    cmp rdx, 0
+    jne bracket_mismatch
+    # ---------------------------------------------------------
+    # Interpreter
+    # r11 = tape base
+    # rbx = jump_table base
+    # r8  = data pointer index
+    # r9  = program counter (pc)
+    # r10 = input remaining length
+    # r15 = input pointer
+    # ---------------------------------------------------------
+    lea r11, [rip + tape]
+    lea rbx, [rip + jump_table]
+    xor r8, r8
+    xor r9, r9
+interp_loop:
+    cmp r9, r14
+    jae interp_done
+    mov al, byte ptr [r12 + r9]   # fetch command
+
+    cmp al, '>'
+    je cmd_gt
+    cmp al, '<'
+    je cmd_lt
+    cmp al, '+'
+    je cmd_inc
+    cmp al, '-'
+    je cmd_dec
+    cmp al, '.'
+    je cmd_out
+    cmp al, ','
+    je cmd_in
+    cmp al, '['
+    je cmd_lbr
+    cmp al, ']'
+    je cmd_rbr
+    # ignore any other character
+    inc r9
+    jmp interp_loop
+
+cmd_gt:
+    inc r8
+    inc r9
+    jmp interp_loop
+
+cmd_lt:
+    dec r8
+    inc r9
+    jmp interp_loop
+
+cmd_inc:
+    movzx eax, byte ptr [r11 + r8]
+    inc al
+    mov byte ptr [r11 + r8], al
+    inc r9
+    jmp interp_loop
+
+cmd_dec:
+    movzx eax, byte ptr [r11 + r8]
+    dec al
+    mov byte ptr [r11 + r8], al
+    inc r9
+    jmp interp_loop
+
+cmd_out:
+    movzx eax, byte ptr [r11 + r8]
+    mov byte ptr [rip + outbuf], al
+    mov rax, SYS_WRITE
+    mov rdi, 1
+    lea rsi, [rip + outbuf]
+    mov rdx, 1
+    syscall
+    inc r9
+    jmp interp_loop
+
+cmd_in:
+    cmp r10, 0
+    je cmd_in_zero
+    mov al, byte ptr [r15]
+    inc r15
+    dec r10
+    jmp cmd_in_store
+cmd_in_zero:
+    xor al, al
+cmd_in_store:
+    mov byte ptr [r11 + r8], al
+    inc r9
+    jmp interp_loop
+
+cmd_lbr:
+    movzx eax, byte ptr [r11 + r8]
+    test al, al
+    jne lbr_continue
+    ; cell is zero, jump forward
+    mov eax, dword ptr [rbx + r9*4]
+    lea r9, [rax + 1]
+   

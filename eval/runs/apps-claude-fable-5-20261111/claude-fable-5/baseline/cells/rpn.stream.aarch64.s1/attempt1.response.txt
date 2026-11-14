@@ -1,0 +1,239 @@
+.section .rodata
+errmsg: .ascii "error\n"
+
+.bss
+.balign 8
+inbuf:  .space 65544
+.balign 8
+vstack: .space 8192
+
+.text
+.globl _start
+_start:
+        // read entire input
+        adrp    x19, inbuf
+        add     x19, x19, :lo12:inbuf
+        mov     x20, #0                 // total bytes read
+read_loop:
+        mov     x2, #65536
+        sub     x2, x2, x20
+        cbz     x2, read_done
+        mov     x0, #0
+        add     x1, x19, x20
+        mov     x8, #63
+        svc     #0
+        cmp     x0, #0
+        b.le    read_done
+        add     x20, x20, x0
+        b       read_loop
+read_done:
+        add     x20, x19, x20           // x20 = end of input
+        adrp    x23, vstack
+        add     x23, x23, :lo12:vstack  // x23 = value stack base
+        mov     x21, x19                // x21 = current line start
+
+line_loop:
+        cmp     x21, x20
+        b.hs    done
+        // find end of line
+        mov     x22, x21
+find_nl:
+        cmp     x22, x20
+        b.hs    nl_at_end
+        ldrb    w0, [x22]
+        cmp     w0, #10
+        b.eq    nl_found
+        add     x22, x22, #1
+        b       find_nl
+nl_found:
+        add     x25, x22, #1            // next line start
+        b       eval
+nl_at_end:
+        mov     x25, x22                // == end of input
+eval:
+        mov     x24, #0                 // stack count
+        mov     x9, x21                 // scan pointer q
+tok_loop:
+skip_sep:
+        cmp     x9, x22
+        b.hs    line_end_tokens
+        ldrb    w0, [x9]
+        cmp     w0, #32
+        b.eq    is_sep
+        cmp     w0, #9
+        b.ne    tok_start
+is_sep:
+        add     x9, x9, #1
+        b       skip_sep
+
+tok_start:
+        mov     x10, x9                 // token start
+find_tend:
+        cmp     x9, x22
+        b.hs    tend
+        ldrb    w0, [x9]
+        cmp     w0, #32
+        b.eq    tend
+        cmp     w0, #9
+        b.eq    tend
+        add     x9, x9, #1
+        b       find_tend
+tend:
+        sub     x11, x9, x10            // token length
+        cmp     x11, #1
+        b.ne    try_literal
+        ldrb    w0, [x10]
+        cmp     w0, #43                 // '+'
+        b.ne    1f
+        mov     x17, #0
+        b       do_op
+1:      cmp     w0, #45                 // '-'
+        b.ne    2f
+        mov     x17, #1
+        b       do_op
+2:      cmp     w0, #42                 // '*'
+        b.ne    3f
+        mov     x17, #2
+        b       do_op
+3:      cmp     w0, #47                 // '/'
+        b.ne    4f
+        mov     x17, #3
+        b       do_op
+4:      cmp     w0, #37                 // '%'
+        b.ne    try_literal
+        mov     x17, #4
+        b       do_op
+
+try_literal:
+        mov     x12, x10                // digit scan pointer
+        mov     x13, #0                 // negative flag
+        ldrb    w0, [x12]
+        cmp     w0, #45
+        b.ne    1f
+        mov     x13, #1
+        add     x12, x12, #1
+1:
+        sub     x14, x9, x12            // number of digits
+        cmp     x14, #1
+        b.lt    err
+        cmp     x14, #18
+        b.gt    err
+        mov     x15, #0                 // value
+        mov     x16, #10
+digit_loop:
+        cmp     x12, x9
+        b.hs    digits_done
+        ldrb    w0, [x12], #1
+        sub     w0, w0, #48
+        cmp     w0, #9
+        b.hi    err
+        madd    x15, x15, x16, x0
+        b       digit_loop
+digits_done:
+        cbz     x13, push_val
+        neg     x15, x15
+push_val:
+        cmp     x24, #1024
+        b.hs    err
+        str     x15, [x23, x24, lsl #3]
+        add     x24, x24, #1
+        b       tok_loop
+
+do_op:
+        cmp     x24, #2
+        b.lo    err
+        sub     x24, x24, #1
+        ldr     x1, [x23, x24, lsl #3]  // b
+        sub     x24, x24, #1
+        ldr     x0, [x23, x24, lsl #3]  // a
+        cbz     x17, o_add
+        cmp     x17, #1
+        b.eq    o_sub
+        cmp     x17, #2
+        b.eq    o_mul
+        // division / remainder
+        cbz     x1, err
+        cmn     x1, #1                  // b == -1 ?
+        b.ne    divok
+        mov     x2, #1
+        lsl     x2, x2, #63             // INT64_MIN
+        cmp     x0, x2
+        b.eq    err
+divok:
+        sdiv    x2, x0, x1
+        cmp     x17, #3
+        b.eq    o_div_store
+        msub    x15, x2, x1, x0         // remainder
+        b       op_push
+o_div_store:
+        mov     x15, x2
+        b       op_push
+o_add:
+        add     x15, x0, x1
+        b       op_push
+o_sub:
+        sub     x15, x0, x1
+        b       op_push
+o_mul:
+        mul     x15, x0, x1
+op_push:
+        str     x15, [x23, x24, lsl #3]
+        add     x24, x24, #1
+        b       tok_loop
+
+line_end_tokens:
+        cmp     x24, #1
+        b.ne    err
+        ldr     x0, [x23]
+        bl      print_int
+        b       next_line
+err:
+        mov     x0, #1
+        adrp    x1, errmsg
+        add     x1, x1, :lo12:errmsg
+        mov     x2, #6
+        mov     x8, #64
+        svc     #0
+next_line:
+        mov     x21, x25
+        b       line_loop
+
+done:
+        mov     x0, #0
+        mov     x8, #93
+        svc     #0
+
+// print_int: print signed x0 in decimal plus newline to stdout
+print_int:
+        sub     sp, sp, #32
+        add     x4, sp, #31
+        mov     w2, #10
+        strb    w2, [x4]                // newline at end
+        mov     x5, #0                  // negative flag
+        cmp     x0, #0
+        b.ge    1f
+        mov     x5, #1
+        neg     x0, x0                  // unsigned magnitude (INT64_MIN ok)
+1:
+        mov     x3, #10
+2:
+        udiv    x2, x0, x3
+        msub    x6, x2, x3, x0
+        add     w6, w6, #48
+        sub     x4, x4, #1
+        strb    w6, [x4]
+        mov     x0, x2
+        cbnz    x0, 2b
+        cbz     x5, 3f
+        mov     w6, #45
+        sub     x4, x4, #1
+        strb    w6, [x4]
+3:
+        mov     x0, #1
+        mov     x1, x4
+        add     x2, sp, #32
+        sub     x2, x2, x4
+        mov     x8, #64
+        svc     #0
+        add     sp, sp, #32
+        ret

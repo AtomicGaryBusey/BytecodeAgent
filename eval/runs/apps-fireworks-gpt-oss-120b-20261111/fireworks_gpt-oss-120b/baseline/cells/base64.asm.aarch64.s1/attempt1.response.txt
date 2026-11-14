@@ -1,0 +1,243 @@
+	.globl _start
+	.text
+	.align 2
+
+// system call numbers
+SYS_READ		= 63
+SYS_WRITE		= 64
+SYS_EXIT		= 93
+
+// constants
+MAX_INPUT		= 49152
+LINE_MAX		= 76
+NEWLINE		= 10
+EQ_CHAR		= 61   // '='
+
+_start:
+	// x0-x30 are zero on entry per specification
+	// Get addresses of buffers and tables
+	adr	x17, input_buf         // x17 = input buffer pointer
+	adr	x14, output_buf        // x14 = output buffer pointer (write position)
+	adr	x16, b64_table         // x16 = base64 table pointer
+
+	// initialize counters
+	mov	x18, #0                 // x18 = total bytes read so far
+	mov	x19, #MAX_INPUT         // x19 = remaining space in input buffer
+
+read_loop:
+	// syscall read(fd=0, buf=x17 + x18, count=x19)
+	mov	x0, #0                  // fd = stdin
+	add	x1, x17, x18            // buffer pointer
+	mov	x2, x19                 // count
+	mov	x8, #SYS_READ
+	svc	#0
+
+	cbnz	x0, read_more          // if result != 0, we read some bytes
+	// x0 == 0 : EOF
+	b	read_done
+
+read_more:
+	// x0 holds number of bytes read (positive)
+	add	x18, x18, x0            // total bytes read += n
+	sub	x19, x19, x0            // remaining space -= n
+	cbnz	x19, read_loop         // if we still have space, continue reading
+	// otherwise buffer full, stop reading
+read_done:
+
+	// If no input, exit with status 0 (no output)
+	cmp	x18, #0
+	beq	exit
+
+	// Set up pointers for processing
+	mov	x12, x17                // x12 = input pointer
+	mov	x13, x18                // x13 = bytes remaining
+	mov	x15, #0                 // x15 = line length counter (0..75)
+
+	// Main encoding loop processing 3-byte groups
+encode_main:
+	cmp	x13, #3
+	b.lt	encode_remain
+
+	// Load three bytes
+	ldrb	w0, [x12], #1          // b0
+	ldrb	w1, [x12], #1          // b1
+	ldrb	w2, [x12], #1          // b2
+	sub	x13, x13, #3
+
+	// ---- output char 0 ----
+	ubfx	w3, w0, #2, #6         // c0 = b0 >> 2
+	ldrb	w4, [x16, w3]          // base64 char
+	strb	w4, [x14], #1
+	add	x15, x15, #1
+	cmp	x15, #LINE_MAX
+	b.eq	output_newline
+
+	// ---- output char 1 ----
+	and	w5, w0, #0x3            // low 2 bits of b0
+	lsl	w5, w5, #4
+	ubfx	w6, w1, #4, #4         // b1>>4
+	orr	w5, w5, w6              // c1
+	ldrb	w4, [x16, w5]
+	strb	w4, [x14], #1
+	add	x15, x15, #1
+	cmp	x15, #LINE_MAX
+	b.eq	output_newline
+
+	// ---- output char 2 ----
+	and	w7, w1, #0xF            // low 4 bits of b1
+	lsl	w7, w7, #2
+	ubfx	w8, w2, #6, #2         // b2>>6 (2 bits)
+	orr	w7, w7, w8              // c2
+	ldrb	w4, [x16, w7]
+	strb	w4, [x14], #1
+	add	x15, x15, #1
+	cmp	x15, #LINE_MAX
+	b.eq	output_newline
+
+	// ---- output char 3 ----
+	and	w9, w2, #0x3F           // c3 = b2 & 0x3F
+	ldrb	w4, [x16, w9]
+	strb	w4, [x14], #1
+	add	x15, x15, #1
+	cmp	x15, #LINE_MAX
+	b.eq	output_newline
+
+	b	encode_main
+
+// ---------------------------------------------------------------------------
+encode_remain:
+	// x13 is 0,1,2
+	cmp	x13, #0
+	beq	finish_output
+
+	cmp	x13, #1
+	b.eq	encode_one
+
+	// must be 2
+encode_two:
+	ldrb	w0, [x12]               // b0
+	ldrb	w1, [x12, #1]           // b1
+
+	// c0 = b0 >> 2
+	ubfx	w3, w0, #2, #6
+	ldrb	w4, [x16, w3]
+	strb	w4, [x14], #1
+	add	x15, x15, #1
+	cmp	x15, #LINE_MAX
+	b.eq	output_newline
+
+	// c1 = ((b0 & 0x3) << 4) | (b1 >> 4)
+	and	w5, w0, #0x3
+	lsl	w5, w5, #4
+	ubfx	w6, w1, #4, #4
+	orr	w5, w5, w6
+	ldrb	w4, [x16, w5]
+	strb	w4, [x14], #1
+	add	x15, x15, #1
+	cmp	x15, #LINE_MAX
+	b.eq	output_newline
+
+	// c2 = (b1 & 0xF) << 2
+	and	w7, w1, #0xF
+	lsl	w7, w7, #2
+	ldrb	w4, [x16, w7]
+	strb	w4, [x14], #1
+	add	x15, x15, #1
+	cmp	x15, #LINE_MAX
+	b.eq	output_newline
+
+	// output padding '='
+	mov	w4, #EQ_CHAR
+	strb	w4, [x14], #1
+	add	x15, x15, #1
+	cmp	x15, #LINE_MAX
+	b.eq	output_newline
+
+	b	finish_output
+
+encode_one:
+	ldrb	w0, [x12]               // b0
+
+	// c0 = b0 >> 2
+	ubfx	w3, w0, #2, #6
+	ldrb	w4, [x16, w3]
+	strb	w4, [x14], #1
+	add	x15, x15, #1
+	cmp	x15, #LINE_MAX
+	b.eq	output_newline
+
+	// c1 = (b0 & 0x3) << 4
+	and	w5, w0, #0x3
+	lsl	w5, w5, #4
+	ldrb	w4, [x16, w5]
+	strb	w4, [x14], #1
+	add	x15, x15, #1
+	cmp	x15, #LINE_MAX
+	b.eq	output_newline
+
+	// two padding '=' characters
+	mov	w4, #EQ_CHAR
+	strb	w4, [x14], #1
+	add	x15, x15, #1
+	cmp	x15, #LINE_MAX
+	b.eq	output_newline
+
+	mov	w4, #EQ_CHAR
+	strb	w4, [x14], #1
+	add	x15, x15, #1
+	cmp	x15, #LINE_MAX
+	b.eq	output_newline
+
+	b	finish_output
+
+// ---------------------------------------------------------------------------
+output_newline:
+	mov	w4, #NEWLINE
+	strb	w4, [x14], #1
+	mov	x15, #0
+	b	encode_main   // fall through from groups; for remainder paths, use branch later
+
+// ---------------------------------------------------------------------------
+finish_output:
+	// If line length non‑zero, terminate the line with newline
+	cmp	x15, #0
+	beq	write_output
+	// write pending newline
+	mov	w4, #NEWLINE
+	strb	w4, [x14], #1
+	// x15 not needed further
+
+write_output:
+	// Compute output length = x14 - output_buf
+	adr	x17, output_buf
+	sub	x0, x14, x17           // x0 = length
+	// If length == 0, exit (should not happen here)
+	cbnz	x0, do_write
+
+exit:
+	mov	x8, #SYS_EXIT
+	mov	x0, #0
+	svc	#0
+
+do_write:
+	// write(fd=1, buf=output_buf, count=length)
+	mov	x8, #SYS_WRITE
+	mov	x0, #1
+	mov	x1, x17
+	mov	x2, x0        // length
+	svc	#0
+	b	exit
+
+	// ---------------------------------------------------------------------------
+	.section .rodata
+	.align 2
+b64_table:
+	.ascii "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/"
+
+	// ---------------------------------------------------------------------------
+	.bss
+	.align 4
+input_buf:
+	.zero	MAX_INPUT
+output_buf:
+	.zero	70000

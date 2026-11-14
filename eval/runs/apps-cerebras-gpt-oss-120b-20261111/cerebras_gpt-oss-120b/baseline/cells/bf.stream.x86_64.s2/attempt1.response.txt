@@ -1,0 +1,224 @@
+.globl _start
+.text
+
+_start:
+    #-----------------------------------------------------------------
+    # Allocate registers
+    # rbx = pointer to buffer (program + input)
+    # r12 = total bytes read
+    #-----------------------------------------------------------------
+    lea rbx, [rip + buf]          # buffer address
+    xor r12, r12                  # total read = 0
+
+read_loop:
+    mov rax, 0                    # sys_read
+    mov rdi, 0                    # fd = stdin
+    lea rsi, [rbx + r12]          # buf + total_read
+    mov rdx, 65536
+    sub rdx, r12                  # remaining space
+    syscall
+    test rax, rax
+    je read_done
+    add r12, rax                  # total_read += n
+    cmp r12, 65536
+    jae read_done
+    jmp read_loop
+
+read_done:
+    # r12 = total input length
+    #-----------------------------------------------------------------
+    # Find first '!' separator
+    # rcx = index
+    # rdx = program length
+    # r13 = program length (saved)
+    # r14 = input length
+    # r15 = input pointer
+    #-----------------------------------------------------------------
+    xor rcx, rcx
+find_sep:
+    cmp rcx, r12
+    jae no_excl
+    mov al, byte ptr [rbx + rcx]
+    cmp al, 0x21                 # '!'
+    je have_excl
+    inc rcx
+    jmp find_sep
+have_excl:
+    mov rdx, rcx                  # program length = index
+    mov r13, rdx
+    mov r14, r12
+    sub r14, rcx
+    dec r14                       # input length = total - (idx+1)
+    lea r15, [rbx + rcx + 1]      # input pointer
+    jmp after_split
+no_excl:
+    mov rdx, r12                  # program length = total
+    mov r13, rdx
+    xor r14, r14                  # input length = 0
+    lea r15, [rbx + r12]          # input pointer (unused)
+after_split:
+
+    #-----------------------------------------------------------------
+    # Bracket matching check and build jump table
+    # rsi = address of bracket_stack
+    # rax = stack depth
+    # rcx = program index
+    #-----------------------------------------------------------------
+    lea rsi, [rip + bracket_stack]
+    xor rax, rax                  # stack depth = 0
+    xor rcx, rcx                  # pc = 0
+
+bracket_loop:
+    cmp rcx, r13
+    jae bracket_done
+    mov al, byte ptr [rbx + rcx]
+    cmp al, '['
+    je bracket_push
+    cmp al, ']'
+    je bracket_pop
+    inc rcx
+    jmp bracket_loop
+
+bracket_push:
+    mov [rsi + rax*4], ecx        # push index
+    inc rax
+    inc rcx
+    jmp bracket_loop
+
+bracket_pop:
+    dec rax
+    js mismatch
+    mov ebx, [rsi + rax*4]        # matching '[' index
+    # store forward jump: [ '[' ] = ']'
+    lea edi, [rcx]                # edi = current index (']')
+    mov [jump_table + ebx*4], edi
+    # store backward jump: [ ']' ] = '['
+    mov [jump_table + rcx*4], ebx
+    inc rcx
+    jmp bracket_loop
+
+bracket_done:
+    test rax, rax
+    jne mismatch                  # unmatched '[' left
+
+    #-----------------------------------------------------------------
+    # Execution of Brainfuck program
+    # r8  = data pointer (tape)
+    # rcx = program counter (index)
+    # r9  = input pointer (may be unused)
+    # r10 = remaining input length
+    #-----------------------------------------------------------------
+    lea r8, [rip + tape]          # data pointer
+    xor rcx, rcx                  # pc = 0
+    mov r9, r15
+    mov r10, r14
+
+exec_loop:
+    cmp rcx, r13
+    jae exec_done
+    mov al, byte ptr [rbx + rcx]
+
+    cmp al, '>'
+    je do_inc_dp
+    cmp al, '<'
+    je do_dec_dp
+    cmp al, '+'
+    je do_inc_cell
+    cmp al, '-'
+    je do_dec_cell
+    cmp al, '.'
+    je do_output
+    cmp al, ','
+    je do_input
+    cmp al, '['
+    je do_bracket_if_zero
+    cmp al, ']'
+    je do_bracket_if_nonzero
+
+    # ignore any other character
+    inc rcx
+    jmp exec_loop
+
+do_inc_dp:
+    inc r8
+    inc rcx
+    jmp exec_loop
+
+do_dec_dp:
+    dec r8
+    inc rcx
+    jmp exec_loop
+
+do_inc_cell:
+    inc byte ptr [r8]
+    inc rcx
+    jmp exec_loop
+
+do_dec_cell:
+    dec byte ptr [r8]
+    inc rcx
+    jmp exec_loop
+
+do_output:
+    mov rax, 1                    # sys_write
+    mov rdi, 1                    # stdout
+    mov rsi, r8
+    mov rdx, 1
+    syscall
+    inc rcx
+    jmp exec_loop
+
+do_input:
+    cmp r10, 0
+    je input_eof
+    mov al, byte ptr [r9]
+    mov byte ptr [r8], al
+    inc r9
+    dec r10
+    inc rcx
+    jmp exec_loop
+input_eof:
+    mov byte ptr [r8], 0
+    inc rcx
+    jmp exec_loop
+
+do_bracket_if_zero:
+    cmp byte ptr [r8], 0
+    jne after_bracket_zero
+    mov eax, dword ptr [jump_table + rcx*4]
+    mov rcx, rax
+    inc rcx
+    jmp exec_loop
+after_bracket_zero:
+    inc rcx
+    jmp exec_loop
+
+do_bracket_if_nonzero:
+    cmp byte ptr [r8], 0
+    je after_bracket_nonzero
+    mov eax, dword ptr [jump_table + rcx*4]
+    mov rcx, rax
+    inc rcx
+    jmp exec_loop
+after_bracket_nonzero:
+    inc rcx
+    jmp exec_loop
+
+exec_done:
+    mov rax, 60                   # sys_exit
+    xor rdi, rdi                  # status 0
+    syscall
+
+mismatch:
+    mov rax, 60                   # sys_exit
+    mov rdi, 1                    # status 1
+    syscall
+
+#-----------------------------------------------------------------
+# BSS section: buffers, tape, stack, jump table
+#-----------------------------------------------------------------
+.bss
+buf:            .zero 65536
+tape:           .zero 30000
+bracket_stack: .zero 1000*4
+jump_table:     .zero 65536*4

@@ -1,0 +1,225 @@
+.global _start
+.equ SYSCALL_READ, 63
+.equ SYSCALL_WRITE, 64
+.equ SYSCALL_EXIT, 93
+
+.section .bss
+.p2align 3
+prog_buf:        .zero 65536
+.bracket_stack: .zero 8000          // 1000 entries * 8 bytes
+.jump_table:    .zero 524288        // 65536 entries * 8 bytes
+.tape:           .zero 30000
+
+.text
+_start:
+    // -----------------------
+    // Read entire stdin into prog_buf
+    mov     x5, #0                     // total bytes read = 0
+read_loop:
+    mov     x0, #0                     // fd = stdin
+    adr     x1, prog_buf
+    add     x1, x1, x5                 // buf = prog_buf + total
+    mov     x2, #65536
+    sub     x2, x2, x5                 // count = remaining space
+    mov     x8, #SYSCALL_READ
+    svc     #0
+    cbz     x0, read_done
+    add     x5, x5, x0                 // total += bytes read
+    b       read_loop
+read_done:
+
+    // -----------------------
+    // Split at first '!' into program and input
+    adr     x10, prog_buf              // x10 = prog_buf base
+    mov     x6, #0                     // program length index
+find_excl:
+    cmp     x6, x5
+    beq     no_excl
+    add     x11, x10, x6
+    ldrb    w12, [x11]
+    cmp     w12, #'!'
+    beq     found_excl
+    add     x6, x6, #1
+    b       find_excl
+found_excl:
+    // program length = x6, input starts after '!'
+    add     x13, x10, x6
+    add     x13, x13, #1               // x13 = input pointer
+    sub     x7, x5, x6
+    sub     x7, x7, #1                // x7 = input length
+    b       split_done
+no_excl:
+    mov     x6, x5                     // program length = total
+    add     x13, x10, x5               // input pointer = end (empty)
+    mov     x7, #0                     // input length = 0
+split_done:
+
+    // -----------------------
+    // Bracket validation and jump table construction
+    adr     x14, .bracket_stack        // stack base
+    adr     x19, .jump_table           // jump table base
+    mov     x15, #0                    // stack depth
+    mov     x12, #0                    // position i
+bracket_loop:
+    cmp     x12, x6
+    beq     brackets_done
+    add     x16, x10, x12
+    ldrb    w17, [x16]
+    cmp     w17, #'['
+    beq     bracket_open
+    cmp     w17, #']'
+    beq     bracket_close
+    // ignore other chars
+    add     x12, x12, #1
+    b       bracket_loop
+bracket_open:
+    lsl     x18, x15, #3               // x18 = depth * 8
+    add     x18, x14, x18
+    str     x12, [x18]                 // push position
+    add     x15, x15, #1
+    add     x12, x12, #1
+    b       bracket_loop
+bracket_close:
+    cmp     x15, #0
+    beq     error_exit
+    sub     x15, x15, #1
+    lsl     x18, x15, #3
+    add     x18, x14, x18
+    ldr     x20, [x18]                 // x20 = matching '[' position
+    // store matching '[' for current ']'
+    lsl     x21, x12, #3
+    add     x21, x19, x21
+    str     x20, [x21]
+    // store current position for matching '['
+    lsl     x22, x20, #3
+    add     x22, x19, x22
+    str     x12, [x22]
+    add     x12, x12, #1
+    b       bracket_loop
+brackets_done:
+    cmp     x15, #0
+    bne     error_exit
+
+    // -----------------------
+    // Execution
+    adr     x23, .tape                // tape base
+    mov     x20, #0                   // data pointer offset
+    mov     x22, #0                   // input position offset
+    mov     x12, #0                   // program counter (offset)
+
+exec_loop:
+    cmp     x12, x6
+    beq     success_exit
+    add     x24, x10, x12
+    ldrb    w25, [x24]
+
+    cmp     w25, #'>'
+    beq     cmd_gt
+    cmp     w25, #'<'
+    beq     cmd_lt
+    cmp     w25, #'+'
+    beq     cmd_inc
+    cmp     w25, #'-'
+    beq     cmd_dec
+    cmp     w25, #'.'
+    beq     cmd_out
+    cmp     w25, #','
+    beq     cmd_in
+    cmp     w25, #'['
+    beq     cmd_lbra
+    cmp     w25, #']'
+    beq     cmd_rbra
+    // ignore any other character
+    add     x12, x12, #1
+    b       exec_loop
+
+cmd_gt:
+    add     x20, x20, #1
+    add     x12, x12, #1
+    b       exec_loop
+
+cmd_lt:
+    sub     x20, x20, #1
+    add     x12, x12, #1
+    b       exec_loop
+
+cmd_inc:
+    add     x26, x23, x20
+    ldrb    w27, [x26]
+    add     w27, w27, #1
+    and     w27, w27, #0xff
+    strb    w27, [x26]
+    add     x12, x12, #1
+    b       exec_loop
+
+cmd_dec:
+    add     x26, x23, x20
+    ldrb    w27, [x26]
+    sub     w27, w27, #1
+    and     w27, w27, #0xff
+    strb    w27, [x26]
+    add     x12, x12, #1
+    b       exec_loop
+
+cmd_out:
+    add     x26, x23, x20
+    mov     x0, #1
+    mov     x1, x26
+    mov     x2, #1
+    mov     x8, #SYSCALL_WRITE
+    svc     #0
+    add     x12, x12, #1
+    b       exec_loop
+
+cmd_in:
+    cmp     x22, x7
+    bge     input_exhausted
+    add     x27, x13, x22
+    ldrb    w28, [x27]
+    b       store_input
+input_exhausted:
+    mov     w28, #0
+store_input:
+    add     x26, x23, x20
+    strb    w28, [x26]
+    add     x22, x22, #1
+    add     x12, x12, #1
+    b       exec_loop
+
+cmd_lbra:
+    add     x26, x23, x20
+    ldrb    w27, [x26]
+    cbz     w27, lbra_jump
+    // cell not zero, continue
+    add     x12, x12, #1
+    b       exec_loop
+lbra_jump:
+    lsl     x28, x12, #3
+    add     x28, x19, x28
+    ldr     x29, [x28]               // matching ']'
+    add     x12, x29, #1
+    b       exec_loop
+
+cmd_rbra:
+    add     x26, x23, x20
+    ldrb    w27, [x26]
+    cbnz    w27, rbra_jump
+    // cell zero, continue
+    add     x12, x12, #1
+    b       exec_loop
+rbra_jump:
+    lsl     x28, x12, #3
+    add     x28, x19, x28
+    ldr     x29, [x28]               // matching '['
+    add     x12, x29, #1
+    b       exec_loop
+
+error_exit:
+    mov     x0, #1
+    mov     x8, #SYSCALL_EXIT
+    svc     #0
+
+success_exit:
+    mov     x0, #0
+    mov     x8, #SYSCALL_EXIT
+    svc     #0

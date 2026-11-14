@@ -1,0 +1,231 @@
+    .globl _start
+
+    .bss
+    .align 8
+input_buf:
+    .zero 65536
+    .align 8
+tape:
+    .zero 30000
+    .align 8
+output_buf:
+    .zero 65536
+    .align 8
+jump_table:
+    .zero 262144
+    .align 4
+bracket_stack:
+    .zero 4000
+
+    .text
+
+_start:
+    // Phase 1: Read all of stdin into input_buf
+    adrp    x9,  input_buf
+    add     x9,  x9,  :lo12:input_buf
+    mov     x10, x9                   // write pointer
+    mov     x11, #65536               // remaining space
+
+.Lread_loop:
+    mov     x0, #0                    // fd = stdin
+    mov     x1, x10
+    mov     x2, x11
+    mov     x8, #63                   // sys_read
+    svc     #0
+    cmp     x0, #0
+    b.le    .Lread_done
+    add     x10, x10, x0
+    sub     x11, x11, x0
+    cbnz    x11, .Lread_loop
+
+.Lread_done:
+    // x9 = buf base, x10 = one past last byte
+
+    // Phase 2: Find first '!'
+    mov     x12, x9
+    mov     x13, x10
+
+.Lfind_bang:
+    cmp     x12, x13
+    b.hs    .Lno_bang
+    ldrb    w14, [x12]
+    cmp     w14, #0x21
+    b.eq    .Lfound_bang
+    add     x12, x12, #1
+    b       .Lfind_bang
+
+.Lfound_bang:
+    mov     x28, x9                   // program base
+    mov     x21, x12                  // program end (ptr to '!')
+    add     x22, x12, #1              // BF input start
+    mov     x23, x10                  // BF input end
+    b       .Lvalidate
+
+.Lno_bang:
+    mov     x28, x9
+    mov     x21, x10
+    mov     x22, x10
+    mov     x23, x10
+
+.Lvalidate:
+    // Phase 3: Validate brackets, build jump table
+    // jump_table[i] is a 32-bit entry at word-offset i from base
+    // indexed by program byte offset, giving matching bracket byte offset
+    adrp    x26, jump_table
+    add     x26, x26, :lo12:jump_table
+
+    adrp    x15, bracket_stack
+    add     x15, x15, :lo12:bracket_stack
+    mov     x16, x15                  // bracket stack pointer (empty)
+
+    mov     x17, x28                  // scan pointer
+
+.Lscan:
+    cmp     x17, x21
+    b.hs    .Lscan_end
+
+    ldrb    w14, [x17]
+    cmp     w14, #0x5b                // '['
+    b.eq    .Lpush
+    cmp     w14, #0x5d                // ']'
+    b.eq    .Lpop
+    add     x17, x17, #1
+    b       .Lscan
+
+.Lpush:
+    // Check stack depth (1000 * 4 = 4000 bytes max)
+    sub     x0, x16, x15
+    cmp     x0, #4000
+    b.hs    .Lbad
+    // Push '[' byte offset onto stack
+    sub     x0, x17, x28
+    str     w0, [x16], #4
+    add     x17, x17, #1
+    b       .Lscan
+
+.Lpop:
+    cmp     x16, x15
+    b.eq    .Lbad                    // empty stack = unmatched ']'
+    ldr     w0, [x16, #-4]!          // pop '[' offset into w0 (zero-extends to x0)
+    sub     x1, x17, x28             // ']' byte offset in x1
+    str     w1, [x26, x0, lsl #2]   // jump_table['[' offset] = ']' offset
+    str     w0, [x26, x1, lsl #2]   // jump_table[']' offset] = '[' offset
+    add     x17, x17, #1
+    b       .Lscan
+
+.Lscan_end:
+    cmp     x16, x15
+    b.ne    .Lbad                    // unclosed '['
+
+    // Phase 4: Run the BF interpreter
+    adrp    x20, tape
+    add     x20, x20, :lo12:tape     // data pointer
+
+    adrp    x24, output_buf
+    add     x24, x24, :lo12:output_buf
+    mov     x25, x24                  // output write pointer
+
+    mov     x19, x28                  // instruction pointer
+
+.Li:
+    cmp     x19, x21
+    b.hs    .Lend
+
+    ldrb    w0, [x19], #1            // fetch instruction, advance ip
+
+    cmp     w0, #0x3e
+    b.eq    .Lgt
+    cmp     w0, #0x3c
+    b.eq    .Llt
+    cmp     w0, #0x2b
+    b.eq    .Lpl
+    cmp     w0, #0x2d
+    b.eq    .Lmi
+    cmp     w0, #0x2e
+    b.eq    .Ldo
+    cmp     w0, #0x2c
+    b.eq    .Lco
+    cmp     w0, #0x5b
+    b.eq    .Llb
+    cmp     w0, #0x5d
+    b.eq    .Lrb
+    b       .Li                      // ignore comment characters
+
+.Lgt:
+    add     x20, x20, #1
+    b       .Li
+
+.Llt:
+    sub     x20, x20, #1
+    b       .Li
+
+.Lpl:
+    ldrb    w1, [x20]
+    add     w1, w1, #1
+    and     w1, w1, #0xff
+    strb    w1, [x20]
+    b       .Li
+
+.Lmi:
+    ldrb    w1, [x20]
+    sub     w1, w1, #1
+    and     w1, w1, #0xff
+    strb    w1, [x20]
+    b       .Li
+
+.Ldo:
+    ldrb    w1, [x20]
+    strb    w1, [x25], #1
+    b       .Li
+
+.Lco:
+    cmp     x22, x23
+    b.hs    .Lco_eof
+    ldrb    w1, [x22], #1
+    strb    w1, [x20]
+    b       .Li
+
+.Lco_eof:
+    strb    wzr, [x20]
+    b       .Li
+
+.Llb:
+    ldrb    w1, [x20]
+    cbnz    w1, .Li                  // cell != 0: enter loop body
+    // cell == 0: jump to just after matching ']'
+    sub     x0, x19, x28
+    sub     x0, x0, #1               // byte offset of '[' itself
+    ldr     w1, [x26, x0, lsl #2]   // w1 = byte offset of matching ']'
+    add     x19, x28, x1
+    add     x19, x19, #1             // ip = after ']'
+    b       .Li
+
+.Lrb:
+    ldrb    w1, [x20]
+    cbz     w1, .Li                  // cell == 0: exit loop
+    // cell != 0: jump back to just after matching '['
+    sub     x0, x19, x28
+    sub     x0, x0, #1               // byte offset of ']' itself
+    ldr     w1, [x26, x0, lsl #2]   // w1 = byte offset of matching '['
+    add     x19, x28, x1
+    add     x19, x19, #1             // ip = after '['
+    b       .Li
+
+.Lend:
+    // Write output buffer
+    sub     x2, x25, x24             // output byte count
+    cbz     x2, .Lq0
+    mov     x0, #1                   // fd = stdout
+    mov     x1, x24
+    mov     x8, #64                  // sys_write
+    svc     #0
+
+.Lq0:
+    mov     x0, #0
+    mov     x8, #93                  // sys_exit
+    svc     #0
+
+.Lbad:
+    mov     x0, #1
+    mov     x8, #93
+    svc     #0

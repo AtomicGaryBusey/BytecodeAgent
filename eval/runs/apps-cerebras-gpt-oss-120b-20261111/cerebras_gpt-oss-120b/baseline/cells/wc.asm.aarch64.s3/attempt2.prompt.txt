@@ -1,0 +1,230 @@
+Write the complete program `wc`: a static Linux executable for AArch64 (ARMv8-A, little-endian), written in assembly. There is no C library, no C runtime and no helper code: you write the entry point `_start`, every function, every table and string, and make the system calls yourself.
+
+Entry state (as the Linux kernel sets it up): execution starts at the label `_start`. sp is 16-byte aligned and points at argc = 0, followed by the NULL terminators of an empty argv, an empty envp and an empty auxiliary vector: the program gets no arguments. Every other general-purpose register (x0-x30) is zero; x30 is not a return address, so `_start` must never return with `ret`; the program ends only through the exit system call.
+
+System calls: the `svc #0` instruction, with the system call number in x8 and the arguments in x0, x1, x2; the result comes back in x0. Every other register is preserved. Exactly these four are available:
+- read = 63: read(fd = 0, buf, count) reads up to count bytes of standard input into buf; returns the number of bytes read, 0 at end of input.
+- write = 64: write(fd, buf, count) with fd 1 (standard output) or 2 (standard error); returns count.
+- exit = 93: exit(status) ends the program; the exit status is the low 8 bits of status.
+- exit_group = 94: the same as exit.
+Any other system call number or file descriptor stops the program with an error, and so does a buffer that is not entirely inside the program's memory.
+
+Memory: the program's own sections plus a stack of 1 MiB below the entry sp. There is no heap (no brk, no mmap, no malloc): put working storage in `.bss` (zero-initialised), at most 1 MiB in total, or on the stack. Code is not writable. Any access outside these areas stops the program. Each test run may execute at most 50,000,000 instructions.
+
+Output format: one complete assembly source file in GNU assembler (GNU as) syntax for AArch64. Examples: `ldr x2, [x0, x1, lsl #3]`, `ldrb w3, [x1], #1`, `stp x29, x30, [sp, #-16]!`. Comments start with `//`; do not use `;`.
+Allowed in the file:
+- Sections: `.text` (code), `.section .rodata` (read-only data), `.data` (initialised writable data), `.bss` (zero-initialised space: only `.zero`/`.space` and alignment). Instructions go in `.text` only.
+- Data directives: `.byte`, `.short`/`.2byte`, `.word` (4 bytes on this target), `.long`/`.int`/`.4byte`, `.quad`/`.8byte`, `.ascii`, `.asciz`/`.string`, `.zero`/`.space`, alignment with `.align`/`.balign`/`.p2align`, and `.globl`/`.global` (write `.globl _start`).
+- Labels `name:` in any section, and GNU local labels `1:` referenced as `1f` (next) / `1b` (previous).
+- Constants: `.equ name, value` (or `.set name, value`, or `name = value`), where value is a number or a difference of labels defined earlier in the same section (e.g. `msg_len = . - msg`). Define every constant before its first use.
+- Addressing data: `adrp x0, label` followed by `add x0, x0, :lo12:label` (or a load/store `ldr x1, [x0, :lo12:label]`); `adr x0, label` also works within +-1 MiB. Literal pools are NOT allowed: no `ldr x0, =label` and no `ldr x0, =constant` (build constants with mov/movz/movk).
+Not allowed: macros (`.macro`, `.rept`, `.irp`), conditional assembly (`.if`), `.include`, `.incbin`, `.fill`, `.org`, `.comm`/`.lcomm`, `.inst`, `.cfi_*` directives, section stacks (`.pushsection`) and any other section. No libc and no other library: there is nothing to link against, so every symbol you use must be defined in your file.
+Instruction set: ARMv8.0-A with floating point and Advanced SIMD (NEON). Not supported (rejected): CRC32, LSE atomics, dot product, half-precision, crypto (AES/SHA/PMULL) and SVE.
+Output ONLY the assembly source: no Markdown fences, no prose before or after it.
+
+Specification: Task `wc`: count the lines, words and bytes of standard input and print them.
+
+- lines = the number of newline bytes (0x0A) in the input. A final line without a newline is NOT counted.
+- words = the number of maximal non-empty runs of non-whitespace bytes. Whitespace is exactly these six bytes:
+  space 0x20, tab 0x09, newline 0x0A, vertical tab 0x0B, form feed 0x0C, carriage return 0x0D. Every other byte
+  value (including 0x00, other control bytes and bytes >= 0x80) is a word byte.
+- bytes = the total number of input bytes.
+
+Output exactly one line: the three counts in decimal, separated by single spaces, followed by a newline:
+`<lines> <words> <bytes>\n` (no padding, no leading zeros; zero is printed as `0`). Example: input
+`hello world\nbye` prints `1 3 15\n`; empty input prints `0 0 0\n`.
+
+Limits: the input is at most 65536 bytes. Exit status 0.
+
+Input and output (applies to this whole task):
+- The input is the complete contents of standard input (file descriptor 0). Read it with `read` until `read`
+  returns 0 (end of input). A `read` may return FEWER bytes than requested, at any position (in the middle of a
+  line, a token or a group of bytes), so keep calling it; only a return value of 0 means end of input.
+- Write the output to standard output (file descriptor 1). Only the bytes this task describes may appear on
+  standard output (standard error is ignored). Every output byte must be written before the program exits.
+- Finish with `exit` (or `exit_group`) and the exit status this task gives. The program must not run off the end
+  of its code or crash.
+
+Your previous attempt was:
+<previous>
+.global _start
+    .text
+_start:
+    // zero counters: x9=lines, x10=words, x11=bytes, x12=in_word flag
+    mov     x9, #0
+    mov     x10, #0
+    mov     x11, #0
+    mov     x12, #0
+
+read_loop:
+    // set buffer pointer in x7
+    adrp    x7, buf
+    add     x7, x7, :lo12:buf
+
+    // read(fd=0, buf, count=4096)
+    mov     x8, #63          // syscall number
+    mov     x0, #0           // fd stdin
+    mov     x1, x7           // buffer address
+    mov     x2, #4096        // max bytes per read
+    svc     #0
+    // result in x0 (bytes read)
+    cbz     x0, output_counts    // if 0, end of input
+
+    // x4 = remaining bytes in this chunk
+    mov     x4, x0
+
+process_chunk:
+    cbz     x4, read_loop         // if no more bytes, read next chunk
+
+    // load next byte and advance pointer
+    ldrb    w13, [x7], #1
+    subs    x4, x4, #1
+
+    // count total bytes
+    add     x11, x11, #1
+
+    // check for newline (0x0A)
+    cmp     w13, #10
+    bne     not_newline
+    add     x9, x9, #1            // increment lines
+not_newline:
+    // whitespace test: space 0x20, tab 0x09, newline 0x0A, VT 0x0B, FF 0x0C, CR 0x0D
+    cmp     w13, #0x20
+    beq     is_whitespace
+    cmp     w13, #0x09
+    beq     is_whitespace
+    cmp     w13, #0x0A
+    beq     is_whitespace
+    cmp     w13, #0x0B
+    beq     is_whitespace
+    cmp     w13, #0x0C
+    beq     is_whitespace
+    cmp     w13, #0x0D
+    beq     is_whitespace
+    b       non_whitespace
+
+is_whitespace:
+    // if we were inside a word, leave the word
+    cmp     x12, #0
+    beq     continue_loop
+    mov     x12, #0
+    b       continue_loop
+
+non_whitespace:
+    // non-whitespace character
+    cmp     x12, #0
+    bne     continue_loop
+    // start of a new word
+    add     x10, x10, #1
+    mov     x12, #1
+
+continue_loop:
+    b       process_chunk
+
+output_counts:
+    // prepare output buffer pointer in x1
+    adrp    x1, outbuf
+    add     x1, x1, :lo12:outbuf
+    mov     x0, x1               // x0 = dest pointer for itoa
+
+    // convert lines (x9)
+    mov     x2, x9
+    bl      itoa
+
+    // store space
+    mov     w3, #' '
+    strb    w3, [x0], #1
+
+    // convert words (x10)
+    mov     x2, x10
+    bl      itoa
+
+    // store space
+    mov     w3, #' '
+    strb    w3, [x0], #1
+
+    // convert bytes (x11)
+    mov     x2, x11
+    bl      itoa
+
+    // store newline
+    mov     w3, #10
+    strb    w3, [x0], #1
+
+    // compute length = end_ptr - start_ptr
+    sub     x2, x0, x1          // x2 = length
+
+    // write(fd=1, buf=outbuf, count=length)
+    mov     x8, #64
+    mov     x0, #1
+    mov     x1, x1
+    svc     #0
+
+    // exit(0)
+    mov     x8, #93
+    mov     x0, #0
+    svc     #0
+
+// ------------------------------------------------------------
+// itoa: convert unsigned integer in x2 to decimal string.
+// x0 = destination pointer (updated on return)
+// x2 = number to convert
+// Returns with x0 pointing after the written string.
+itoa:
+    // if number is zero, output "0"
+    cmp     x2, #0
+    bne     itoa_nonzero
+    mov     w3, #'0'
+    strb    w3, [x0], #1
+    ret
+
+itoa_nonzero:
+    // reserve temporary space on stack (32 bytes)
+    sub     sp, sp, #32
+    mov     x4, #0              // digit count
+
+itoa_loop:
+    // quotient = x2 / 10
+    udiv    x5, x2, #10
+    // remainder = x2 - quotient*10
+    mul     x6, x5, #10
+    sub     x6, x2, x6
+    // convert digit to ASCII
+    add     x6, x6, #'0'
+    // store digit at temporary buffer (sp + x4)
+    add     x7, sp, x4
+    strb    w6, [x7]
+    // increment digit count
+    add     x4, x4, #1
+    // prepare next iteration
+    mov     x2, x5
+    cbz     x2, itoa_copy_digits
+    b       itoa_loop
+
+itoa_copy_digits:
+    // x4 = number of digits
+    // copy digits in reverse order to destination
+    subs    x4, x4, #1          // x4 = last index
+itoa_copy_loop:
+    add     x7, sp, x4
+    ldrb    w6, [x7]
+    strb    w6, [x0], #1
+    subs    x4, x4, #1
+    bge     itoa_copy_loop
+
+    // restore stack pointer
+    add     sp, sp, #32
+    ret
+
+    .bss
+    .align 8
+buf:    .zero   4096
+outbuf: .zero   64
+</previous>
+It failed:
+<failure>
+GNU as rejected the program:
+line 139: expected an integer or zero register at operand 3 -- `udiv x5,x2,#10'
+line 141: expected an integer or zero register at operand 3 -- `mul x6,x5,#10'
+</failure>
+Write a corrected, complete version. Same output format; output only the code.

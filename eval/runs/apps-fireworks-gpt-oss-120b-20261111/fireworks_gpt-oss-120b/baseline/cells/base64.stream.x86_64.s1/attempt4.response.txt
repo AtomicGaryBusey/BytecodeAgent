@@ -1,0 +1,166 @@
+.globl _start
+.equ INPUT_MAX, 49152
+.equ OUT_MAX, 70000
+.equ LINE_LIMIT, 76
+
+.section .bss
+.align 16
+input_buf:
+    .zero INPUT_MAX
+out_buf:
+    .zero OUT_MAX
+
+.section .rodata
+b64_table:
+    .ascii "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/"
+
+.text
+_start:
+    # ---------- read all input ----------
+    xor rbx, rbx                # rbx = total bytes read
+read_loop:
+    mov rdi, 0                  # fd = stdin
+    lea rsi, [rip + input_buf]
+    add rsi, rbx                # dest = buffer + offset
+    mov rdx, INPUT_MAX
+    sub rdx, rbx                # remaining space
+    mov rax, 0                  # sys_read
+    syscall
+    test rax, rax
+    jz read_done                # rax == 0 => EOF
+    add rbx, rax                # total += bytes read
+    cmp rbx, INPUT_MAX
+    jae read_done
+    jmp read_loop
+read_done:
+    mov rcx, rbx                # rcx = remaining input length
+    test rcx, rcx
+    jz exit_ok                  # empty input -> no output
+
+    # ---------- set up pointers ----------
+    lea rsi, [rip + input_buf]  # source pointer
+    lea rdi, [rip + out_buf]    # dest pointer
+    xor r8, r8                  # r8 = line_len counter
+    lea r9, [rip + b64_table]   # base64 table pointer
+
+process_full:
+    cmp rcx, 3
+    jb process_remain
+
+    # load three bytes
+    movzx eax, byte ptr [rsi]          # b0
+    movzx ebx, byte ptr [rsi + 1]      # b1
+    movzx ecx, byte ptr [rsi + 2]      # b2
+
+    # first 6 bits
+    mov edx, eax
+    shr edx, 2
+    and edx, 0x3F
+    mov al, [r9 + rdx]
+    mov [rdi], al
+    inc rdi
+    inc r8
+    cmp r8, LINE_LIMIT
+    je insert_nl
+
+    # second 6 bits
+    mov edx, eax
+    and edx, 3
+    shl edx, 4
+    mov esi, ebx
+    shr esi, 4
+    or edx, esi
+    and edx, 0x3F
+    mov al, [r9 + rdx]
+    mov [rdi], al
+    inc rdi
+    inc r8
+    cmp r8, LINE_LIMIT
+    je insert_nl
+
+    # third 6 bits
+    mov edx, ebx
+    and edx, 0xF
+    shl edx, 2
+    mov esi, ecx
+    shr esi, 6
+    or edx, esi
+    and edx, 0x3F
+    mov al, [r9 + rdx]
+    mov [rdi], al
+    inc rdi
+    inc r8
+    cmp r8, LINE_LIMIT
+    je insert_nl
+
+    # fourth 6 bits
+    mov edx, ecx
+    and edx, 0x3F
+    mov al, [r9 + rdx]
+    mov [rdi], al
+    inc rdi
+    inc r8
+    cmp r8, LINE_LIMIT
+    je insert_nl
+
+    # advance pointers
+    add rsi, 3
+    sub rcx, 3
+    jmp process_full
+
+insert_nl:
+    mov byte ptr [rdi], 0x0A
+    inc rdi
+    xor r8, r8          # reset line_len
+    jmp short continue_after_nl
+
+continue_after_nl:
+    # after newline, continue processing (line_len already reset)
+    # the newline was just written; continue loop without adjusting src/len here
+    # (src/len already updated before reaching here)
+    # For simplicity, after newline we just continue with the next iteration
+    jmp process_full
+
+process_remain:
+    cmp rcx, 0
+    je finalize_output
+
+    # there is 1 or 2 bytes left
+    movzx eax, byte ptr [rsi]          # b0
+    # first character (always present)
+    mov edx, eax
+    shr edx, 2
+    and edx, 0x3F
+    mov al, [r9 + rdx]
+    mov [rdi], al
+    inc rdi
+    inc r8
+    cmp r8, LINE_LIMIT
+    je insert_nl
+
+    cmp rcx, 1
+    je pad_one_byte
+
+    # rcx == 2
+    movzx ebx, byte ptr [rsi + 1]      # b1
+    # second character
+    mov edx, eax
+    and edx, 3
+    shl edx, 4
+    mov esi, ebx
+    shr esi, 4
+    or edx, esi
+    and edx, 0x3F
+    mov al, [r9 + rdx]
+    mov [rdi], al
+    inc rdi
+    inc r8
+    cmp r8, LINE_LIMIT
+    je insert_nl
+
+    # third character
+    mov edx, ebx
+    and edx, 0xF
+    shl edx, 2
+    and edx, 0x3F
+    mov al, [r9 + edx]

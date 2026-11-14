@@ -1,0 +1,251 @@
+.text
+.globl _start
+
+_start:
+    # read all input
+    xor r14, r14                      # total bytes read
+read_loop:
+    mov edx, 65536
+    sub rdx, r14
+    jz read_done
+    lea rsi, [rip + inbuf]
+    add rsi, r14
+    xor edi, edi
+    xor eax, eax                      # read
+    syscall
+    test rax, rax
+    jle read_done
+    add r14, rax
+    jmp read_loop
+read_done:
+    lea r12, [rip + inbuf]            # current pointer
+    add r14, r12                      # end of input
+    lea rbx, [rip + outbuf]           # output position
+
+line_loop:
+    cmp r12, r14
+    jae flush_exit
+    # find end of line
+    mov r13, r12
+findnl:
+    cmp r13, r14
+    jae have_le
+    cmp byte ptr [r13], 10
+    je have_le
+    inc r13
+    jmp findnl
+have_le:
+    xor r15, r15                      # value stack count
+
+tok_loop:
+    # skip separators
+skipsep:
+    cmp r12, r13
+    jae line_end
+    movzx eax, byte ptr [r12]
+    cmp al, 0x20
+    je sep_adv
+    cmp al, 0x09
+    jne tok_start
+sep_adv:
+    inc r12
+    jmp skipsep
+
+tok_start:
+    mov rsi, r12                      # token start
+findend:
+    inc r12
+    cmp r12, r13
+    jae tok_have
+    movzx eax, byte ptr [r12]
+    cmp al, 0x20
+    je tok_have
+    cmp al, 0x09
+    jne findend
+tok_have:
+    mov rcx, r12
+    sub rcx, rsi                      # token length
+    cmp rcx, 1
+    jne try_lit
+    movzx eax, byte ptr [rsi]
+    cmp al, '+'
+    je op_add
+    cmp al, '-'
+    je op_sub
+    cmp al, '*'
+    je op_mul
+    cmp al, '/'
+    je op_div
+    cmp al, '%'
+    je op_mod
+
+try_lit:
+    xor r8d, r8d                      # negative flag
+    movzx eax, byte ptr [rsi]
+    cmp al, '-'
+    jne lit_digits
+    mov r8d, 1
+    inc rsi
+    dec rcx
+lit_digits:
+    test rcx, rcx
+    jz line_error
+    cmp rcx, 18
+    ja line_error
+    xor r9d, r9d                      # value
+digloop:
+    movzx eax, byte ptr [rsi]
+    sub eax, '0'
+    cmp eax, 9
+    ja line_error
+    imul r9, r9, 10
+    add r9, rax
+    inc rsi
+    dec rcx
+    jnz digloop
+    test r8d, r8d
+    jz push_val
+    neg r9
+push_val:
+    lea rax, [rip + vstack]
+    mov qword ptr [rax + r15*8], r9
+    inc r15
+    jmp tok_loop
+
+op_add:
+    xor r10d, r10d
+    jmp do_op
+op_sub:
+    mov r10d, 1
+    jmp do_op
+op_mul:
+    mov r10d, 2
+    jmp do_op
+op_div:
+    mov r10d, 3
+    jmp do_op
+op_mod:
+    mov r10d, 4
+do_op:
+    cmp r15, 2
+    jb line_error
+    lea rdi, [rip + vstack]
+    mov rcx, qword ptr [rdi + r15*8 - 8]    # b
+    mov rax, qword ptr [rdi + r15*8 - 16]   # a
+    test r10d, r10d
+    jz 1f
+    cmp r10d, 1
+    je 2f
+    cmp r10d, 2
+    je 3f
+    # division / remainder
+    test rcx, rcx
+    jz line_error
+    cmp rcx, -1
+    jne 4f
+    mov rdx, 0x8000000000000000
+    cmp rax, rdx
+    je line_error
+4:
+    cqo
+    idiv rcx
+    cmp r10d, 3
+    je op_store                        # '/': quotient in rax
+    mov rax, rdx                       # '%': remainder
+    jmp op_store
+1:
+    add rax, rcx
+    jmp op_store
+2:
+    sub rax, rcx
+    jmp op_store
+3:
+    imul rax, rcx
+op_store:
+    dec r15
+    mov qword ptr [rdi + r15*8 - 8], rax
+    jmp tok_loop
+
+line_end:
+    cmp r15, 1
+    jne line_error
+    lea rdi, [rip + vstack]
+    mov rax, qword ptr [rdi]
+    call print_num
+    jmp next_line
+
+line_error:
+    lea rsi, [rip + errmsg]
+    mov ecx, 6
+    mov rdi, rbx
+    rep movsb
+    mov rbx, rdi
+next_line:
+    mov r12, r13
+    cmp r12, r14
+    jae line_loop
+    inc r12
+    jmp line_loop
+
+# print_num: rax = signed value; appends decimal + newline at [rbx], advances rbx
+print_num:
+    mov r9, rax
+    mov rdi, rax
+    test rax, rax
+    jns 1f
+    neg rdi
+1:
+    lea rsi, [rip + numbuf + 32]
+    mov r8d, 10
+2:
+    xor edx, edx
+    mov rax, rdi
+    div r8
+    mov rdi, rax
+    add dl, '0'
+    dec rsi
+    mov byte ptr [rsi], dl
+    test rdi, rdi
+    jnz 2b
+    test r9, r9
+    jns 3f
+    dec rsi
+    mov byte ptr [rsi], '-'
+3:
+    lea rcx, [rip + numbuf + 32]
+    sub rcx, rsi
+    mov rdi, rbx
+    rep movsb
+    mov byte ptr [rdi], 10
+    inc rdi
+    mov rbx, rdi
+    ret
+
+flush_exit:
+    lea rsi, [rip + outbuf]
+    mov rdx, rbx
+    sub rdx, rsi
+    jz do_exit
+write_loop:
+    mov edi, 1
+    mov eax, 1                         # write
+    syscall
+    test rax, rax
+    jle do_exit
+    add rsi, rax
+    sub rdx, rax
+    jnz write_loop
+do_exit:
+    mov eax, 60                        # exit
+    xor edi, edi
+    syscall
+
+.section .rodata
+errmsg: .ascii "error\n"
+
+.bss
+.balign 8
+vstack: .space 262144
+numbuf: .space 32
+inbuf:  .space 65537
+outbuf: .space 524288

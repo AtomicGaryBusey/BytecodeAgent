@@ -1,0 +1,250 @@
+.global _start
+.text
+.align 2
+
+.equ BUFFER_SIZE, 32768
+.equ MAX_LINES, 1000
+
+_start:
+    // x19 = input buffer base
+    adrp    x19, input_buf
+    add     x19, x19, :lo12:input_buf
+    // x20 = line pointer array base
+    adrp    x20, line_ptrs
+    add     x20, x20, :lo12:line_ptrs
+    // x21 = line length array base (32‑bit lengths)
+    adrp    x21, line_lens
+    add     x21, x21, :lo12:line_lens
+    // x22 = address of total_bytes variable
+    adrp    x22, total_bytes
+    add     x22, x22, :lo12:total_bytes
+    // total_bytes = 0
+    mov     x0, #0
+    str     x0, [x22]
+
+    // x23 = write pointer (current fill position)
+    mov     x23, x19
+    // x24 = remaining space in buffer
+    mov     x24, #BUFFER_SIZE
+
+read_loop:
+    mov     x0, #0          // fd = stdin
+    mov     x1, x23         // buf
+    mov     x2, x24         // count
+    mov     x8, #63         // sys_read
+    svc     #0
+    cmp     x0, #0
+    beq     read_done
+    // add to total_bytes
+    ldr     x5, [x22]
+    add     x5, x5, x0
+    str     x5, [x22]
+    // advance write pointer and remaining space
+    add     x23, x23, x0
+    sub     x24, x24, x0
+    b       read_loop
+
+read_done:
+    // x25 = start of buffer
+    mov     x25, x19
+    // x26 = end of data (start + total_bytes)
+    ldr     x5, [x22]
+    add     x26, x25, x5
+
+    // x27 = line count = 0
+    mov     x27, #0
+
+parse_loop:
+    cmp     x25, x26
+    bge     parse_done
+
+    // x28 = line start pointer
+    mov     x28, x25
+
+find_nl:
+    cmp     x25, x26
+    bge     no_nl
+    ldrb    w0, [x25]
+    cmp     w0, #0x0A
+    beq     have_nl
+    add     x25, x25, #1
+    b       find_nl
+
+have_nl:
+    // length = cur - start
+    sub     x0, x25, x28          // length in x0
+    // store pointer
+    str     x28, [x20, x27, LSL #3]
+    // store length (lower 32 bits)
+    str     w0, [x21, x27, LSL #2]
+    add     x27, x27, #1
+    // skip newline
+    add     x25, x25, #1
+    b       parse_loop
+
+no_nl:
+    // final line (may be zero length)
+    sub     x0, x25, x28
+    str     x28, [x20, x27, LSL #3]
+    str     w0, [x21, x27, LSL #2]
+    add     x27, x27, #1
+    // advance cur to end to exit loop
+    mov     x25, x26
+    b       parse_loop
+
+parse_done:
+    // --------- insertion sort (stable) ----------
+    // x27 = n (line count)
+    mov     x9, #1               // i = 1
+sort_i_loop:
+    cmp     x9, x27
+    bge     sort_done
+
+    mov     x10, x9              // j = i
+sort_j_loop:
+    cbz     x10, sort_i_next     // if j == 0 break
+    // x11 = j-1
+    sub     x11, x10, #1
+
+    // load len[j-1] into w5, ptr[j-1] into x4
+    ldr     w5, [x21, x11, LSL #2]
+    uxtw    x5, w5
+    ldr     x4, [x20, x11, LSL #3]
+
+    // load len[j] into w6, ptr[j] into x6
+    ldr     w6, [x21, x10, LSL #2]
+    uxtw    x6, w6
+    ldr     x6, [x20, x10, LSL #3]
+
+    // compare lines: ptr1=x4,len1=x5, ptr2=x6,len2=x6? mistake: need separate len registers
+    // We'll use x5 for len1 (already in x5), x7 for len2
+    // Load len[j] again correctly
+    ldr     w7, [x21, x10, LSL #2]
+    uxtw    x7, w7
+
+    // call compare_lines
+    mov     x0, x4          // ptr1
+    mov     x1, x5          // len1
+    mov     x2, x6          // ptr2
+    mov     x3, x7          // len2
+    bl      compare_lines   // result in x0
+
+    cmp     x0, #0
+    ble     sort_i_next     // if line[j-1] <= line[j] stop
+
+    // swap entries j-1 and j
+    // temp ptr = ptr[j-1] (x4), temp len = w5
+    // store ptr[j] into slot j-1
+    str     x6, [x20, x11, LSL #3]
+    // store temp ptr into slot j
+    str     x4, [x20, x10, LSL #3]
+
+    // store len[j] into slot j-1
+    str     w7, [x21, x11, LSL #2]
+    // store temp len into slot j
+    str     w5, [x21, x10, LSL #2]
+
+    sub     x10, x10, #1
+    b       sort_j_loop
+
+sort_i_next:
+    add     x9, x9, #1
+    b       sort_i_loop
+
+sort_done:
+    // --------- output ----------
+    mov     x12, #0               // index i = 0
+
+out_loop:
+    cmp     x12, x27
+    bge     exit_prog
+
+    // load pointer and length
+    ldr     x13, [x20, x12, LSL #3]   // ptr
+    ldr     w14, [x21, x12, LSL #2]   // len (32‑bit)
+    uxtw    x14, w14                  // length as 64‑bit
+
+write_line:
+    cmp     x14, #0
+    beq     write_nl
+    mov     x0, #1
+    mov     x1, x13
+    mov     x2, x14
+    mov     x8, #64
+    svc     #0
+    // x0 = bytes written (may be less than requested)
+    cmp     x0, #0
+    ble     write_nl
+    sub     x14, x14, x0
+    add     x13, x13, x0
+    b       write_line
+
+write_nl:
+    adr     x5, nl
+    mov     x0, #1
+    mov     x1, x5
+    mov     x2, #1
+    mov     x8, #64
+    svc     #0
+
+    add     x12, x12, #1
+    b       out_loop
+
+exit_prog:
+    mov     x0, #0
+    mov     x8, #93
+    svc     #0
+
+// ------------------------------------------------
+// compare_lines:
+//   x0 = ptr1, x1 = len1, x2 = ptr2, x3 = len2
+//   returns x0: negative if line1<line2, zero if equal, positive if line1>line2
+compare_lines:
+    // preserve registers we need later
+    mov     x4, x0          // p1
+    mov     x5, x2          // p2
+
+    // compute min_len in x6
+    mov     x6, x1
+    mov     x7, x3
+    cmp     x6, x7
+    csel    x6, x6, x7, lt   // x6 = min(len1,len2)
+
+    // if min_len == 0, jump to length compare
+    cbz     x6, len_compare
+
+cmp_loop:
+    ldrb    w8, [x4], #1
+    ldrb    w9, [x5], #1
+    subs    w10, w8, w9
+    bne     diff_found
+    sub     x6, x6, #1
+    cbnz    x6, cmp_loop
+
+len_compare:
+    sub     x0, x1, x3          // result = len1 - len2
+    ret
+
+diff_found:
+    sub     w0, w8, w9          // signed 32‑bit diff
+    sxtw    x0, w0
+    ret
+
+.section .bss
+.align 3
+input_buf:
+    .space  BUFFER_SIZE
+
+line_ptrs:
+    .space  MAX_LINES * 8
+
+line_lens:
+    .space  MAX_LINES * 4
+
+total_bytes:
+    .zero   8
+
+.section .rodata
+.align 1
+nl:
+    .byte   0x0A

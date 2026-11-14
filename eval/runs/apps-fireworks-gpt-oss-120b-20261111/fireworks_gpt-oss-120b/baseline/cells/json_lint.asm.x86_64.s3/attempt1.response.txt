@@ -1,0 +1,646 @@
+.globl _start
+
+.section .bss
+    .align 8
+input_buf:          .zero 65536
+input_len:          .quad 0
+error_offset:       .quad 0
+
+.section .rodata
+ok_msg:             .ascii "ok\n"
+ok_len = . - ok_msg
+err_prefix:         .ascii "error at "
+err_prefix_len = . - err_prefix
+newline:            .ascii "\n"
+newline_len = . - newline
+
+.section .text
+_start:
+    ; rbx = address of input_buf
+    lea rbx, [rip + input_buf]
+
+    ; read all input into buffer
+    xor rcx, rcx            ; rcx = bytes read so far
+    mov r8, 65536           ; remaining capacity
+read_loop:
+    mov rax, 0              ; sys_read
+    mov rdi, 0              ; stdin
+    lea rsi, [rbx + rcx]
+    mov rdx, r8
+    syscall
+    test rax, rax
+    jz read_done
+    add rcx, rax
+    sub r8, rax
+    jmp read_loop
+read_done:
+    mov [rip + input_len], rcx
+
+    ; rsi = current offset = 0
+    xor rsi, rsi
+    ; parse document
+    call parse_document
+    cmp rax, 0
+    je output_error
+
+output_ok:
+    mov rax, 1              ; sys_write
+    mov rdi, 1              ; stdout
+    lea rsi, [rip + ok_msg]
+    mov rdx, ok_len
+    syscall
+    mov rax, 60             ; sys_exit
+    xor rdi, rdi            ; status 0
+    syscall
+
+output_error:
+    ; write "error at "
+    mov rax, 1
+    mov rdi, 1
+    lea rsi, [rip + err_prefix]
+    mov rdx, err_prefix_len
+    syscall
+
+    ; convert error_offset to decimal string on stack
+    sub rsp, 32             ; reserve space
+    mov rbx, rsp            ; rbx = pointer to buffer end
+    mov rcx, 0              ; digit count
+    mov rax, [rip + error_offset]
+    test rax, rax
+    jnz .convert_loop
+    ; offset is zero
+    mov byte ptr [rbx-1], '0'
+    inc rcx
+    jmp .after_convert
+.convert_loop:
+    xor rdx, rdx
+    mov rdi, 10
+    div rdi                 ; rax = rax/10, rdx = remainder
+    add dl, '0'
+    dec rbx
+    mov [rbx], dl
+    inc rcx
+    test rax, rax
+    jne .convert_loop
+.after_convert:
+    ; write digits
+    mov rax, 1
+    mov rdi, 1
+    mov rsi, rbx
+    mov rdx, rcx
+    syscall
+
+    ; write newline
+    add rsp, 32
+    mov rax, 1
+    mov rdi, 1
+    lea rsi, [rip + newline]
+    mov rdx, newline_len
+    syscall
+
+    ; exit status 1
+    mov rax, 60
+    mov rdi, 1
+    syscall
+
+; -------------------------------------------------
+; parse_document: parse ws value ws and ensure full consumption
+; returns rax = 1 on success, 0 on error
+parse_document:
+    ; skip leading ws
+    call skip_ws
+    ; parse value
+    call parse_value
+    test rax, rax
+    jz parse_doc_fail
+    ; skip trailing ws
+    call skip_ws
+    ; check if at end
+    mov rax, [rip + input_len]
+    cmp rsi, rax
+    je parse_doc_success
+    ; extra non-ws bytes -> error at current offset
+    mov [rip + error_offset], rsi
+    xor rax, rax
+    ret
+parse_doc_success:
+    mov rax, 1
+    ret
+parse_doc_fail:
+    xor rax, rax
+    ret
+
+; -------------------------------------------------
+; skip_ws: advance rsi over any whitespace (space, tab, newline, carriage return)
+skip_ws:
+    mov rdx, [rip + input_len]
+skip_ws_loop:
+    cmp rsi, rdx
+    jae skip_ws_done
+    movzx eax, byte ptr [rbx + rsi]
+    cmp al, 0x20
+    je .inc
+    cmp al, 0x09
+    je .inc
+    cmp al, 0x0A
+    je .inc
+    cmp al, 0x0D
+    je .inc
+    jmp skip_ws_done
+.inc:
+    inc rsi
+    jmp skip_ws_loop
+skip_ws_done:
+    ret
+
+; -------------------------------------------------
+; parse_value: decides which specific parser to call
+parse_value:
+    mov rdx, [rip + input_len]
+    cmp rsi, rdx
+    jae .value_error_eof
+    movzx eax, byte ptr [rbx + rsi]
+    cmp al, '{'
+    je .object
+    cmp al, '['
+    je .array
+    cmp al, '"'
+    je .string
+    cmp al, 't'
+    je .true_lit
+    cmp al, 'f'
+    je .false_lit
+    cmp al, 'n'
+    je .null_lit
+    ; number may start with '-' or digit
+    cmp al, '-'
+    je .number
+    cmp al, '0'
+    je .number
+    cmp al, '1'
+    jae .number_check_digit
+    jmp .value_error
+.value_error_eof:
+    ; unexpected EOF while expecting a value
+    mov [rip + error_offset], rsi
+    xor rax, rax
+    ret
+.value_error:
+    mov [rip + error_offset], rsi
+    xor rax, rax
+    ret
+.number_check_digit:
+    ; al is between '2' and '9' or could be other chars >= '2'
+    cmp al, '9'
+    jbe .number
+    jmp .value_error
+.object:
+    call parse_object
+    ret
+.array:
+    call parse_array
+    ret
+.string:
+    call parse_string
+    ret
+.true_lit:
+    call parse_true
+    ret
+.false_lit:
+    call parse_false
+    ret
+.null_lit:
+    call parse_null
+    ret
+.number:
+    call parse_number
+    ret
+
+; -------------------------------------------------
+; parse_object
+parse_object:
+    ; match '{'
+    call expect_char
+    .char db '{'
+    test rax, rax
+    jz .obj_fail
+    ; skip ws
+    call skip_ws
+    ; check for empty object
+    mov rdx, [rip + input_len]
+    cmp rsi, rdx
+    jae .obj_error_eof
+    movzx eax, byte ptr [rbx + rsi]
+    cmp al, '}'
+    je .obj_close
+    ; otherwise parse first member
+.obj_member_loop:
+    ; parse string (key)
+    call parse_string
+    test rax, rax
+    jz .obj_fail
+    call skip_ws
+    ; expect ':'
+    call expect_char
+    .char db ':'
+    test rax, rax
+    jz .obj_fail
+    call skip_ws
+    ; parse value
+    call parse_value
+    test rax, rax
+    jz .obj_fail
+    call skip_ws
+    ; check for ',' or end
+    mov rdx, [rip + input_len]
+    cmp rsi, rdx
+    jae .obj_error_eof
+    movzx eax, byte ptr [rbx + rsi]
+    cmp al, ','
+    jne .obj_check_close
+    ; consume ',' and continue
+    inc rsi
+    call skip_ws
+    jmp .obj_member_loop
+.obj_check_close:
+    ; expect '}'
+    cmp al, '}'
+    jne .obj_fail
+.obj_close:
+    ; consume '}'
+    inc rsi
+    mov rax, 1
+    ret
+.obj_fail:
+    xor rax, rax
+    ret
+.obj_error_eof:
+    mov [rip + error_offset], rsi
+    xor rax, rax
+    ret
+
+; -------------------------------------------------
+; parse_array
+parse_array:
+    ; match '['
+    call expect_char
+    .char db '['
+    test rax, rax
+    jz .arr_fail
+    call skip_ws
+    ; check for empty array
+    mov rdx, [rip + input_len]
+    cmp rsi, rdx
+    jae .arr_error_eof
+    movzx eax, byte ptr [rbx + rsi]
+    cmp al, ']'
+    je .arr_close
+.arr_element_loop:
+    ; parse value
+    call parse_value
+    test rax, rax
+    jz .arr_fail
+    call skip_ws
+    ; check for ',' or ']'
+    mov rdx, [rip + input_len]
+    cmp rsi, rdx
+    jae .arr_error_eof
+    movzx eax, byte ptr [rbx + rsi]
+    cmp al, ','
+    jne .arr_check_close
+    ; consume ',' and continue
+    inc rsi
+    call skip_ws
+    jmp .arr_element_loop
+.arr_check_close:
+    cmp al, ']'
+    jne .arr_fail
+.arr_close:
+    inc rsi
+    mov rax, 1
+    ret
+.arr_fail:
+    xor rax, rax
+    ret
+.arr_error_eof:
+    mov [rip + error_offset], rsi
+    xor rax, rax
+    ret
+
+; -------------------------------------------------
+; parse_string
+parse_string:
+    ; match opening quote
+    call expect_char
+    .char db '"'
+    test rax, rax
+    jz .str_fail
+.str_loop:
+    ; check EOF
+    mov rdx, [rip + input_len]
+    cmp rsi, rdx
+    jae .str_error_eof
+    movzx eax, byte ptr [rbx + rsi]
+    cmp al, '"'
+    je .str_end
+    cmp al, '\\'
+    je .str_escape
+    ; check control chars (0x00-0x1F)
+    cmp al, 0x20
+    jb .str_fail_invalid
+    ; regular character
+    inc rsi
+    jmp .str_loop
+.str_escape:
+    inc rsi
+    ; need escaped character
+    mov rdx, [rip + input_len]
+    cmp rsi, rdx
+    jae .str_error_eof
+    movzx eax, byte ptr [rbx + rsi]
+    ; check valid escape chars
+    cmp al, '"'
+    je .esc_ok
+    cmp al, '\\'
+    je .esc_ok
+    cmp al, '/'
+    je .esc_ok
+    cmp al, 'b'
+    je .esc_ok
+    cmp al, 'f'
+    je .esc_ok
+    cmp al, 'n'
+    je .esc_ok
+    cmp al, 'r'
+    je .esc_ok
+    cmp al, 't'
+    je .esc_ok
+    cmp al, 'u'
+    je .esc_unicode
+    ; invalid escape
+    jmp .str_fail_invalid
+.esc_ok:
+    inc rsi
+    jmp .str_loop
+.esc_unicode:
+    inc rsi
+    ; need exactly 4 hex digits
+    mov rcx, 4
+.uni_loop:
+    mov rdx, [rip + input_len]
+    cmp rsi, rdx
+    jae .str_error_eof
+    movzx eax, byte ptr [rbx + rsi]
+    ; check hex digit
+    cmp al, '0'
+    jb .str_fail_invalid
+    cmp al, '9'
+    jbe .hex_ok
+    cmp al, 'A'
+    jb .str_fail_invalid
+    cmp al, 'F'
+    jbe .hex_ok
+    cmp al, 'a'
+    jb .str_fail_invalid
+    cmp al, 'f'
+    ja .str_fail_invalid
+.hex_ok:
+    inc rsi
+    dec rcx
+    jnz .uni_loop
+    jmp .str_loop
+.str_end:
+    inc rsi
+    mov rax, 1
+    ret
+.str_fail_invalid:
+    mov [rip + error_offset], rsi
+    xor rax, rax
+    ret
+.str_error_eof:
+    mov [rip + error_offset], rsi
+    xor rax, rax
+    ret
+.str_fail:
+    mov [rip + error_offset], rsi
+    xor rax, rax
+    ret
+
+; -------------------------------------------------
+; parse_number
+parse_number:
+    ; optional '-'
+    mov rdx, [rip + input_len]
+    cmp rsi, rdx
+    jae .num_error_eof
+    movzx eax, byte ptr [rbx + rsi]
+    cmp al, '-'
+    jne .num_int_start
+    inc rsi
+    ; after '-', must have something
+    mov rdx, [rip + input_len]
+    cmp rsi, rdx
+    jae .num_error_eof
+    movzx eax, byte ptr [rbx + rsi]
+.num_int_start:
+    ; integer part
+    cmp al, '0'
+    jne .num_int_nonzero
+    ; leading zero
+    inc rsi
+    jmp .num_frac_check
+.num_int_nonzero:
+    ; first digit 1-9
+    cmp al, '1'
+    jb .num_fail_invalid
+    cmp al, '9'
+    ja .num_fail_invalid
+    ; consume digits
+    inc rsi
+.num_int_digits_loop:
+    mov rdx, [rip + input_len]
+    cmp rsi, rdx
+    jae .num_frac_check
+    movzx eax, byte ptr [rbx + rsi]
+    cmp al, '0'
+    jb .num_frac_check
+    cmp al, '9'
+    ja .num_frac_check
+    inc rsi
+    jmp .num_int_digits_loop
+.num_frac_check:
+    ; optional fraction
+    mov rdx, [rip + input_len]
+    cmp rsi, rdx
+    jae .num_exp_check
+    movzx eax, byte ptr [rbx + rsi]
+    cmp al, '.'
+    jne .num_exp_check
+    ; have '.', need at least one digit after
+    inc rsi
+    ; must have a digit
+    mov rdx, [rip + input_len]
+    cmp rsi, rdx
+    jae .num_fail_invalid
+    movzx eax, byte ptr [rbx + rsi]
+    cmp al, '0'
+    jb .num_fail_invalid
+    cmp al, '9'
+    ja .num_fail_invalid
+    ; consume fraction digits
+    inc rsi
+.num_frac_digits_loop:
+    mov rdx, [rip + input_len]
+    cmp rsi, rdx
+    jae .num_exp_check
+    movzx eax, byte ptr [rbx + rsi]
+    cmp al, '0'
+    jb .num_exp_check
+    cmp al, '9'
+    ja .num_exp_check
+    inc rsi
+    jmp .num_frac_digits_loop
+.num_exp_check:
+    ; optional exponent
+    mov rdx, [rip + input_len]
+    cmp rsi, rdx
+    jae .num_success
+    movzx eax, byte ptr [rbx + rsi]
+    cmp al, 'e'
+    je .num_exp_start
+    cmp al, 'E'
+    jne .num_success
+.num_exp_start:
+    inc rsi
+    ; optional sign
+    mov rdx, [rip + input_len]
+    cmp rsi, rdx
+    jae .num_fail_invalid
+    movzx eax, byte ptr [rbx + rsi]
+    cmp al, '+'
+    je .num_exp_sign
+    cmp al, '-'
+    je .num_exp_sign
+    jmp .num_exp_digits
+.num_exp_sign:
+    inc rsi
+    ; fall through to digits
+.num_exp_digits:
+    ; need at least one digit
+    mov rdx, [rip + input_len]
+    cmp rsi, rdx
+    jae .num_fail_invalid
+    movzx eax, byte ptr [rbx + rsi]
+    cmp al, '0'
+    jb .num_fail_invalid
+    cmp al, '9'
+    ja .num_fail_invalid
+    ; consume exponent digits
+    inc rsi
+.num_exp_digits_loop:
+    mov rdx, [rip + input_len]
+    cmp rsi, rdx
+    jae .num_success
+    movzx eax, byte ptr [rbx + rsi]
+    cmp al, '0'
+    jb .num_success
+    cmp al, '9'
+    ja .num_success
+    inc rsi
+    jmp .num_exp_digits_loop
+.num_success:
+    mov rax, 1
+    ret
+.num_fail_invalid:
+    mov [rip + error_offset], rsi
+    xor rax, rax
+    ret
+.num_error_eof:
+    mov [rip + error_offset], rsi
+    xor rax, rax
+    ret
+
+; -------------------------------------------------
+; parse_true  (expect "true")
+parse_true:
+    call expect_sequence
+    .seq db "true"
+    .seq_len equ $ - .seq
+    ret
+
+; parse_false (expect "false")
+parse_false:
+    call expect_sequence
+    .seq db "false"
+    .seq_len equ $ - .seq
+    ret
+
+; parse_null (expect "null")
+parse_null:
+    call expect_sequence
+    .seq db "null"
+    .seq_len equ $ - .seq
+    ret
+
+; -------------------------------------------------
+; expect_char: expects the next byte to be the character specified in following .char db
+; returns rax=1 on success, 0 on failure
+expect_char:
+    ; rsi points at current offset
+    mov rdx, [rip + input_len]
+    cmp rsi, rdx
+    jae .expect_eof
+    movzx eax, byte ptr [rbx + rsi]
+    ; load expected char immediate (next byte after call)
+    movzx ecx, byte ptr [rip + .char]
+    cmp al, cl
+    jne .expect_fail
+    inc rsi
+    mov rax, 1
+    ret
+.expect_fail:
+    mov [rip + error_offset], rsi
+    xor rax, rax
+    ret
+.expect_eof:
+    mov [rip + error_offset], rsi
+    xor rax, rax
+    ret
+
+; -------------------------------------------------
+; expect_sequence: expects the next bytes to match the inline sequence defined after the call
+; returns rax=1 on success, 0 on failure
+expect_sequence:
+    ; rsi = current offset
+    ; rdx = input_len
+    mov rdx, [rip + input_len]
+    ; rcx = length of sequence
+    mov rcx, qword ptr [rip + .seq_len]
+    xor r8, r8            ; index i = 0
+.seq_loop:
+    cmp r8, rcx
+    je .seq_success
+    ; check EOF
+    cmp rsi, rdx
+    jae .seq_fail_eof
+    movzx eax, byte ptr [rbx + rsi]
+    movzx ebp, byte ptr [rip + .seq + r8]
+    cmp al, bpl
+    jne .seq_fail
+    inc rsi
+    inc r8
+    jmp .seq_loop
+.seq_success:
+    mov rax, 1
+    ret
+.seq_fail:
+    ; error at position of mismatched byte
+    mov [rip + error_offset], rsi
+    xor rax, rax
+    ret
+.seq_fail_eof:
+    mov [rip + error_offset], rsi
+    xor rax, rax
+    ret
+
+; -------------------------------------------------

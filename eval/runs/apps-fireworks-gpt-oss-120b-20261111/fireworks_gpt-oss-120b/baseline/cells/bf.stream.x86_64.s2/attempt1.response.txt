@@ -1,0 +1,250 @@
+.global _start
+.section .bss
+.align 16
+buffer:          .zero 65536          # whole stdin (program + '!' + input)
+tape:            .zero 30000          # Brainfuck data tape
+jump_table:      .zero 65536*4        # 4‑byte jump targets for each program byte
+bracket_stack:   .zero 1000*4         # stack for bracket matching
+outbuf:          .zero 1              # single‑byte output buffer
+
+.text
+_start:
+    # -------------------------------------------------
+    # Read entire stdin into buffer (max 65536 bytes)
+    # rbx = buffer address
+    # rcx = total bytes read so far
+    # rdx = remaining capacity
+    # -------------------------------------------------
+    lea rbx, [rip + buffer]
+    xor rcx, rcx                # total = 0
+    mov rdx, 65536              # remaining = max
+
+read_loop:
+    test rdx, rdx
+    jz read_done                # no space left
+    mov rax, 0                  # sys_read
+    mov rdi, 0                  # fd = stdin
+    mov rsi, rbx                # buf = current pointer
+    mov r8, rdx                 # count = remaining
+    mov rdx, r8                 # need rdx for syscall
+    syscall
+    test rax, rax
+    jz read_done                # EOF
+    add rcx, rax                # total += bytes
+    add rbx, rax                # advance buffer pointer
+    sub rdx, rax                # remaining -= bytes
+    jmp read_loop
+read_done:
+    # rcx = total length of input
+    # rbx = buffer + total length (end address)
+
+    # -------------------------------------------------
+    # Find first '!' separator
+    # rsi = pointer to start of buffer
+    # rdi = total length
+    # r8  = program length (until '!')
+    # r9  = pointer to input data (after '!')
+    # -------------------------------------------------
+    lea rsi, [rip + buffer]
+    mov rdi, rcx                # total length
+    xor r8, r8                  # prog_len = 0
+    xor r9, r9                  # input_ptr = 0 (means no input)
+    xor r10, r10                # input_len = 0
+
+find_sep:
+    test rdi, rdi
+    jz no_separator             # reached end without '!'
+
+    mov al, byte ptr [rsi]
+    cmp al, 0x21                # '!'
+    jne not_sep
+    # separator found
+    mov r8, rsi                 # r8 = prog_start (will reuse later)
+    sub r8, [rip + buffer]      # prog_len = offset of '!'
+    lea r9, [rsi + 1]           # input start = after '!'
+    mov r10, rdi                # remaining bytes after separator
+    sub r10, 1                  # input_len = total - prog_len - 1
+    jmp after_split
+not_sep:
+    inc rsi
+    dec rdi
+    jmp find_sep
+
+no_separator:
+    # whole input is program, no input data
+    mov r8, rcx                 # prog_len = total length
+    mov r9, rsi                 # input_ptr = end (unused)
+    xor r10, r10                # input_len = 0
+after_split:
+    # r8 = prog_len (bytes)
+    # rsi = prog_start (buffer)
+    # r9 = input_ptr
+    # r10 = input_len
+
+    # -------------------------------------------------
+    # Bracket matching and jump table construction
+    # rcx = index i (0 .. prog_len-1)
+    # rdx = stack pointer (depth)
+    # -------------------------------------------------
+    xor rcx, rcx                # i = 0
+    xor rdx, rdx                # stack depth = 0
+    lea r11, [rip + bracket_stack]   # stack base
+    lea r12, [rip + jump_table]      # jump table base
+
+match_loop:
+    cmp rcx, r8
+    jae match_done
+
+    mov al, byte ptr [rsi + rcx]
+
+    cmp al, '['
+    je push_bracket
+    cmp al, ']'
+    je pop_bracket
+    jmp advance_i
+
+push_bracket:
+    # stack[depth] = i
+    mov rax, rcx
+    mov dword ptr [r11 + rdx*4], eax
+    inc rdx
+    jmp advance_i
+
+pop_bracket:
+    test rdx, rdx
+    jz bracket_error            # unmatched ']'
+
+    dec rdx
+    mov eax, dword ptr [r11 + rdx*4]   # j = matching '[' index
+    # store i+1 at jump_table[j]
+    mov edx, ecx
+    inc edx                      # i+1
+    mov dword ptr [r12 + rax*4], edx
+    # store j+1 at jump_table[i]
+    inc eax                      # j+1
+    mov dword ptr [r12 + rcx*4], eax
+    jmp advance_i
+
+advance_i:
+    inc rcx
+    jmp match_loop
+
+match_done:
+    test rdx, rdx
+    jnz bracket_error           # leftover '['
+
+    # -------------------------------------------------
+    # Execution
+    # r13 = data pointer index (0..29999)
+    # r14 = program counter (pc)
+    # -------------------------------------------------
+    xor r13, r13                 # dp = 0
+    xor r14, r14                 # pc = 0
+    lea r15, [rip + tape]        # tape base
+    lea rbx, [rip + buffer]      # prog base (same as rsi earlier)
+    lea rdx, [rip + outbuf]      # outbuf address
+
+exec_loop:
+    cmp r14, r8
+    jae exec_finish
+
+    mov al, byte ptr [rbx + r14]
+
+    cmp al, '>'
+    je inc_ptr
+    cmp al, '<'
+    je dec_ptr
+    cmp al, '+'
+    je inc_cell
+    cmp al, '-'
+    je dec_cell
+    cmp al, '.'
+    je output_cell
+    cmp al, ','
+    je input_cell
+    cmp al, '['
+    je bracket_open
+    cmp al, ']'
+    je bracket_close
+    # ignore any other character
+    inc r14
+    jmp exec_loop
+
+inc_ptr:
+    inc r13
+    inc r14
+    jmp exec_loop
+
+dec_ptr:
+    dec r13
+    inc r14
+    jmp exec_loop
+
+inc_cell:
+    inc byte ptr [r15 + r13]
+    inc r14
+    jmp exec_loop
+
+dec_cell:
+    dec byte ptr [r15 + r13]
+    inc r14
+    jmp exec_loop
+
+output_cell:
+    mov al, byte ptr [r15 + r13]
+    mov byte ptr [rdx], al
+    mov rax, 1                  # sys_write
+    mov rdi, 1                  # stdout
+    mov rsi, rdx                # buffer
+    mov rdx, 1                  # count
+    syscall
+    inc r14
+    jmp exec_loop
+
+input_cell:
+    test r10, r10               # input_len > 0 ?
+    jz input_eof
+    mov al, byte ptr [r9]
+    inc r9
+    dec r10
+    jmp store_input
+input_eof:
+    xor al, al                  # zero byte
+store_input:
+    mov byte ptr [r15 + r13], al
+    inc r14
+    jmp exec_loop
+
+bracket_open:
+    movzx eax, byte ptr [r15 + r13]
+    test eax, eax
+    jne not_zero_open
+    # cell == 0 -> jump to after matching ']'
+    mov eax, dword ptr [r12 + r14*4]
+    mov r14, rax
+    jmp exec_loop
+not_zero_open:
+    inc r14
+    jmp exec_loop
+
+bracket_close:
+    movzx eax, byte ptr [r15 + r13]
+    test eax, eax
+    je not_nonzero_close
+    # cell != 0 -> jump back to after matching '['
+    mov eax, dword ptr [r12 + r14*4]
+    mov r14, rax
+    jmp exec_loop
+not_nonzero_close:
+    inc r14
+    jmp exec_loop
+
+exec_finish:
+    mov rax, 60                 # sys_exit
+    xor rdi, rdi                # status 0
+    syscall
+
+bracket_error:
+    mov rax, 60                 # sys_exit
+    mov rdi, 1                  # status 1
+    syscall

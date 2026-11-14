@@ -1,0 +1,290 @@
+Write the complete program `sort_lines`: a static Linux executable for AArch64 (ARMv8-A, little-endian), written in assembly. There is no C library, no C runtime and no helper code: you write the entry point `_start`, every function, every table and string, and make the system calls yourself.
+
+Entry state (as the Linux kernel sets it up): execution starts at the label `_start`. sp is 16-byte aligned and points at argc = 0, followed by the NULL terminators of an empty argv, an empty envp and an empty auxiliary vector: the program gets no arguments. Every other general-purpose register (x0-x30) is zero; x30 is not a return address, so `_start` must never return with `ret`; the program ends only through the exit system call.
+
+System calls: the `svc #0` instruction, with the system call number in x8 and the arguments in x0, x1, x2; the result comes back in x0. Every other register is preserved. Exactly these four are available:
+- read = 63: read(fd = 0, buf, count) reads up to count bytes of standard input into buf; returns the number of bytes read, 0 at end of input.
+- write = 64: write(fd, buf, count) with fd 1 (standard output) or 2 (standard error); returns count.
+- exit = 93: exit(status) ends the program; the exit status is the low 8 bits of status.
+- exit_group = 94: the same as exit.
+Any other system call number or file descriptor stops the program with an error, and so does a buffer that is not entirely inside the program's memory.
+
+Memory: the program's own sections plus a stack of 1 MiB below the entry sp. There is no heap (no brk, no mmap, no malloc): put working storage in `.bss` (zero-initialised), at most 1 MiB in total, or on the stack. Code is not writable. Any access outside these areas stops the program. Each test run may execute at most 200,000,000 instructions.
+
+Output format: one complete assembly source file in GNU assembler (GNU as) syntax for AArch64. Examples: `ldr x2, [x0, x1, lsl #3]`, `ldrb w3, [x1], #1`, `stp x29, x30, [sp, #-16]!`. Comments start with `//`; do not use `;`.
+Allowed in the file:
+- Sections: `.text` (code), `.section .rodata` (read-only data), `.data` (initialised writable data), `.bss` (zero-initialised space: only `.zero`/`.space` and alignment). Instructions go in `.text` only.
+- Data directives: `.byte`, `.short`/`.2byte`, `.word` (4 bytes on this target), `.long`/`.int`/`.4byte`, `.quad`/`.8byte`, `.ascii`, `.asciz`/`.string`, `.zero`/`.space`, alignment with `.align`/`.balign`/`.p2align`, and `.globl`/`.global` (write `.globl _start`).
+- Labels `name:` in any section, and GNU local labels `1:` referenced as `1f` (next) / `1b` (previous).
+- Constants: `.equ name, value` (or `.set name, value`, or `name = value`), where value is a number or a difference of labels defined earlier in the same section (e.g. `msg_len = . - msg`). Define every constant before its first use.
+- Addressing data: `adrp x0, label` followed by `add x0, x0, :lo12:label` (or a load/store `ldr x1, [x0, :lo12:label]`); `adr x0, label` also works within +-1 MiB. Literal pools are NOT allowed: no `ldr x0, =label` and no `ldr x0, =constant` (build constants with mov/movz/movk).
+Not allowed: macros (`.macro`, `.rept`, `.irp`), conditional assembly (`.if`), `.include`, `.incbin`, `.fill`, `.org`, `.comm`/`.lcomm`, `.inst`, `.cfi_*` directives, section stacks (`.pushsection`) and any other section. No libc and no other library: there is nothing to link against, so every symbol you use must be defined in your file.
+Instruction set: ARMv8.0-A with floating point and Advanced SIMD (NEON). Not supported (rejected): CRC32, LSE atomics, dot product, half-precision, crypto (AES/SHA/PMULL) and SVE.
+Output ONLY the assembly source: no Markdown fences, no prose before or after it.
+
+Specification: Task `sort_lines`: print the lines of standard input sorted in ascending byte-wise order.
+
+- Lines are defined as follows: a line is a (possibly empty) sequence of bytes terminated by a newline 0x0A; if
+  the input does not end with a newline, the bytes after the last newline form one more, final line. Empty input
+  has no lines, and the empty remainder after a final newline is not a line.
+- Order: compare two lines byte by byte as UNSIGNED values 0x00-0xFF (like C `memcmp`); the first differing
+  byte decides. If one line is a prefix of the other, the shorter line comes first (so the empty line sorts
+  before every non-empty line). Equal lines are all printed (duplicates are kept).
+- Print every line followed by one newline 0x0A (the final line gets a newline even if it had none in the
+  input). Empty input prints nothing. A carriage return 0x0D and every other byte value are ordinary bytes.
+
+Example: `pear\napple\nPear\n\napple` prints `\nPear\napple\napple\npear\n`.
+
+Limits: the input is at most 32768 bytes and has at most 1000 lines. Exit status 0.
+
+Input and output (applies to this whole task):
+- The input is the complete contents of standard input (file descriptor 0). Read it with `read` until `read`
+  returns 0 (end of input). A `read` may return FEWER bytes than requested, at any position (in the middle of a
+  line, a token or a group of bytes), so keep calling it; only a return value of 0 means end of input.
+- Write the output to standard output (file descriptor 1). Only the bytes this task describes may appear on
+  standard output (standard error is ignored). Every output byte must be written before the program exits.
+- Finish with `exit` (or `exit_group`) and the exit status this task gives. The program must not run off the end
+  of its code or crash.
+
+Your previous attempt was:
+<previous>
+.global _start
+.text
+_start:
+    // base addresses
+    adrp    x20, line_ptrs
+    add     x20, x20, :lo12:line_ptrs       // x20 = line_ptrs base
+    adrp    x21, line_lens
+    add     x21, x21, :lo12:line_lens       // x21 = line_lens base
+    adrp    x22, buf
+    add     x22, x22, :lo12:buf             // x22 = buf base
+
+    // read input
+    mov     x9, #0                          // total_len = 0
+read_loop:
+    mov     x2, #32768
+    sub     x2, x2, x9                      // remaining space
+    cbz     x2, read_done
+    add     x1, x22, x9                     // buf + total_len
+    mov     x0, #0
+    mov     x8, #63
+    svc     #0
+    cbz     x0, read_done
+    add     x9, x9, x0                      // total_len += bytes_read
+    b       read_loop
+read_done:
+    // parse lines
+    mov     x10, #0                         // offset i
+    mov     x11, #0                         // line_start
+    mov     w12, #0                         // line count
+
+parse_loop:
+    cmp     x10, x9
+    beq     parse_finish_check
+    add     x23, x22, x10
+    ldrb    w24, [x23]                      // current byte
+    cmp     w24, #10
+    bne     not_newline
+    // newline found
+    sub     x4, x10, x11                    // length
+    add     x5, x22, x11                    // pointer = buf + line_start
+    // store pointer
+    uxtw    x6, w12
+    lsl     x6, x6, #3
+    add     x7, x20, x6
+    str     x5, [x7]
+    // store length
+    uxtw    x6, w12
+    lsl     x6, x6, #2
+    add     x7, x21, x6
+    str     w4, [x7]
+    // line count++
+    add     w12, w12, #1
+    // advance line_start past newline
+    add     x11, x10, #1
+    // advance offset past newline
+    add     x10, x10, #1
+    b       parse_loop
+not_newline:
+    add     x10, x10, #1
+    b       parse_loop
+
+parse_finish_check:
+    cmp     x11, x9
+    bge     after_parse
+    sub     x4, x9, x11                     // length
+    add     x5, x22, x11                    // pointer
+    // store pointer
+    uxtw    x6, w12
+    lsl     x6, x6, #3
+    add     x7, x20, x6
+    str     x5, [x7]
+    // store length
+    uxtw    x6, w12
+    lsl     x6, x6, #2
+    add     x7, x21, x6
+    str     w4, [x7]
+    add     w12, w12, #1
+after_parse:
+    cbz     w12, exit_program                // no lines
+
+    // selection sort
+    mov     w24, #0                         // i
+outer_loop:
+    cmp     w24, w12
+    bge     output_loop
+    mov     w25, w24                       // min = i
+    add     w26, w24, #1                   // j = i+1
+inner_loop:
+    cmp     w26, w12
+    bge     after_inner
+    // ----- compare line j (w26) with line min (w25) -----
+    // ptr_j
+    uxtw    x0, w26
+    lsl     x0, x0, #3
+    add     x1, x20, x0
+    ldr     x2, [x1]                       // x2 = ptr_j
+    // len_j
+    uxtw    x3, w26
+    lsl     x3, x3, #2
+    add     x4, x21, x3
+    ldr     w5, [x4]                       // w5 = len_j
+    // ptr_min
+    uxtw    x6, w25
+    lsl     x6, x6, #3
+    add     x7, x20, x6
+    ldr     x8, [x7]                       // x8 = ptr_min
+    // len_min
+    uxtw    x9, w25
+    lsl     x9, x9, #2
+    add     x10, x21, x9
+    ldr     w11, [x10]                     // w11 = len_min
+    // compare loop
+    mov     x12, #0                        // offset counter
+compare_loop:
+    cmp     x12, x5
+    bge     j_exhausted
+    cmp     x12, x11
+    bge     min_exhausted
+    add     x13, x2, x12
+    ldrb    w13, [x13]
+    add     x14, x8, x12
+    ldrb    w14, [x14]
+    cmp     w13, w14
+    bne     diff_bytes
+    add     x12, x12, #1
+    b       compare_loop
+diff_bytes:
+    cmp     w13, w14
+    bhs     not_less
+    mov     w0, #1                         // j < min
+    b       after_compare
+not_less:
+    mov     w0, #0
+    b       after_compare
+j_exhausted:
+    mov     w0, #1                         // j shorter
+    b       after_compare
+min_exhausted:
+    mov     w0, #0                         // min shorter
+after_compare:
+    // if w0 == 1 then min = j
+    cmp     w0, #0
+    beq     skip_min_update
+    mov     w25, w26
+skip_min_update:
+    add     w26, w26, #1
+    b       inner_loop
+after_inner:
+    // swap if min != i
+    cmp     w25, w24
+    beq     continue_outer
+    // swap pointers
+    uxtw    x0, w24
+    lsl     x0, x0, #3
+    add     x1, x20, x0
+    ldr     x2, [x1]                       // ptr_i
+    uxtw    x3, w25
+    lsl     x3, x3, #3
+    add     x4, x20, x3
+    ldr     x5, [x4]                       // ptr_min
+    str     x5, [x1]
+    str     x2, [x4]
+    // swap lengths
+    uxtw    x0, w24
+    lsl     x0, x0, #2
+    add     x1, x21, x0
+    ldr     w2, [x1]                       // len_i
+    uxtw    x3, w25
+    lsl     x3, x3, #2
+    add     x4, x21, x3
+    ldr     w5, [x4]                       // len_min
+    str     w5, [x1]
+    str     w2, [x4]
+continue_outer:
+    add     w24, w24, #1
+    b       outer_loop
+
+output_loop:
+    cmp     w24, w12
+    bge     exit_program
+    // load pointer and length
+    uxtw    x0, w24
+    lsl     x0, x0, #3
+    add     x1, x20, x0
+    ldr     x2, [x1]                       // x2 = ptr_line
+    uxtw    x3, w24
+    lsl     x3, x3, #2
+    add     x4, x21, x3
+    ldr     w5, [x4]                       // w5 = len_line
+write_line_loop:
+    cbz     w5, write_newline
+    mov     x0, #1                         // fd = stdout
+    mov     x1, x2
+    mov     w2, w5
+    mov     x8, #64
+    svc     #0
+    cbz     x0, write_newline
+    add     x2, x2, x0
+    sub     w5, w5, w0
+    b       write_line_loop
+write_newline:
+    adrp    x0, newline
+    add     x0, x0, :lo12:newline
+    mov     x1, x0
+    mov     w2, #1
+    mov     x8, #64
+    svc     #0
+    add     w24, w24, #1
+    b       output_loop
+
+exit_program:
+    mov     x0, #0
+    mov     x8, #93
+    svc     #0
+
+.section .rodata
+newline:
+    .byte   0x0A
+
+.bss
+.align 4
+buf:
+    .space 32768
+.align 8
+line_ptrs:
+    .space 8000
+.align 4
+line_lens:
+    .space 4000
+</previous>
+It failed:
+<failure>
+Test `one_byte` failed (stdin delivered whole; test run 2 of 42; the runs before it passed).
+stdin (1 bytes): "x"
+exit status: expected 0, got 0
+stdout differs from byte 0 on (line 1, column 1 of the expected output); expected 2 bytes in total, got 0
+  expected from byte 0: "x\n"
+  actual from byte 0:   (end of output)
+</failure>
+Write a corrected, complete version. Same output format; output only the code.

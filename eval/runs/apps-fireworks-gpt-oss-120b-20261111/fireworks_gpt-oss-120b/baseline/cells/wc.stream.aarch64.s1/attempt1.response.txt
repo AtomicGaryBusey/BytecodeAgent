@@ -1,0 +1,191 @@
+	.globl _start
+	.text
+	.align 2
+
+	// Constants
+	.equ READ_BUF_SIZE, 4096
+
+_start:
+	// Zero counters (registers are zero per spec, but ensure)
+	mov	x9, xzr		// total bytes
+	mov	x10, xzr		// lines
+	mov	x11, xzr		// words
+	mov	w12, wzr		// in_word flag (0)
+
+	// Buffer address
+	adr	x5, buf
+
+read_loop:
+	// sys_read(fd=0, buf, READ_BUF_SIZE)
+	mov	x0, #0
+	mov	x1, x5
+	mov	x2, #READ_BUF_SIZE
+	mov	x8, #63
+	svc	#0
+	cmp	x0, #0
+	beq	read_done
+
+	// Process bytes read (x0 = count)
+	mov	x6, x5			// ptr = buf
+	mov	x7, x0			// remaining = count
+
+process_loop:
+	cbz	x7, read_loop_end
+	ldrb	w8, [x6], #1
+	subs	x7, x7, #1
+
+	// total bytes++
+	add	x9, x9, #1
+
+	// newline?
+	cmp	w8, #0x0A
+	beq	is_newline
+
+	// whitespace checks
+	cmp	w8, #0x20		// space
+	beq	is_whitespace
+	cmp	w8, #0x09		// tab
+	beq	is_whitespace
+	cmp	w8, #0x0B		// VT
+	beq	is_whitespace
+	cmp	w8, #0x0C		// FF
+	beq	is_whitespace
+	cmp	w8, #0x0D		// CR
+	beq	is_whitespace
+
+	// non‑whitespace
+	cmp	w12, #0
+	bne	process_loop
+	mov	w12, #1
+	b	process_loop
+
+is_newline:
+	add	x10, x10, #1
+	// fall through to whitespace handling
+
+is_whitespace:
+	cmp	w12, #0
+	beq	process_loop
+	add	x11, x11, #1
+	mov	w12, #0
+	b	process_loop
+
+read_loop_end:
+	b	read_loop
+
+read_done:
+	// final word if still in_word
+	cmp	w12, #0
+	beq	after_word_fix
+	add	x11, x11, #1
+after_word_fix:
+
+	// Prepare output buffer
+	adr	x20, outbuf		// dest pointer
+	mov	x21, x20		// start of output
+
+	// ---- lines ----
+	stp	x11, x9, [sp, #-16]!	// save word and byte counters
+	mov	x0, x10
+	mov	x1, x20
+	bl	dec_to_ascii
+	mov	x20, x0
+	ldp	x11, x9, [sp], #16
+
+	// space
+	mov	w1, #' '
+	strb	w1, [x20], #1
+
+	// ---- words ----
+	stp	x11, x9, [sp, #-16]!	// save word and byte counters again
+	mov	x0, x11
+	mov	x1, x20
+	bl	dec_to_ascii
+	mov	x20, x0
+	ldp	x11, x9, [sp], #16
+
+	// space
+	mov	w1, #' '
+	strb	w1, [x20], #1
+
+	// ---- bytes ----
+	mov	x0, x9
+	mov	x1, x20
+	bl	dec_to_ascii
+	mov	x20, x0
+
+	// newline
+	mov	w1, #10
+	strb	w1, [x20], #1
+
+	// Write output
+	sub	x2, x20, x21		// length
+	mov	x0, #1			// fd = stdout
+	mov	x1, x21
+	mov	x8, #64		// sys_write
+	svc	#0
+
+	// Exit
+	mov	x0, #0
+	mov	x8, #93		// sys_exit
+	svc	#0
+
+	// ------------------------------------------------------------
+	// subroutine: decimal conversion
+	// Input:  x0 = value, x1 = destination pointer
+	// Output: x0 = updated destination pointer (after written digits)
+	// Clobbers: x2‑x8, w5‑w6
+dec_to_ascii:
+	// allocate space for reversed digits (max 32 bytes)
+	sub	sp, sp, #32
+	mov	x2, sp			// temp pointer
+	mov	x3, xzr			// digit count
+	mov	x4, #10			// divisor
+
+	cmp	x0, #0
+	bne	.dt_loop
+
+	// value is zero
+	mov	w5, #'0'
+	strb	w5, [x1], #1
+	add	sp, sp, #32
+	mov	x0, x1
+	ret
+
+.dt_loop:
+	// while x0 != 0
+	udiv	x5, x0, x4		// quotient
+	msub	x6, x5, x4, x0		// remainder = x0 - x5*10
+	add	w6, w6, #'0'		// make ASCII
+	strb	w6, [x2], #1
+	add	x3, x3, #1
+	mov	x0, x5
+	cbnz	x0, .dt_loop
+
+	// x2 now points after last digit, x3 = count
+	// copy digits in correct order
+	mov	x7, x2			// end pointer
+
+.copy_rev:
+	cbnz	x3, .copy_rev_body
+	b	.copy_done
+
+.copy_rev_body:
+	sub	x7, x7, #1
+	ldrb	w5, [x7]
+	strb	w5, [x1], #1
+	sub	x3, x3, #1
+	b	.copy_rev
+
+.copy_done:
+	add	sp, sp, #32
+	mov	x0, x1
+	ret
+
+	// ------------------------------------------------------------
+	.bss
+	.align 8
+buf:
+	.zero	READ_BUF_SIZE
+outbuf:
+	.zero	64

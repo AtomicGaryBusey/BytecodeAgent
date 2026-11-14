@@ -1,0 +1,440 @@
+Write the complete program `rpn`: a static Linux executable for AArch64 (ARMv8-A, little-endian), written in assembly. There is no C library, no C runtime and no helper code: you write the entry point `_start`, every function, every table and string, and make the system calls yourself.
+
+Entry state (as the Linux kernel sets it up): execution starts at the label `_start`. sp is 16-byte aligned and points at argc = 0, followed by the NULL terminators of an empty argv, an empty envp and an empty auxiliary vector: the program gets no arguments. Every other general-purpose register (x0-x30) is zero; x30 is not a return address, so `_start` must never return with `ret`; the program ends only through the exit system call.
+
+System calls: the `svc #0` instruction, with the system call number in x8 and the arguments in x0, x1, x2; the result comes back in x0. Every other register is preserved. Exactly these four are available:
+- read = 63: read(fd = 0, buf, count) reads up to count bytes of standard input into buf; returns the number of bytes read, 0 at end of input.
+- write = 64: write(fd, buf, count) with fd 1 (standard output) or 2 (standard error); returns count.
+- exit = 93: exit(status) ends the program; the exit status is the low 8 bits of status.
+- exit_group = 94: the same as exit.
+Any other system call number or file descriptor stops the program with an error, and so does a buffer that is not entirely inside the program's memory.
+
+Memory: the program's own sections plus a stack of 1 MiB below the entry sp. There is no heap (no brk, no mmap, no malloc): put working storage in `.bss` (zero-initialised), at most 1 MiB in total, or on the stack. Code is not writable. Any access outside these areas stops the program. Each test run may execute at most 50,000,000 instructions.
+
+Output format: one complete assembly source file in GNU assembler (GNU as) syntax for AArch64. Examples: `ldr x2, [x0, x1, lsl #3]`, `ldrb w3, [x1], #1`, `stp x29, x30, [sp, #-16]!`. Comments start with `//`; do not use `;`.
+Allowed in the file:
+- Sections: `.text` (code), `.section .rodata` (read-only data), `.data` (initialised writable data), `.bss` (zero-initialised space: only `.zero`/`.space` and alignment). Instructions go in `.text` only.
+- Data directives: `.byte`, `.short`/`.2byte`, `.word` (4 bytes on this target), `.long`/`.int`/`.4byte`, `.quad`/`.8byte`, `.ascii`, `.asciz`/`.string`, `.zero`/`.space`, alignment with `.align`/`.balign`/`.p2align`, and `.globl`/`.global` (write `.globl _start`).
+- Labels `name:` in any section, and GNU local labels `1:` referenced as `1f` (next) / `1b` (previous).
+- Constants: `.equ name, value` (or `.set name, value`, or `name = value`), where value is a number or a difference of labels defined earlier in the same section (e.g. `msg_len = . - msg`). Define every constant before its first use.
+- Addressing data: `adrp x0, label` followed by `add x0, x0, :lo12:label` (or a load/store `ldr x1, [x0, :lo12:label]`); `adr x0, label` also works within +-1 MiB. Literal pools are NOT allowed: no `ldr x0, =label` and no `ldr x0, =constant` (build constants with mov/movz/movk).
+Not allowed: macros (`.macro`, `.rept`, `.irp`), conditional assembly (`.if`), `.include`, `.incbin`, `.fill`, `.org`, `.comm`/`.lcomm`, `.inst`, `.cfi_*` directives, section stacks (`.pushsection`) and any other section. No libc and no other library: there is nothing to link against, so every symbol you use must be defined in your file.
+Instruction set: ARMv8.0-A with floating point and Advanced SIMD (NEON). Not supported (rejected): CRC32, LSE atomics, dot product, half-precision, crypto (AES/SHA/PMULL) and SVE.
+Output ONLY the assembly source: no Markdown fences, no prose before or after it.
+
+Specification: Task `rpn`: evaluate one Reverse Polish Notation expression per input line and print one result line per input
+line.
+
+Lines: a line is a (possibly empty) sequence of bytes terminated by a newline 0x0A; if the input does not end
+with a newline, the bytes after the last newline form one more, final line. Empty input has no lines (prints
+nothing), and the empty remainder after a final newline is not a line.
+
+Tokens: the separators are space 0x20 and tab 0x09 only; a token is a maximal run of other bytes. Any number of
+separators may appear before, between and after tokens. A token is exactly one of:
+- an integer literal: an optional `-` followed by 1 to 18 decimal digits `0`-`9` (leading zeros allowed, `-0`
+  is 0). A literal with 19 or more digits is invalid;
+- an operator: exactly one of `+` `-` `*` `/` `%` (a lone `-` is the subtraction operator);
+- anything else (for example `1a`, `+5`, `--3`, `1.5`, `x`, or a token containing 0x0D or any other byte) is
+  invalid.
+
+Evaluation uses a stack of signed 64-bit integers, empty at the start of each line. Process tokens left to right:
+a literal is pushed; an operator pops b (top) then a, and pushes `a op b`. `+`, `-`, `*` wrap modulo 2^64 (two's
+complement). `/` is division truncated toward zero; `%` is the remainder with the sign of a (a == (a/b)*b +
+a%b), as in C. A line is an ERROR if: it contains an invalid token; an operator finds fewer than two values on
+the stack; `/` or `%` has b == 0; `/` or `%` has a == -9223372036854775808 and b == -1; or, after the last token,
+the stack does not hold exactly one value (this includes a line with no tokens, e.g. an empty line).
+
+Output per line: if it is not an error, the single remaining value in decimal (a `-` sign if negative, no `+`,
+no leading zeros; -9223372036854775808 must print correctly) followed by a newline; if it is an error, exactly
+`error\n`. After an error the rest of that line is ignored and evaluation continues with the next line.
+
+Example: input `3 4 +\n-7 2 /\n1 +\n\n5 1 2 + 4 * + 3 -` prints `7\n-3\nerror\nerror\n14\n`.
+
+Limits: the input is at most 65536 bytes; a line is at most 1000 bytes. Exit status 0.
+
+Input and output (applies to this whole task):
+- The input is the complete contents of standard input (file descriptor 0). Read it with `read` until `read`
+  returns 0 (end of input). A `read` may return FEWER bytes than requested, at any position (in the middle of a
+  line, a token or a group of bytes), so keep calling it; only a return value of 0 means end of input.
+- Write the output to standard output (file descriptor 1). Only the bytes this task describes may appear on
+  standard output (standard error is ignored). Every output byte must be written before the program exits.
+- Finish with `exit` (or `exit_group`) and the exit status this task gives. The program must not run off the end
+  of its code or crash.
+
+Your previous attempt was:
+<previous>
+    .globl _start
+    .text
+_start:
+    // stack base address
+    adr     x4, stack               // x4 = &stack[0]
+
+    // read entire input into input_buf
+    mov     x0, #0                  // fd = stdin
+    adr     x1, input_buf
+    mov     x2, #65536
+    mov     x8, #63                 // sys_read
+    svc     #0
+    cbz     x0, read_done
+    mov     x9, x0                  // total_len = bytes read
+read_loop:
+    mov     x0, #0
+    adr     x1, input_buf
+    add     x1, x1, x9              // buffer + total_len
+    mov     x2, #65536
+    sub     x2, x2, x9              // remaining space
+    mov     x8, #63
+    svc     #0
+    cbz     x0, read_done
+    add     x9, x9, x0              // total_len += bytes read
+    b       read_loop
+read_done:
+    // x9 = total_len (0 .. 65536)
+    mov     x10, #0                 // cur_offset = 0
+
+main_loop:
+    cmp     x10, x9
+    bge     finish
+
+    // line_start = cur_offset
+    mov     x11, x10                // x11 = line_start
+    // find newline or end
+    mov     x12, x10                // x12 = iterator
+find_nl:
+    cmp     x12, x9
+    beq     line_end_no_nl
+    adr     x13, input_buf
+    add     x13, x13, x12
+    ldrb    w14, [x13]
+    cmp     w14, #10                // '\n'
+    beq     line_end_nl
+    add     x12, x12, #1
+    b       find_nl
+line_end_nl:
+    // x12 points at newline
+    b       line_process_start
+line_end_no_nl:
+    // no newline, line ends at total_len
+    // x12 already equals total_len
+line_process_start:
+    // x12 = line_end (position of newline or total_len)
+    // initialize line evaluation
+    mov     x15, #0                 // stack depth = 0
+    mov     x20, #0                 // error flag = 0
+    mov     x16, x11                // token_ptr = line_start
+
+token_loop:
+    // skip separators (space 0x20, tab 0x09)
+    cmp     x16, x12
+    bge     tokens_done
+    adr     x13, input_buf
+    add     x13, x13, x16
+    ldrb    w14, [x13]
+    cmp     w14, #32                // space
+    beq     inc_token_ptr
+    cmp     w14, #9                 // tab
+    beq     inc_token_ptr
+    b       token_start
+inc_token_ptr:
+    add     x16, x16, #1
+    b       token_loop
+
+token_start:
+    // token_start_offset = x16
+    mov     x17, x16                // start
+    mov     x18, x16                // end iterator
+tok_find_end:
+    cmp     x18, x12
+    bge     tok_end
+    adr     x13, input_buf
+    add     x13, x13, x18
+    ldrb    w14, [x13]
+    cmp     w14, #32                // space
+    beq     tok_end
+    cmp     w14, #9                 // tab
+    beq     tok_end
+    add     x18, x18, #1
+    b       tok_find_end
+tok_end:
+    // token_len = x18 - x17
+    sub     x19, x18, x17            // token_len
+
+    // load first byte of token
+    adr     x13, input_buf
+    add     x13, x13, x17
+    ldrb    w20, [x13]               // first char
+
+    // check for single-char operator
+    cmp     x19, #1
+    bne     not_single_char
+    // possible operator
+    cmp     w20, #'+'
+    beq     op_add
+    cmp     w20, #'-'
+    beq     op_sub
+    cmp     w20, #'*'
+    beq     op_mul
+    cmp     w20, #'/'
+    beq     op_div
+    cmp     w20, #'%'
+    beq     op_mod
+    // not an operator -> fall through to literal handling
+    b       literal_start
+
+not_single_char:
+literal_start:
+    // determine if literal (optional leading '-')
+    mov     x21, #0                 // is_negative = 0
+    cmp     w20, #'-'
+    bne     lit_check_digits
+    mov     x21, #1                 // negative sign
+    // need at least one more character
+    cmp     x19, #2
+    blt     token_invalid
+    // digit_start = x17 + 1
+    add     x22, x17, #1
+    b       lit_digit_loop_start
+lit_check_digits:
+    // first char must be digit
+    cmp     w20, #'0'
+    blt     token_invalid
+    cmp     w20, #'9'
+    bgt     token_invalid
+    // digit_start = x17
+    mov     x22, x17
+lit_digit_loop_start:
+    // count digits and validate, also count length <=18
+    mov     x23, #0                 // digit count
+lit_digit_loop:
+    cmp     x22, x18
+    bge     lit_digits_done
+    adr     x13, input_buf
+    add     x13, x13, x22
+    ldrb    w24, [x13]
+    cmp     w24, #'0'
+    blt     token_invalid
+    cmp     w24, #'9'
+    bgt     token_invalid
+    add     x23, x23, #1
+    cmp     x23, #18
+    bgt     token_invalid
+    add     x22, x22, #1
+    b       lit_digit_loop
+lit_digits_done:
+    // build integer value
+    mov     x25, #0                 // accumulator
+    // set digit pointer start again
+    cmp     x21, #0
+    beq     digit_start_is_x17
+    add     x26, x17, #1
+    b       digit_parse_loop
+digit_start_is_x17:
+    mov     x26, x17
+    // x23 holds digit count
+    mov     x27, #0                 // index i
+digit_parse_iter:
+    cmp     x27, x23
+    beq     digit_parse_done
+    add     x28, x26, x27
+    adr     x13, input_buf
+    add     x13, x13, x28
+    ldrb    w29, [x13]
+    sub     w29, w29, #'0'          // digit value 0-9
+    // x25 = x25 * 10 + digit
+    mov     x30, x25
+    lsl     x30, x30, #3
+    add     x30, x30, x25, lsl #1   // *8 + *2 = *10
+    add     x30, x30, x29
+    mov     x25, x30
+    add     x27, x27, #1
+    b       digit_parse_iter
+digit_parse_done:
+    // apply sign if needed
+    cmp     x21, #0
+    beq     push_literal
+    sub     x25, xzr, x25           // negate
+push_literal:
+    // push x25 onto stack
+    mov     x5, x15
+    lsl     x5, x5, #3
+    add     x6, x4, x5
+    str     x25, [x6]
+    add     x15, x15, #1
+    // advance to next token
+    mov     x16, x18
+    b       token_loop
+
+token_invalid:
+    mov     x20, #1                 // set error flag
+    mov     x16, x12                // skip rest of line
+    b       token_loop
+
+// operator implementations
+op_add:
+    cmp     x15, #2
+    blt     line_error
+    sub     x15, x15, #1
+    mov     x5, x15
+    lsl     x5, x5, #3
+    add     x6, x4, x5
+    ldr     x9, [x6]                // b
+    sub     x15, x15, #1
+    mov     x5, x15
+    lsl     x5, x5, #3
+    add     x6, x4, x5
+    ldr     x10, [x6]               // a
+    add     x11, x10, x9            // a+b (wrap)
+    str     x11, [x6]
+    add     x15, x15, #1
+    mov     x16, x18
+    b       token_loop
+
+op_sub:
+    cmp     x15, #2
+    blt     line_error
+    sub     x15, x15, #1
+    mov     x5, x15
+    lsl     x5, x5, #3
+    add     x6, x4, x5
+    ldr     x9, [x6]                // b
+    sub     x15, x15, #1
+    mov     x5, x15
+    lsl     x5, x5, #3
+    add     x6, x4, x5
+    ldr     x10, [x6]               // a
+    sub     x11, x10, x9            // a-b
+    str     x11, [x6]
+    add     x15, x15, #1
+    mov     x16, x18
+    b       token_loop
+
+op_mul:
+    cmp     x15, #2
+    blt     line_error
+    sub     x15, x15, #1
+    mov     x5, x15
+    lsl     x5, x5, #3
+    add     x6, x4, x5
+    ldr     x9, [x6]                // b
+    sub     x15, x15, #1
+    mov     x5, x15
+    lsl     x5, x5, #3
+    add     x6, x4, x5
+    ldr     x10, [x6]               // a
+    mul     x11, x10, x9
+    str     x11, [x6]
+    add     x15, x15, #1
+    mov     x16, x18
+    b       token_loop
+
+op_div:
+    cmp     x15, #2
+    blt     line_error
+    sub     x15, x15, #1
+    mov     x5, x15
+    lsl     x5, x5, #3
+    add     x6, x4, x5
+    ldr     x9, [x6]                // b
+    cbz     x9, line_error          // divide by zero
+    sub     x15, x15, #1
+    mov     x5, x15
+    lsl     x5, x5, #3
+    add     x6, x4, x5
+    ldr     x10, [x6]               // a
+    // overflow check: a == INT64_MIN && b == -1
+    movz    x30, #0x8000, lsl #48   // x30 = INT64_MIN
+    cmp     x10, x30
+    bne     div_normal
+    cmp     x9, #-1
+    beq     line_error
+div_normal:
+    sdiv    x11, x10, x9
+    str     x11, [x6]
+    add     x15, x15, #1
+    mov     x16, x18
+    b       token_loop
+
+op_mod:
+    cmp     x15, #2
+    blt     line_error
+    sub     x15, x15, #1
+    mov     x5, x15
+    lsl     x5, x5, #3
+    add     x6, x4, x5
+    ldr     x9, [x6]                // b
+    cbz     x9, line_error          // modulo by zero
+    sub     x15, x15, #1
+    mov     x5, x15
+    lsl     x5, x5, #3
+    add     x6, x4, x5
+    ldr     x10, [x6]               // a
+    // overflow check same as div
+    movz    x30, #0x8000, lsl #48
+    cmp     x10, x30
+    bne     mod_normal
+    cmp     x9, #-1
+    beq     line_error
+mod_normal:
+    sdiv    x11, x10, x9            // q = a/b
+    mul     x12, x11, x9            // q*b
+    sub     x13, x10, x12           // a - q*b
+    str     x13, [x6]
+    add     x15, x15, #1
+    mov     x16, x18
+    b       token_loop
+
+line_error:
+    mov     x20, #1                 // set error flag
+    mov     x16, x12                // skip rest of line
+    b       token_loop
+
+tokens_done:
+    // after processing all tokens of the line
+    cmp     x20, #0
+    bne     line_error_output
+    cmp     x15, #1
+    bne     line_error_output
+    // stack has exactly one value at top
+    sub     x5, x15, #1
+    lsl     x5, x5, #3
+    add     x6, x4, x5
+    ldr     x0, [x6]                // result in x0
+
+    // convert result to decimal string in out_buf, then write it
+    // sign handling
+    asr     x7, x0, #63             // sign mask
+    mov     x9, #0                  // sign flag
+    cbz     x7, pos_abs
+    mov     x9, #1                  // negative
+    sub     x8, xzr, x0             // abs = -value
+    b       abs_ready
+pos_abs:
+    mov     x8, x0                  // abs = value
+abs_ready:
+    adr     x10, out_buf
+    add     x11, x10, #31           // ptr = end of buffer
+    mov     x12, #0                 // length = 0
+    cbz     x8, store_zero
+conv_loop:
+    mov     x14, #10
+    udiv    x13, x8, x14            // quotient
+    mul     x15, x13, x14
+    sub     x15, x8, x15            // remainder
+    add     x15, x15, #'0'
+    strb    w15, [x11]
+    sub     x11, x11, #1
+    add     x12, x12, #1
+    mov     x8, x13
+    cbz     x8, conv_done
+    b       conv_loop
+conv_done:
+    b       output_digits
+store_zero:
+    add     x15, xzr, #'0'
+</previous>
+It failed:
+<failure>
+The assembler rejected line 368 (`add     x15, xzr, #'0'`): aarch64: Invalid operand (KS_ERR_ASM_INVALIDOPERAND); GNU as: integer register expected in the extended/shifted operand register at operand 3 -- `add x15,xzr,#48' (line 368: "add     x15, xzr, #'0'")
+Generation was stopped at that line; the 273 instructions before it had been accepted.
+</failure>
+Write a corrected, complete version. Same output format; output only the code.

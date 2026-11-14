@@ -1,0 +1,167 @@
+.global _start
+.text
+.align 2
+
+// syscall numbers
+.equ SYS_READ,   63
+.equ SYS_WRITE,  64
+.equ SYS_EXIT,   93
+
+// file descriptors
+.equ FD_STDIN,   0
+.equ FD_STDOUT,  1
+
+// limits
+.equ INPUT_MAX,  65536
+.equ DEC_BUF_SIZE, 20
+.equ MAX_NESTING, 1000
+
+// messages
+.section .rodata
+msg_ok:
+    .asciz "ok\n"
+msg_ok_len = . - msg_ok
+
+msg_error_prefix:
+    .asciz "error at "
+msg_error_prefix_len = . - msg_error_prefix
+
+msg_newline:
+    .asciz "\n"
+msg_newline_len = . - msg_newline
+
+.bss
+.align 8
+input_buf:
+    .zero INPUT_MAX
+input_len:
+    .zero 8
+error_offset:
+    .zero 8
+dec_buf:
+    .zero DEC_BUF_SIZE
+
+.text
+
+_start:
+    // x19 = current offset (global) = 0
+    mov     x19, #0
+
+    // x20 = &input_buf
+    adrp    x20, input_buf
+    add     x20, x20, :lo12:input_buf
+
+    // x21 = input length = 0
+    mov     x21, #0
+
+read_loop:
+    // x3 = INPUT_MAX
+    movz    x3, #0x0, LSL #0
+    movk    x3, #0x1, LSL #16        // 0x00010000 = 65536
+
+    // x4 = remaining space = INPUT_MAX - x21
+    sub     x4, x3, x21
+
+    // x5 = buffer address = input_buf + x21
+    add     x5, x20, x21
+
+    // sys_read(fd=0, buf=x5, count=x4)
+    mov     x0, FD_STDIN
+    mov     x1, x5
+    mov     x2, x4
+    mov     x8, SYS_READ
+    svc     0
+
+    // result in x0
+    cmp     x0, #0
+    beq     read_done
+    // add to length
+    add     x21, x21, x0
+    b       read_loop
+
+read_done:
+    // parse document
+    bl      skip_ws
+    bl      parse_value
+    bl      skip_ws
+
+    // after parsing, ensure no extra bytes
+    cmp     x19, x21
+    beq     success
+    // extra data -> error at current offset
+    mov     x22, x19
+    b       output_error
+
+// ------------------------------------------------------------
+// Helpers
+// ------------------------------------------------------------
+skip_ws:
+    // loop skipping space, tab, newline, carriage return
+1:
+    cmp     x19, x21
+    b.hs    2f                      // reached end, return
+    ldrb    w0, [x20, x19]
+    // compare with allowed whitespace
+    cmp     w0, #' '
+    beq     inc_ws
+    cmp     w0, #0x09                // tab
+    beq     inc_ws
+    cmp     w0, #0x0a                // newline
+    beq     inc_ws
+    cmp     w0, #0x0d                // carriage return
+    beq     inc_ws
+    b       2f                       // not whitespace
+inc_ws:
+    add     x19, x19, #1
+    b       1b
+2:
+    ret
+
+// ------------------------------------------------------------
+// parse_value
+// ------------------------------------------------------------
+parse_value:
+    // check EOF
+    cmp     x19, x21
+    b.hs    error_incomplete
+    ldrb    w0, [x20, x19]
+
+    // object
+    cmp     w0, #'{'
+    beq     parse_object
+    // array
+    cmp     w0, #'['
+    beq     parse_array
+    // string
+    cmp     w0, #'"'
+    beq     parse_string
+    // minus => number
+    cmp     w0, #'-'
+    beq     parse_number
+    // digit?
+    cmp     w0, #'0'
+    beq     parse_number
+    // check '1'..'9'
+    cmp     w0, #'1'
+    b.lt    literal_check
+    cmp     w0, #'9'
+    b.le    parse_number
+literal_check:
+    // literals true, false, null
+    cmp     w0, #'t'
+    beq     parse_true
+    cmp     w0, #'f'
+    beq     parse_false
+    cmp     w0, #'n'
+    beq     parse_null
+    // otherwise error
+    b       error_invalid
+
+parse_true:
+    // need "true"
+    // ensure enough bytes
+    add     x2, x19, #4
+    cmp     x2, x21
+    b.hs    error_incomplete
+    // compare each char
+    ldrb    w1, [x20, x19, #1]

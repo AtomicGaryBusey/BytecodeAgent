@@ -1,0 +1,276 @@
+```asm
+.globl _start
+
+.section .bss
+.align 16
+input_buf:
+.zero 65536
+.align 16
+rpn_stack:
+.zero 8192
+.align 16
+num_scratch:
+.zero 32
+.align 16
+out_buf:
+.zero 524288
+
+.text
+_start:
+    lea rbx, [rip + input_buf]
+    mov r12, rbx
+    lea r13, [rip + input_buf + 65536]
+rd_loop:
+    mov rdx, r13
+    sub rdx, r12
+    jz rd_done
+    mov rax, 0
+    mov rdi, 0
+    mov rsi, r12
+    syscall
+    test rax, rax
+    jle rd_done
+    add r12, rax
+    jmp rd_loop
+rd_done:
+    lea r14, [rip + out_buf]
+
+main_loop:
+    cmp rbx, r12
+    jae main_done
+    mov r8, rbx
+    mov r9, rbx
+find_nl:
+    cmp r9, r12
+    jae no_more_nl
+    cmp byte ptr [r9], 10
+    je got_nl
+    inc r9
+    jmp find_nl
+no_more_nl:
+    call proc_line
+    jmp main_done
+got_nl:
+    call proc_line
+    lea rbx, [r9 + 1]
+    jmp main_loop
+
+main_done:
+    lea rsi, [rip + out_buf]
+    mov rdx, r14
+    sub rdx, rsi
+    test rdx, rdx
+    jz do_exit
+write_loop:
+    mov rax, 1
+    mov rdi, 1
+    syscall
+    test rax, rax
+    jle do_exit
+    add rsi, rax
+    sub rdx, rax
+    jnz write_loop
+do_exit:
+    mov rax, 231
+    xor rdi, rdi
+    syscall
+    jmp do_exit
+
+proc_line:
+    lea r15, [rip + rpn_stack]
+    mov r10, r8
+
+tok_loop:
+skip_sep:
+    cmp r10, r9
+    jae end_tokens
+    movzx eax, byte ptr [r10]
+    cmp al, 0x20
+    je sep_inc
+    cmp al, 0x09
+    je sep_inc
+    jmp got_tok
+sep_inc:
+    inc r10
+    jmp skip_sep
+
+got_tok:
+    mov rdi, r10
+find_tok_end:
+    cmp r10, r9
+    jae tok_end_reached
+    movzx eax, byte ptr [r10]
+    cmp al, 0x20
+    je tok_end_reached
+    cmp al, 0x09
+    je tok_end_reached
+    inc r10
+    jmp find_tok_end
+tok_end_reached:
+    mov rcx, r10
+    sub rcx, rdi
+
+    cmp rcx, 1
+    jne try_num
+    movzx eax, byte ptr [rdi]
+    cmp al, 0x2B
+    je op_add
+    cmp al, 0x2D
+    je op_sub
+    cmp al, 0x2A
+    je op_mul
+    cmp al, 0x2F
+    je op_div
+    cmp al, 0x25
+    je op_mod
+
+try_num:
+    mov rsi, rdi
+    xor r11, r11
+    movzx eax, byte ptr [rsi]
+    cmp al, 0x2D
+    jne num_parse
+    cmp rcx, 1
+    jbe err_line
+    inc rsi
+    dec rcx
+    mov r11, 1
+num_parse:
+    test rcx, rcx
+    jz err_line
+    cmp rcx, 18
+    ja err_line
+    xor rax, rax
+num_dig:
+    movzx edx, byte ptr [rsi]
+    sub edx, 0x30
+    cmp edx, 9
+    ja err_line
+    imul rax, rax, 10
+    add rax, rdx
+    inc rsi
+    dec rcx
+    jnz num_dig
+    test r11, r11
+    jz num_push
+    neg rax
+num_push:
+    mov qword ptr [r15], rax
+    add r15, 8
+    jmp tok_loop
+
+op_add:
+    lea rax, [rip + rpn_stack + 16]
+    cmp r15, rax
+    jb err_line
+    mov rax, qword ptr [r15 - 8]
+    add qword ptr [r15 - 16], rax
+    sub r15, 8
+    jmp tok_loop
+
+op_sub:
+    lea rax, [rip + rpn_stack + 16]
+    cmp r15, rax
+    jb err_line
+    mov rax, qword ptr [r15 - 8]
+    sub qword ptr [r15 - 16], rax
+    sub r15, 8
+    jmp tok_loop
+
+op_mul:
+    lea rax, [rip + rpn_stack + 16]
+    cmp r15, rax
+    jb err_line
+    mov rax, qword ptr [r15 - 16]
+    imul rax, qword ptr [r15 - 8]
+    mov qword ptr [r15 - 16], rax
+    sub r15, 8
+    jmp tok_loop
+
+op_div:
+    lea rax, [rip + rpn_stack + 16]
+    cmp r15, rax
+    jb err_line
+    mov rdi, qword ptr [r15 - 8]
+    test rdi, rdi
+    jz err_line
+    mov rax, qword ptr [r15 - 16]
+    cmp rdi, -1
+    jne do_div
+    mov rdx, 1
+    shl rdx, 63
+    cmp rax, rdx
+    je err_line
+do_div:
+    cqo
+    idiv rdi
+    mov qword ptr [r15 - 16], rax
+    sub r15, 8
+    jmp tok_loop
+
+op_mod:
+    lea rax, [rip + rpn_stack + 16]
+    cmp r15, rax
+    jb err_line
+    mov rdi, qword ptr [r15 - 8]
+    test rdi, rdi
+    jz err_line
+    mov rax, qword ptr [r15 - 16]
+    cmp rdi, -1
+    jne do_mod
+    mov rdx, 1
+    shl rdx, 63
+    cmp rax, rdx
+    je err_line
+do_mod:
+    cqo
+    idiv rdi
+    mov qword ptr [r15 - 16], rdx
+    sub r15, 8
+    jmp tok_loop
+
+end_tokens:
+    lea rax, [rip + rpn_stack + 8]
+    cmp r15, rax
+    jne err_line
+    mov rax, qword ptr [r15 - 8]
+    test rax, rax
+    jns pn_pos
+    mov byte ptr [r14], 0x2D
+    inc r14
+    neg rax
+pn_pos:
+    lea rdi, [rip + num_scratch + 32]
+    mov rcx, 10
+pn_div_loop:
+    xor rdx, rdx
+    div rcx
+    add dl, 0x30
+    dec rdi
+    mov byte ptr [rdi], dl
+    test rax, rax
+    jnz pn_div_loop
+    lea rdx, [rip + num_scratch + 32]
+pn_copy:
+    cmp rdi, rdx
+    jae pn_done
+    movzx eax, byte ptr [rdi]
+    mov byte ptr [r14], al
+    inc r14
+    inc rdi
+    jmp pn_copy
+pn_done:
+    mov byte ptr [r14], 10
+    inc r14
+    ret
+
+err_line:
+    mov byte ptr [r14], 0x65
+    mov byte ptr [r14 + 1], 0x72
+    mov byte ptr [r14 + 2], 0x72
+    mov byte ptr [r14 + 3], 0x6F
+    mov byte ptr [r14 + 4], 0x72
+    mov byte ptr [r14 + 5], 10
+    add r14, 6
+    ret
+```

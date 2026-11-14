@@ -1,0 +1,264 @@
+.global _start
+.text
+
+// -------------------------------------------------
+// Constants
+.equ    BUFFER_SIZE, 32768
+.equ    MAX_LINES, 1000
+
+// -------------------------------------------------
+// Entry point
+_start:
+    // x19 = base of input buffer
+    adrp    x19, buf
+    add     x19, x19, :lo12:buf
+
+    // w20 = total length read so far = 0
+    mov     w20, #0
+
+read_loop:
+    // sys_read(fd=0, buf+total_len, remaining)
+    mov     x0, #0                     // fd
+    add     x1, x19, w20, uxtw         // buf + total_len
+    mov     w2, #BUFFER_SIZE
+    sub     w2, w2, w20                // remaining bytes
+    mov     x8, #63                    // sys_read
+    svc     #0
+    cbz     x0, read_done              // x0 == 0 -> EOF
+    // x0 = bytes read (may be less than requested)
+    add     w20, w20, w0               // total_len += bytes_read
+    b       read_loop
+
+read_done:
+    // -------------------------------------------------
+    // Parse lines into offset/length tables
+    // w21 = offset cursor = 0
+    // w22 = line count = 0
+    mov     w21, #0
+    mov     w22, #0
+
+parse_loop:
+    cmp     w21, w20
+    b.ge    parse_done                 // offset >= total_len
+
+    // w23 = start_offset = w21
+    mov     w23, w21
+
+scan_loop:
+    cmp     w21, w20
+    b.ge    no_newline                 // reached end without newline
+    add     x2, x19, w21, uxtw
+    ldrb    w2, [x2]
+    cmp     w2, #10                    // newline?
+    b.eq    found_newline
+
+    add     w21, w21, #1
+    b       scan_loop
+
+found_newline:
+    // line length = w21 - w23
+    sub     w24, w21, w23
+    // store offset and length
+    lsl     w0, w22, #2                // byte offset = line_index*4
+    adrp    x1, lines_off
+    add     x1, x1, :lo12:lines_off
+    str     w23, [x1, x0]              // lines_off[line] = start_offset
+    adrp    x2, lines_len
+    add     x2, x2, :lo12:lines_len
+    str     w24, [x2, x0]              // lines_len[line] = length
+    add     w22, w22, #1               // line count++
+
+    // skip newline
+    add     w21, w21, #1
+    b       parse_loop
+
+no_newline:
+    // final line (no terminating newline)
+    sub     w24, w21, w23              // length = offset - start_offset
+    // If length == 0 and EOF after newline, we don't store (empty remainder not a line)
+    cmp     w24, #0
+    beq     parse_done
+
+    lsl     w0, w22, #2
+    adrp    x1, lines_off
+    add     x1, x1, :lo12:lines_off
+    str     w23, [x1, x0]
+    adrp    x2, lines_len
+    add     x2, x2, :lo12:lines_len
+    str     w24, [x2, x0]
+    add     w22, w22, #1
+
+parse_done:
+    // w22 = number of lines
+    cbz     w22, exit_program          // no lines -> exit
+
+    // -------------------------------------------------
+    // Simple bubble sort (ascending)
+    // w9 = outer remaining = line_count - 1
+    sub     w9, w22, #1
+
+outer_loop:
+    cbz     w9, sort_done
+
+    // w10 = inner limit = w9
+    mov     w10, w9
+    // w11 = j = 0
+    mov     w11, #0
+
+inner_loop:
+    // Compute addresses of lines_off[j] and lines_off[j+1]
+    lsl     w0, w11, #2                // byte offset = j*4
+    adrp    x3, lines_off
+    add     x3, x3, :lo12:lines_off
+    add     x4, x3, x0                 // addr_j
+    add     x5, x4, #4                 // addr_j1
+
+    // Compute addresses of lines_len[j] and lines_len[j+1]
+    adrp    x6, lines_len
+    add     x6, x6, :lo12:lines_len
+    add     x7, x6, x0                 // len_addr_j
+    add     x8, x7, #4                 // len_addr_j1
+
+    // Load offsets and lengths
+    ldr     w12, [x4]                  // off_a
+    ldr     w13, [x5]                  // off_b
+    ldr     w14, [x7]                  // len_a
+    ldr     w15, [x8]                  // len_b
+
+    // Call compare: result in w0 (1 if a > b)
+    mov     x0, x19                    // buffer base
+    mov     w1, w12
+    mov     w2, w14
+    mov     w3, w13
+    mov     w4, w15
+    bl      _cmp
+
+    // If result == 1, swap entries
+    cbz     w0, next_inner
+    // swap offsets
+    str     w13, [x4]
+    str     w12, [x5]
+    // swap lengths
+    str     w15, [x7]
+    str     w14, [x8]
+
+next_inner:
+    add     w11, w11, #1
+    cmp     w11, w10
+    blt     inner_loop
+
+    // decrement outer remaining
+    sub     w9, w9, #1
+    b       outer_loop
+
+sort_done:
+    // -------------------------------------------------
+    // Output sorted lines
+    mov     w23, #0                     // i = 0
+
+output_loop:
+    cmp     w23, w22
+    b.ge    exit_program
+
+    // Load offset and length for line i
+    lsl     w0, w23, #2
+    adrp    x1, lines_off
+    add     x1, x1, :lo12:lines_off
+    ldr     w2, [x1, x0]                // offset
+    adrp    x3, lines_len
+    add     x3, x3, :lo12:lines_len
+    ldr     w3, [x3, x0]                // length
+
+    // write line
+    mov     x0, #1                      // stdout
+    add     x1, x19, w2, uxtw
+    mov     x2, x3
+    mov     x8, #64                     // sys_write
+    svc     #0
+
+    // write newline
+    mov     x0, #1
+    adrp    x1, newline
+    add     x1, x1, :lo12:newline
+    mov     x2, #1
+    mov     x8, #64
+    svc     #0
+
+    add     w23, w23, #1
+    b       output_loop
+
+exit_program:
+    mov     x0, #0
+    mov     x8, #93                     // sys_exit
+    svc     #0
+
+// -------------------------------------------------
+// Compare subroutine
+// Inputs:
+//   x0 = buffer base
+//   w1 = offset a
+//   w2 = len a
+//   w3 = offset b
+//   w4 = len b
+// Output:
+//   w0 = 1 if a > b, else 0
+_cmp:
+    // w5 = min(len_a, len_b)
+    mov     w5, w2
+    cmp     w2, w4
+    csel    w5, w2, w4, lt
+
+    // w6 = i = 0
+    mov     w6, #0
+
+cmp_loop:
+    cmp     w6, w5
+    beq     equal_prefix
+
+    // load byte from a: buf + offset_a + i
+    add     x7, x0, w1, uxtw
+    add     x7, x7, w6, uxtw
+    ldrb    w8, [x7]
+
+    // load byte from b: buf + offset_b + i
+    add     x9, x0, w3, uxtw
+    add     x9, x9, w6, uxtw
+    ldrb    w9, [x9]
+
+    cmp     w8, w9
+    blt     a_less
+    bgt     a_greater
+
+    // equal, continue
+    add     w6, w6, #1
+    b       cmp_loop
+
+a_less:
+    mov     w0, #0
+    ret
+
+a_greater:
+    mov     w0, #1
+    ret
+
+equal_prefix:
+    // lengths decide
+    cmp     w2, w4
+    blt     a_less
+    bgt     a_greater
+    mov     w0, #0
+    ret
+
+// -------------------------------------------------
+.section .rodata
+newline:
+    .byte   0x0A
+
+.bss
+    .align 8
+buf:
+    .space  BUFFER_SIZE
+lines_off:
+    .space  MAX_LINES * 4
+lines_len:
+    .space  MAX_LINES * 4

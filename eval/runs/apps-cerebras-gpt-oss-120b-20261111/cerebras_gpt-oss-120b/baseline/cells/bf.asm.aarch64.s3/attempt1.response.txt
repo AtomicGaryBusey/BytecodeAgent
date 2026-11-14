@@ -1,0 +1,321 @@
+	.global _start
+	.text
+
+// constants
+.equ    BUF_SIZE,      65536
+.equ    PROG_MAX,     65536
+.equ    INPUT_MAX,    65536
+.equ    TAPE_SIZE,    30000
+.equ    STACK_MAX,    1048576
+.equ    STACK_NEST_MAX, 1000
+
+// system call numbers
+.equ    SYS_READ,     63
+.equ    SYS_WRITE,    64
+.equ    SYS_EXIT,     93
+
+// file descriptors
+.equ    FD_STDIN,     0
+.equ    FD_STDOUT,    1
+
+_start:
+	// x19..x25 will hold base pointers (preserved across syscalls)
+	adrp	x19, .bss               // buf
+	add	x19, x19, :lo12:.bss
+
+	adrp	x20, prog               // prog
+	add	x20, x20, :lo12:prog
+
+	adrp	x21, tape               // tape
+	add	x21, x21, :lo12:tape
+
+	adrp	x22, bracket_stack      // bracket stack
+	add	x22, x22, :lo12:bracket_stack
+
+	adrp	x23, bracket_map        // bracket map
+	add	x23, x23, :lo12:bracket_map
+
+	adrp	x24, input_buf          // input buffer
+	add	x24, x24, :lo12:input_buf
+
+	adrp	x25, out_byte           // single byte output buffer
+	add	x25, x25, :lo12:out_byte
+
+	// =========================
+	// 1. read whole stdin
+	// total_len in x5, initially 0
+	mov	x5, #0
+read_loop:
+	// compute remaining space
+	mov	x2, #BUF_SIZE
+	sub	x2, x2, x5               // x2 = remaining
+	cbnz	x2, 1f
+	b	read_done                // no space left
+1:
+	// x0 = fd, x1 = buf+total_len, x2 = remaining
+	mov	x0, #FD_STDIN
+	add	x1, x19, x5
+	// syscall
+	mov	x8, #SYS_READ
+	svc	#0
+	cmp	x0, #0
+	beq	read_done
+	// x0 = bytes read
+	add	x5, x5, x0
+	b	read_loop
+read_done:
+	// x5 = total_len
+
+	// =========================
+	// 2. find first '!' separating program and input
+	mov	x6, #0                 // index i
+	mov	x7, #0                 // flag found (0 not yet, 1 found)
+find_excl:
+	cmp	x6, x5
+	bge	no_excl_found
+	ldrb	w0, [x19, x6]          // load byte
+	cmp	w0, #'!'               // 0x21
+	bne	1f
+	mov	x7, #1                 // found
+	b	excl_found
+1:	// not found yet
+	add	x6, x6, #1
+	b	find_excl
+excl_found:
+	// x6 = index of '!'
+	// prog_len = x6
+	mov	x8, x6                 // prog_len
+	b	copy_program
+no_excl_found:
+	// whole input is program, no input
+	mov	x8, x5                 // prog_len = total_len
+	mov	x7, #0                 // indicate no input
+	// input_len = 0
+	mov	x9, #0
+	b	copy_program
+
+copy_program:
+	// copy prog_len bytes from buf to prog
+	mov	x0, #0                 // src offset
+copy_prog_loop:
+	cmp	x0, x8
+	bge	copy_done
+	ldrb	w1, [x19, x0]
+	strb	w1, [x20, x0]
+	add	x0, x0, #1
+	b	copy_prog_loop
+copy_done:
+	// set prog_len in x10
+	mov	x10, x8                // prog_len
+
+	// =========================
+	// 3. copy input part (if any) after '!'
+	// input_len = total_len - prog_len - (found?1:0)
+	cmp	x7, #0
+	beq	no_input
+	// there is a '!'
+	add	x11, x19, x6          // pointer to '!' byte
+	add	x11, x11, #1          // start of input
+	sub	x12, x5, x6
+	sub	x12, x12, #1          // input_len
+	mov	x9, x12               // input_len
+	// copy input_len bytes to input_buf
+	mov	x0, #0
+copy_input_loop:
+	cmp	x0, x9
+	bge	copy_input_done
+	ldrb	w1, [x11, x0]
+	strb	w1, [x24, x0]
+	add	x0, x0, #1
+	b	copy_input_loop
+copy_input_done:
+	b	setup_brackets
+no_input:
+	// input_len already 0 (x9)
+	b	setup_brackets
+
+setup_brackets:
+	// x13 = stack pointer (number of items)
+	mov	x13, #0
+	// x14 = index i = 0
+	mov	x14, #0
+bracket_loop:
+	cmp	x14, x10
+	bge	bracket_done
+	ldrb	w0, [x20, x14]        // prog byte
+	cmp	w0, #'['
+	beq	bracket_push
+	cmp	w0, #']'
+	beq	bracket_pop
+	// other char
+	add	x14, x14, #1
+	b	bracket_loop
+
+bracket_push:
+	// store current index on stack
+	lsl	x15, x13, #2          // x15 = stack_offset*4
+	str	w14, [x22, x15]       // bracket_stack[stack_ptr] = i
+	add	x13, x13, #1          // ++stack_ptr
+	add	x14, x14, #1
+	b	bracket_loop
+
+bracket_pop:
+	// if stack empty => error
+	cmp	x13, #0
+	beq	unbalanced_error
+	sub	x13, x13, #1          // --stack_ptr
+	lsl	x15, x13, #2          // offset
+	ldr	w16, [x22, x15]       // w16 = matching '[' index
+	// store forward link: bracket_map[i] = matching '['
+	lsl	x17, x14, #2          // prog index *4
+	str	w16, [x23, x17]       // bracket_map[']'] = '['
+	// store backward link: bracket_map[matching '['] = i
+	lsl	x18, w16, #2
+	str	w14, [x23, x18]       // bracket_map['['] = ']'
+	add	x14, x14, #1
+	b	bracket_loop
+
+unbalanced_error:
+	// exit status 1
+	mov	x0, #1
+	mov	x8, #SYS_EXIT
+	svc	#0
+
+bracket_done:
+	// if stack not empty => error
+	cmp	x13, #0
+	bne	unbalanced_error
+
+	// =========================
+	// 4. execute program
+	// x20 = prog base, x10 = prog_len
+	// x21 = tape base, data_ptr offset in x19? reuse x19? x19 is buf base, keep separate:
+	// use x26 for data pointer offset
+	mov	x26, #0               // data pointer (0..TAPE_SIZE-1)
+	// pc in x27
+	mov	x27, #0               // pc
+
+	// input position in x28
+	mov	x28, #0               // input cursor
+
+exec_loop:
+	cmp	x27, x10
+	bge	exec_finish
+	ldrb	w0, [x20, x27]        // current command byte
+
+	// compare with each command
+	cmp	w0, #'>'
+	beq	cmd_inc_ptr
+	cmp	w0, #'<'
+	beq	cmd_dec_ptr
+	cmp	w0, #'+'
+	beq	cmd_inc_cell
+	cmp	w0, #'-'
+	beq	cmd_dec_cell
+	cmp	w0, #'.'
+	beq	cmd_output
+	cmp	w0, #','
+	beq	cmd_input
+	cmp	w0, #'['
+	beq	cmd_jump_fwd
+	cmp	w0, #']'
+	beq	cmd_jump_back
+	// other chars: ignore
+	add	x27, x27, #1
+	b	exec_loop
+
+cmd_inc_ptr:
+	add	x26, x26, #1
+	add	x27, x27, #1
+	b	exec_loop
+
+cmd_dec_ptr:
+	sub	x26, x26, #1
+	add	x27, x27, #1
+	b	exec_loop
+
+cmd_inc_cell:
+	// load cell
+	ldrb	w1, [x21, x26]
+	add	w1, w1, #1
+	strb	w1, [x21, x26]
+	add	x27, x27, #1
+	b	exec_loop
+
+cmd_dec_cell:
+	ldrb	w1, [x21, x26]
+	sub	w1, w1, #1
+	strb	w1, [x21, x26]
+	add	x27, x27, #1
+	b	exec_loop
+
+cmd_output:
+	ldrb	w1, [x21, x26]        // value to output
+	strb	w1, [x25]            // store to temp buffer
+	mov	x0, #FD_STDOUT
+	mov	x1, x25
+	mov	x2, #1
+	mov	x8, #SYS_WRITE
+	svc	#0
+	add	x27, x27, #1
+	b	exec_loop
+
+cmd_input:
+	cmp	x28, x9               // compare input_cursor < input_len
+	bge	input_eof
+	ldrb	w1, [x24, x28]        // load byte
+	add	x28, x28, #1
+	b	store_input
+input_eof:
+	mov	w1, #0
+store_input:
+	strb	w1, [x21, x26]
+	add	x27, x27, #1
+	b	exec_loop
+
+cmd_jump_fwd:                 // '['
+	ldrb	w1, [x21, x26]        // cell value
+	cmp	w1, #0
+	bne	nonzero_jump_fwd
+	// cell==0, need to jump to after matching ']'
+	// load match from bracket_map
+	lsl	x0, x27, #2           // index*4
+	ldr	w0, [x23, x0]         // w0 = matching ']'
+	add	x0, x0, #1            // pc = match+1
+	mov	x27, x0
+	b	exec_loop
+nonzero_jump_fwd:
+	add	x27, x27, #1
+	b	exec_loop
+
+cmd_jump_back:                // ']'
+	ldrb	w1, [x21, x26]        // cell value
+	cmp	w1, #0
+	beq	nonzero_jump_back_end
+	// cell !=0, jump back to after matching '['
+	lsl	x0, x27, #2
+	ldr	w0, [x23, x0]         // w0 = matching '['
+	add	x0, x0, #1
+	mov	x27, x0
+	b	exec_loop
+nonzero_jump_back_end:
+	add	x27, x27, #1
+	b	exec_loop
+
+exec_finish:
+	// exit status 0
+	mov	x0, #0
+	mov	x8, #SYS_EXIT
+	svc	#0
+
+	// =========================
+	// data sections
+	.section .bss
+buf:                .zero BUF_SIZE
+prog:               .zero PROG_MAX
+tape:               .zero TAPE_SIZE
+bracket_stack:      .zero STACK_NEST_MAX*4
+bracket_map:        .zero PROG_MAX*4
+input_buf:          .zero INPUT_MAX
+out_byte:           .byte 0
+	.end

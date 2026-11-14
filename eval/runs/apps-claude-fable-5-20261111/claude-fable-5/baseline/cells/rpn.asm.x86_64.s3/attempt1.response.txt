@@ -1,0 +1,224 @@
+.text
+.globl _start
+
+_start:
+        # read all input
+        xor     ebx, ebx                # total bytes read
+read_loop:
+        lea     rsi, [rip + inbuf]
+        add     rsi, rbx
+        mov     edx, 70000
+        sub     edx, ebx
+        jle     read_done
+        xor     eax, eax                # read
+        xor     edi, edi                # fd 0
+        syscall
+        test    rax, rax
+        jle     read_done
+        add     rbx, rax
+        jmp     read_loop
+read_done:
+        lea     r13, [rip + inbuf]      # current input pointer
+        lea     r14, [r13 + rbx]        # input end
+        lea     r15, [rip + outbuf]     # output write pointer
+
+line_loop:
+        cmp     r13, r14
+        jae     finish
+        xor     r12d, r12d              # stack count = 0
+
+token_loop:
+        cmp     r13, r14
+        jae     line_end
+        movzx   eax, byte ptr [r13]
+        cmp     al, 0x0A
+        je      line_end_nl
+        cmp     al, 0x20
+        je      sep
+        cmp     al, 0x09
+        jne     token_start
+sep:
+        inc     r13
+        jmp     token_loop
+
+token_start:
+        mov     rsi, r13                # token start
+tscan:
+        inc     r13
+        cmp     r13, r14
+        jae     tdone
+        movzx   eax, byte ptr [r13]
+        cmp     al, 0x0A
+        je      tdone
+        cmp     al, 0x20
+        je      tdone
+        cmp     al, 0x09
+        jne     tscan
+tdone:
+        mov     rcx, r13
+        sub     rcx, rsi                # token length
+        movzx   eax, byte ptr [rsi]
+        cmp     rcx, 1
+        jne     try_literal
+        cmp     al, '+'
+        je      is_op
+        cmp     al, '-'
+        je      is_op
+        cmp     al, '*'
+        je      is_op
+        cmp     al, '/'
+        je      is_op
+        cmp     al, '%'
+        je      is_op
+        # single char, not operator: try as literal
+try_literal:
+        xor     r8d, r8d                # negative flag
+        cmp     al, '-'
+        jne     lit_nodash
+        mov     r8d, 1
+        inc     rsi
+        dec     rcx
+lit_nodash:
+        test    rcx, rcx
+        jz      err_skip                # no digits
+        cmp     rcx, 18
+        ja      err_skip                # too many digits
+        xor     ebx, ebx                # accumulator
+lit_digit:
+        movzx   eax, byte ptr [rsi]
+        sub     eax, '0'
+        cmp     eax, 9
+        ja      err_skip                # non-digit
+        imul    rbx, rbx, 10
+        add     rbx, rax
+        inc     rsi
+        dec     rcx
+        jnz     lit_digit
+        test    r8d, r8d
+        jz      push_val
+        neg     rbx
+push_val:
+        lea     rax, [rip + stk]
+        mov     qword ptr [rax + r12*8], rbx
+        inc     r12
+        jmp     token_loop
+
+is_op:
+        mov     bl, al                  # operator char
+        cmp     r12, 2
+        jb      err_skip
+        lea     rdi, [rip + stk]
+        mov     r9, qword ptr [rdi + r12*8 - 8]    # b
+        mov     rax, qword ptr [rdi + r12*8 - 16]  # a
+        dec     r12
+        cmp     bl, '+'
+        je      do_add
+        cmp     bl, '-'
+        je      do_sub
+        cmp     bl, '*'
+        je      do_mul
+        # division or modulus
+        test    r9, r9
+        jz      err_skip                # divide by zero
+        cmp     r9, -1
+        jne     div_ok
+        movabs  rcx, 0x8000000000000000
+        cmp     rax, rcx
+        je      err_skip                # INT64_MIN / -1
+div_ok:
+        cqo
+        idiv    r9
+        cmp     bl, '/'
+        je      store_rax
+        mov     rax, rdx                # remainder
+        jmp     store_rax
+do_add:
+        add     rax, r9
+        jmp     store_rax
+do_sub:
+        sub     rax, r9
+        jmp     store_rax
+do_mul:
+        imul    rax, r9
+store_rax:
+        mov     qword ptr [rdi + r12*8 - 8], rax
+        jmp     token_loop
+
+        # error: skip rest of line, emit "error\n"
+err_skip:
+        cmp     r13, r14
+        jae     err_emit
+        movzx   eax, byte ptr [r13]
+        inc     r13
+        cmp     al, 0x0A
+        jne     err_skip
+err_emit:
+        mov     dword ptr [r15], 0x6F727265   # "erro"
+        mov     word ptr [r15 + 4], 0x0A72    # "r\n"
+        add     r15, 6
+        jmp     line_loop
+
+line_end_nl:
+        inc     r13
+line_end:
+        cmp     r12, 1
+        jne     err_emit
+        lea     rdi, [rip + stk]
+        mov     rax, qword ptr [rdi]
+        # print signed decimal + newline
+        test    rax, rax
+        jns     pn_pos
+        mov     byte ptr [r15], '-'
+        inc     r15
+        neg     rax                     # INT64_MIN ok as unsigned
+pn_pos:
+        lea     rbx, [rip + numbuf + 32]
+        mov     rsi, rbx
+        mov     rcx, 10
+pn_loop:
+        xor     edx, edx
+        div     rcx
+        add     dl, '0'
+        dec     rsi
+        mov     byte ptr [rsi], dl
+        test    rax, rax
+        jnz     pn_loop
+pn_copy:
+        cmp     rsi, rbx
+        jae     pn_done
+        mov     al, byte ptr [rsi]
+        mov     byte ptr [r15], al
+        inc     rsi
+        inc     r15
+        jmp     pn_copy
+pn_done:
+        mov     byte ptr [r15], 0x0A
+        inc     r15
+        jmp     line_loop
+
+finish:
+        lea     rbx, [rip + outbuf]
+wr_loop:
+        cmp     rbx, r15
+        jae     done
+        mov     eax, 1                  # write
+        mov     edi, 1                  # fd 1
+        mov     rsi, rbx
+        mov     rdx, r15
+        sub     rdx, rbx
+        syscall
+        test    rax, rax
+        jle     done
+        add     rbx, rax
+        jmp     wr_loop
+done:
+        mov     eax, 60                 # exit
+        xor     edi, edi
+        syscall
+
+.bss
+.balign 8
+inbuf:  .space 70016
+outbuf: .space 458752
+stk:    .space 8192
+numbuf: .space 32

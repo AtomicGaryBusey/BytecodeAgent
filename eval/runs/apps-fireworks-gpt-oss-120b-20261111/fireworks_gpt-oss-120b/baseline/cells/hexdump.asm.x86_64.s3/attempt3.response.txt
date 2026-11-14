@@ -1,0 +1,229 @@
+.globl _start
+
+.equ INPUT_MAX, 65536
+.equ LINE_MAX, 80          # max line length including newline
+
+.section .bss
+.align 16
+input_buf:
+    .zero INPUT_MAX
+total_len:
+    .zero 8                # 8-byte counter
+line_buf:
+    .zero LINE_MAX
+
+.section .rodata
+.align 16
+hex_digits:
+    .ascii "0123456789abcdef"
+
+.text
+_start:
+    # -------------------------------------------------
+    # read all input into input_buf, total_len = bytes read
+    # -------------------------------------------------
+    xor r12, r12                # r12 = total_len
+    lea rsi, [rip + input_buf]  # destination pointer
+
+read_loop:
+    mov rdi, 0                  # fd = stdin
+    mov rdx, INPUT_MAX
+    sub rdx, r12                # remaining space in buffer
+    mov rax, 0                  # sys_read
+    syscall
+    test rax, rax
+    jz read_done
+    add r12, rax                # total_len += bytes read
+    add rsi, rax                # advance pointer
+    cmp r12, INPUT_MAX
+    jb read_loop
+
+read_done:
+    mov [rip + total_len], r12
+
+    # -------------------------------------------------
+    # dump rows
+    # -------------------------------------------------
+    xor r8, r8                  # r8 = offset (row start)
+
+row_loop:
+    mov r12, [rip + total_len]  # total_len
+    cmp r8, r12
+    jae final_offset_line
+
+    # n = min(16, total_len - offset)
+    mov rcx, r12
+    sub rcx, r8
+    cmp rcx, 16
+    jle have_n
+    mov rcx, 16
+have_n:
+    mov r13, rcx                # r13 = n (bytes in this row)
+
+    # line buffer write pointer
+    lea r9, [rip + line_buf]    # r9 = write ptr into line_buf
+
+    # ----- offset (8 hex digits) -----
+    mov ebp, 8                  # remaining digit count
+    mov edx, 28                 # shift amount = 4*7
+offset_loop:
+    mov rax, r8
+    mov cl, dl
+    shr rax, cl
+    and rax, 0xF
+    mov al, byte ptr [rip + hex_digits + rax]
+    mov byte ptr [r9], al
+    inc r9
+    sub dl, 4
+    dec ebp
+    jne offset_loop
+
+    # two spaces after offset
+    mov byte ptr [r9], ' '
+    inc r9
+    mov byte ptr [r9], ' '
+    inc r9
+
+    # data pointer for this row
+    lea rdx, [rip + input_buf]
+    add rdx, r8                 # rdx = &input_buf[offset]
+
+    # ----- hex bytes and spaces -----
+    xor r10d, r10d              # i = 0
+hex_loop:
+    cmp r10, 8
+    jne after_mid_space
+    mov byte ptr [r9], ' '
+    inc r9
+after_mid_space:
+    cmp r10, 16
+    jae after_hex_bytes
+
+    cmp r10, r13
+    jae missing_byte
+
+    # present byte
+    mov al, byte ptr [rdx + r10]
+    mov bl, al
+
+    # high nibble
+    mov ah, al
+    shr ah, 4
+    and ah, 0xF
+    movzx rax, ah
+    mov al, byte ptr [rip + hex_digits + rax]
+    mov byte ptr [r9], al
+    inc r9
+
+    # low nibble
+    mov al, bl
+    and al, 0xF
+    movzx rax, al
+    mov al, byte ptr [rip + hex_digits + rax]
+    mov byte ptr [r9], al
+    inc r9
+
+    # space after byte
+    mov byte ptr [r9], ' '
+    inc r9
+    jmp next_hex
+
+missing_byte:
+    # three spaces for missing byte
+    mov byte ptr [r9], ' '
+    inc r9
+    mov byte ptr [r9], ' '
+    inc r9
+    mov byte ptr [r9], ' '
+    inc r9
+
+next_hex:
+    inc r10
+    jmp hex_loop
+
+after_hex_bytes:
+    # space before '|'
+    mov byte ptr [r9], ' '
+    inc r9
+    mov byte ptr [r9], '|'
+    inc r9
+
+    # ----- ASCII representation -----
+    xor r10d, r10d              # i = 0
+ascii_loop:
+    cmp r10, r13
+    jae after_ascii
+    mov al, byte ptr [rdx + r10]
+    cmp al, 0x20
+    jl ascii_dot
+    cmp al, 0x7e
+    jg ascii_dot
+    jmp ascii_store
+ascii_dot:
+    mov al, '.'
+ascii_store:
+    mov byte ptr [r9], al
+    inc r9
+    inc r10
+    jmp ascii_loop
+
+after_ascii:
+    # closing '|', newline
+    mov byte ptr [r9], '|'
+    inc r9
+    mov byte ptr [r9], 0x0a
+    inc r9
+
+    # write the line (r9 - line_buf) bytes
+    lea rdx, [rip + line_buf]
+    mov rcx, r9
+    sub rcx, rdx                # rcx = length
+    mov rdi, 1                  # stdout
+    mov rsi, rdx
+    mov rdx, rcx
+    mov rax, 1                  # sys_write
+    syscall
+
+    # next row
+    add r8, 16
+    jmp row_loop
+
+    # -------------------------------------------------
+    # final total offset line
+    # -------------------------------------------------
+final_offset_line:
+    lea r9, [rip + line_buf]    # reuse line_buf
+
+    mov ebp, 8
+    mov edx, 28
+total_offset_loop:
+    mov rax, [rip + total_len]
+    mov cl, dl
+    shr rax, cl
+    and rax, 0xF
+    mov al, byte ptr [rip + hex_digits + rax]
+    mov byte ptr [r9], al
+    inc r9
+    sub dl, 4
+    dec ebp
+    jne total_offset_loop
+
+    mov byte ptr [r9], 0x0a
+    inc r9
+
+    # write final line
+    lea rdx, [rip + line_buf]
+    mov rcx, r9
+    sub rcx, rdx
+    mov rdi, 1
+    mov rsi, rdx
+    mov rdx, rcx
+    mov rax, 1
+    syscall
+
+    # -------------------------------------------------
+    # exit
+    # -------------------------------------------------
+    mov rax, 60                 # sys_exit
+    xor rdi, rdi                # status 0
+    syscall

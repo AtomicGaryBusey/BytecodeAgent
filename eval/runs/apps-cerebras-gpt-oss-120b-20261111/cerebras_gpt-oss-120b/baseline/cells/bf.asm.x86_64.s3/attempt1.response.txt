@@ -1,0 +1,186 @@
+.global _start
+.section .bss
+.align 16
+buf:            .zero 65536
+prog_len:       .quad 0
+input_offset:   .quad 0
+input_len:      .quad 0
+input_pos:      .quad 0
+match:          .zero 65536*4
+tape:           .zero 30000
+stack:          .zero 1000*8
+stack_ptr:      .quad 0
+
+.section .text
+_start:
+    # read all stdin into buf
+    xor rbx, rbx                # rbx = total_len
+read_loop:
+    mov rdi, 0                  # fd 0
+    lea rsi, [rip + buf]
+    add rsi, rbx                # buf + total_len
+    mov rdx, 65536
+    sub rdx, rbx                # remaining space
+    mov rax, 0                  # sys_read
+    syscall
+    test rax, rax
+    je read_done
+    add rbx, rax                # total_len += ret
+    cmp rbx, 65536
+    jl read_loop
+read_done:
+    # find first '!'
+    lea rsi, [rip + buf]        # base of buffer
+    xor rcx, rcx                # index i
+find_excl:
+    cmp rcx, rbx
+    jae no_excl
+    mov al, [rsi + rcx]
+    cmp al, 0x21                # '!'
+    je found_excl
+    inc rcx
+    jmp find_excl
+found_excl:
+    mov [rip + prog_len], rcx
+    inc rcx                     # skip '!'
+    mov rdx, rbx
+    sub rdx, rcx                # input_len = total_len - rcx
+    mov [rip + input_len], rdx
+    mov [rip + input_offset], rcx
+    jmp after_split
+no_excl:
+    mov [rip + prog_len], rbx
+    xor rdx, rdx
+    mov [rip + input_len], rdx
+    mov [rip + input_offset], rbx
+after_split:
+    # bracket check and build match table
+    xor rdx, rdx                # stack_ptr = 0
+    xor rcx, rcx                # i = 0
+    mov rax, [rip + prog_len]
+bracket_loop:
+    cmp rcx, rax
+    jae bracket_done
+    mov al, [rsi + rcx]
+    cmp al, '['
+    je push_bracket
+    cmp al, ']'
+    je pop_bracket
+    inc rcx
+    jmp bracket_loop
+push_bracket:
+    mov [rip + stack + rdx*8], rcx
+    inc rdx
+    inc rcx
+    jmp bracket_loop
+pop_bracket:
+    test rdx, rdx
+    je bracket_error
+    dec rdx
+    mov r8, [rip + stack + rdx*8]   # matching '[' position
+    mov ebx, ecx                    # rcx is position of ']'
+    mov [rip + match + r8*4], ebx   # match['['] = ']'
+    mov [rip + match + rcx*4], r8d  # match[']'] = '['
+    inc rcx
+    jmp bracket_loop
+bracket_done:
+    test rdx, rdx
+    jne bracket_error
+    # execution
+    lea rsi, [rip + buf]        # buf base
+    mov r8, [rip + tape]        # data pointer
+    xor rcx, rcx                # ip = 0
+    mov r10d, [rip + input_offset]   # input start offset (32-bit)
+    xor r11, r11                # input_pos = 0
+exec_loop:
+    mov rdx, [rip + prog_len]
+    cmp rcx, rdx
+    jae exec_done
+    mov al, [rsi + rcx]
+    cmp al, '>'
+    je inc_ptr
+    cmp al, '<'
+    je dec_ptr
+    cmp al, '+'
+    je inc_cell
+    cmp al, '-'
+    je dec_cell
+    cmp al, '.'
+    je out_cell
+    cmp al, ','
+    je in_cell
+    cmp al, '['
+    je jump_fwd
+    cmp al, ']'
+    je jump_back
+    inc rcx
+    jmp exec_loop
+inc_ptr:
+    inc r8
+    inc rcx
+    jmp exec_loop
+dec_ptr:
+    dec r8
+    inc rcx
+    jmp exec_loop
+inc_cell:
+    inc byte ptr [r8]
+    inc rcx
+    jmp exec_loop
+dec_cell:
+    dec byte ptr [r8]
+    inc rcx
+    jmp exec_loop
+out_cell:
+    mov rax, 1                 # sys_write
+    mov rdi, 1                 # fd 1
+    mov rdx, 1
+    mov rsi, r8
+    syscall
+    inc rcx
+    jmp exec_loop
+in_cell:
+    mov rdx, [rip + input_len]
+    cmp r11, rdx
+    jae in_eof
+    mov rdx, r10
+    add rdx, r11
+    mov al, [rsi + rdx]
+    mov [r8], al
+    inc r11
+    inc rcx
+    jmp exec_loop
+in_eof:
+    mov byte ptr [r8], 0
+    inc rcx
+    jmp exec_loop
+jump_fwd:
+    mov al, [r8]
+    test al, al
+    jne not_zero_fwd
+    mov ebx, [rip + match + rcx*4]
+    inc rbx
+    mov rcx, rbx
+    jmp exec_loop
+not_zero_fwd:
+    inc rcx
+    jmp exec_loop
+jump_back:
+    mov al, [r8]
+    test al, al
+    je not_nonzero_back
+    mov ebx, [rip + match + rcx*4]
+    inc rbx
+    mov rcx, rbx
+    jmp exec_loop
+not_nonzero_back:
+    inc rcx
+    jmp exec_loop
+exec_done:
+    mov rax, 60                # sys_exit
+    xor rdi, rdi
+    syscall
+bracket_error:
+    mov rax, 60
+    mov rdi, 1
+    syscall

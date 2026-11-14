@@ -1,0 +1,326 @@
+Write the complete program `sort_lines`: a static Linux executable for AArch64 (ARMv8-A, little-endian), written in assembly. There is no C library, no C runtime and no helper code: you write the entry point `_start`, every function, every table and string, and make the system calls yourself.
+
+Entry state (as the Linux kernel sets it up): execution starts at the label `_start`. sp is 16-byte aligned and points at argc = 0, followed by the NULL terminators of an empty argv, an empty envp and an empty auxiliary vector: the program gets no arguments. Every other general-purpose register (x0-x30) is zero; x30 is not a return address, so `_start` must never return with `ret`; the program ends only through the exit system call.
+
+System calls: the `svc #0` instruction, with the system call number in x8 and the arguments in x0, x1, x2; the result comes back in x0. Every other register is preserved. Exactly these four are available:
+- read = 63: read(fd = 0, buf, count) reads up to count bytes of standard input into buf; returns the number of bytes read, 0 at end of input.
+- write = 64: write(fd, buf, count) with fd 1 (standard output) or 2 (standard error); returns count.
+- exit = 93: exit(status) ends the program; the exit status is the low 8 bits of status.
+- exit_group = 94: the same as exit.
+Any other system call number or file descriptor stops the program with an error, and so does a buffer that is not entirely inside the program's memory.
+
+Memory: the program's own sections plus a stack of 1 MiB below the entry sp. There is no heap (no brk, no mmap, no malloc): put working storage in `.bss` (zero-initialised), at most 1 MiB in total, or on the stack. Code is not writable. Any access outside these areas stops the program. Each test run may execute at most 200,000,000 instructions.
+
+Output format: one complete assembly source file in GNU assembler (GNU as) syntax for AArch64. Examples: `ldr x2, [x0, x1, lsl #3]`, `ldrb w3, [x1], #1`, `stp x29, x30, [sp, #-16]!`. Comments start with `//`; do not use `;`.
+Allowed in the file:
+- Sections: `.text` (code), `.section .rodata` (read-only data), `.data` (initialised writable data), `.bss` (zero-initialised space: only `.zero`/`.space` and alignment). Instructions go in `.text` only.
+- Data directives: `.byte`, `.short`/`.2byte`, `.word` (4 bytes on this target), `.long`/`.int`/`.4byte`, `.quad`/`.8byte`, `.ascii`, `.asciz`/`.string`, `.zero`/`.space`, alignment with `.align`/`.balign`/`.p2align`, and `.globl`/`.global` (write `.globl _start`).
+- Labels `name:` in any section, and GNU local labels `1:` referenced as `1f` (next) / `1b` (previous).
+- Constants: `.equ name, value` (or `.set name, value`, or `name = value`), where value is a number or a difference of labels defined earlier in the same section (e.g. `msg_len = . - msg`). Define every constant before its first use.
+- Addressing data: `adrp x0, label` followed by `add x0, x0, :lo12:label` (or a load/store `ldr x1, [x0, :lo12:label]`); `adr x0, label` also works within +-1 MiB. Literal pools are NOT allowed: no `ldr x0, =label` and no `ldr x0, =constant` (build constants with mov/movz/movk).
+Not allowed: macros (`.macro`, `.rept`, `.irp`), conditional assembly (`.if`), `.include`, `.incbin`, `.fill`, `.org`, `.comm`/`.lcomm`, `.inst`, `.cfi_*` directives, section stacks (`.pushsection`) and any other section. No libc and no other library: there is nothing to link against, so every symbol you use must be defined in your file.
+Instruction set: ARMv8.0-A with floating point and Advanced SIMD (NEON). Not supported (rejected): CRC32, LSE atomics, dot product, half-precision, crypto (AES/SHA/PMULL) and SVE.
+Output ONLY the assembly source: no Markdown fences, no prose before or after it.
+
+Specification: Task `sort_lines`: print the lines of standard input sorted in ascending byte-wise order.
+
+- Lines are defined as follows: a line is a (possibly empty) sequence of bytes terminated by a newline 0x0A; if
+  the input does not end with a newline, the bytes after the last newline form one more, final line. Empty input
+  has no lines, and the empty remainder after a final newline is not a line.
+- Order: compare two lines byte by byte as UNSIGNED values 0x00-0xFF (like C `memcmp`); the first differing
+  byte decides. If one line is a prefix of the other, the shorter line comes first (so the empty line sorts
+  before every non-empty line). Equal lines are all printed (duplicates are kept).
+- Print every line followed by one newline 0x0A (the final line gets a newline even if it had none in the
+  input). Empty input prints nothing. A carriage return 0x0D and every other byte value are ordinary bytes.
+
+Example: `pear\napple\nPear\n\napple` prints `\nPear\napple\napple\npear\n`.
+
+Limits: the input is at most 32768 bytes and has at most 1000 lines. Exit status 0.
+
+Input and output (applies to this whole task):
+- The input is the complete contents of standard input (file descriptor 0). Read it with `read` until `read`
+  returns 0 (end of input). A `read` may return FEWER bytes than requested, at any position (in the middle of a
+  line, a token or a group of bytes), so keep calling it; only a return value of 0 means end of input.
+- Write the output to standard output (file descriptor 1). Only the bytes this task describes may appear on
+  standard output (standard error is ignored). Every output byte must be written before the program exits.
+- Finish with `exit` (or `exit_group`) and the exit status this task gives. The program must not run off the end
+  of its code or crash.
+
+Your previous attempt was:
+<previous>
+.global _start
+.text
+
+// -------------------------------------------------
+// Constants
+.equ    BUFFER_SIZE, 32768
+.equ    MAX_LINES, 1000
+
+// -------------------------------------------------
+// Entry point
+_start:
+    // x19 = base of input buffer
+    adrp    x19, buf
+    add     x19, x19, :lo12:buf
+
+    // w20 = total length read so far = 0
+    mov     w20, #0
+
+read_loop:
+    // sys_read(fd=0, buf+total_len, remaining)
+    mov     x0, #0                     // fd
+    add     x1, x19, w20, uxtw         // buf + total_len
+    mov     w2, #BUFFER_SIZE
+    sub     w2, w2, w20                // remaining bytes
+    mov     x8, #63                    // sys_read
+    svc     #0
+    cbz     x0, read_done              // x0 == 0 -> EOF
+    // x0 = bytes read (may be less than requested)
+    add     w20, w20, w0               // total_len += bytes_read
+    b       read_loop
+
+read_done:
+    // -------------------------------------------------
+    // Parse lines into offset/length tables
+    // w21 = offset cursor = 0
+    // w22 = line count = 0
+    mov     w21, #0
+    mov     w22, #0
+
+parse_loop:
+    cmp     w21, w20
+    b.ge    parse_done                 // offset >= total_len
+
+    // w23 = start_offset = w21
+    mov     w23, w21
+
+scan_loop:
+    cmp     w21, w20
+    b.ge    no_newline                 // reached end without newline
+    add     x2, x19, w21, uxtw
+    ldrb    w2, [x2]
+    cmp     w2, #10                    // newline?
+    b.eq    found_newline
+
+    add     w21, w21, #1
+    b       scan_loop
+
+found_newline:
+    // line length = w21 - w23
+    sub     w24, w21, w23
+    // store offset and length
+    lsl     w0, w22, #2                // byte offset = line_index*4
+    adrp    x1, lines_off
+    add     x1, x1, :lo12:lines_off
+    str     w23, [x1, x0]              // lines_off[line] = start_offset
+    adrp    x2, lines_len
+    add     x2, x2, :lo12:lines_len
+    str     w24, [x2, x0]              // lines_len[line] = length
+    add     w22, w22, #1               // line count++
+
+    // skip newline
+    add     w21, w21, #1
+    b       parse_loop
+
+no_newline:
+    // final line (no terminating newline)
+    sub     w24, w21, w23              // length = offset - start_offset
+    // If length == 0 and EOF after newline, we don't store (empty remainder not a line)
+    cmp     w24, #0
+    beq     parse_done
+
+    lsl     w0, w22, #2
+    adrp    x1, lines_off
+    add     x1, x1, :lo12:lines_off
+    str     w23, [x1, x0]
+    adrp    x2, lines_len
+    add     x2, x2, :lo12:lines_len
+    str     w24, [x2, x0]
+    add     w22, w22, #1
+
+parse_done:
+    // w22 = number of lines
+    cbz     w22, exit_program          // no lines -> exit
+
+    // -------------------------------------------------
+    // Simple bubble sort (ascending)
+    // w9 = outer remaining = line_count - 1
+    sub     w9, w22, #1
+
+outer_loop:
+    cbz     w9, sort_done
+
+    // w10 = inner limit = w9
+    mov     w10, w9
+    // w11 = j = 0
+    mov     w11, #0
+
+inner_loop:
+    // Compute addresses of lines_off[j] and lines_off[j+1]
+    lsl     w0, w11, #2                // byte offset = j*4
+    adrp    x3, lines_off
+    add     x3, x3, :lo12:lines_off
+    add     x4, x3, x0                 // addr_j
+    add     x5, x4, #4                 // addr_j1
+
+    // Compute addresses of lines_len[j] and lines_len[j+1]
+    adrp    x6, lines_len
+    add     x6, x6, :lo12:lines_len
+    add     x7, x6, x0                 // len_addr_j
+    add     x8, x7, #4                 // len_addr_j1
+
+    // Load offsets and lengths
+    ldr     w12, [x4]                  // off_a
+    ldr     w13, [x5]                  // off_b
+    ldr     w14, [x7]                  // len_a
+    ldr     w15, [x8]                  // len_b
+
+    // Call compare: result in w0 (1 if a > b)
+    mov     x0, x19                    // buffer base
+    mov     w1, w12
+    mov     w2, w14
+    mov     w3, w13
+    mov     w4, w15
+    bl      _cmp
+
+    // If result == 1, swap entries
+    cbz     w0, next_inner
+    // swap offsets
+    str     w13, [x4]
+    str     w12, [x5]
+    // swap lengths
+    str     w15, [x7]
+    str     w14, [x8]
+
+next_inner:
+    add     w11, w11, #1
+    cmp     w11, w10
+    blt     inner_loop
+
+    // decrement outer remaining
+    sub     w9, w9, #1
+    b       outer_loop
+
+sort_done:
+    // -------------------------------------------------
+    // Output sorted lines
+    mov     w23, #0                     // i = 0
+
+output_loop:
+    cmp     w23, w22
+    b.ge    exit_program
+
+    // Load offset and length for line i
+    lsl     w0, w23, #2
+    adrp    x1, lines_off
+    add     x1, x1, :lo12:lines_off
+    ldr     w2, [x1, x0]                // offset
+    adrp    x3, lines_len
+    add     x3, x3, :lo12:lines_len
+    ldr     w3, [x3, x0]                // length
+
+    // write line
+    mov     x0, #1                      // stdout
+    add     x1, x19, w2, uxtw
+    mov     x2, x3
+    mov     x8, #64                     // sys_write
+    svc     #0
+
+    // write newline
+    mov     x0, #1
+    adrp    x1, newline
+    add     x1, x1, :lo12:newline
+    mov     x2, #1
+    mov     x8, #64
+    svc     #0
+
+    add     w23, w23, #1
+    b       output_loop
+
+exit_program:
+    mov     x0, #0
+    mov     x8, #93                     // sys_exit
+    svc     #0
+
+// -------------------------------------------------
+// Compare subroutine
+// Inputs:
+//   x0 = buffer base
+//   w1 = offset a
+//   w2 = len a
+//   w3 = offset b
+//   w4 = len b
+// Output:
+//   w0 = 1 if a > b, else 0
+_cmp:
+    // w5 = min(len_a, len_b)
+    mov     w5, w2
+    cmp     w2, w4
+    csel    w5, w2, w4, lt
+
+    // w6 = i = 0
+    mov     w6, #0
+
+cmp_loop:
+    cmp     w6, w5
+    beq     equal_prefix
+
+    // load byte from a: buf + offset_a + i
+    add     x7, x0, w1, uxtw
+    add     x7, x7, w6, uxtw
+    ldrb    w8, [x7]
+
+    // load byte from b: buf + offset_b + i
+    add     x9, x0, w3, uxtw
+    add     x9, x9, w6, uxtw
+    ldrb    w9, [x9]
+
+    cmp     w8, w9
+    blt     a_less
+    bgt     a_greater
+
+    // equal, continue
+    add     w6, w6, #1
+    b       cmp_loop
+
+a_less:
+    mov     w0, #0
+    ret
+
+a_greater:
+    mov     w0, #1
+    ret
+
+equal_prefix:
+    // lengths decide
+    cmp     w2, w4
+    blt     a_less
+    bgt     a_greater
+    mov     w0, #0
+    ret
+
+// -------------------------------------------------
+.section .rodata
+newline:
+    .byte   0x0A
+
+.bss
+    .align 8
+buf:
+    .space  BUFFER_SIZE
+lines_off:
+    .space  MAX_LINES * 4
+lines_len:
+    .space  MAX_LINES * 4
+</previous>
+It failed:
+<failure>
+Test `two` failed (stdin delivered whole; test run 4 of 42; the runs before it passed).
+stdin (4 bytes): "b\na\n"
+The program stopped with a fault (oob): 4-byte write of unmapped memory at 0x1, pc=0x400120 at pc 0x400120 [the faulting instruction is `str w13, [x4]` at 0x400120 (inner_loop+0x50) (disassembly of the assembled program)]
+exit status: expected 0, got none (the program did not exit)
+stdout differs from byte 0 on (line 1, column 1 of the expected output); expected 4 bytes in total, got 0
+  expected from byte 0: "a\nb\n"
+  actual from byte 0:   (end of output)
+</failure>
+Write a corrected, complete version. Same output format; output only the code.

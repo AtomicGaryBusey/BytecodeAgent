@@ -1,0 +1,247 @@
+.globl _start
+.equ MAX_INPUT, 32768
+.equ MAX_LINES, 1000
+
+.section .bss
+.align 16
+buffer:      .space MAX_INPUT
+line_ptrs:   .space MAX_LINES*8
+line_lens:   .space MAX_LINES*4
+
+.section .rodata
+nl: .byte 0x0a
+
+.text
+_start:
+    xor    ebx, ebx            # line count = 0
+    xor    r12, r12            # total bytes read = 0
+    lea    r13, [rip + buffer] # r13 = buffer base
+
+read_loop:
+    mov    rax, 0              # sys_read
+    mov    rdi, 0              # fd = stdin
+    lea    rsi, [r13 + r12]    # buffer + offset
+    mov    rdx, MAX_INPUT
+    sub    rdx, r12            # remaining space
+    syscall
+    test   rax, rax
+    jz     parse_input
+    add    r12, rax
+    jmp    read_loop
+
+parse_input:
+    cmp    r12, 0
+    je     exit_success        # empty input, nothing to do
+
+    xor    rsi, rsi            # offset into buffer = 0
+
+parse_loop:
+    cmp    rsi, r12
+    jae    sort_and_output     # all bytes processed
+
+    mov    rdx, rsi            # start of line
+
+scan_loop:
+    cmp    rsi, r12
+    jae    line_end            # reached EOF
+    mov    al, byte ptr [r13 + rsi]
+    cmp    al, 0x0a
+    je     line_end
+    inc    rsi
+    jmp    scan_loop
+
+line_end:
+    mov    rax, rsi
+    sub    rax, rdx            # length = rsi - start
+    # store pointer (offset)
+    lea    rcx, [rip + line_ptrs]
+    mov    [rcx + rbx*8], rdx
+    # store length
+    lea    rcx, [rip + line_lens]
+    mov    [rcx + rbx*4], eax
+    inc    ebx                 # line count++
+
+    # skip newline if present
+    cmp    rsi, r12
+    jae    parse_loop
+    mov    al, byte ptr [r13 + rsi]
+    cmp    al, 0x0a
+    jne    parse_loop
+    inc    rsi
+    jmp    parse_loop
+
+sort_and_output:
+    # rbx = line count (n)
+    cmp    ebx, 1
+    jle    output_lines        # 0 or 1 lines need no sort
+
+    # load base addresses
+    lea    r10, [rip + line_ptrs]   # r10 = ptrs base
+    lea    r11, [rip + line_lens]   # r11 = lens base
+    lea    rdx, [rip + buffer]      # rdx = buffer base for compare
+
+    xor    edi, edi                  # i = 0
+i_loop:
+    inc    edi                       # i++
+    cmp    edi, ebx
+    jge    output_lines
+
+    mov    esi, edi                  # j = i
+inner_loop:
+    cmp    esi, 0
+    je     i_loop
+
+    mov    r8d, esi
+    dec    r8d                       # r8d = j-1 (index)
+
+    # load line data for indices j-1 and j
+    mov    r9,  [r10 + r8*8]         # off1
+    mov    r10d,[r11 + r8*4]         # len1
+    mov    r11, [r10 + rsi*8]        # off2
+    mov    r12d,[r11 + rsi*4]        # len2
+
+    # preserve for swap
+    push   r9
+    push   r10
+    push   r11
+    push   r12
+
+    mov    rdi, r9
+    mov    rsi, r10
+    mov    rdx, r11
+    mov    rcx, r12
+    call   cmp_lines
+
+    pop    r12
+    pop    r11
+    pop    r10
+    pop    r9
+
+    cmp    eax, 0
+    jle    no_swap
+
+    # swap offsets
+    mov    r13, [r10 + r8*8]
+    mov    rax, [r10 + rsi*8]
+    mov    [r10 + r8*8], rax
+    mov    [r10 + rsi*8], r13
+
+    # swap lengths
+    mov    r14d, [r11 + r8*4]
+    mov    eax,  [r11 + rsi*4]
+    mov    [r11 + r8*4], eax
+    mov    [r11 + rsi*4], r14d
+
+    dec    esi
+    jmp    inner_loop
+
+no_swap:
+    jmp    i_loop
+
+output_lines:
+    # rdx = buffer base, r10 = ptrs base, r11 = lens base
+    lea    rdx, [rip + buffer]
+    lea    r10, [rip + line_ptrs]
+    lea    r11, [rip + line_lens]
+    xor    esi, esi                 # index = 0
+out_loop:
+    cmp    esi, ebx
+    jge    exit_success
+
+    mov    r8,  [r10 + rsi*8]       # offset
+    mov    r9d, [r11 + rsi*4]       # length
+
+    test   r9d, r9d
+    jz     write_nl
+
+    mov    rax, 1                   # sys_write
+    mov    rdi, 1                   # stdout
+    lea    rsi, [rdx + r8]
+    mov    rdx, r9
+    syscall
+
+write_nl:
+    mov    rax, 1
+    mov    rdi, 1
+    lea    rsi, [rip + nl]
+    mov    rdx, 1
+    syscall
+
+    inc    esi
+    jmp    out_loop
+
+exit_success:
+    mov    rax, 60
+    xor    rdi, rdi
+    syscall
+
+# ------------------------------------------------------------
+# cmp_lines:
+#   Input:
+#     rdi = offset1
+#     rsi = len1
+#     rdx = offset2
+#     rcx = len2
+#   Returns:
+#     eax = -1 if line1 < line2
+#           0 if equal
+#           1 if line1 > line2
+#   Clobbers: rax, rbx, rbp, r8-r15 (as needed)
+# ------------------------------------------------------------
+cmp_lines:
+    push   rbx
+    push   rbp
+
+    mov    r8, rdx          # r8 = offset2 (preserve)
+    mov    r9, rcx          # r9 = len2   (preserve)
+
+    # rdi = offset1, rsi = len1
+    # rdx = offset2 (now in r8), rcx = len2 (now in r9)
+
+    mov    rax, rsi
+    cmp    rax, r9
+    cmova  rax, r9          # rax = min(len1,len2)
+
+    xor    rbx, rbx         # rbx = 0, will be used as zero flag
+
+compare_bytes:
+    test   rax, rax
+    jz     compare_lengths
+
+    mov    al, byte ptr [rdx + rdi]   # byte from line1
+    mov    bl, byte ptr [rdx + r8]    # byte from line2
+    cmp    al, bl
+    jne    diff_found
+
+    inc    rdi
+    inc    r8
+    dec    rax
+    jmp    compare_bytes
+
+diff_found:
+    movzx  eax, al
+    movzx  ebx, bl
+    cmp    eax, ebx
+    jl     set_minus_one
+    jg     set_plus_one
+    xor    eax, eax
+    jmp    done_cmp
+
+compare_lengths:
+    cmp    rsi, r9
+    jl     set_minus_one
+    jg     set_plus_one
+    xor    eax, eax
+    jmp    done_cmp
+
+set_minus_one:
+    mov    eax, -1
+    jmp    done_cmp
+
+set_plus_one:
+    mov    eax, 1
+
+done_cmp:
+    pop    rbp
+    pop    rbx
+    ret

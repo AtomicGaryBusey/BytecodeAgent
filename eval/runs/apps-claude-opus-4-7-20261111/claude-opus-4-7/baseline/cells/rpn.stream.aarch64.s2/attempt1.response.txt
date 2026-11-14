@@ -1,0 +1,277 @@
+```
+.equ SYS_read, 63
+.equ SYS_write, 64
+.equ SYS_exit, 93
+
+.bss
+.balign 16
+input_buf:
+.zero 65536
+output_buf:
+.zero 524288
+rpn_stack:
+.zero 8192
+
+.text
+.globl _start
+
+_start:
+    adrp x19, input_buf
+    add  x19, x19, :lo12:input_buf
+    mov  x20, x19
+    mov  x26, #65536
+rd_loop:
+    cbz  x26, rd_done
+    mov  x8, #SYS_read
+    mov  x0, #0
+    mov  x1, x20
+    mov  x2, x26
+    svc  #0
+    cmp  x0, #0
+    b.le rd_done
+    add  x20, x20, x0
+    sub  x26, x26, x0
+    b    rd_loop
+rd_done:
+    adrp x22, output_buf
+    add  x22, x22, :lo12:output_buf
+    mov  x23, x22
+    mov  x24, x19
+
+proc_line:
+    cmp  x24, x20
+    b.ge proc_done
+    mov  x25, x24
+scan_nl:
+    cmp  x25, x20
+    b.ge scan_done
+    ldrb w0, [x25]
+    cmp  w0, #0x0A
+    b.eq scan_done
+    add  x25, x25, #1
+    b    scan_nl
+scan_done:
+    mov  x0, x24
+    mov  x1, x25
+    bl   eval_line
+    mov  x24, x25
+    cmp  x24, x20
+    b.ge proc_done
+    add  x24, x24, #1
+    b    proc_line
+proc_done:
+    adrp x0, output_buf
+    add  x0, x0, :lo12:output_buf
+    sub  x2, x23, x0
+    cbz  x2, do_exit
+    mov  x1, x0
+    mov  x0, #1
+    mov  x8, #SYS_write
+    svc  #0
+do_exit:
+    mov  x0, #0
+    mov  x8, #SYS_exit
+    svc  #0
+
+eval_line:
+    stp  x29, x30, [sp, #-48]!
+    stp  x19, x20, [sp, #16]
+    stp  x21, x22, [sp, #32]
+    mov  x19, x0
+    mov  x20, x1
+    adrp x21, rpn_stack
+    add  x21, x21, :lo12:rpn_stack
+    mov  x22, x21
+
+tok_loop:
+    cmp  x19, x20
+    b.ge tok_end
+    ldrb w0, [x19]
+    cmp  w0, #0x20
+    b.eq tok_skip
+    cmp  w0, #0x09
+    b.ne tok_start
+tok_skip:
+    add  x19, x19, #1
+    b    tok_loop
+tok_start:
+    mov  x3, x19
+tok_find:
+    cmp  x19, x20
+    b.ge tok_got
+    ldrb w0, [x19]
+    cmp  w0, #0x20
+    b.eq tok_got
+    cmp  w0, #0x09
+    b.eq tok_got
+    add  x19, x19, #1
+    b    tok_find
+tok_got:
+    sub  x4, x19, x3
+    cmp  x4, #1
+    b.ne parse_num
+    ldrb w5, [x3]
+    cmp  w5, #'+'
+    b.eq op_add
+    cmp  w5, #'-'
+    b.eq op_sub
+    cmp  w5, #'*'
+    b.eq op_mul
+    cmp  w5, #'/'
+    b.eq op_div
+    cmp  w5, #'%'
+    b.eq op_mod
+
+parse_num:
+    mov  x6, x3
+    mov  x7, #0
+    ldrb w5, [x6]
+    cmp  w5, #'-'
+    b.ne pn_digits
+    mov  x7, #1
+    add  x6, x6, #1
+pn_digits:
+    sub  x9, x19, x6
+    cmp  x9, #1
+    b.lt err_line
+    cmp  x9, #18
+    b.gt err_line
+    mov  x8, #0
+pn_loop:
+    cmp  x6, x19
+    b.eq pn_end
+    ldrb w5, [x6]
+    sub  w5, w5, #'0'
+    cmp  w5, #9
+    b.hi err_line
+    add  x8, x8, x8, lsl #2
+    lsl  x8, x8, #1
+    add  x8, x8, x5
+    add  x6, x6, #1
+    b    pn_loop
+pn_end:
+    cbz  x7, pn_push
+    neg  x8, x8
+pn_push:
+    str  x8, [x22], #8
+    b    tok_loop
+
+op_add:
+    sub  x9, x22, x21
+    cmp  x9, #16
+    b.lt err_line
+    ldp  x6, x7, [x22, #-16]
+    add  x6, x6, x7
+    str  x6, [x22, #-16]
+    sub  x22, x22, #8
+    b    tok_loop
+op_sub:
+    sub  x9, x22, x21
+    cmp  x9, #16
+    b.lt err_line
+    ldp  x6, x7, [x22, #-16]
+    sub  x6, x6, x7
+    str  x6, [x22, #-16]
+    sub  x22, x22, #8
+    b    tok_loop
+op_mul:
+    sub  x9, x22, x21
+    cmp  x9, #16
+    b.lt err_line
+    ldp  x6, x7, [x22, #-16]
+    mul  x6, x6, x7
+    str  x6, [x22, #-16]
+    sub  x22, x22, #8
+    b    tok_loop
+op_div:
+    sub  x9, x22, x21
+    cmp  x9, #16
+    b.lt err_line
+    ldp  x6, x7, [x22, #-16]
+    cbz  x7, err_line
+    cmn  x7, #1
+    b.ne op_div_go
+    movz x8, #0x8000, lsl #48
+    cmp  x6, x8
+    b.eq err_line
+op_div_go:
+    sdiv x6, x6, x7
+    str  x6, [x22, #-16]
+    sub  x22, x22, #8
+    b    tok_loop
+op_mod:
+    sub  x9, x22, x21
+    cmp  x9, #16
+    b.lt err_line
+    ldp  x6, x7, [x22, #-16]
+    cbz  x7, err_line
+    cmn  x7, #1
+    b.ne op_mod_go
+    movz x8, #0x8000, lsl #48
+    cmp  x6, x8
+    b.eq err_line
+op_mod_go:
+    sdiv x10, x6, x7
+    msub x6, x10, x7, x6
+    str  x6, [x22, #-16]
+    sub  x22, x22, #8
+    b    tok_loop
+
+tok_end:
+    sub  x9, x22, x21
+    cmp  x9, #8
+    b.ne err_line
+    ldr  x0, [x21]
+    bl   print_num
+    mov  w1, #0x0A
+    strb w1, [x23], #1
+    b    eval_done
+
+err_line:
+    mov  w0, #'e'
+    strb w0, [x23], #1
+    mov  w0, #'r'
+    strb w0, [x23], #1
+    strb w0, [x23], #1
+    mov  w0, #'o'
+    strb w0, [x23], #1
+    mov  w0, #'r'
+    strb w0, [x23], #1
+    mov  w0, #0x0A
+    strb w0, [x23], #1
+
+eval_done:
+    ldp  x21, x22, [sp, #32]
+    ldp  x19, x20, [sp, #16]
+    ldp  x29, x30, [sp], #48
+    ret
+
+print_num:
+    stp  x29, x30, [sp, #-16]!
+    cmp  x0, #0
+    b.ge pn_pos
+    mov  w1, #'-'
+    strb w1, [x23], #1
+    neg  x0, x0
+pn_pos:
+    sub  sp, sp, #32
+    mov  x2, sp
+    mov  x3, #0
+    mov  x4, #10
+pn_div:
+    udiv x5, x0, x4
+    msub x6, x5, x4, x0
+    add  w6, w6, #'0'
+    strb w6, [x2, x3]
+    add  x3, x3, #1
+    mov  x0, x5
+    cbnz x0, pn_div
+pn_rev:
+    sub  x3, x3, #1
+    ldrb w6, [x2, x3]
+    strb w6, [x23], #1
+    cbnz x3, pn_rev
+    add  sp, sp, #32
+    ldp  x29, x30, [sp], #16
+    ret
+```

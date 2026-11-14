@@ -1,0 +1,225 @@
+.equ INPUT_MAX, 32768
+.equ MAX_LINES, 1000
+
+.globl _start
+.section .text
+_start:
+    # ---------- read entire input ----------
+    lea rbx, [rip + input_buf]          # rbx = base of input buffer
+    xor r12, r12                        # r12 = total_len
+
+read_loop:
+    mov rax, 0                          # sys_read
+    mov rdi, 0                          # fd = stdin
+    lea rsi, [rbx + r12]                # buf = input_buf + total_len
+    mov rdx, INPUT_MAX
+    sub rdx, r12                        # remaining space
+    syscall
+    test rax, rax
+    jz parse_input
+    add r12, rax                        # total_len += bytes_read
+    cmp r12, INPUT_MAX
+    jl read_loop
+
+parse_input:
+    # ---------- parse lines ----------
+    xor r13, r13                        # r13 = line_cnt
+    xor r14, r14                        # r14 = line_start offset
+    xor r15, r15                        # r15 = iterator offset (i)
+
+parse_loop:
+    cmp r15, r12
+    jae parse_done
+    mov al, byte ptr [rbx + r15]
+    cmp al, 0x0A                        # '\n'
+    je store_line_newline
+    inc r15
+    jmp parse_loop
+
+store_line_newline:
+    # length = i - line_start
+    mov eax, r15d
+    sub eax, r14d
+    mov [rip + line_offsets + r13*4], r14d
+    mov [rip + line_lengths + r13*4], eax
+    inc r13
+    inc r15
+    mov r14, r15                        # next line starts after newline
+    jmp parse_loop
+
+parse_done:
+    # final line if any left (no trailing newline)
+    cmp r14, r12
+    jae parse_finished
+    mov eax, r12d
+    sub eax, r14d
+    mov [rip + line_offsets + r13*4], r14d
+    mov [rip + line_lengths + r13*4], eax
+    inc r13
+
+parse_finished:
+    mov [rip + line_cnt], r13
+
+    # ---------- if 0 or 1 lines, skip sorting ----------
+    cmp r13, 1
+    jle output_phase
+
+    # ---------- init idx array ----------
+    xor r8, r8                          # r8 = i
+init_idx_loop:
+    cmp r8, r13
+    jge sort_outer
+    mov eax, r8d
+    mov [rip + idx_array + r8*4], eax
+    inc r8
+    jmp init_idx_loop
+
+    # ---------- bubble sort ----------
+sort_outer:
+    mov rdx, r13
+    dec rdx                              # outer = n-1
+
+outer_loop:
+    xor r8, r8                           # j = 0
+    mov r9, rdx                          # inner limit = outer
+
+inner_loop:
+    cmp r8, r9
+    jge outer_dec
+    # load idx[j] and idx[j+1]
+    mov eax, [rip + idx_array + r8*4]
+    mov edi, eax                         # idx_a
+    mov eax, [rip + idx_array + r8*4 + 4]
+    mov esi, eax                         # idx_b
+
+    # ----- compare lines idx_a (edi) vs idx_b (esi) -----
+    mov eax, [rip + line_offsets + rdi*4]   # offset_a
+    mov ebx, [rip + line_lengths + rdi*4]   # len_a
+    mov ecx, [rip + line_offsets + rsi*4]   # offset_b
+    mov edx, [rip + line_lengths + rsi*4]   # len_b
+
+    lea r10, [rip + input_buf]
+    add r10, rax                           # ptr_a = input_buf + offset_a
+    lea r11, [rip + input_buf]
+    add r11, rcx                           # ptr_b = input_buf + offset_b
+
+    mov r12, rbx                           # len_a
+    mov r13, rdx                           # len_b
+    mov r14, r12
+    cmp r12, r13
+    cmova r14, r13                         # r14 = minlen
+
+    xor r15d, r15d                         # result = 0
+
+cmp_loop:
+    test r14, r14
+    jz cmp_len_done
+    mov al, byte ptr [r10]
+    mov bl, byte ptr [r11]
+    cmp al, bl
+    jne cmp_diff
+    inc r10
+    inc r11
+    dec r14
+    jmp cmp_loop
+
+cmp_len_done:
+    cmp r12, r13
+    je cmp_eq
+    jb cmp_less
+    # a longer than b
+    mov eax, 1
+    jmp cmp_done
+cmp_less:
+    mov eax, -1
+    jmp cmp_done
+cmp_eq:
+    xor eax, eax
+    jmp cmp_done
+
+cmp_diff:
+    cmp al, bl
+    ja cmp_greater
+    mov eax, -1
+    jmp cmp_done
+cmp_greater:
+    mov eax, 1
+
+cmp_done:
+    # if result > 0, swap idx[j] and idx[j+1]
+    test eax, eax
+    jle no_swap
+    mov edx, [rip + idx_array + r8*4]
+    mov eax, [rip + idx_array + r8*4 + 4]
+    mov [rip + idx_array + r8*4], eax
+    mov [rip + idx_array + r8*4 + 4], edx
+
+no_swap:
+    inc r8
+    jmp inner_loop
+
+outer_dec:
+    dec rdx
+    cmp rdx, 0
+    jg outer_loop
+
+output_phase:
+    # ---------- output sorted lines ----------
+    mov r13, [rip + line_cnt]               # total lines
+    cmp r13, 0
+    je exit_success
+
+    xor r8, r8                               # i = 0
+
+output_loop:
+    cmp r8, r13
+    jge exit_success
+
+    mov eax, [rip + idx_array + r8*4]        # line index
+    mov ecx, [rip + line_offsets + rax*4]    # offset
+    mov edx, [rip + line_lengths + rax*4]    # length
+
+    # write line
+    mov rax, 1                               # sys_write
+    mov rdi, 1                               # fd = stdout
+    lea rsi, [rip + input_buf]
+    add rsi, rcx
+    mov rdx, rdx
+    syscall
+
+    # write newline
+    mov rax, 1
+    mov rdi, 1
+    lea rsi, [rip + newline]
+    mov rdx, 1
+    syscall
+
+    inc r8
+    jmp output_loop
+
+exit_success:
+    mov rax, 60
+    xor rdi, rdi
+    syscall
+
+# ---------- constants ----------
+.section .rodata
+newline:
+    .byte 0x0A
+
+.bss
+    .align 8
+input_buf:
+    .space INPUT_MAX
+    .align 4
+line_offsets:
+    .space MAX_LINES*4
+    .align 4
+line_lengths:
+    .space MAX_LINES*4
+    .align 4
+idx_array:
+    .space MAX_LINES*4
+    .align 8
+line_cnt:
+    .quad 0

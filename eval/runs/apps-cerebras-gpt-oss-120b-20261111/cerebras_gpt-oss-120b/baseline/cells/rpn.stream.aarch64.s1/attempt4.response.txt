@@ -1,0 +1,336 @@
+        .global _start
+        .text
+_start:
+        // Load address of input buffer (in .bss)
+        adrp    x19, input_buf
+        add     x19, x19, :lo12:input_buf
+
+        // Read entire stdin into buffer
+        mov     x20, x19          // x20 = write pointer
+        mov     x22, #0           // x22 = total bytes read
+read_loop:
+        mov     x0, #0            // fd = stdin
+        mov     x1, x20           // buf
+        mov     x2, #65536        // count
+        mov     x8, #63           // sys_read
+        svc     #0
+        cmp     x0, #0
+        beq     read_done
+        add     x20, x20, x0
+        add     x22, x22, x0
+        b       read_loop
+read_done:
+        // x21 = end of input = start + total length
+        add     x21, x19, x22
+
+        // Load address of value stack (in .bss)
+        adrp    x25, stack_vals
+        add     x25, x25, :lo12:stack_vals
+
+        // x20 = cur pointer = start of input
+        mov     x20, x19
+
+line_loop:
+        // if cur >= end, exit
+        cmp     x20, x21
+        bge     exit_prog
+
+        // Reset stack size for this line
+        mov     x26, #0          // stack size
+        mov     x28, #0          // error flag
+
+token_loop:
+        // Skip separators (space, tab, newline)
+skip_sep:
+        cmp     x20, x21
+        bge     line_done
+        ldrb    w0, [x20]
+        cmp     w0, #0x20        // space
+        beq     inc_ptr
+        cmp     w0, #0x09        // tab
+        beq     inc_ptr
+        cmp     w0, #0x0A        // newline -> end of line
+        beq     line_done
+        b       token_start
+inc_ptr:
+        add     x20, x20, #1
+        b       skip_sep
+
+token_start:
+        // x10 = token start pointer
+        mov     x10, x20
+
+        // Scan token end (stop at space, tab, newline, or end)
+        mov     x30, x20
+scan_token:
+        cmp     x30, x21
+        bge     token_end
+        ldrb    w0, [x30]
+        cmp     w0, #0x20
+        beq     token_end
+        cmp     w0, #0x09
+        beq     token_end
+        cmp     w0, #0x0A
+        beq     token_end
+        add     x30, x30, #1
+        b       scan_token
+token_end:
+        // x30 = token end (exclusive)
+        mov     x11, x30
+        sub     x12, x11, x10     // token length in x12
+
+        // If error already set, skip token processing
+        cmp     x28, #0
+        bne     after_token
+
+        // Check for single-char operator
+        cmp     x12, #1
+        bne     check_number
+        ldrb    w0, [x10]
+        cmp     w0, #'+'
+        beq     do_op_add
+        cmp     w0, #'-'
+        beq     do_op_sub
+        cmp     w0, #'*'
+        beq     do_op_mul
+        cmp     w0, #'/'
+        beq     do_op_div
+        cmp     w0, #'%'
+        beq     do_op_mod
+        b       check_number
+
+check_number:
+        // Parse optional sign
+        mov     x13, #0          // sign flag: 0 = positive, 1 = negative
+        mov     x14, x10        // digit pointer
+        mov     x15, x12        // remaining length
+        ldrb    w0, [x14]
+        cmp     w0, #'-'
+        bne     num_positive
+        mov     x13, #1
+        add     x14, x14, #1
+        sub     x15, x15, #1
+        cmp     x15, #0
+        beq     invalid_token
+num_positive:
+        cmp     x15, #0
+        beq     invalid_token
+        cmp     x15, #18
+        bhi     invalid_token
+
+        // Parse digits
+        mov     x2, #0          // accumulator
+        mov     x16, #0         // digit count
+num_digit_loop:
+        cmp     x16, x15
+        beq     num_parsed
+        ldrb    w0, [x14], #1
+        cmp     w0, #'0'
+        blt     invalid_token
+        cmp     w0, #'9'
+        bgt     invalid_token
+        sub     w0, w0, #'0'
+        // acc = acc*10 + digit
+        mov     x3, x2
+        mov     x4, #10
+        mul     x2, x3, x4
+        add     x2, x2, x0
+        add     x16, x16, #1
+        b       num_digit_loop
+num_parsed:
+        // Apply sign
+        cmp     x13, #0
+        beq     push_number
+        neg     x2, x2
+push_number:
+        // push x2 onto stack
+        mov     x4, x26
+        lsl     x4, x4, #3
+        add     x5, x25, x4
+        str     x2, [x5]
+        add     x26, x26, #1
+        b       after_token
+
+invalid_token:
+        // set error flag
+        mov     x28, #1
+        b       after_token
+
+do_op_add:
+        bl      pop_two
+        add     x2, x6, x7
+        b       push_result
+do_op_sub:
+        bl      pop_two
+        sub     x2, x6, x7
+        b       push_result
+do_op_mul:
+        bl      pop_two
+        mul     x2, x6, x7
+        b       push_result
+do_op_div:
+        bl      pop_two
+        cmp     x7, #0
+        beq     op_error
+        // INT64_MIN = 0x8000000000000000
+        movz    x9, #0x8000, lsl #48
+        cmp     x6, x9
+        bne     div_ok
+        cmp     x7, #-1
+        beq     op_error
+div_ok:
+        sdiv    x2, x6, x7
+        b       push_result
+do_op_mod:
+        bl      pop_two
+        cmp     x7, #0
+        beq     op_error
+        movz    x9, #0x8000, lsl #48
+        cmp     x6, x9
+        bne     mod_ok
+        cmp     x7, #-1
+        beq     op_error
+mod_ok:
+        sdiv    x10, x6, x7
+        mul     x11, x10, x7
+        sub     x2, x6, x11
+        b       push_result
+op_error:
+        mov     x28, #1
+        b       after_token
+
+push_result:
+        // push x2 onto stack
+        mov     x4, x26
+        lsl     x4, x4, #3
+        add     x5, x25, x4
+        str     x2, [x5]
+        add     x26, x26, #1
+        b       after_token
+
+after_token:
+        // Advance cur to token end
+        mov     x20, x30
+        b       token_loop
+
+line_done:
+        // End of line reached (either newline or EOF)
+        // Output result or error
+        cmp     x28, #0
+        bne     output_error
+        cmp     x26, #1
+        bne     output_error
+
+        // Load result from stack[0]
+        ldr     x0, [x25]
+
+        // Prepare decimal conversion on stack
+        sub     sp, sp, #80          // reserve space
+        mov     x20, sp               // buffer start
+        add     x21, sp, #80          // buffer end
+        sub     x21, x21, #1          // reserve for newline
+        mov     w1, #0x0A
+        strb    w1, [x21]             // newline
+
+        // Handle zero
+        cmp     x0, #0
+        bne     convert_nonzero
+        sub     x21, x21, #1
+        mov     w1, #'0'
+        strb    w1, [x21]
+        b       write_result
+
+convert_nonzero:
+        mov     x22, #0               // sign flag
+        cmp     x0, #0
+        bge     conv_loop_start
+        mov     x22, #1
+conv_loop_start:
+        // while x0 != 0
+        cmp     x0, #0
+        beq     conv_done
+        mov     x5, #10
+        sdiv    x6, x0, x5
+        mul     x7, x6, x5
+        sub     x8, x0, x7           // remainder
+        cmp     x8, #0
+        bge     rem_pos
+        neg     x8, x8
+rem_pos:
+        sub     x21, x21, #1
+        add     w9, w8, #'0'
+        strb    w9, [x21]
+        mov     x0, x6
+        b       conv_loop_start
+conv_done:
+        cmp     x22, #0
+        beq     write_result
+        sub     x21, x21, #1
+        mov     w9, #'-'
+        strb    w9, [x21]
+write_result:
+        // length = (sp+80) - x21
+        add     x3, sp, #80
+        sub     x2, x3, x21
+        mov     x0, #1               // stdout
+        mov     x1, x21
+        mov     x8, #64              // sys_write
+        svc     #0
+        add     sp, sp, #80
+
+        b       advance_cur
+
+output_error:
+        // Write "error\n"
+        mov     x0, #1
+        adrp    x1, err_msg
+        add     x1, x1, :lo12:err_msg
+        mov     x2, #6
+        mov     x8, #64
+        svc     #0
+        b       advance_cur
+
+advance_cur:
+        // If current byte is newline, skip it
+        cmp     x20, x21
+        bge     line_loop            // should not happen
+        ldrb    w0, [x20]
+        cmp     w0, #0x0A
+        bne     line_loop
+        add     x20, x20, #1
+        b       line_loop
+
+pop_two:
+        // Ensure at least two items on stack
+        cmp     x26, #2
+        blt     op_error
+        // pop b
+        sub     x26, x26, #1
+        mov     x4, x26
+        lsl     x4, x4, #3
+        add     x5, x25, x4
+        ldr     x7, [x5]
+        // pop a
+        sub     x26, x26, #1
+        mov     x4, x26
+        lsl     x4, x4, #3
+        add     x5, x25, x4
+        ldr     x6, [x5]
+        ret
+
+exit_prog:
+        mov     x0, #0
+        mov     x8, #93
+        svc     #0
+
+        .section .rodata
+err_msg:
+        .ascii  "error\n"
+
+        .section .bss
+        .align 3
+input_buf:
+        .zero   65536
+stack_vals:
+        .zero   8192        // 1024 * 8 bytes
+

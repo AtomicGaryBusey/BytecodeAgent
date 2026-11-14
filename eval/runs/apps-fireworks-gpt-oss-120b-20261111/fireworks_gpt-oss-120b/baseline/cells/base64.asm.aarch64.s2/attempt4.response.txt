@@ -1,0 +1,228 @@
+	.global	_start
+	.text
+_start:
+	// read all input into input_buf, total length in x19
+	mov	x19, #0                     // total bytes read
+
+read_loop:
+	// remaining = INPUT_MAX - total
+	mov	x0, #49152
+	sub	x0, x0, x19
+	cbnz	x0, 1f
+	b	read_done
+1:
+	adrp	x1, input_buf
+	add	x1, x1, :lo12:input_buf
+	add	x1, x1, x19                // destination = input_buf + total
+
+	mov	x2, x0                     // count
+	mov	x0, #0                     // fd = stdin
+	mov	x8, #63                    // sys_read
+	svc	#0
+	cmp	x0, #0
+	beq	read_done
+	blt	exit_error
+	add	x19, x19, x0
+	b	read_loop
+
+read_done:
+	// if no input, exit with status 0 (no output)
+	cbnz	x19, encode_start
+	b	exit_success
+
+// ------------------------------------------------------------
+encode_start:
+	// src pointer in x2, remaining length in x3
+	adrp	x2, input_buf
+	add	x2, x2, :lo12:input_buf
+	mov	x3, x19
+
+	// dst pointer in x4
+	adrp	x4, output_buf
+	add	x4, x4, :lo12:output_buf
+
+	// line character count in x5
+	mov	x5, #0
+
+	// base64 table address in x6
+	adrp	x6, b64_table
+	add	x6, x6, :lo12:b64_table
+
+encode_loop:
+	cmp	x3, #3
+	blt	encode_tail
+
+	// load three bytes, post‑increment src
+	ldrb	w0, [x2], #1
+	ldrb	w1, [x2], #1
+	ldrb	w2, [x2], #1
+	sub	x3, x3, #3
+
+	// 6‑bit groups
+	lsr	w7, w0, #2                                 // i0
+	and	w8, w0, #3
+	lsl	w8, w8, #4
+	orr	w8, w8, w1, lsr #4                         // i1
+	and	w9, w1, #0xF
+	lsl	w9, w9, #2
+	orr	w9, w9, w2, lsr #6                         // i2
+	and	w10, w2, #0x3F                             // i3
+
+	// emit characters
+	add	x9, x6, w7, uxtw
+	ldrb	w11, [x9]
+	strb	w11, [x4], #1
+
+	add	x9, x6, w8, uxtw
+	ldrb	w11, [x9]
+	strb	w11, [x4], #1
+
+	add	x9, x6, w9, uxtw
+	ldrb	w11, [x9]
+	strb	w11, [x4], #1
+
+	add	x9, x6, w10, uxtw
+	ldrb	w11, [x9]
+	strb	w11, [x4], #1
+
+	add	x5, x5, #4
+	cmp	x5, #76
+	bne	encode_loop
+
+	// line full: emit newline, reset count
+	mov	w11, #0x0A
+	strb	w11, [x4], #1
+	mov	x5, #0
+	b	encode_loop
+
+// ------------------------------------------------------------
+encode_tail:
+	cbnz	x3, tail_process
+	b	encode_finish
+
+tail_process:
+	// first byte always present
+	ldrb	w0, [x2]
+
+	// i0
+	lsr	w7, w0, #2
+	add	x9, x6, w7, uxtw
+	ldrb	w11, [x9]
+	strb	w11, [x4], #1
+	add	x5, x5, #1
+
+	cmp	x3, #2
+	bne	tail_one               // length == 1
+
+	// length == 2
+	ldrb	w1, [x2, #1]
+
+	// i1
+	and	w8, w0, #3
+	lsl	w8, w8, #4
+	orr	w8, w8, w1, lsr #4
+	add	x9, x6, w8, uxtw
+	ldrb	w11, [x9]
+	strb	w11, [x4], #1
+
+	// i2
+	and	w9, w1, #0xF
+	lsl	w9, w9, #2
+	add	x9, x6, w9, uxtw
+	ldrb	w11, [x9]
+	strb	w11, [x4], #1
+
+	// padding "=="
+	mov	w11, #'='
+	strb	w11, [x4], #1
+	strb	w11, [x4], #1
+
+	add	x5, x5, #3           // total added this block = 4 characters
+	b	check_tail_line
+
+tail_one:
+	// length == 1
+	// i1
+	and	w8, w0, #3
+	lsl	w8, w8, #4
+	add	x9, x6, w8, uxtw
+	ldrb	w11, [x9]
+	strb	w11, [x4], #1
+
+	// padding "=="
+	mov	w11, #'='
+	strb	w11, [x4], #1
+	strb	w11, [x4], #1
+
+	add	x5, x5, #3           // total added this block = 4 characters
+
+check_tail_line:
+	cmp	x5, #76
+	bne	encode_finish
+	// line just became full, emit newline
+	mov	w11, #0x0A
+	strb	w11, [x4], #1
+	mov	x5, #0
+	b	encode_finish
+
+// ------------------------------------------------------------
+encode_finish:
+	// if current line has characters, emit final newline
+	cbnz	x5, final_nl
+	b	write_output
+
+final_nl:
+	mov	w11, #0x0A
+	strb	w11, [x4], #1
+
+// ------------------------------------------------------------
+write_output:
+	// x0 = start of output buffer
+	adrp	x0, output_buf
+	add	x0, x0, :lo12:output_buf
+	// x1 = length = x4 - x0
+	sub	x1, x4, x0
+
+	// x2 = remaining = x1
+	mov	x2, x1
+	// x3 = current ptr = x0
+	mov	x3, x0
+
+write_loop:
+	cbnz	x2, do_write
+	b	exit_success
+
+do_write:
+	// sys_write(fd=1, buf=x3, count=x2)
+	mov	x0, #1
+	mov	x1, x3
+	mov	x8, #64
+	svc	#0
+	cmp	x0, #0
+	ble	exit_error
+	sub	x2, x2, x0
+	add	x3, x3, x0
+	b	write_loop
+
+// ------------------------------------------------------------
+exit_success:
+	mov	x0, #0
+	mov	x8, #93
+	svc	#0
+
+exit_error:
+	mov	x0, #1
+	mov	x8, #93
+	svc	#0
+
+	.section	.rodata
+	.align	4
+b64_table:
+	.ascii	"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/"
+
+	.bss
+	.align	12
+input_buf:
+	.space	49152
+output_buf:
+	.space	70000

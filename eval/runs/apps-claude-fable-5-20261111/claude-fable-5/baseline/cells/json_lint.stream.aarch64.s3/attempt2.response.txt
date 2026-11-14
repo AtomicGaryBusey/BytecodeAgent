@@ -1,0 +1,414 @@
+// json_lint - validate JSON document on stdin (AArch64, Linux, freestanding)
+
+    .bss
+    .balign 8
+buf:
+    .space 65544            // input buffer
+numbuf:
+    .space 32               // scratch for decimal conversion
+
+    .section .rodata
+msg_ok:
+    .ascii "ok\n"
+msg_err:
+    .ascii "error at "
+    .equ MSG_ERR_LEN, 9
+lit_true:
+    .asciz "true"
+lit_false:
+    .asciz "false"
+lit_null:
+    .asciz "null"
+
+    .text
+    .globl _start
+_start:
+    adrp    x19, buf
+    add     x19, x19, :lo12:buf     // x19 = buffer base
+    mov     x20, #0                 // x20 = total length
+rd_loop:
+    mov     x0, #0                  // fd 0
+    add     x1, x19, x20
+    mov     x2, #65536
+    sub     x2, x2, x20
+    mov     x8, #63                 // read
+    svc     #0
+    cmp     x0, #0
+    b.le    rd_done
+    add     x20, x20, x0
+    b       rd_loop
+rd_done:
+    mov     x21, #0                 // x21 = position
+    bl      skip_ws
+    bl      parse_value
+    bl      skip_ws
+    cmp     x21, x20
+    b.ne    err
+    // valid: print "ok\n", exit 0
+    mov     x0, #1
+    adrp    x1, msg_ok
+    add     x1, x1, :lo12:msg_ok
+    mov     x2, #3
+    mov     x8, #64                 // write
+    svc     #0
+    mov     x0, #0
+    mov     x8, #93                 // exit
+    svc     #0
+
+// ---------------------------------------------------------------
+// error exit: offset in x21
+err:
+    mov     x0, #1
+    adrp    x1, msg_err
+    add     x1, x1, :lo12:msg_err
+    mov     x2, #MSG_ERR_LEN
+    mov     x8, #64
+    svc     #0
+    // convert x21 to decimal, build digits + '\n' at end of numbuf
+    adrp    x4, numbuf
+    add     x4, x4, :lo12:numbuf
+    add     x4, x4, #31             // x4 -> last byte
+    mov     w0, #0x0A
+    strb    w0, [x4]                // trailing newline
+    mov     x5, x4                  // x5 = start pointer (grows down)
+    mov     x0, x21
+    mov     x6, #10
+1:
+    udiv    x1, x0, x6
+    msub    x2, x1, x6, x0          // remainder
+    add     w2, w2, #0x30
+    sub     x5, x5, #1
+    strb    w2, [x5]
+    mov     x0, x1
+    cbnz    x0, 1b
+    mov     x0, #1
+    mov     x1, x5
+    sub     x2, x4, x5
+    add     x2, x2, #1
+    mov     x8, #64
+    svc     #0
+    mov     x0, #1
+    mov     x8, #93                 // exit(1)
+    svc     #0
+
+// ---------------------------------------------------------------
+// skip_ws: advance x21 over space/tab/LF/CR (leaf)
+skip_ws:
+1:
+    cmp     x21, x20
+    b.hs    2f
+    ldrb    w0, [x19, x21]
+    cmp     w0, #0x20
+    b.eq    3f
+    cmp     w0, #0x09
+    b.eq    3f
+    cmp     w0, #0x0A
+    b.eq    3f
+    cmp     w0, #0x0D
+    b.ne    2f
+3:
+    add     x21, x21, #1
+    b       1b
+2:
+    ret
+
+// ---------------------------------------------------------------
+// parse_value: parse one JSON value at x21
+parse_value:
+    stp     x29, x30, [sp, #-16]!
+    cmp     x21, x20
+    b.hs    err
+    ldrb    w0, [x19, x21]
+    cmp     w0, #0x7B               // '{'
+    b.eq    pv_obj
+    cmp     w0, #0x5B               // '['
+    b.eq    pv_arr
+    cmp     w0, #0x22               // '"'
+    b.eq    pv_str
+    cmp     w0, #0x2D               // '-'
+    b.eq    pv_num
+    sub     w1, w0, #0x30
+    cmp     w1, #9
+    b.ls    pv_num
+    cmp     w0, #0x74               // 't'
+    b.eq    pv_true
+    cmp     w0, #0x66               // 'f'
+    b.eq    pv_false
+    cmp     w0, #0x6E               // 'n'
+    b.eq    pv_null
+    b       err
+pv_obj:
+    bl      parse_object
+    b       pv_done
+pv_arr:
+    bl      parse_array
+    b       pv_done
+pv_str:
+    bl      parse_string
+    b       pv_done
+pv_num:
+    bl      parse_number
+    b       pv_done
+pv_true:
+    adrp    x0, lit_true
+    add     x0, x0, :lo12:lit_true
+    bl      check_lit
+    b       pv_done
+pv_false:
+    adrp    x0, lit_false
+    add     x0, x0, :lo12:lit_false
+    bl      check_lit
+    b       pv_done
+pv_null:
+    adrp    x0, lit_null
+    add     x0, x0, :lo12:lit_null
+    bl      check_lit
+pv_done:
+    ldp     x29, x30, [sp], #16
+    ret
+
+// ---------------------------------------------------------------
+// check_lit: x0 -> NUL-terminated literal, match against input (leaf)
+check_lit:
+1:
+    ldrb    w1, [x0], #1
+    cbz     w1, 2f
+    cmp     x21, x20
+    b.hs    err
+    ldrb    w2, [x19, x21]
+    cmp     w2, w1
+    b.ne    err
+    add     x21, x21, #1
+    b       1b
+2:
+    ret
+
+// ---------------------------------------------------------------
+// parse_string: buf[x21] == '"' on entry (leaf)
+parse_string:
+    add     x21, x21, #1
+ps_loop:
+    cmp     x21, x20
+    b.hs    err
+    ldrb    w0, [x19, x21]
+    cmp     w0, #0x22               // '"'
+    b.eq    ps_end
+    cmp     w0, #0x5C               // '\'
+    b.eq    ps_esc
+    cmp     w0, #0x20
+    b.lo    err
+    add     x21, x21, #1
+    b       ps_loop
+ps_end:
+    add     x21, x21, #1
+    ret
+ps_esc:
+    add     x21, x21, #1
+    cmp     x21, x20
+    b.hs    err
+    ldrb    w0, [x19, x21]
+    cmp     w0, #0x22               // '"'
+    b.eq    ps_simple
+    cmp     w0, #0x5C               // '\'
+    b.eq    ps_simple
+    cmp     w0, #0x2F               // '/'
+    b.eq    ps_simple
+    cmp     w0, #0x62               // 'b'
+    b.eq    ps_simple
+    cmp     w0, #0x66               // 'f'
+    b.eq    ps_simple
+    cmp     w0, #0x6E               // 'n'
+    b.eq    ps_simple
+    cmp     w0, #0x72               // 'r'
+    b.eq    ps_simple
+    cmp     w0, #0x74               // 't'
+    b.eq    ps_simple
+    cmp     w0, #0x75               // 'u'
+    b.ne    err
+    add     x21, x21, #1
+    mov     w3, #4
+ps_hex:
+    cmp     x21, x20
+    b.hs    err
+    ldrb    w0, [x19, x21]
+    sub     w1, w0, #0x30
+    cmp     w1, #9
+    b.ls    ps_hexok
+    orr     w1, w0, #0x20           // fold to lowercase
+    sub     w1, w1, #0x61           // 'a'
+    cmp     w1, #5
+    b.hi    err
+ps_hexok:
+    add     x21, x21, #1
+    subs    w3, w3, #1
+    b.ne    ps_hex
+    b       ps_loop
+ps_simple:
+    add     x21, x21, #1
+    b       ps_loop
+
+// ---------------------------------------------------------------
+// parse_number: buf[x21] is '-' or digit on entry (leaf)
+parse_number:
+    ldrb    w0, [x19, x21]
+    cmp     w0, #0x2D               // '-'
+    b.ne    1f
+    add     x21, x21, #1
+1:
+    cmp     x21, x20
+    b.hs    err
+    ldrb    w0, [x19, x21]
+    cmp     w0, #0x30               // '0'
+    b.eq    pn_zero
+    sub     w1, w0, #0x31           // '1'
+    cmp     w1, #8
+    b.hi    err
+    add     x21, x21, #1
+pn_int:
+    cmp     x21, x20
+    b.hs    pn_ret
+    ldrb    w0, [x19, x21]
+    sub     w1, w0, #0x30
+    cmp     w1, #9
+    b.hi    pn_frac
+    add     x21, x21, #1
+    b       pn_int
+pn_zero:
+    add     x21, x21, #1
+pn_frac:
+    cmp     x21, x20
+    b.hs    pn_ret
+    ldrb    w0, [x19, x21]
+    cmp     w0, #0x2E               // '.'
+    b.ne    pn_exp
+    add     x21, x21, #1
+    cmp     x21, x20
+    b.hs    err
+    ldrb    w0, [x19, x21]
+    sub     w1, w0, #0x30
+    cmp     w1, #9
+    b.hi    err
+    add     x21, x21, #1
+pn_fracd:
+    cmp     x21, x20
+    b.hs    pn_ret
+    ldrb    w0, [x19, x21]
+    sub     w1, w0, #0x30
+    cmp     w1, #9
+    b.hi    pn_exp
+    add     x21, x21, #1
+    b       pn_fracd
+pn_exp:
+    // w0 holds current byte, x21 < x20 here
+    cmp     w0, #0x65               // 'e'
+    b.eq    1f
+    cmp     w0, #0x45               // 'E'
+    b.ne    pn_ret
+1:
+    add     x21, x21, #1
+    cmp     x21, x20
+    b.hs    err
+    ldrb    w0, [x19, x21]
+    cmp     w0, #0x2B               // '+'
+    b.eq    2f
+    cmp     w0, #0x2D               // '-'
+    b.ne    3f
+2:
+    add     x21, x21, #1
+    cmp     x21, x20
+    b.hs    err
+    ldrb    w0, [x19, x21]
+3:
+    sub     w1, w0, #0x30
+    cmp     w1, #9
+    b.hi    err
+    add     x21, x21, #1
+pn_expd:
+    cmp     x21, x20
+    b.hs    pn_ret
+    ldrb    w0, [x19, x21]
+    sub     w1, w0, #0x30
+    cmp     w1, #9
+    b.hi    pn_ret
+    add     x21, x21, #1
+    b       pn_expd
+pn_ret:
+    ret
+
+// ---------------------------------------------------------------
+// parse_object: buf[x21] == '{' on entry
+parse_object:
+    stp     x29, x30, [sp, #-16]!
+    add     x21, x21, #1
+    bl      skip_ws
+    cmp     x21, x20
+    b.hs    err
+    ldrb    w0, [x19, x21]
+    cmp     w0, #0x7D               // '}'
+    b.ne    po_member
+    add     x21, x21, #1
+    b       po_ret
+po_member:
+    cmp     w0, #0x22               // '"'
+    b.ne    err
+    bl      parse_string
+    bl      skip_ws
+    cmp     x21, x20
+    b.hs    err
+    ldrb    w0, [x19, x21]
+    cmp     w0, #0x3A               // ':'
+    b.ne    err
+    add     x21, x21, #1
+    bl      skip_ws
+    bl      parse_value
+    bl      skip_ws
+    cmp     x21, x20
+    b.hs    err
+    ldrb    w0, [x19, x21]
+    cmp     w0, #0x7D               // '}'
+    b.eq    po_close
+    cmp     w0, #0x2C               // ','
+    b.ne    err
+    add     x21, x21, #1
+    bl      skip_ws
+    cmp     x21, x20
+    b.hs    err
+    ldrb    w0, [x19, x21]
+    b       po_member
+po_close:
+    add     x21, x21, #1
+po_ret:
+    ldp     x29, x30, [sp], #16
+    ret
+
+// ---------------------------------------------------------------
+// parse_array: buf[x21] == '[' on entry
+parse_array:
+    stp     x29, x30, [sp, #-16]!
+    add     x21, x21, #1
+    bl      skip_ws
+    cmp     x21, x20
+    b.hs    err
+    ldrb    w0, [x19, x21]
+    cmp     w0, #0x5D               // ']'
+    b.ne    pa_elem
+    add     x21, x21, #1
+    b       pa_ret
+pa_elem:
+    bl      parse_value
+    bl      skip_ws
+    cmp     x21, x20
+    b.hs    err
+    ldrb    w0, [x19, x21]
+    cmp     w0, #0x5D               // ']'
+    b.eq    pa_close
+    cmp     w0, #0x2C               // ','
+    b.ne    err
+    add     x21, x21, #1
+    bl      skip_ws
+    b       pa_elem
+pa_close:
+    add     x21, x21, #1
+pa_ret:
+    ldp     x29, x30, [sp], #16
+    ret

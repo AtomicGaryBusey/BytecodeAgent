@@ -1,0 +1,205 @@
+.globl _start
+
+.section .bss
+    .align 8
+input_buf:
+    .space 32768
+line_offsets:
+    .space 1000*8
+line_lengths:
+    .space 1000*8
+
+.section .rodata
+newline_char:
+    .byte 0x0A
+
+.text
+_start:
+    xor r8, r8                # total_read = 0
+
+read_loop:
+    mov rax, 0                # sys_read
+    mov rdi, 0                # fd = stdin
+    lea rsi, [rip + input_buf]
+    add rsi, r8               # buf = input_buf + total_read
+    mov rdx, 32768
+    sub rdx, r8               # remaining space
+    syscall
+    test rax, rax
+    jz read_done
+    add r8, rax               # total_read += rax
+    cmp r8, 32768
+    ja  read_done
+    jmp read_loop
+
+read_done:
+    xor r9, r9                # src_offset = 0
+    xor r10, r10              # line_count = 0
+
+parse_loop:
+    cmp r9, r8
+    jae parse_done
+
+    mov r11, r9               # line_start = src_offset
+
+    lea rsi, [rip + input_buf]
+    add rsi, r9               # rsi = input_buf + src_offset
+    mov rcx, r8
+    sub rcx, r9               # remaining bytes
+
+scan_loop:
+    test rcx, rcx
+    jz no_newline
+    mov al, byte ptr [rsi]
+    cmp al, 0x0A
+    je found_newline
+    inc rsi
+    inc r9
+    dec rcx
+    jmp scan_loop
+
+found_newline:
+    mov rax, r9
+    sub rax, r11              # length = src_offset - line_start
+    mov rdx, r10
+    mov [line_offsets + rdx*8], r11
+    mov [line_lengths + rdx*8], rax
+    inc r10                   # line_count++
+    inc r9                    # skip newline
+    jmp parse_loop
+
+no_newline:
+    mov rax, r8
+    sub rax, r11              # length = total - line_start
+    mov rdx, r10
+    mov [line_offsets + rdx*8], r11
+    mov [line_lengths + rdx*8], rax
+    inc r10
+    mov r9, r8
+    jmp parse_loop
+
+parse_done:
+    mov rbx, r10              # rbx = line_count
+
+    xor rcx, rcx              # i = 0
+outer_sort:
+    cmp rcx, rbx
+    jge sort_done
+
+    # key = element i
+    mov rax, [line_offsets + rcx*8]   # key_offset
+    mov rdx, [line_lengths + rcx*8]   # key_len
+
+    mov rsi, rcx
+    dec rsi                               # j = i-1
+
+inner_sort:
+    cmp rsi, -1
+    jl place_key
+
+    mov r8,  [line_offsets + rsi*8]   # offset a
+    mov r9,  [line_lengths + rsi*8]   # len a
+
+    # compare a (r8,r9) with key (rax,rdx)
+    mov r12, r9
+    mov r13, rdx
+    cmp r12, r13
+    cmova r12, r13                # r12 = min_len
+
+    lea r14, [rip + input_buf]
+    add r14, r8                   # ptr a
+    lea r15, [rip + input_buf]
+    add r15, rax                  # ptr key
+
+cmp_loop:
+    test r12, r12
+    jz cmp_len_diff
+    mov al, byte ptr [r14]
+    mov bl, byte ptr [r15]
+    cmp al, bl
+    jne cmp_diff
+    inc r14
+    inc r15
+    dec r12
+    jmp cmp_loop
+
+cmp_len_diff:
+    mov eax, r9d
+    sub eax, edx
+    jmp cmp_done
+
+cmp_diff:
+    movzx eax, al
+    movzx ebx, bl
+    sub eax, ebx
+
+cmp_done:
+    cmp eax, 0
+    jg shift_right
+    jmp place_key
+
+shift_right:
+    mov r8, [line_offsets + rsi*8]
+    lea r10, [rsi+1]
+    mov [line_offsets + r10*8], r8
+    mov r8, [line_lengths + rsi*8]
+    mov [line_lengths + r10*8], r8
+    dec rsi
+    jmp inner_sort
+
+place_key:
+    inc rsi
+    mov [line_offsets + rsi*8], rax
+    mov [line_lengths + rsi*8], rdx
+    inc rcx
+    jmp outer_sort
+
+sort_done:
+    xor rcx, rcx                # output index = 0
+
+output_loop:
+    cmp rcx, rbx
+    jge output_done
+
+    mov r8, [line_offsets + rcx*8]   # offset
+    mov rdx, [line_lengths + rcx*8]  # length
+
+    # write line
+    mov rax, 1
+    mov rdi, 1
+    lea rsi, [rip + input_buf]
+    add rsi, r8
+    call write_all
+
+    # write newline
+    mov rax, 1
+    mov rdi, 1
+    lea rsi, [rip + newline_char]
+    mov rdx, 1
+    call write_all
+
+    inc rcx
+    jmp output_loop
+
+output_done:
+    mov rax, 60
+    xor rdi, rdi
+    syscall
+
+# write_all: write full buffer (rdi=fd, rsi=ptr, rdx=count)
+write_all:
+    test rdx, rdx
+    jz .wa_done
+    mov rax, 1          # sys_write
+    syscall
+    test rax, rax
+    jz .wa_error
+    sub rdx, rax
+    add rsi, rax
+    jmp write_all
+.wa_done:
+    ret
+.wa_error:
+    mov rax, 60
+    xor rdi, rdi
+    syscall

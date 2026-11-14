@@ -1,0 +1,212 @@
+.globl _start
+.text
+_start:
+    # read entire stdin into buf
+    xor rbx, rbx                     # total length = 0
+    mov rdi, 0                       # fd = stdin
+    lea rsi, [rip + buf]
+    mov rdx, BUF_SIZE
+read_loop:
+    mov rax, 0                       # sys_read
+    syscall
+    test rax, rax
+    jz read_done
+    add rbx, rax
+    cmp rbx, BUF_SIZE
+    jae read_done
+    lea rsi, [rip + buf + rbx]
+    jmp read_loop
+read_done:
+    mov qword ptr [rel total_len], rbx
+
+    # split at first '!'
+    xor rcx, rcx                     # index = 0
+    mov rdx, rbx                     # len = total_len
+find_excl:
+    cmp rcx, rdx
+    jae no_excl
+    mov al, byte ptr [rip + buf + rcx]
+    cmp al, 0x21                     # '!'
+    je found_excl
+    inc rcx
+    jmp find_excl
+found_excl:
+    mov qword ptr [rel prog_len], rcx
+    mov rax, rbx
+    sub rax, rcx
+    dec rax
+    mov qword ptr [rel input_len], rax
+    mov rax, rcx
+    inc rax
+    mov qword ptr [rel input_offset], rax
+    jmp after_split
+no_excl:
+    mov qword ptr [rel prog_len], rbx
+    mov qword ptr [rel input_len], 0
+    mov qword ptr [rel input_offset], rbx
+after_split:
+    xor rax, rax
+    mov qword ptr [rel input_pos], rax
+
+    # bracket matching
+    xor rbx, rbx                     # stack_ptr = 0
+    xor rcx, rcx                     # i = 0
+    mov rdx, qword ptr [rel prog_len]
+match_loop:
+    cmp rcx, rdx
+    jae match_done
+    mov al, byte ptr [rip + buf + rcx]
+    cmp al, '['
+    je push_bracket
+    cmp al, ']'
+    je pop_bracket
+    jmp inc_i
+push_bracket:
+    mov eax, ecx
+    mov dword ptr [rip + stack + rbx*4], eax
+    inc rbx
+    jmp inc_i
+pop_bracket:
+    dec rbx
+    jl unbalanced
+    mov eax, dword ptr [rip + stack + rbx*4]   # j index
+    mov r8d, ecx                               # i index
+    # match[i] = j
+    mov r9, rcx
+    shl r9, 2
+    mov dword ptr [rip + match + r9], eax
+    # match[j] = i
+    mov r10, rax
+    shl r10, 2
+    mov dword ptr [rip + match + r10], r8d
+    jmp inc_i
+inc_i:
+    inc rcx
+    jmp match_loop
+unbalanced:
+    mov rax, 60
+    mov rdi, 1
+    syscall
+match_done:
+    cmp rbx, 0
+    jne unbalanced
+
+    # execution
+    xor rsi, rsi                     # pc = 0
+    xor rdx, rdx                     # data ptr = 0
+    mov r8, qword ptr [rel prog_len]
+    mov r9, qword ptr [rel input_len]
+    mov r10, qword ptr [rel input_offset]
+    xor r11, r11                     # input_pos = 0
+exec_loop:
+    cmp rsi, r8
+    jae exec_done
+    mov al, byte ptr [rip + buf + rsi]
+    inc rsi
+    cmp al, '>'
+    je inc_ptr
+    cmp al, '<'
+    je dec_ptr
+    cmp al, '+'
+    je inc_cell
+    cmp al, '-'
+    je dec_cell
+    cmp al, '.'
+    je output_cell
+    cmp al, ','
+    je input_cell
+    cmp al, '['
+    je bracket_open
+    cmp al, ']'
+    je bracket_close
+    jmp exec_loop
+inc_ptr:
+    inc rdx
+    jmp exec_loop
+dec_ptr:
+    dec rdx
+    jmp exec_loop
+inc_cell:
+    mov bl, byte ptr [rip + tape + rdx]
+    inc bl
+    mov byte ptr [rip + tape + rdx], bl
+    jmp exec_loop
+dec_cell:
+    mov bl, byte ptr [rip + tape + rdx]
+    dec bl
+    mov byte ptr [rip + tape + rdx], bl
+    jmp exec_loop
+output_cell:
+    movzx edi, byte ptr [rip + tape + rdx]
+    mov byte ptr [rip + out_buf], dil
+    mov rax, 1                       # sys_write
+    mov rdi, 1                       # stdout
+    lea rsi, [rip + out_buf]
+    mov rdx, 1
+    syscall
+    jmp exec_loop
+input_cell:
+    cmp r11, r9
+    jae input_eof
+    mov rax, r10
+    add rax, r11
+    mov bl, byte ptr [rip + buf + rax]
+    inc r11
+    mov byte ptr [rip + tape + rdx], bl
+    jmp exec_loop
+input_eof:
+    mov byte ptr [rip + tape + rdx], 0
+    jmp exec_loop
+bracket_open:
+    mov bl, byte ptr [rip + tape + rdx]
+    test bl, bl
+    jne exec_loop
+    mov rcx, rsi
+    dec rcx
+    mov rax, rcx
+    shl rax, 2
+    mov ebx, dword ptr [rip + match + rax]
+    inc rbx
+    mov rsi, rbx
+    jmp exec_loop
+bracket_close:
+    mov bl, byte ptr [rip + tape + rdx]
+    test bl, bl
+    je exec_loop
+    mov rcx, rsi
+    dec rcx
+    mov rax, rcx
+    shl rax, 2
+    mov ebx, dword ptr [rip + match + rax]
+    inc rbx
+    mov rsi, rbx
+    jmp exec_loop
+exec_done:
+    mov rax, 60
+    xor rdi, rdi
+    syscall
+
+# data
+.section .bss
+.align 8
+total_len:      .quad 0
+prog_len:       .quad 0
+input_len:      .quad 0
+input_offset:   .quad 0
+input_pos:      .quad 0
+
+.align 16
+buf:            .space BUF_SIZE
+.align 4
+match:          .space BUF_SIZE*4
+.align 1
+tape:           .space TAPE_SIZE
+.align 4
+stack:          .space MAX_STACK*4
+.align 1
+out_buf:        .byte 0
+
+# constants
+.equ BUF_SIZE, 65536
+.equ TAPE_SIZE, 30000
+.equ MAX_STACK, 1000

@@ -1,0 +1,168 @@
+.globl _start
+
+.equ MAX_INPUT, 32768
+.equ MAX_LINES, 1000
+.equ SYS_READ,   0
+.equ SYS_WRITE,  1
+.equ SYS_EXIT,   60
+
+.section .bss
+.align 16
+input_buf:
+    .zero MAX_INPUT
+.align 8
+line_ptrs:
+    .zero MAX_LINES*8
+.align 4
+line_lens:
+    .zero MAX_LINES*4
+
+.section .rodata
+nl:
+    .byte 0x0A
+
+.text
+_start:
+    # buffer base in r12
+    lea r12, [rip + input_buf]
+    xor rbx, rbx                # total_len = 0
+
+read_loop:
+    mov     rax, SYS_READ
+    xor     rdi, rdi            # fd = 0
+    lea     rsi, [r12 + rbx]    # dest = buffer + total_len
+    mov     rdx, MAX_INPUT
+    sub     rdx, rbx            # remaining space
+    syscall
+    test    rax, rax
+    jz      read_done
+    add     rbx, rax            # total_len += bytes read
+    jmp     read_loop
+
+read_done:
+    # prepare pointers to line tables
+    lea r13, [rip + line_ptrs]  # line_ptrs base
+    lea r14, [rip + line_lens]  # line_lens base
+
+    xor rsi, rsi                # i = 0 (scan index)
+    xor r9, r9                  # start = 0 (begin of current line)
+    xor rdx, rdx                # line_cnt = 0
+
+parse_loop:
+    cmp rsi, rbx                # i == total_len ?
+    je  parse_done
+
+    mov al, byte ptr [r12 + rsi]
+    cmp al, 0x0A                # newline ?
+    je  newline_found
+
+    inc rsi
+    jmp parse_loop
+
+newline_found:
+    # length = i - start
+    mov rcx, rsi
+    sub rcx, r9
+    # pointer = buffer + start
+    lea rax, [r12 + r9]
+    # store
+    mov [r13 + rdx*8], rax
+    mov [r14 + rdx*4], ecx
+    inc rdx                     # line_cnt++
+
+    inc rsi                     # skip newline
+    mov r9, rsi                 # new start = i
+    jmp parse_loop
+
+parse_done:
+    cmp r9, rbx                # any remaining bytes?
+    je  no_final_line
+
+    mov rcx, rbx
+    sub rcx, r9                # length = total_len - start
+    lea rax, [r12 + r9]
+    mov [r13 + rdx*8], rax
+    mov [r14 + rdx*4], ecx
+    inc rdx                     # line_cnt++
+
+no_final_line:
+    mov r11, rdx                # r11 = line_cnt
+
+    cmp r11, 1
+    jbe sort_done               # 0 or 1 line, no need to sort
+
+    # bubble sort (ascending)
+    mov rdx, r11                # outer counter = line_cnt
+    dec rdx                     # outer passes = line_cnt-1
+
+outer_loop:
+    cmp rdx, 0
+    jl  sort_done
+
+    xor r8, r8                  # inner index i = 0
+inner_loop:
+    mov r9, r11
+    dec r9                      # limit = line_cnt-1
+    cmp r8, r9
+    jae inner_done
+
+    # load a
+    mov rax, [r13 + r8*8]       # ptr a
+    mov rsi, [r14 + r8*4]       # len a
+    # load b (i+1)
+    lea r10, [r8 + 1]
+    mov rbx, [r13 + r10*8]      # ptr b
+    mov rcx, [r14 + r10*4]      # len b
+
+    # compare a vs b
+    mov rdi, rax
+    mov rdx, rbx
+    call compare                # result in rax
+
+    cmp rax, 0
+    jle no_swap
+
+    # swap pointers
+    mov rsi, [r13 + r8*8]
+    mov rdi, [r13 + r10*8]
+    mov [r13 + r8*8], rdi
+    mov [r13 + r10*8], rsi
+
+    # swap lengths (32‑bit)
+    mov esi, [r14 + r8*4]
+    mov edi, [r14 + r10*4]
+    mov [r14 + r8*4], edi
+    mov [r14 + r10*4], esi
+
+no_swap:
+    inc r8
+    jmp inner_loop
+
+inner_done:
+    dec rdx
+    jmp outer_loop
+
+sort_done:
+    # output sorted lines
+    xor r8, r8                  # idx = 0
+
+output_loop:
+    cmp r8, r11
+    jae output_done
+
+    mov rsi, [r13 + r8*8]       # line pointer
+    mov rdx, [r14 + r8*4]       # line length
+    mov rax, SYS_WRITE
+    mov rdi, 1
+    syscall
+
+    # write newline
+    mov rax, SYS_WRITE
+    mov rdi, 1
+    lea rsi, [rip + nl]
+    mov rdx, 1
+    syscall
+
+    inc r8
+    jjmp output_loop
+

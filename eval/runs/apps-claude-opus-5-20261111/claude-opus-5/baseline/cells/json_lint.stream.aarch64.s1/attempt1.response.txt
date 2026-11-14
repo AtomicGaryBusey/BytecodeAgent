@@ -1,0 +1,351 @@
+.globl _start
+
+.text
+_start:
+    adrp    x19, buf
+    add     x19, x19, :lo12:buf
+    mov     x20, xzr
+rd_loop:
+    mov     x2, #65536
+    sub     x2, x2, x20
+    cbz     x2, rd_done
+    add     x1, x19, x20
+    mov     x0, xzr
+    mov     x8, #63
+    svc     #0
+    cmp     x0, #0
+    b.le    rd_done
+    add     x20, x20, x0
+    b       rd_loop
+rd_done:
+    mov     x21, xzr
+    bl      skip_ws
+    bl      parse_value
+    bl      skip_ws
+    cmp     x21, x20
+    b.ne    fail
+    adrp    x1, s_ok
+    add     x1, x1, :lo12:s_ok
+    mov     x2, #3
+    mov     x0, #1
+    mov     x8, #64
+    svc     #0
+    mov     x0, xzr
+    mov     x8, #93
+    svc     #0
+
+fail:
+    adrp    x1, s_err
+    add     x1, x1, :lo12:s_err
+    mov     x2, #9
+    mov     x0, #1
+    mov     x8, #64
+    svc     #0
+    adrp    x1, numbuf
+    add     x1, x1, :lo12:numbuf
+    add     x9, x1, #32
+    sub     x3, x9, #1
+    mov     w0, #10
+    strb    w0, [x3]
+    mov     x4, x21
+    mov     x5, #10
+f_dig:
+    udiv    x6, x4, x5
+    msub    x7, x6, x5, x4
+    add     w7, w7, #48
+    sub     x3, x3, #1
+    strb    w7, [x3]
+    mov     x4, x6
+    cbnz    x4, f_dig
+    sub     x2, x9, x3
+    mov     x1, x3
+    mov     x0, #1
+    mov     x8, #64
+    svc     #0
+    mov     x0, #1
+    mov     x8, #93
+    svc     #0
+
+// ---- skip whitespace (leaf) ----
+skip_ws:
+    ldrb    w0, [x19, x21]
+    cmp     w0, #0x20
+    b.eq    sw_adv
+    cmp     w0, #0x09
+    b.eq    sw_adv
+    cmp     w0, #0x0a
+    b.eq    sw_adv
+    cmp     w0, #0x0d
+    b.ne    sw_done
+sw_adv:
+    add     x21, x21, #1
+    b       skip_ws
+sw_done:
+    ret
+
+// ---- match literal: x0 = asciz pointer (leaf) ----
+match_lit:
+    ldrb    w1, [x0], #1
+    cbz     w1, ml_done
+    ldrb    w2, [x19, x21]
+    cmp     w1, w2
+    b.ne    fail
+    add     x21, x21, #1
+    b       match_lit
+ml_done:
+    ret
+
+// ---- value ----
+parse_value:
+    stp     x29, x30, [sp, #-16]!
+    ldrb    w0, [x19, x21]
+    cmp     w0, #0x7b
+    b.eq    pv_obj
+    cmp     w0, #0x5b
+    b.eq    pv_arr
+    cmp     w0, #0x22
+    b.eq    pv_str
+    cmp     w0, #0x74
+    b.eq    pv_true
+    cmp     w0, #0x66
+    b.eq    pv_false
+    cmp     w0, #0x6e
+    b.eq    pv_null
+    cmp     w0, #0x2d
+    b.eq    pv_num
+    sub     w1, w0, #0x30
+    cmp     w1, #10
+    b.lo    pv_num
+    b       fail
+pv_obj:
+    bl      parse_object
+    b       pv_ret
+pv_arr:
+    bl      parse_array
+    b       pv_ret
+pv_str:
+    bl      parse_string
+    b       pv_ret
+pv_num:
+    bl      parse_number
+    b       pv_ret
+pv_true:
+    adrp    x0, lit_true
+    add     x0, x0, :lo12:lit_true
+    bl      match_lit
+    b       pv_ret
+pv_false:
+    adrp    x0, lit_false
+    add     x0, x0, :lo12:lit_false
+    bl      match_lit
+    b       pv_ret
+pv_null:
+    adrp    x0, lit_null
+    add     x0, x0, :lo12:lit_null
+    bl      match_lit
+pv_ret:
+    ldp     x29, x30, [sp], #16
+    ret
+
+// ---- string (leaf), buf[pos] == '"' ----
+parse_string:
+    add     x21, x21, #1
+ps_loop:
+    ldrb    w0, [x19, x21]
+    cmp     w0, #0x22
+    b.eq    ps_end
+    cmp     w0, #0x5c
+    b.eq    ps_esc
+    cmp     w0, #0x20
+    b.lo    fail
+    add     x21, x21, #1
+    b       ps_loop
+ps_end:
+    add     x21, x21, #1
+    ret
+ps_esc:
+    add     x21, x21, #1
+    ldrb    w0, [x19, x21]
+    cmp     w0, #0x75
+    b.eq    ps_hex
+    cmp     w0, #0x22
+    b.eq    ps_e1
+    cmp     w0, #0x5c
+    b.eq    ps_e1
+    cmp     w0, #0x2f
+    b.eq    ps_e1
+    cmp     w0, #0x62
+    b.eq    ps_e1
+    cmp     w0, #0x66
+    b.eq    ps_e1
+    cmp     w0, #0x6e
+    b.eq    ps_e1
+    cmp     w0, #0x72
+    b.eq    ps_e1
+    cmp     w0, #0x74
+    b.eq    ps_e1
+    b       fail
+ps_e1:
+    add     x21, x21, #1
+    b       ps_loop
+ps_hex:
+    add     x21, x21, #1
+    mov     w3, #4
+ps_hloop:
+    ldrb    w0, [x19, x21]
+    sub     w1, w0, #0x30
+    cmp     w1, #10
+    b.lo    ps_hok
+    orr     w2, w0, #0x20
+    sub     w1, w2, #0x61
+    cmp     w1, #6
+    b.hs    fail
+ps_hok:
+    add     x21, x21, #1
+    subs    w3, w3, #1
+    b.ne    ps_hloop
+    b       ps_loop
+
+// ---- number (leaf) ----
+parse_number:
+    ldrb    w0, [x19, x21]
+    cmp     w0, #0x2d
+    b.ne    pn_int
+    add     x21, x21, #1
+pn_int:
+    ldrb    w0, [x19, x21]
+    cmp     w0, #0x30
+    b.ne    pn_nz
+    add     x21, x21, #1
+    b       pn_frac
+pn_nz:
+    sub     w1, w0, #0x31
+    cmp     w1, #9
+    b.hs    fail
+pn_dloop:
+    add     x21, x21, #1
+    ldrb    w0, [x19, x21]
+    sub     w1, w0, #0x30
+    cmp     w1, #10
+    b.lo    pn_dloop
+pn_frac:
+    ldrb    w0, [x19, x21]
+    cmp     w0, #0x2e
+    b.ne    pn_exp
+    add     x21, x21, #1
+    ldrb    w0, [x19, x21]
+    sub     w1, w0, #0x30
+    cmp     w1, #10
+    b.hs    fail
+pn_floop:
+    add     x21, x21, #1
+    ldrb    w0, [x19, x21]
+    sub     w1, w0, #0x30
+    cmp     w1, #10
+    b.lo    pn_floop
+pn_exp:
+    ldrb    w0, [x19, x21]
+    orr     w1, w0, #0x20
+    cmp     w1, #0x65
+    b.ne    pn_done
+    add     x21, x21, #1
+    ldrb    w0, [x19, x21]
+    cmp     w0, #0x2b
+    b.eq    pn_sign
+    cmp     w0, #0x2d
+    b.ne    pn_edig
+pn_sign:
+    add     x21, x21, #1
+pn_edig:
+    ldrb    w0, [x19, x21]
+    sub     w1, w0, #0x30
+    cmp     w1, #10
+    b.hs    fail
+pn_eloop:
+    add     x21, x21, #1
+    ldrb    w0, [x19, x21]
+    sub     w1, w0, #0x30
+    cmp     w1, #10
+    b.lo    pn_eloop
+pn_done:
+    ret
+
+// ---- object ----
+parse_object:
+    stp     x29, x30, [sp, #-16]!
+    add     x21, x21, #1
+    bl      skip_ws
+    ldrb    w0, [x19, x21]
+    cmp     w0, #0x7d
+    b.eq    po_close
+po_member:
+    ldrb    w0, [x19, x21]
+    cmp     w0, #0x22
+    b.ne    fail
+    bl      parse_string
+    bl      skip_ws
+    ldrb    w0, [x19, x21]
+    cmp     w0, #0x3a
+    b.ne    fail
+    add     x21, x21, #1
+    bl      skip_ws
+    bl      parse_value
+    bl      skip_ws
+    ldrb    w0, [x19, x21]
+    cmp     w0, #0x2c
+    b.ne    po_maybe
+    add     x21, x21, #1
+    bl      skip_ws
+    b       po_member
+po_maybe:
+    cmp     w0, #0x7d
+    b.ne    fail
+po_close:
+    add     x21, x21, #1
+    ldp     x29, x30, [sp], #16
+    ret
+
+// ---- array ----
+parse_array:
+    stp     x29, x30, [sp, #-16]!
+    add     x21, x21, #1
+    bl      skip_ws
+    ldrb    w0, [x19, x21]
+    cmp     w0, #0x5d
+    b.eq    pa_close
+pa_elem:
+    bl      parse_value
+    bl      skip_ws
+    ldrb    w0, [x19, x21]
+    cmp     w0, #0x2c
+    b.ne    pa_maybe
+    add     x21, x21, #1
+    bl      skip_ws
+    b       pa_elem
+pa_maybe:
+    cmp     w0, #0x5d
+    b.ne    fail
+pa_close:
+    add     x21, x21, #1
+    ldp     x29, x30, [sp], #16
+    ret
+
+.section .rodata
+.balign 8
+s_ok:
+    .ascii "ok\n"
+s_err:
+    .ascii "error at "
+lit_true:
+    .asciz "true"
+lit_false:
+    .asciz "false"
+lit_null:
+    .asciz "null"
+
+.bss
+.balign 16
+buf:
+    .zero 65552
+numbuf:
+    .zero 32

@@ -1,0 +1,279 @@
+	.globl	_start
+	.text
+_start:
+	// read all stdin into input_buf
+	mov	x0, #0                // fd = stdin
+	adrp	x1, input_buf
+	add	x1, x1, :lo12:input_buf
+	mov	x2, #65536
+	mov	x8, #63               // sys_read
+	svc	#0
+	cmp	x0, #0
+	beq	_read_done
+	mov	x9, x0                // bytes read this call
+	mov	x10, #0               // total offset
+_read_loop:
+	add	x10, x10, x9
+	cbz	x9, _read_done
+	add	x1, x1, x9            // advance buffer pointer
+	mov	x0, #0
+	mov	x2, #65536
+	sub	x2, x2, x10           // remaining space
+	mov	x8, #63
+	svc	#0
+	mov	x9, x0
+	b	_read_loop
+_read_done:
+	// total length in x10 (if no reads, x10 = 0)
+	mov	x11, x10              // total_len
+
+	// find first '!' byte
+	mov	x12, #0                // index
+_find_bang:
+	cmp	x12, x11
+	bge	_no_bang
+	adrp	x0, input_buf
+	add	x0, x0, :lo12:input_buf
+	add	x0, x0, x12
+	ldrb	w0, [x0]
+	cmp	w0, #0x21            // '!'
+	beq	_found_bang
+	add	x12, x12, #1
+	b	_find_bang
+_found_bang:
+	// program length = x12
+	mov	x14, x12              // prog_len
+	add	x15, x12, #1          // input_start offset
+	sub	x16, x11, x15         // input_len
+	b	_after_split
+_no_bang:
+	// whole input is program
+	mov	x14, x11              // prog_len
+	mov	x15, #0               // input_start = empty
+	mov	x16, #0               // input_len = 0
+_after_split:
+
+	// bracket balance check
+	mov	x17, #0               // balance counter
+	mov	x18, #0               // index i
+_bal_loop:
+	cmp	x18, x14
+	bge	_bal_done
+	adrp	x0, input_buf
+	add	x0, x0, :lo12:input_buf
+	add	x0, x0, x18
+	ldrb	w0, [x0]
+	cmp	w0, #'['
+	beq	_bal_inc
+	cmp	w0, #']'
+	beq	_bal_dec
+	add	x18, x18, #1
+	b	_bal_loop
+_bal_inc:
+	add	x17, x17, #1
+	add	x18, x18, #1
+	b	_bal_loop
+_bal_dec:
+	sub	x17, x17, #1
+	tst	x17, x17
+	bmi	_err_unbalanced
+	add	x18, x18, #1
+	b	_bal_loop
+_bal_done:
+	cmp	x17, #0
+	bne	_err_unbalanced
+	b	_exec_start
+
+_err_unbalanced:
+	// exit status 1
+	mov	x0, #1
+	mov	x8, #93
+	svc	#0
+
+_exec_start:
+	// tape pointer index
+	mov	x19, #0
+	// input pointer index (relative to input start)
+	mov	x20, #0
+	// program counter index
+	mov	x21, #0
+
+_exec_loop:
+	cmp	x21, x14
+	bge	_exec_done
+	adrp	x0, input_buf
+	add	x0, x0, :lo12:input_buf
+	add	x0, x0, x21
+	ldrb	w0, [x0]
+	cmp	w0, #'>'
+	beq	_cmd_inc_ptr
+	cmp	w0, #'<'
+	beq	_cmd_dec_ptr
+	cmp	w0, #'+'
+	beq	_cmd_inc_cell
+	cmp	w0, #'-'
+	beq	_cmd_dec_cell
+	cmp	w0, #'.'
+	beq	_cmd_output
+	cmp	w0, #','
+	beq	_cmd_input
+	cmp	w0, #'['
+	beq	_cmd_bracket_open
+	cmp	w0, #']'
+	beq	_cmd_bracket_close
+	// ignore other chars
+	add	x21, x21, #1
+	b	_exec_loop
+
+_cmd_inc_ptr:
+	add	x19, x19, #1
+	add	x21, x21, #1
+	b	_exec_loop
+_cmd_dec_ptr:
+	sub	x19, x19, #1
+	add	x21, x21, #1
+	b	_exec_loop
+_cmd_inc_cell:
+	adrp	x0, tape
+	add	x0, x0, :lo12:tape
+	add	x0, x0, x19
+	ldrb	w1, [x0]
+	add	w1, w1, #1
+	strb	w1, [x0]
+	add	x21, x21, #1
+	b	_exec_loop
+_cmd_dec_cell:
+	adrp	x0, tape
+	add	x0, x0, :lo12:tape
+	add	x0, x0, x19
+	ldrb	w1, [x0]
+	sub	w1, w1, #1
+	strb	w1, [x0]
+	add	x21, x21, #1
+	b	_exec_loop
+_cmd_output:
+	adrp	x0, tape
+	add	x0, x0, :lo12:tape
+	add	x0, x0, x19
+	ldrb	w1, [x0]
+	adrp	x2, out_buf
+	add	x2, x2, :lo12:out_buf
+	strb	w1, [x2]
+	mov	x0, #1               // fd = stdout
+	mov	x1, x2               // buffer
+	mov	x2, #1               // count
+	mov	x8, #64              // sys_write
+	svc	#0
+	add	x21, x21, #1
+	b	_exec_loop
+_cmd_input:
+	cmp	x20, x16
+	bge	_input_eof
+	// address = input_buf + input_start + input_ptr
+	mov	x22, x15
+	add	x22, x22, x20
+	adrp	x0, input_buf
+	add	x0, x0, :lo12:input_buf
+	add	x0, x0, x22
+	ldrb	w1, [x0]
+	b	_store_input
+_input_eof:
+	mov	w1, #0
+_store_input:
+	adrp	x0, tape
+	add	x0, x0, :lo12:tape
+	add	x0, x0, x19
+	strb	w1, [x0]
+	add	x20, x20, #1
+	add	x21, x21, #1
+	b	_exec_loop
+
+_cmd_bracket_open:
+	adrp	x0, tape
+	add	x0, x0, :lo12:tape
+	add	x0, x0, x19
+	ldrb	w0, [x0]
+	cbz	w0, _bracket_skip_forward
+	add	x21, x21, #1
+	b	_exec_loop
+_bracket_skip_forward:
+	mov	x23, #1               // nest
+	add	x24, x21, #1          // idx
+_bracket_forward_loop:
+	cmp	x24, x14
+	bge	_err_unbalanced
+	adrp	x0, input_buf
+	add	x0, x0, :lo12:input_buf
+	add	x0, x0, x24
+	ldrb	w0, [x0]
+	cmp	w0, #'['
+	beq	_inc_nest_fwd
+	cmp	w0, #']'
+	beq	_dec_nest_fwd
+	add	x24, x24, #1
+	b	_bracket_forward_loop
+_inc_nest_fwd:
+	add	x23, x23, #1
+	add	x24, x24, #1
+	b	_bracket_forward_loop
+_dec_nest_fwd:
+	sub	x23, x23, #1
+	add	x24, x24, #1
+	cmp	x23, #0
+	bne	_bracket_forward_loop
+	// found matching ']'
+	mov	x21, x24
+	b	_exec_loop
+
+_cmd_bracket_close:
+	adrp	x0, tape
+	add	x0, x0, :lo12:tape
+	add	x0, x0, x19
+	ldrb	w0, [x0]
+	cbz	w0, _bracket_continue
+	// need to find matching '[' backwards
+	mov	x23, #1               // nest
+	sub	x24, x21, #1          // idx
+_bracket_back_loop:
+	cmp	x24, #0
+	blt	_err_unbalanced
+	adrp	x0, input_buf
+	add	x0, x0, :lo12:input_buf
+	add	x0, x0, x24
+	ldrb	w0, [x0]
+	cmp	w0, #']'
+	beq	_inc_nest_back
+	cmp	w0, #'['
+	beq	_dec_nest_back
+	sub	x24, x24, #1
+	b	_bracket_back_loop
+_inc_nest_back:
+	add	x23, x23, #1
+	sub	x24, x24, #1
+	b	_bracket_back_loop
+_dec_nest_back:
+	sub	x23, x23, #1
+	sub	x24, x24, #1
+	cmp	x23, #0
+	bne	_bracket_back_loop
+	// matching '[' at x24
+	add	x21, x24, #1
+	b	_exec_loop
+_bracket_continue:
+	add	x21, x21, #1
+	b	_exec_loop
+
+_exec_done:
+	mov	x0, #0
+	mov	x8, #93
+	svc	#0
+
+	// Data sections
+	.section .bss
+	.align 8
+input_buf:
+	.space 65536
+out_buf:
+	.space 1
+tape:
+	.space 30000

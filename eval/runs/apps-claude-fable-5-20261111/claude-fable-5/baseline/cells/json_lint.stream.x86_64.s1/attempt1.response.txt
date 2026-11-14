@@ -1,0 +1,365 @@
+.text
+.globl _start
+
+_start:
+    # read all of stdin into buf
+    xor r12, r12                      # total bytes read
+rd_loop:
+    mov edx, 65536
+    sub edx, r12d
+    jle rd_done
+    xor eax, eax                      # sys_read
+    xor edi, edi                      # fd 0
+    lea rsi, [rip + buf]
+    add rsi, r12
+    syscall
+    test rax, rax
+    jle rd_done
+    add r12, rax
+    jmp rd_loop
+rd_done:
+    lea rbx, [rip + buf]              # rbx = buffer base
+    xor r13, r13                      # r13 = position
+
+    call skip_ws
+    call parse_value
+    call skip_ws
+    cmp r13, r12
+    jne fail_here
+
+    # success: print "ok\n", exit 0
+    mov eax, 1
+    mov edi, 1
+    lea rsi, [rip + okmsg]
+    mov edx, 3
+    syscall
+    mov eax, 60
+    xor edi, edi
+    syscall
+
+# ---------------- error reporting ----------------
+fail_here:
+    mov rdi, r13
+    jmp fail
+fail_eof:
+    mov rdi, r12
+fail:                                  # rdi = offset, never returns
+    mov rax, rdi
+    lea rsi, [rip + numbuf + 31]
+    mov byte ptr [rsi], 10             # newline
+    mov rcx, 10
+fd_loop:
+    dec rsi
+    xor edx, edx
+    div rcx
+    add dl, '0'
+    mov byte ptr [rsi], dl
+    test rax, rax
+    jnz fd_loop
+    mov r14, rsi                       # start of digits
+    mov eax, 1
+    mov edi, 1
+    lea rsi, [rip + errmsg]
+    mov edx, errmsg_len
+    syscall
+    mov rsi, r14
+    lea rdx, [rip + numbuf + 32]
+    sub rdx, rsi
+    mov eax, 1
+    mov edi, 1
+    syscall
+    mov eax, 60
+    mov edi, 1
+    syscall
+
+# ---------------- whitespace ----------------
+skip_ws:
+sw_loop:
+    cmp r13, r12
+    jae sw_done
+    movzx eax, byte ptr [rbx + r13]
+    cmp al, 0x20
+    je sw_adv
+    cmp al, 0x09
+    je sw_adv
+    cmp al, 0x0a
+    je sw_adv
+    cmp al, 0x0d
+    jne sw_done
+sw_adv:
+    inc r13
+    jmp sw_loop
+sw_done:
+    ret
+
+# ---------------- value dispatch ----------------
+parse_value:
+    cmp r13, r12
+    jae fail_eof
+    movzx eax, byte ptr [rbx + r13]
+    cmp al, '{'
+    je parse_object
+    cmp al, '['
+    je parse_array
+    cmp al, '"'
+    je parse_string
+    cmp al, 't'
+    je pv_true
+    cmp al, 'f'
+    je pv_false
+    cmp al, 'n'
+    je pv_null
+    cmp al, '-'
+    je parse_number
+    sub al, '0'
+    cmp al, 9
+    jbe parse_number
+    jmp fail_here
+pv_true:
+    lea rsi, [rip + lit_true]
+    jmp match_lit
+pv_false:
+    lea rsi, [rip + lit_false]
+    jmp match_lit
+pv_null:
+    lea rsi, [rip + lit_null]
+match_lit:
+ml_loop:
+    movzx eax, byte ptr [rsi]
+    test al, al
+    jz ml_done
+    cmp r13, r12
+    jae fail_eof
+    cmp al, byte ptr [rbx + r13]
+    jne fail_here
+    inc r13
+    inc rsi
+    jmp ml_loop
+ml_done:
+    ret
+
+# ---------------- string ----------------
+parse_string:
+    inc r13                            # consume opening quote
+ps_loop:
+    cmp r13, r12
+    jae fail_eof
+    movzx eax, byte ptr [rbx + r13]
+    cmp al, '"'
+    je ps_close
+    cmp al, 0x5c
+    je ps_esc
+    cmp al, 0x20
+    jb fail_here
+    inc r13
+    jmp ps_loop
+ps_close:
+    inc r13
+    ret
+ps_esc:
+    inc r13                            # consume backslash
+    cmp r13, r12
+    jae fail_eof
+    movzx eax, byte ptr [rbx + r13]
+    cmp al, 'u'
+    je ps_hex
+    cmp al, '"'
+    je ps_eok
+    cmp al, 0x5c
+    je ps_eok
+    cmp al, '/'
+    je ps_eok
+    cmp al, 'b'
+    je ps_eok
+    cmp al, 'f'
+    je ps_eok
+    cmp al, 'n'
+    je ps_eok
+    cmp al, 'r'
+    je ps_eok
+    cmp al, 't'
+    je ps_eok
+    jmp fail_here
+ps_eok:
+    inc r13
+    jmp ps_loop
+ps_hex:
+    inc r13                            # consume 'u'
+    mov r15d, 4
+ps_hloop:
+    cmp r13, r12
+    jae fail_eof
+    movzx eax, byte ptr [rbx + r13]
+    mov edx, eax
+    sub dl, '0'
+    cmp dl, 9
+    jbe ps_hok
+    or al, 0x20
+    sub al, 'a'
+    cmp al, 5
+    ja fail_here
+ps_hok:
+    inc r13
+    dec r15d
+    jnz ps_hloop
+    jmp ps_loop
+
+# ---------------- number ----------------
+parse_number:
+    movzx eax, byte ptr [rbx + r13]
+    cmp al, '-'
+    jne pn_int
+    inc r13
+    cmp r13, r12
+    jae fail_eof
+    movzx eax, byte ptr [rbx + r13]
+pn_int:
+    sub al, '0'
+    cmp al, 9
+    ja fail_here
+    inc r13
+    test al, al
+    jz pn_frac                         # leading 0: no further int digits
+pn_iloop:
+    cmp r13, r12
+    jae pn_done
+    movzx eax, byte ptr [rbx + r13]
+    sub al, '0'
+    cmp al, 9
+    ja pn_frac
+    inc r13
+    jmp pn_iloop
+pn_frac:
+    cmp r13, r12
+    jae pn_done
+    movzx eax, byte ptr [rbx + r13]
+    cmp al, '.'
+    jne pn_exp
+    inc r13
+    cmp r13, r12
+    jae fail_eof
+    movzx eax, byte ptr [rbx + r13]
+    sub al, '0'
+    cmp al, 9
+    ja fail_here
+    inc r13
+pn_floop:
+    cmp r13, r12
+    jae pn_done
+    movzx eax, byte ptr [rbx + r13]
+    sub al, '0'
+    cmp al, 9
+    ja pn_exp
+    inc r13
+    jmp pn_floop
+pn_exp:
+    movzx eax, byte ptr [rbx + r13]
+    or al, 0x20
+    cmp al, 'e'
+    jne pn_done
+    inc r13
+    cmp r13, r12
+    jae fail_eof
+    movzx eax, byte ptr [rbx + r13]
+    cmp al, '+'
+    je pn_sign
+    cmp al, '-'
+    jne pn_edig
+pn_sign:
+    inc r13
+    cmp r13, r12
+    jae fail_eof
+    movzx eax, byte ptr [rbx + r13]
+pn_edig:
+    sub al, '0'
+    cmp al, 9
+    ja fail_here
+    inc r13
+pn_eloop:
+    cmp r13, r12
+    jae pn_done
+    movzx eax, byte ptr [rbx + r13]
+    sub al, '0'
+    cmp al, 9
+    ja pn_done
+    inc r13
+    jmp pn_eloop
+pn_done:
+    ret
+
+# ---------------- object ----------------
+parse_object:
+    inc r13                            # consume '{'
+    call skip_ws
+    cmp r13, r12
+    jae fail_eof
+    movzx eax, byte ptr [rbx + r13]
+    cmp al, '}'
+    jne po_member
+    inc r13
+    ret
+po_member:
+    cmp al, '"'
+    jne fail_here
+    call parse_string
+    call skip_ws
+    cmp r13, r12
+    jae fail_eof
+    cmp byte ptr [rbx + r13], ':'
+    jne fail_here
+    inc r13
+    call skip_ws
+    call parse_value
+    call skip_ws
+    cmp r13, r12
+    jae fail_eof
+    movzx eax, byte ptr [rbx + r13]
+    cmp al, '}'
+    jne po_comma
+    inc r13
+    ret
+po_comma:
+    cmp al, ','
+    jne fail_here
+    inc r13
+    call skip_ws
+    cmp r13, r12
+    jae fail_eof
+    movzx eax, byte ptr [rbx + r13]
+    jmp po_member
+
+# ---------------- array ----------------
+parse_array:
+    inc r13                            # consume '['
+    call skip_ws
+    cmp r13, r12
+    jae fail_eof
+    cmp byte ptr [rbx + r13], ']'
+    jne pa_elem
+    inc r13
+    ret
+pa_elem:
+    call parse_value
+    call skip_ws
+    cmp r13, r12
+    jae fail_eof
+    movzx eax, byte ptr [rbx + r13]
+    cmp al, ']'
+    jne pa_comma
+    inc r13
+    ret
+pa_comma:
+    cmp al, ','
+    jne fail_here
+    inc r13
+    call skip_ws
+    jmp pa_elem
+
+# ---------------- data ----------------
+.section .rodata
+okmsg:
+    .ascii "ok\n"
+errmsg:
+    .ascii "error at "
+errmsg_len = . - errmsg
+lit

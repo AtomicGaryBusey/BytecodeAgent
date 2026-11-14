@@ -1,0 +1,90 @@
+	.text
+	.globl _start
+_start:
+	// Load base addresses (preserve in callee‑saved registers)
+	adrp	x19, buf                // x19 = &buf
+	add	x19, x19, :lo12:buf
+	adrp	x20, input_len          // x20 = &input_len
+	add	x20, x20, :lo12:input_len
+	adrp	x21, linebuf            // x21 = &linebuf
+	add	x21, x21, :lo12:linebuf
+	adrp	x22, hexchars           // x22 = &hexchars
+	add	x22, x22, :lo12:hexchars
+
+	// ---------- read input ----------
+	// *input_len = 0 (already zero in .bss)
+read_loop:
+	ldr	x0, [x20]               // x0 = input_len
+	mov	x1, #65536
+	sub	x1, x1, x0              // x1 = remaining space
+	cbnz	x1, 1f
+	b	read_done                 // no space left (should not happen)
+1:
+	// read up to 4096 or remaining, whichever is smaller
+	mov	x2, #4096
+	cmp	x1, x2
+	csel	x1, x2, x1, hi         // x1 = chunk size
+	// syscall read(fd=0, buf+offset, count)
+	mov	x0, #0                  // fd
+	add	x2, x19, x0             // x2 = &buf + offset (offset in x0 currently 0)
+	add	x2, x2, x0              // actually need offset in x0? we stored offset in x0 above; reuse:
+	// Wait: offset is in x0 (input_len). We'll recompute buffer pointer:
+	add	x2, x19, x0             // buf + offset
+	mov	x3, x1                  // count
+	mov	x8, #63                 // sys_read
+	svc	#0
+	cbnz	x0, 2f                  // bytes read != 0
+	b	read_done                 // EOF
+2:
+	// add bytes read to *input_len
+	ldr	x1, [x20]
+	add	x1, x1, x0
+	str	x1, [x20]
+	b	read_loop
+read_done:
+
+	// ---------- dump ----------
+	mov	x23, #0                    // offset = 0
+dump_loop:
+	ldr	x24, [x20]                 // total_len
+	cmp	x23, x24
+	bge	dump_done                // finished all data
+	// n = min(16, total_len - offset)
+	sub	x25, x24, x23              // remaining
+	mov	x26, #16
+	cmp	x25, x26
+	csel	x25, x26, x25, lo        // x25 = n (bytes in this line)
+
+	// x27 = linebuf pointer
+	mov	x27, x21
+
+	// ----- write offset (8 hex digits) -----
+	mov	x28, x23                  // value to convert
+	mov	x9, #8                    // digit counter
+offset_digit_loop:
+	sub	x9, x9, #1
+	lsl	x10, x9, #2               // shift = digit*4
+	lsr	x11, x28, x10
+	and	x11, x11, #0xF
+	ldrb	w12, [x22, x11]          // hex char
+	strb	w12, [x27], #1
+	cbnz	x9, offset_digit_loop
+
+	// two spaces after offset
+	mov	w12, #' '
+	strb	w12, [x27], #1
+	strb	w12, [x27], #1
+
+	// ----- hex byte fields (16 slots) -----
+	mov	x9, #0                     // i = 0
+hex_field_loop:
+	cmp	x9, #16
+	bge	hex_field_done
+	cmp	x9, x25
+	bge	hex_field_blank           // i >= n -> blank
+	// load byte = buf[offset+i]
+	add	x10, x19, x23
+	add	x10, x10, x9
+	ldrb	w11, [x10]
+	// high nibble
+	lsr	x12, w11, #4

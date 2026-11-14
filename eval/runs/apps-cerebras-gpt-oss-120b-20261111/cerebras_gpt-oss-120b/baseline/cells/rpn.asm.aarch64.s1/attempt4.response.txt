@@ -1,0 +1,408 @@
+.section .bss
+    .align 8
+input_buf:
+    .zero 65536                // buffer for input
+input_len:
+    .zero 8                    // total bytes read
+stack:
+    .zero 8192                 // 1024 * 8 bytes for RPN stack
+temp_buf:
+    .zero 32                   // temporary buffer for number conversion
+
+.section .rodata
+    .align 8
+err_msg:
+    .ascii "error\n"
+
+.section .text
+    .globl _start
+_start:
+    // ----- read entire input into input_buf -----
+    adrp    x1, input_buf
+    add     x1, x1, :lo12:input_buf
+    mov     x2, #65536
+    mov     x8, #63                // sys_read
+read_loop:
+    mov     x0, #0                 // fd = stdin
+    svc     #0
+    cbz     x0, read_done          // EOF when read returns 0
+    // accumulate length
+    adrp    x4, input_len
+    add     x4, x4, :lo12:input_len
+    ldr     x5, [x4]
+    add     x5, x5, x0
+    str     x5, [x4]
+    b       read_loop
+read_done:
+    // ----- if no input, exit success -----
+    adrp    x13, input_len
+    add     x13, x13, :lo12:input_len
+    ldr     x13, [x13]                 // total_len in x13
+    cbz     x13, exit_success
+
+    // ----- process each line -----
+    mov     x14, #0                    // offset into input_buf
+
+line_loop:
+    cmp     x14, x13
+    bge     exit_success               // finished all input
+
+    // find end of current line (newline or end)
+    mov     x15, x14                    // scanning pointer
+find_newline:
+    cmp     x15, x13
+    bge     line_end_no_nl
+    adrp    x4, input_buf
+    add     x4, x4, :lo12:input_buf
+    add     x5, x4, x15
+    ldrb    w6, [x5]
+    cmp     w6, #0x0A
+    beq     line_end_found
+    add     x15, x15, #1
+    b       find_newline
+line_end_found:
+    sub     x16, x15, x14               // line_len = newline - start
+    mov     x0, x14                    // start offset
+    mov     x1, x16                    // length
+    bl      parse_line
+    add     x14, x15, #1               // skip newline
+    b       line_loop
+line_end_no_nl:
+    sub     x16, x13, x14              // remaining bytes as line
+    mov     x0, x14
+    mov     x1, x16
+    bl      parse_line
+    b       exit_success
+
+exit_success:
+    mov     x0, #0
+    mov     x8, #93                    // sys_exit
+    svc     #0
+
+// -----------------------------------------------------
+// parse_line(start_offset = x0, length = x1)
+// -----------------------------------------------------
+parse_line:
+    // Save callee‑saved registers we use
+    stp     x19, x20, [sp, #-16]!
+    stp     x21, x22, [sp, #-16]!
+
+    // Base addresses
+    adrp    x5, input_buf
+    add     x5, x5, :lo12:input_buf   // x5 = input base
+    adrp    x6, stack
+    add     x6, x6, :lo12:stack       // x6 = stack base
+
+    // RPN stack index (0 = empty)
+    mov     x19, #0
+
+    // error flag = 0 (no error)
+    mov     x20, #0
+
+    // cursor within line
+    mov     x7, #0
+
+token_loop:
+    // ----- skip separators (space, tab) -----
+skip_sep:
+    cmp     x7, x1
+    bge     after_tokens
+    add     x8, x5, x0
+    add     x8, x8, x7
+    ldrb    w9, [x8]
+    cmp     w9, #0x20
+    beq     inc_sep
+    cmp     w9, #0x09
+    beq     inc_sep
+    b       after_sep
+inc_sep:
+    add     x7, x7, #1
+    b       skip_sep
+after_sep:
+    cmp     x7, x1
+    bge     after_tokens
+
+    // token start = x7
+    mov     x10, x7
+
+    // ----- find token end -----
+find_tok_end:
+    cmp     x7, x1
+    bge     tok_end
+    add     x8, x5, x0
+    add     x8, x8, x7
+    ldrb    w9, [x8]
+    cmp     w9, #0x20
+    beq     tok_end
+    cmp     w9, #0x09
+    beq     tok_end
+    add     x7, x7, #1
+    b       find_tok_end
+tok_end:
+    sub     x11, x7, x10               // token_len in x11
+
+    // If an error already occurred, ignore remaining tokens
+    cmp     x20, #0
+    bne     token_loop
+
+    // Load first character of token
+    add     x8, x5, x0
+    add     x8, x8, x10
+    ldrb    w12, [x8]
+
+    // ----- operator (single char) -----
+    cmp     x11, #1
+    bne     maybe_literal
+    cmp     w12, #'+'                 // '+'
+    beq     op_plus
+    cmp     w12, #'-'                 // '-'
+    beq     op_minus
+    cmp     w12, #'*'                 // '*'
+    beq     op_mul
+    cmp     w12, #'/'                 // '/'
+    beq     op_div
+    cmp     w12, #'%'                 // '%'
+    beq     op_mod
+    b       maybe_literal
+
+// -----------------------------------------------------
+// Operators
+// -----------------------------------------------------
+op_plus:
+    cmp     x19, #2
+    blt     set_error
+    sub     x19, x19, #1
+    ldr     x9, [x6, x19, LSL #3]     // b
+    sub     x19, x19, #1
+    ldr     x8, [x6, x19, LSL #3]     // a
+    add     x9, x8, x9                // result
+    str     x9, [x6, x19, LSL #3]     // push
+    add     x19, x19, #1
+    b       token_loop
+
+op_minus:
+    cmp     x19, #2
+    blt     set_error
+    sub     x19, x19, #1
+    ldr     x9, [x6, x19, LSL #3]     // b
+    sub     x19, x19, #1
+    ldr     x8, [x6, x19, LSL #3]     // a
+    sub     x9, x8, x9                // a - b
+    str     x9, [x6, x19, LSL #3]
+    add     x19, x19, #1
+    b       token_loop
+
+op_mul:
+    cmp     x19, #2
+    blt     set_error
+    sub     x19, x19, #1
+    ldr     x9, [x6, x19, LSL #3]     // b
+    sub     x19, x19, #1
+    ldr     x8, [x6, x19, LSL #3]     // a
+    mul     x9, x8, x9
+    str     x9, [x6, x19, LSL #3]
+    add     x19, x19, #1
+    b       token_loop
+
+op_div:
+    cmp     x19, #2
+    blt     set_error
+    sub     x19, x19, #1
+    ldr     x9, [x6, x19, LSL #3]     // b
+    sub     x19, x19, #1
+    ldr     x8, [x6, x19, LSL #3]     // a
+    cbz     x9, set_error            // divide by zero
+    // overflow check: a == INT64_MIN && b == -1
+    mov     x12, x8
+    neg     x12, x12
+    cmp     x12, x8
+    bne     div_ok
+    cmp     x9, #-1
+    beq     set_error
+div_ok:
+    sdiv    x9, x8, x9
+    str     x9, [x6, x19, LSL #3]
+    add     x19, x19, #1
+    b       token_loop
+
+op_mod:
+    cmp     x19, #2
+    blt     set_error
+    sub     x19, x19, #1
+    ldr     x9, [x6, x19, LSL #3]     // b
+    sub     x19, x19, #1
+    ldr     x8, [x6, x19, LSL #3]     // a
+    cbz     x9, set_error            // mod by zero
+    // overflow check
+    mov     x12, x8
+    neg     x12, x12
+    cmp     x12, x8
+    bne     mod_ok
+    cmp     x9, #-1
+    beq     set_error
+mod_ok:
+    sdiv    x10, x8, x9               // q
+    mul     x10, x10, x9             // q*b
+    sub     x9, x8, x10               // remainder
+    str     x9, [x6, x19, LSL #3]
+    add     x19, x19, #1
+    b       token_loop
+
+// -----------------------------------------------------
+// Literal parsing
+// -----------------------------------------------------
+maybe_literal:
+    // token length must be <19
+    cmp     x11, #19
+    bhs     set_error
+
+    // sign flag: 0 = positive, 1 = negative
+    mov     x12, #0
+    // digit index within token
+    mov     x13, #0
+
+    // load first character again
+    add     x8, x5, x0
+    add     x8, x8, x10
+    ldrb    w14, [x8]
+
+    // check optional leading '-'
+    cmp     w14, #'-'
+    bne     lit_parse_digits
+    // token is just "-" ? invalid
+    cmp     x11, #1
+    beq     set_error
+    mov     x12, #1                // negative
+    mov     x13, #1                // start after sign
+lit_parse_digits:
+    mov     x15, #0                // accumulator
+
+digit_loop:
+    cmp     x13, x11
+    beq     lit_done
+    // load character at token[ start + x13 ]
+    add     x8, x5, x0
+    add     x8, x8, x10
+    add     x8, x8, x13
+    ldrb    w9, [x8]
+    // must be '0'..'9'
+    cmp     w9, #'0'
+    blt     set_error
+    cmp     w9, #'9'
+    bgt     set_error
+    sub     w9, w9, #'0'          // digit value
+    mov     x16, #10
+    mul     x15, x15, x16
+    add     x15, x15, x9
+    add     x13, x13, #1
+    b       digit_loop
+lit_done:
+    // apply sign if needed
+    cmp     x12, #0
+    beq     lit_push
+    neg     x15, x15
+lit_push:
+    // push onto RPN stack
+    str     x15, [x6, x19, LSL #3]
+    add     x19, x19, #1
+    b       token_loop
+
+// -----------------------------------------------------
+// Error handling
+// -----------------------------------------------------
+set_error:
+    mov     x20, #1
+    b       token_loop
+
+after_tokens:
+    // ----- output result or error -----
+    cmp     x20, #0
+    bne     output_error
+
+    cmp     x19, #1
+    bne     output_error
+
+    // get result from stack[0]
+    ldr     x0, [x6]                  // result
+    bl      print_int64
+    b       parse_done
+
+output_error:
+    // write "error\n"
+    mov     x0, #1                    // fd = stdout
+    adrp    x1, err_msg
+    add     x1, x1, :lo12:err_msg
+    mov     x2, #6
+    mov     x8, #64
+    svc     #0
+
+parse_done:
+    // Restore callee‑saved registers and return
+    ldp     x21, x22, [sp], #16
+    ldp     x19, x20, [sp], #16
+    ret
+
+// -----------------------------------------------------
+// print_int64: x0 = signed 64‑bit value
+// Writes decimal representation followed by '\n'
+// -----------------------------------------------------
+print_int64:
+    // Save registers we use
+    stp     x19, x20, [sp, #-16]!
+    stp     x21, x22, [sp, #-16]!
+
+    // temp buffer base
+    adrp    x19, temp_buf
+    add     x19, x19, :lo12:temp_buf
+    add     x20, x19, #32           // end pointer
+
+    // Determine sign
+    mov     x21, #0                 // sign flag
+    cmp     x0, #0
+    bge     pos_number
+    mov     x21, #1
+    neg     x0, x0                  // absolute value (as unsigned)
+pos_number:
+    // Special case 0
+    cmp     x0, #0
+    bne     conv_loop
+    sub     x20, x20, #1
+    mov     w22, #'0'
+    strb    w22, [x20]
+    b       after_digits
+
+conv_loop:
+    mov     x22, #10
+conv_div:
+    udiv    x23, x0, x22            // quotient
+    mul     x24, x23, x22
+    sub     x24, x0, x24            // remainder
+    add     x24, x24, #'0'
+    sub     x20, x20, #1
+    strb    w24, [x20]
+    mov     x0, x23
+    cmp     x0, #0
+    bne     conv_div
+
+after_digits:
+    cmp     x21, #0
+    beq     no_sign
+    sub     x20, x20, #1
+    mov     w22, #'-'
+    strb    w22, [x20]
+no_sign:
+    // length = (temp_buf+32) - x20
+    add     x22, x19, #32
+    sub     x23, x22, x20
+
+    // write string
+    mov     x0, #1
+    mov     x1, x20
+    mov     x2, x23
+    mov     x8, #64
+    svc     #0
+
+    // Restore registers and return
+    ldp     x21, x22, [sp], #16
+    ldp     x19, x20, [sp], #16
+    ret

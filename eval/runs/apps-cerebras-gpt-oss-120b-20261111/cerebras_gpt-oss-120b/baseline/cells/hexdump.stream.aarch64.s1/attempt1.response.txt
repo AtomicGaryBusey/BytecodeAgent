@@ -1,0 +1,212 @@
+.section .bss
+    .align 8
+buf:        .zero 65536
+total_len: .zero 8
+
+.section .rodata
+    .align 4
+hex_digits: .ascii "0123456789abcdef"
+
+.section .text
+    .global _start
+_start:
+    // x19 = buf address
+    adrp    x19, buf
+    add     x19, x19, #:lo12:buf
+    // x21 = current write pointer = buf
+    mov     x21, x19
+    // total length = 0
+    mov     x20, #0
+
+read_loop:
+    mov     x0, #0          // fd = stdin
+    mov     x1, x21         // buffer pointer
+    mov     x2, #65536
+    mov     x8, #63         // read
+    svc     #0
+    cmp     x0, #0
+    beq     read_done
+    // x0 = bytes read
+    add     x20, x20, x0    // total_len += bytes read
+    add     x21, x21, x0    // advance write pointer
+    b       read_loop
+
+read_done:
+    // x19 = buf, x20 = total_len
+    mov     x22, #0         // offset = 0
+
+    // precompute address of hex table
+    adrp    x4, hex_digits
+    add     x4, x4, #:lo12:hex_digits
+
+output_loop:
+    cmp     x22, x20
+    bge     output_done
+
+    // remaining = total_len - offset
+    sub     x23, x20, x22
+    // n = min(16, remaining)
+    mov     x24, #16
+    cmp     x23, x24
+    csel    x23, x23, x24, lt   // x23 = n
+
+    // allocate line buffer on stack (80 bytes)
+    sub     sp, sp, #80
+    mov     x30, sp          // line_start
+    mov     x25, sp          // line_ptr
+
+    // ----- offset (8 hex digits) -----
+    mov     x26, x22         // copy offset
+    mov     x27, #28         // shift amount
+
+offset_hex_loop:
+    mov     x28, x26
+    lsr     x28, x28, x27
+    and     x28, x28, #0xF
+    add     x28, x28, x4
+    ldrb    w28, [x28]
+    strb    w28, [x25], #1
+    sub     x27, x27, #4
+    cmp     x27, #0
+    bge     offset_hex_loop
+
+    // two spaces
+    mov     w0, #0x20
+    strb    w0, [x25], #1
+    strb    w0, [x25], #1
+
+    // ----- hex bytes -----
+    // row_start = buf + offset
+    add     x28, x19, x22
+
+    mov     x29, #0          // i = 0
+
+hex_bytes_loop:
+    cmp     x29, #16
+    beq     hex_bytes_done
+
+    cmp     x29, x23
+    bge     hex_spaces
+
+    // byte present
+    ldrb    w0, [x28, x29]
+    // high nibble
+    and     w1, w0, #0xF0
+    lsr     w1, w1, #4
+    add     x1, x4, w1, uxtw
+    ldrb    w1, [x1]
+    strb    w1, [x25], #1
+    // low nibble
+    and     w1, w0, #0xF
+    add     x1, x4, w1, uxtw
+    ldrb    w1, [x1]
+    strb    w1, [x25], #1
+    // space
+    mov     w0, #0x20
+    strb    w0, [x25], #1
+    b       hex_next
+
+hex_spaces:
+    // three spaces
+    mov     w0, #0x20
+    strb    w0, [x25], #1
+    strb    w0, [x25], #1
+    strb    w0, [x25], #1
+
+hex_next:
+    add     x29, x29, #1
+    // extra space after 8 bytes
+    cmp     x29, #8
+    bne     hex_bytes_loop
+    mov     w0, #0x20
+    strb    w0, [x25], #1
+    b       hex_bytes_loop
+
+hex_bytes_done:
+    // space and '|'
+    mov     w0, #0x20
+    strb    w0, [x25], #1
+    mov     w0, #'|'
+    strb    w0, [x25], #1
+
+    // ----- ASCII representation -----
+    mov     x29, #0          // i = 0
+
+ascii_loop:
+    cmp     x29, x23
+    beq     ascii_done
+    ldrb    w0, [x28, x29]
+    cmp     w0, #0x20
+    blt     ascii_dot
+    cmp     w0, #0x7e
+    bgt     ascii_dot
+    // printable
+    b       ascii_store
+ascii_dot:
+    mov     w0, #'.'
+ascii_store:
+    strb    w0, [x25], #1
+    add     x29, x29, #1
+    b       ascii_loop
+
+ascii_done:
+    // trailing '|', newline
+    mov     w0, #'|'
+    strb    w0, [x25], #1
+    mov     w0, #10
+    strb    w0, [x25], #1
+
+    // write the line
+    sub     x0, x25, x30    // length
+    mov     x1, x30
+    mov     x2, x0
+    mov     x0, #1          // stdout
+    mov     x8, #64         // write
+    svc     #0
+
+    // restore stack
+    add     sp, sp, #80
+
+    // next offset
+    add     x22, x22, #16
+    b       output_loop
+
+output_done:
+    // ----- final total length line -----
+    sub     sp, sp, #16
+    mov     x30, sp
+    mov     x25, sp
+
+    // convert total_len (x20) to 8 hex digits
+    mov     x26, x20
+    mov     x27, #28
+
+final_hex_loop:
+    mov     x28, x26
+    lsr     x28, x28, x27
+    and     x28, x28, #0xF
+    add     x28, x28, x4
+    ldrb    w28, [x28]
+    strb    w28, [x25], #1
+    sub     x27, x27, #4
+    cmp     x27, #0
+    bge     final_hex_loop
+
+    // newline
+    mov     w0, #10
+    strb    w0, [x25], #1
+
+    // write it
+    sub     x0, x25, x30
+    mov     x1, x30
+    mov     x2, x0
+    mov     x0, #1
+    mov     x8, #64
+    svc     #0
+
+    add     sp, sp, #16
+
+    // exit
+    mov     x0, #0
+    mov     x8, #93
+    svc     #0

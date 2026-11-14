@@ -1,0 +1,209 @@
+.globl _start
+
+.equ BUFMAX, 65536
+
+.text
+_start:
+    // x19 = input buffer base
+    adrp    x19, buf
+    add     x19, x19, :lo12:buf
+
+    mov     x9, #0                  // total bytes read
+.Lread:
+    mov     x2, #BUFMAX
+    sub     x2, x2, x9
+    cbz     x2, .Lread_done
+    mov     x0, #0
+    add     x1, x19, x9
+    mov     x8, #63
+    svc     #0
+    cmp     x0, #0
+    b.le    .Lread_done
+    add     x9, x9, x0
+    b       .Lread
+.Lread_done:
+
+    add     x27, x19, x9            // end of all input
+
+    // find first '!'
+    mov     x10, #0
+.Lscan:
+    cmp     x10, x9
+    b.eq    .Lnobang
+    ldrb    w11, [x19, x10]
+    cmp     w11, #0x21
+    b.eq    .Lbang
+    add     x10, x10, #1
+    b       .Lscan
+.Lbang:
+    mov     x20, x10                // program length
+    add     x26, x19, x10
+    add     x26, x26, #1            // input pointer
+    b       .Lhavesplit
+.Lnobang:
+    mov     x20, x9
+    mov     x26, x27
+.Lhavesplit:
+
+    adrp    x23, jmptab
+    add     x23, x23, :lo12:jmptab
+    adrp    x13, bstack
+    add     x13, x13, :lo12:bstack
+
+    mov     x12, #0                 // bracket stack depth
+    mov     x21, #0                 // pc
+.Lval:
+    cmp     x21, x20
+    b.eq    .Lvalend
+    ldrb    w11, [x19, x21]
+    cmp     w11, #0x5B
+    b.eq    .Lvpush
+    cmp     w11, #0x5D
+    b.eq    .Lvpop
+.Lvnext:
+    add     x21, x21, #1
+    b       .Lval
+.Lvpush:
+    str     w21, [x13, x12, lsl #2]
+    add     x12, x12, #1
+    b       .Lvnext
+.Lvpop:
+    cbz     x12, .Lbad
+    sub     x12, x12, #1
+    ldr     w14, [x13, x12, lsl #2]
+    str     w21, [x23, x14, lsl #2]
+    mov     x15, x14
+    str     w15, [x23, x21, lsl #2]
+    b       .Lvnext
+.Lvalend:
+    cbnz    x12, .Lbad
+
+    // set up run state
+    adrp    x22, tape
+    add     x22, x22, :lo12:tape
+    adrp    x24, outbuf
+    add     x24, x24, :lo12:outbuf
+    mov     x25, #0                 // output length
+    mov     x21, #0                 // pc
+
+.Lrun:
+    cmp     x21, x20
+    b.hs    .Ldone
+    ldrb    w11, [x19, x21]
+    add     x21, x21, #1
+
+    cmp     w11, #0x2B              // '+'
+    b.eq    .Cinc
+    cmp     w11, #0x2D              // '-'
+    b.eq    .Cdec
+    cmp     w11, #0x3E              // '>'
+    b.eq    .Cright
+    cmp     w11, #0x3C              // '<'
+    b.eq    .Cleft
+    cmp     w11, #0x5B              // '['
+    b.eq    .Copen
+    cmp     w11, #0x5D              // ']'
+    b.eq    .Cclose
+    cmp     w11, #0x2E              // '.'
+    b.eq    .Cout
+    cmp     w11, #0x2C              // ','
+    b.eq    .Cin
+    b       .Lrun
+
+.Cinc:
+    ldrb    w14, [x22]
+    add     w14, w14, #1
+    strb    w14, [x22]
+    b       .Lrun
+.Cdec:
+    ldrb    w14, [x22]
+    sub     w14, w14, #1
+    strb    w14, [x22]
+    b       .Lrun
+.Cright:
+    add     x22, x22, #1
+    b       .Lrun
+.Cleft:
+    sub     x22, x22, #1
+    b       .Lrun
+.Copen:
+    ldrb    w14, [x22]
+    cbnz    w14, .Lrun
+    sub     x15, x21, #1
+    ldr     w16, [x23, x15, lsl #2]
+    add     x21, x16, #1
+    b       .Lrun
+.Cclose:
+    ldrb    w14, [x22]
+    cbz     w14, .Lrun
+    sub     x15, x21, #1
+    ldr     w16, [x23, x15, lsl #2]
+    add     x21, x16, #1
+    b       .Lrun
+.Cout:
+    ldrb    w14, [x22]
+    strb    w14, [x24, x25]
+    add     x25, x25, #1
+    mov     x17, #BUFMAX
+    cmp     x25, x17
+    b.lo    .Lrun
+    bl      .Lflush
+    b       .Lrun
+.Cin:
+    cmp     x26, x27
+    b.hs    .Cin_eof
+    ldrb    w14, [x26], #1
+    strb    w14, [x22]
+    b       .Lrun
+.Cin_eof:
+    strb    wzr, [x22]
+    b       .Lrun
+
+.Ldone:
+    bl      .Lflush
+    mov     x0, #0
+    mov     x8, #93
+    svc     #0
+    b       .Ldone
+
+.Lbad:
+    mov     x0, #1
+    mov     x8, #93
+    svc     #0
+    b       .Lbad
+
+// flush outbuf (x24 base, x25 length); clobbers x0,x1,x2,x8,x9
+.Lflush:
+    mov     x9, #0
+.Lfl1:
+    cmp     x9, x25
+    b.hs    .Lfl2
+    mov     x0, #1
+    add     x1, x24, x9
+    sub     x2, x25, x9
+    mov     x8, #64
+    svc     #0
+    cmp     x0, #0
+    b.le    .Lfl2
+    add     x9, x9, x0
+    b       .Lfl1
+.Lfl2:
+    mov     x25, #0
+    ret
+
+.bss
+.balign 16
+buf:
+    .zero 65536
+.balign 16
+jmptab:
+    .zero 262144
+.balign 16
+bstack:
+    .zero 262144
+.balign 16
+tape:
+    .zero 30016
+.balign 16
+outbuf:
+    .zero 65536

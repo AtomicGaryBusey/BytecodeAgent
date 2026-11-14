@@ -1,0 +1,273 @@
+.globl _start
+
+.text
+_start:
+    mov qword ptr [rip + toklen], 0
+    mov qword ptr [rip + valcount], 0
+    mov byte ptr [rip + bad], 0
+    mov byte ptr [rip + lineseen], 0
+
+read_more:
+    mov eax, 0
+    mov edi, 0
+    lea rsi, [rip + inbuf]
+    mov edx, 4096
+    syscall
+    test rax, rax
+    jz at_eof
+    lea rbp, [rip + inbuf]
+    lea r12, [rbp + rax]
+
+byte_loop:
+    cmp rbp, r12
+    jae read_more
+    movzx eax, byte ptr [rbp]
+    inc rbp
+    cmp al, 10
+    je got_newline
+    mov byte ptr [rip + lineseen], 1
+    cmp al, 32
+    je got_separator
+    cmp al, 9
+    je got_separator
+    cmp byte ptr [rip + bad], 0
+    jne byte_loop
+    mov rcx, qword ptr [rip + toklen]
+    cmp rcx, 1000
+    jae make_bad
+    lea rdx, [rip + token]
+    mov byte ptr [rdx + rcx], al
+    inc rcx
+    mov qword ptr [rip + toklen], rcx
+    jmp byte_loop
+
+make_bad:
+    mov byte ptr [rip + bad], 1
+    jmp byte_loop
+
+got_separator:
+    call finish_token
+    jmp byte_loop
+
+got_newline:
+    call finish_token
+    call finish_line
+    call reset_line
+    jmp byte_loop
+
+at_eof:
+    cmp byte ptr [rip + lineseen], 0
+    je do_exit
+    call finish_token
+    call finish_line
+
+do_exit:
+    mov eax, 60
+    xor edi, edi
+    syscall
+
+reset_line:
+    mov qword ptr [rip + toklen], 0
+    mov qword ptr [rip + valcount], 0
+    mov byte ptr [rip + bad], 0
+    mov byte ptr [rip + lineseen], 0
+    ret
+
+finish_token:
+    mov r8, qword ptr [rip + toklen]
+    test r8, r8
+    jz ft_done
+    mov qword ptr [rip + toklen], 0
+    cmp byte ptr [rip + bad], 0
+    jne ft_done
+
+    cmp r8, 1
+    jne parse_literal
+    mov al, byte ptr [rip + token]
+    cmp al, '+'
+    je do_operator
+    cmp al, '-'
+    je do_operator
+    cmp al, '*'
+    je do_operator
+    cmp al, '/'
+    je do_operator
+    cmp al, '%'
+    je do_operator
+
+parse_literal:
+    xor ecx, ecx
+    xor edi, edi
+    mov al, byte ptr [rip + token]
+    cmp al, '-'
+    jne literal_digits
+    mov edi, 1
+    mov ecx, 1
+    cmp rcx, r8
+    jae token_bad
+
+literal_digits:
+    xor rax, rax
+digit_loop:
+    cmp rcx, r8
+    jae digits_done
+    movzx edx, byte ptr [rip + token + rcx]
+    sub edx, '0'
+    cmp edx, 9
+    ja token_bad
+    imul rax, rax, 10
+    add rax, rdx
+    inc rcx
+    jmp digit_loop
+
+digits_done:
+    test edi, edi
+    jz push_literal
+    neg rax
+push_literal:
+    mov rcx, qword ptr [rip + valcount]
+    cmp rcx, 1024
+    jae token_bad
+    lea rdx, [rip + values]
+    mov qword ptr [rdx + rcx*8], rax
+    inc rcx
+    mov qword ptr [rip + valcount], rcx
+    ret
+
+do_operator:
+    mov r9b, al
+    mov rcx, qword ptr [rip + valcount]
+    cmp rcx, 2
+    jb token_bad
+    lea rdx, [rip + values]
+    mov r8, qword ptr [rdx + rcx*8 - 8]
+    mov rax, qword ptr [rdx + rcx*8 - 16]
+    cmp r9b, '+'
+    je op_add
+    cmp r9b, '-'
+    je op_sub
+    cmp r9b, '*'
+    je op_mul
+    cmp r9b, '/'
+    je op_div
+    jmp op_mod
+
+op_add:
+    add rax, r8
+    jmp op_store
+op_sub:
+    sub rax, r8
+    jmp op_store
+op_mul:
+    imul rax, r8
+    jmp op_store
+
+op_div:
+    test r8, r8
+    jz token_bad
+    mov r10, 0x8000000000000000
+    cmp rax, r10
+    jne div_ok
+    cmp r8, -1
+    je token_bad
+div_ok:
+    cqo
+    idiv r8
+    jmp op_store
+
+op_mod:
+    test r8, r8
+    jz token_bad
+    mov r10, 0x8000000000000000
+    cmp rax, r10
+    jne mod_ok
+    cmp r8, -1
+    je token_bad
+mod_ok:
+    cqo
+    idiv r8
+    mov rax, rdx
+
+op_store:
+    mov rcx, qword ptr [rip + valcount]
+    lea rdx, [rip + values]
+    mov qword ptr [rdx + rcx*8 - 16], rax
+    dec rcx
+    mov qword ptr [rip + valcount], rcx
+ft_done:
+    ret
+
+token_bad:
+    mov byte ptr [rip + bad], 1
+    ret
+
+finish_line:
+    cmp byte ptr [rip + bad], 0
+    jne print_error
+    cmp qword ptr [rip + valcount], 1
+    jne print_error
+    mov rax, qword ptr [rip + values]
+    jmp print_number
+
+print_error:
+    mov eax, 1
+    mov edi, 1
+    lea rsi, [rip + errmsg]
+    mov edx, 6
+    syscall
+    ret
+
+print_number:
+    lea rsi, [rip + outbuf + 32]
+    dec rsi
+    mov byte ptr [rsi], 10
+    xor edi, edi
+    test rax, rax
+    jns number_digits
+    mov edi, 1
+    neg rax
+number_digits:
+    mov ecx, 10
+number_loop:
+    xor edx, edx
+    div rcx
+    add dl, '0'
+    dec rsi
+    mov byte ptr [rsi], dl
+    test rax, rax
+    jne number_loop
+    test edi, edi
+    jz number_write
+    dec rsi
+    mov byte ptr [rsi], '-'
+number_write:
+    lea rdx, [rip + outbuf + 32]
+    sub rdx, rsi
+    mov eax, 1
+    mov edi, 1
+    syscall
+    ret
+
+.section .rodata
+errmsg:
+    .ascii "error\n"
+
+.bss
+.align 16
+inbuf:
+    .zero 4096
+token:
+    .zero 1001
+.align 8
+values:
+    .zero 8192
+outbuf:
+    .zero 32
+toklen:
+    .zero 8
+valcount:
+    .zero 8
+bad:
+    .zero 1
+lineseen:
+    .zero 1

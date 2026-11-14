@@ -1,0 +1,178 @@
+    .section .text
+    .global _start
+_start:
+    // ------------------- set up base addresses -------------------
+    adrp    x28, tape            // x28 = tape base
+    add     x28, x28, :lo12:tape
+    adrp    x29, combined_buf    // x29 = combined buffer base
+    add     x29, x29, :lo12:combined_buf
+    adrp    x30, loop_stack      // x30 = loop stack base
+    add     x30, x30, :lo12:loop_stack
+
+    // ------------------- read all stdin -------------------
+    mov     x10, x29                 // write pointer = combined_buf
+    mov     x11, #0                  // total_len = 0
+
+read_loop:
+    mov     x12, #65536
+    sub     x12, x12, x11            // remaining space
+    cbz     x12, read_done
+
+    mov     x0, #0                   // stdin
+    mov     x1, x10                  // buffer
+    mov     x2, x12                  // count
+    mov     x8, #63                  // sys_read
+    svc     #0
+    cbz     x0, read_done            // EOF
+
+    add     x11, x11, x0             // total_len += read
+    add     x10, x10, x0             // advance write ptr
+    b       read_loop
+
+read_done:
+    // x11 = total_len
+    // ------------------- locate delimiter '!' -------------------
+    mov     x14, #0                  // prog_len = 0
+    mov     x15, #0                  // delim_found = 0
+    mov     x13, x29                 // scan pointer = combined_buf
+
+scan_delim:
+    cmp     x14, x11
+    bge     no_delim
+    ldrb    w0, [x13, x14]
+    cmp     w0, #'!'
+    beq     delim_found
+    add     x14, x14, #1
+    b       scan_delim
+
+delim_found:
+    mov     x15, #1                  // delim_found = 1
+    b       after_scan
+
+no_delim:
+    mov     x14, x11                // prog_len = total_len
+
+after_scan:
+    // x14 = prog_len, x15 = delim_found flag
+
+    // ------------------- set program and input pointers -------------------
+    mov     x19, x29                 // prog_ptr = combined_buf
+    add     x20, x29, x14            // prog_end = combined_buf + prog_len
+
+    // input_ptr = combined_buf + prog_len + delim_found
+    add     x21, x14, x15
+    add     x22, x29, x21            // input_ptr
+    add     x23, x29, x11            // input_end
+
+    // ------------------- bracket balance check -------------------
+    mov     x24, #0                  // depth
+    mov     x25, #0                  // index
+
+balance_loop:
+    cmp     x25, x14
+    bge     balance_done
+    ldrb    w0, [x29, x25]
+    cmp     w0, #'['
+    beq     bal_inc
+    cmp     w0, #']'
+    beq     bal_dec
+    add     x25, x25, #1
+    b       balance_loop
+
+bal_inc:
+    add     x24, x24, #1
+    add     x25, x25, #1
+    b       balance_loop
+
+bal_dec:
+    cbz     x24, bracket_error      // would go negative
+    sub     x24, x24, #1
+    add     x25, x25, #1
+    b       balance_loop
+
+bracket_error:
+    mov     x0, #1
+    mov     x8, #93                 // sys_exit
+    svc     #0
+
+balance_done:
+    cbnz    x24, bracket_error
+
+    // ------------------- interpreter state -------------------
+    mov     x26, #0                 // data pointer index
+    mov     x27, #0                 // loop stack index (next free)
+
+interpret_loop:
+    cmp     x19, x20
+    bge     interp_done
+
+    ldrb    w0, [x19], #1           // fetch command, advance prog_ptr
+
+    cmp     w0, #'>'
+    beq     cmd_inc_ptr
+    cmp     w0, #'<'
+    beq     cmd_dec_ptr
+    cmp     w0, #'+'
+    beq     cmd_inc_cell
+    cmp     w0, #'-'
+    beq     cmd_dec_cell
+    cmp     w0, #'.'
+    beq     cmd_output
+    cmp     w0, #','
+    beq     cmd_input
+    cmp     w0, #'['
+    beq     cmd_bracket_open
+    cmp     w0, #']'
+    beq     cmd_bracket_close
+    b       interpret_loop          // ignore any other byte
+
+cmd_inc_ptr:
+    add     x26, x26, #1
+    b       interpret_loop
+
+cmd_dec_ptr:
+    sub     x26, x26, #1
+    b       interpret_loop
+
+cmd_inc_cell:
+    add     x1, x28, x26            // cell address
+    ldrb    w2, [x1]
+    add     w2, w2, #1
+    and     w2, w2, #0xFF
+    strb    w2, [x1]
+    b       interpret_loop
+
+cmd_dec_cell:
+    add     x1, x28, x26
+    ldrb    w2, [x1]
+    sub     w2, w2, #1
+    and     w2, w2, #0xFF
+    strb    w2, [x1]
+    b       interpret_loop
+
+cmd_output:
+    mov     x0, #1                 // stdout
+    add     x1, x28, x26
+    mov     x2, #1
+    mov     x8, #64                // sys_write
+    svc     #0
+    b       interpret_loop
+
+cmd_input:
+    cmp     x22, x23
+    bge     input_eof
+    ldrb    w2, [x22], #1
+    b       store_input
+input_eof:
+    mov     w2, #0
+store_input:
+    add     x1, x28, x26
+    strb    w2, [x1]
+    b       interpret_loop
+
+cmd_bracket_open:
+    add     x1, x28, x26
+    ldrb    w2, [x1]
+    cbz     w2, skip_forward
+    // push return address (current prog_ptr) onto stack
+    mul     x3, x27, #8

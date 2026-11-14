@@ -1,0 +1,257 @@
+.equ    SYSCALL_READ,     63
+.equ    SYSCALL_WRITE,    64
+.equ    SYSCALL_EXIT,     93
+.equ    BUF_SIZE,         65536
+
+.section .bss
+.align 3
+buffer:     .space  BUF_SIZE
+.align 3
+linebuf:    .zero   80          // maximum line length + a few bytes
+
+.section .rodata
+hex_table:  .ascii  "0123456789abcdef"
+
+.text
+.global _start
+_start:
+    // Load addresses
+    adrp    x19, buffer
+    add     x19, x19, :lo12:buffer      // x19 = buffer base
+    mov     x20, #BUF_SIZE               // x20 = remaining space
+    mov     x21, #0                      // x21 = total length
+    mov     x22, x19                     // x22 = current write pointer
+
+read_loop:
+    mov     x0, #0                       // fd = stdin
+    mov     x1, x22                      // buf
+    mov     x2, x20                      // count
+    mov     x8, #SYSCALL_READ
+    svc     #0
+
+    cbz     x0, read_done                // x0 == 0 : EOF
+    // x0 = bytes read
+    add     x21, x21, x0                 // total_len += bytes_read
+    add     x22, x22, x0                 // buf_ptr += bytes_read
+    sub     x20, x20, x0                 // remaining -= bytes_read
+    cbnz    x20, read_loop
+
+read_done:
+    // Dump loop initialization
+    mov     x23, #0                      // x23 = current offset
+
+dump_loop:
+    cmp     x23, x21
+    bge     dump_final                  // offset >= total_len -> done
+
+    // row_len = min(16, total_len - offset)
+    sub     x24, x21, x23                // x24 = remaining bytes
+    mov     x25, #16
+    cmp     x24, x25
+    csel    x25, x24, x25, hi           // if remaining < 16, use remaining
+
+    // Prepare line buffer pointer
+    adrp    x5, linebuf
+    add     x5, x5, :lo12:linebuf        // x5 = linebuf pointer (will be updated)
+
+    // Prepare hex table pointer
+    adrp    x6, hex_table
+    add     x6, x6, :lo12:hex_table      // x6 = hex table
+
+    // ----- offset hex (8 nibbles) -----
+    mov     x7, x23                      // offset value
+    mov     w8, #8
+off_hex_loop:
+    sub     w8, w8, #1
+    lsl     w9, w8, #2                   // shift = nibble*4
+    lsr     x10, x7, x9
+    and     w10, w10, #0xF
+    add     x11, x6, w10, uxtw #0
+    ldrb    w12, [x11]
+    strb    w12, [x5], #1
+    cbnz    w8, off_hex_loop
+
+    // two spaces after offset
+    mov     w12, #' '
+    strb    w12, [x5], #1
+    strb    w12, [x5], #1
+
+    // ----- byte hex area -----
+    // address of current row start
+    add     x15, x19, x23                // x15 = buffer + offset
+
+    // first half (bytes 0..7)
+    mov     w13, #0
+first_half_loop:
+    cmp     w13, #8
+    bge     second_half_prep
+    cmp     w13, w25
+    bge     first_missing
+
+    add     x14, x15, w13, uxtw #0       // address of byte
+    ldrb    w16, [x14]                   // w16 = byte value
+
+    // high nibble
+    lsr     w17, w16, #4
+    and     w17, w17, #0xF
+    add     x18, x6, w17, uxtw #0
+    ldrb    w19, [x18]
+    strb    w19, [x5], #1
+
+    // low nibble
+    and     w17, w16, #0xF
+    add     x18, x6, w17, uxtw #0
+    ldrb    w19, [x18]
+    strb    w19, [x5], #1
+
+    // space after byte
+    mov     w19, #' '
+    strb    w19, [x5], #1
+    b       inc_first
+
+first_missing:
+    // three spaces for missing byte
+    mov     w19, #' '
+    strb    w19, [x5], #1
+    strb    w19, [x5], #1
+    strb    w19, [x5], #1
+
+inc_first:
+    add     w13, w13, #1
+    b       first_half_loop
+
+second_half_prep:
+    // extra space after 8 bytes
+    mov     w19, #' '
+    strb    w19, [x5], #1
+
+    // bytes 8..15
+    mov     w13, #8
+second_half_loop:
+    cmp     w13, #16
+    bge     after_bytes_hex
+    cmp     w13, w25
+    bge     second_missing
+
+    add     x14, x15, w13, uxtw #0       // address of byte
+    ldrb    w16, [x14]
+
+    // high nibble
+    lsr     w17, w16, #4
+    and     w17, w17, #0xF
+    add     x18, x6, w17, uxtw #0
+    ldrb    w19, [x18]
+    strb    w19, [x5], #1
+
+    // low nibble
+    and     w17, w16, #0xF
+    add     x18, x6, w17, uxtw #0
+    ldrb    w19, [x18]
+    strb    w19, [x5], #1
+
+    // space after byte
+    mov     w19, #' '
+    strb    w19, [x5], #1
+    b       inc_second
+
+second_missing:
+    // three spaces for missing byte
+    mov     w19, #' '
+    strb    w19, [x5], #1
+    strb    w19, [x5], #1
+    strb    w19, [x5], #1
+
+inc_second:
+    add     w13, w13, #1
+    b       second_half_loop
+
+after_bytes_hex:
+    // ----- ASCII part -----
+    // space and '|'
+    mov     w19, #' '
+    strb    w19, [x5], #1
+    mov     w19, #'|'
+    strb    w19, [x5], #1
+
+    // ascii for each byte in row_len
+    mov     w13, #0
+ascii_loop:
+    cmp     w13, w25
+    bge     ascii_done
+
+    add     x14, x15, w13, uxtw #0
+    ldrb    w16, [x14]
+
+    // printable?
+    cmp     w16, #0x20
+    blt     ascii_dot
+    cmp     w16, #0x7e
+    bgt     ascii_dot
+    // printable
+    strb    w16, [x5], #1
+    b       ascii_next
+
+ascii_dot:
+    mov     w16, #'.'
+    strb    w16, [x5], #1
+
+ascii_next:
+    add     w13, w13, #1
+    b       ascii_loop
+
+ascii_done:
+    // final '|' and newline
+    mov     w19, #'|'
+    strb    w19, [x5], #1
+    mov     w19, #'\n'
+    strb    w19, [x5], #1
+
+    // write line
+    adrp    x9, linebuf
+    add     x9, x9, :lo12:linebuf
+    sub     x0, x5, x9                  // x0 = length
+    mov     x1, #1                      // fd = stdout
+    mov     x2, x9                      // buf
+    mov     x8, #SYSCALL_WRITE
+    svc     #0
+
+    // update offset
+    add     x23, x23, x25
+    b       dump_loop
+
+dump_final:
+    // ----- final total length line -----
+    adrp    x5, linebuf
+    add     x5, x5, :lo12:linebuf
+    adrp    x6, hex_table
+    add     x6, x6, :lo12:hex_table
+    mov     x7, x21                     // total length
+
+    mov     w8, #8
+final_hex_loop:
+    sub     w8, w8, #1
+    lsl     w9, w8, #2
+    lsr     x10, x7, x9
+    and     w10, w10, #0xF
+    add     x11, x6, w10, uxtw #0
+    ldrb    w12, [x11]
+    strb    w12, [x5], #1
+    cbnz    w8, final_hex_loop
+
+    // newline
+    mov     w12, #'\n'
+    strb    w12, [x5], #1
+
+    // write final line
+    adrp    x9, linebuf
+    add     x9, x9, :lo12:linebuf
+    sub     x0, x5, x9
+    mov     x1, #1
+    mov     x2, x9
+    mov     x8, #SYSCALL_WRITE
+    svc     #0
+
+    // exit success
+    mov     x0, #0
+    mov     x8, #SYSCALL_EXIT
+    svc     #0

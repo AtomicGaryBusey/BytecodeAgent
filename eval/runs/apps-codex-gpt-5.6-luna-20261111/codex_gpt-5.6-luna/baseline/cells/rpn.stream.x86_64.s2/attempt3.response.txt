@@ -1,0 +1,293 @@
+.equ INPUT_SIZE, 65536
+.equ VALUE_STACK_SIZE, 8192
+
+.section .rodata
+error_text:
+.ascii "error\n"
+.equ ERROR_LEN, . - error_text
+
+.section .bss
+.balign 8
+input_buffer:
+.zero INPUT_SIZE
+.balign 8
+value_stack:
+.zero VALUE_STACK_SIZE
+.balign 8
+output_buffer:
+.zero 64
+
+.text
+.globl _start
+_start:
+	xor r12d, r12d
+
+read_more:
+	cmp r12, INPUT_SIZE
+	jae input_done
+	mov eax, 0
+	xor edi, edi
+	lea rsi, [rip + input_buffer]
+	add rsi, r12
+	mov edx, INPUT_SIZE
+	sub rdx, r12
+	syscall
+	test rax, rax
+	jz input_done
+	add r12, rax
+	jmp read_more
+
+input_done:
+	lea r14, [rip + input_buffer]
+	mov r13, r14
+	add r13, r12
+	lea r15, [rip + value_stack]
+
+next_line:
+	cmp r14, r13
+	jae program_exit
+	xor ebx, ebx
+
+parse_line:
+	cmp r14, r13
+	jae finish_eof
+
+	movzx eax, byte ptr [r14]
+	cmp al, 0x20
+	je skip_separator
+	cmp al, 0x09
+	je skip_separator
+	cmp al, 0x0a
+	je finish_newline
+
+	mov r8, r14
+	mov r10, r14
+
+scan_token:
+	cmp r10, r13
+	jae token_scanned
+	movzx eax, byte ptr [r10]
+	cmp al, 0x20
+	je token_scanned
+	cmp al, 0x09
+	je token_scanned
+	cmp al, 0x0a
+	je token_scanned
+	inc r10
+	jmp scan_token
+
+token_scanned:
+	mov r14, r10
+	mov r9, r10
+	sub r9, r8
+	cmp r9, 1
+	jne try_integer
+
+	movzx eax, byte ptr [r8]
+	cmp al, '+'
+	je operator_token
+	cmp al, '-'
+	je operator_token
+	cmp al, '*'
+	je operator_token
+	cmp al, '/'
+	je operator_token
+	cmp al, '%'
+	je operator_token
+	jmp try_integer
+
+operator_token:
+	mov r11d, eax
+	cmp ebx, 2
+	jb bad_line
+	mov rax, qword ptr [r15 + rbx*8 - 16]
+	mov rdx, qword ptr [r15 + rbx*8 - 8]
+	sub ebx, 2
+
+	cmp r11b, '+'
+	je do_add
+	cmp r11b, '-'
+	je do_sub
+	cmp r11b, '*'
+	je do_mul
+	cmp r11b, '/'
+	je do_div
+	jmp do_mod
+
+do_add:
+	add rax, rdx
+	jmp push_result
+
+do_sub:
+	sub rax, rdx
+	jmp push_result
+
+do_mul:
+	imul rax, rdx
+	jmp push_result
+
+do_div:
+	test rdx, rdx
+	jz bad_line
+	mov rcx, rdx
+	mov rdx, 0x8000000000000000
+	cmp rax, rdx
+	jne div_ok
+	cmp rcx, -1
+	je bad_line
+div_ok:
+	cqo
+	idiv rcx
+	jmp push_result
+
+do_mod:
+	test rdx, rdx
+	jz bad_line
+	mov rcx, rdx
+	mov rdx, 0x8000000000000000
+	cmp rax, rdx
+	jne mod_ok
+	cmp rcx, -1
+	je bad_line
+mod_ok:
+	cqo
+	idiv rcx
+	mov rax, rdx
+
+push_result:
+	mov qword ptr [r15 + rbx*8], rax
+	inc ebx
+	jmp parse_line
+
+try_integer:
+	xor r11d, r11d
+	mov r10, r8
+	cmp byte ptr [r10], '-'
+	jne integer_digits
+	mov r11d, 1
+	inc r10
+	dec r9
+
+integer_digits:
+	cmp r9, 1
+	jb bad_line
+	cmp r9, 18
+	ja bad_line
+	xor eax, eax
+	mov rcx, r9
+
+digit_loop:
+	movzx edx, byte ptr [r10]
+	cmp dl, '0'
+	jb bad_line
+	cmp dl, '9'
+	ja bad_line
+	imul rax, rax, 10
+	sub edx, '0'
+	add rax, rdx
+	inc r10
+	dec rcx
+	jnz digit_loop
+	test r11d, r11d
+	jz integer_done
+	neg rax
+
+integer_done:
+	mov qword ptr [r15 + rbx*8], rax
+	inc ebx
+	jmp parse_line
+
+skip_separator:
+	inc r14
+	jmp parse_line
+
+finish_newline:
+	inc r14
+	cmp ebx, 1
+	jne output_error
+	mov rax, qword ptr [r15]
+	call output_number
+	jmp next_line
+
+finish_eof:
+	cmp ebx, 1
+	jne output_error_eof
+	mov rax, qword ptr [r15]
+	call output_number
+	jmp program_exit
+
+bad_line:
+	cmp r14, r13
+	jae output_error_eof
+	movzx eax, byte ptr [r14]
+	cmp al, 0x0a
+	je bad_at_newline
+	inc r14
+	jmp bad_line
+
+bad_at_newline:
+	inc r14
+
+output_error:
+	lea rsi, [rip + error_text]
+	mov edx, ERROR_LEN
+	call write_all
+	jmp next_line
+
+output_error_eof:
+	lea rsi, [rip + error_text]
+	mov edx, ERROR_LEN
+	call write_all
+	jmp program_exit
+
+output_number:
+	test rax, rax
+	setl r8b
+	lea rsi, [rip + output_buffer + 63]
+	mov byte ptr [rsi], 0x0a
+	dec rsi
+	test rax, rax
+	jns number_digits
+	neg rax
+
+number_digits:
+	xor edx, edx
+	mov ecx, 10
+	div rcx
+	add dl, '0'
+	mov byte ptr [rsi], dl
+	dec rsi
+	test rax, rax
+	jnz number_digits
+	test r8b, r8b
+	jz number_ready
+	mov byte ptr [rsi], '-'
+	dec rsi
+
+number_ready:
+	inc rsi
+	lea rdx, [rip + output_buffer + 64]
+	sub rdx, rsi
+	call write_all
+	ret
+
+write_all:
+	test rdx, rdx
+	jz write_done
+	mov eax, 1
+	mov edi, 1
+	syscall
+	sub rdx, rax
+	add rsi, rax
+	jmp write_all
+
+write_done:
+	ret
+
+program_exit:
+	mov eax, 60
+	xor edi, edi
+	syscall
+
+halt:
+	jmp halt

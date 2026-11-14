@@ -1,0 +1,518 @@
+.equ IN_SIZE, 65536
+.equ SYS_read, 63
+.equ SYS_write, 64
+.equ SYS_exit, 93
+
+.section .rodata
+true_s:
+	.ascii "true"
+false_s:
+	.ascii "false"
+null_s:
+	.ascii "null"
+ok_s:
+	.ascii "ok\n"
+ok_len = . - ok_s
+err_s:
+	.ascii "error at "
+err_len = . - err_s
+nl_s:
+	.ascii "\n"
+
+.section .bss
+	.align 4
+input:
+	.zero IN_SIZE
+outbuf:
+	.zero 64
+
+.text
+.globl _start
+_start:
+	adrp x23, input
+	add x23, x23, :lo12:input
+	mov x22, x23
+
+read_more:
+	mov x0, #0
+	mov x1, x22
+	adrp x2, input
+	add x2, x2, :lo12:input
+	add x2, x2, #IN_SIZE
+	sub x2, x2, x22
+	mov x8, #SYS_read
+	svc #0
+	cmp x0, #0
+	beq read_done
+	add x22, x22, x0
+	b read_more
+
+read_done:
+	mov x20, x22
+	mov x19, x23
+	bl parse_value
+	cmp x0, #0
+	beq report_error
+	bl skip_ws
+	cmp x19, x20
+	b.ne trailing_error
+
+	adrp x1, ok_s
+	add x1, x1, :lo12:ok_s
+	mov x2, #ok_len
+	bl write_all
+	mov x0, #0
+	mov x8, #SYS_exit
+	svc #0
+
+trailing_error:
+	sub x1, x19, x23
+
+report_error:
+	mov x21, x1
+	adrp x1, err_s
+	add x1, x1, :lo12:err_s
+	mov x2, #err_len
+	bl write_all
+
+	adrp x4, outbuf
+	add x4, x4, :lo12:outbuf
+	add x5, x4, #63
+	mov x6, #10
+	strb w6, [x5]
+	mov x7, #1
+	mov x0, x21
+	cbnz x0, decimal_loop
+
+	sub x1, x5, #1
+	mov w6, #'0'
+	strb w6, [x1]
+	mov x2, #2
+	bl write_all
+	b finish_error
+
+decimal_loop:
+	mov x6, #10
+	udiv x7, x0, x6
+	msub x8, x7, x6, x0
+	add w8, w8, #'0'
+	sub x5, x5, #1
+	strb w8, [x5]
+	mov x0, x7
+	cbnz x0, decimal_loop
+	sub x1, x5, #0
+	add x2, x4, #64
+	sub x2, x2, x5
+	bl write_all
+
+finish_error:
+	mov x0, #1
+	mov x8, #SYS_exit
+	svc #0
+
+write_all:
+	stp x29, x30, [sp, #-16]!
+	mov x29, sp
+	mov x3, x2
+	mov x4, x1
+write_loop:
+	mov x0, #1
+	mov x1, x4
+	mov x2, x3
+	mov x8, #SYS_write
+	svc #0
+	sub x3, x3, x0
+	add x4, x4, x0
+	cbnz x3, write_loop
+	ldp x29, x30, [sp], #16
+	ret
+
+skip_ws:
+skip_ws_loop:
+	cmp x19, x20
+	b.eq skip_ws_done
+	ldrb w0, [x19]
+	cmp w0, #0x20
+	b.eq skip_ws_one
+	cmp w0, #9
+	b.eq skip_ws_one
+	cmp w0, #10
+	b.eq skip_ws_one
+	cmp w0, #13
+	b.ne skip_ws_done
+skip_ws_one:
+	add x19, x19, #1
+	b skip_ws_loop
+skip_ws_done:
+	ret
+
+parse_value:
+	stp x29, x30, [sp, #-16]!
+	mov x29, sp
+	bl skip_ws
+	cmp x19, x20
+	b.eq pv_fail_end
+	ldrb w0, [x19]
+	cmp w0, #'{'
+	b.eq pv_object
+	cmp w0, #'['
+	b.eq pv_array
+	cmp w0, #'"'
+	b.eq pv_string
+	cmp w0, #'-'
+	b.eq pv_number
+	cmp w0, #'0'
+	b.lo pv_literal_check
+	cmp w0, #'9'
+	b.ls pv_number
+pv_literal_check:
+	cmp w0, #'t'
+	b.eq pv_true
+	cmp w0, #'f'
+	b.eq pv_false
+	cmp w0, #'n'
+	b.eq pv_null
+	b pv_fail_here
+
+pv_object:
+	bl parse_object
+	b pv_return
+pv_array:
+	bl parse_array
+	b pv_return
+pv_string:
+	bl parse_string
+	b pv_return
+pv_number:
+	bl parse_number
+	b pv_return
+pv_true:
+	adrp x0, true_s
+	add x0, x0, :lo12:true_s
+	mov x1, #4
+	bl parse_literal
+	b pv_return
+pv_false:
+	adrp x0, false_s
+	add x0, x0, :lo12:false_s
+	mov x1, #5
+	bl parse_literal
+	b pv_return
+pv_null:
+	adrp x0, null_s
+	add x0, x0, :lo12:null_s
+	mov x1, #4
+	bl parse_literal
+	b pv_return
+pv_fail_end:
+	sub x1, x19, x23
+	b pv_fail
+pv_fail_here:
+	sub x1, x19, x23
+pv_fail:
+	mov x0, #0
+pv_return:
+	ldp x29, x30, [sp], #16
+	ret
+
+parse_literal:
+	stp x29, x30, [sp, #-16]!
+	mov x29, sp
+	mov x24, x0
+	mov x25, x1
+lit_loop:
+	cbz x25, lit_ok
+	cmp x19, x20
+	b.eq lit_bad
+	ldrb w2, [x19]
+	ldrb w3, [x24]
+	cmp w2, w3
+	b.ne lit_bad
+	add x19, x19, #1
+	add x24, x24, #1
+	sub x25, x25, #1
+	b lit_loop
+lit_ok:
+	mov x0, #1
+	b lit_done
+lit_bad:
+	sub x1, x19, x23
+	mov x0, #0
+lit_done:
+	ldp x29, x30, [sp], #16
+	ret
+
+parse_string:
+	stp x29, x30, [sp, #-16]!
+	mov x29, sp
+	add x19, x19, #1
+str_loop:
+	cmp x19, x20
+	b.eq str_bad_end
+	ldrb w0, [x19]
+	cmp w0, #'"'
+	b.eq str_close
+	cmp w0, #'\\'
+	b.eq str_escape
+	cmp w0, #0x20
+	b.lo str_bad_here
+	add x19, x19, #1
+	b str_loop
+str_escape:
+	add x19, x19, #1
+	cmp x19, x20
+	b.eq str_bad_end
+	ldrb w0, [x19]
+	cmp w0, #'u'
+	b.eq str_unicode
+	cmp w0, #'"'
+	b.eq str_simple
+	cmp w0, #'\\'
+	b.eq str_simple
+	cmp w0, #'/'
+	b.eq str_simple
+	cmp w0, #'b'
+	b.eq str_simple
+	cmp w0, #'f'
+	b.eq str_simple
+	cmp w0, #'n'
+	b.eq str_simple
+	cmp w0, #'r'
+	b.eq str_simple
+	cmp w0, #'t'
+	b.ne str_bad_here
+str_simple:
+	add x19, x19, #1
+	b str_loop
+str_unicode:
+	add x19, x19, #1
+	mov x1, #4
+unicode_loop:
+	cmp x19, x20
+	b.eq str_bad_end
+	ldrb w0, [x19]
+	cmp w0, #'0'
+	b.lo hex_upper
+	cmp w0, #'9'
+	b.ls hex_ok
+hex_upper:
+	cmp w0, #'A'
+	b.lo hex_lower
+	cmp w0, #'F'
+	b.ls hex_ok
+hex_lower:
+	cmp w0, #'a'
+	b.lo str_bad_here
+	cmp w0, #'f'
+	b.hi str_bad_here
+hex_ok:
+	add x19, x19, #1
+	subs x1, x1, #1
+	b.ne unicode_loop
+	b str_loop
+str_close:
+	add x19, x19, #1
+	mov x0, #1
+	b str_done
+str_bad_end:
+	sub x1, x19, x23
+	b str_bad
+str_bad_here:
+	sub x1, x19, x23
+str_bad:
+	mov x0, #0
+str_done:
+	ldp x29, x30, [sp], #16
+	ret
+
+parse_number:
+	stp x29, x30, [sp, #-16]!
+	mov x29, sp
+	cmp x19, x20
+	b.eq num_bad
+	ldrb w0, [x19]
+	cmp w0, #'-'
+	b.ne num_int
+	add x19, x19, #1
+	cmp x19, x20
+	b.eq num_bad
+	ldrb w0, [x19]
+num_int:
+	cmp w0, #'0'
+	b.eq num_zero
+	cmp w0, #'1'
+	b.lo num_bad
+	cmp w0, #'9'
+	b.hi num_bad
+num_digits:
+	add x19, x19, #1
+	cmp x19, x20
+	b.eq num_suffix
+	ldrb w0, [x19]
+	cmp w0, #'0'
+	b.lo num_suffix
+	cmp w0, #'9'
+	b.ls num_digits
+	b num_suffix
+num_zero:
+	add x19, x19, #1
+	cmp x19, x20
+	b.eq num_suffix
+	ldrb w0, [x19]
+	cmp w0, #'0'
+	b.lo num_suffix
+	cmp w0, #'9'
+	b.ls num_bad
+num_suffix:
+	cmp x19, x20
+	b.eq num_ok
+	ldrb w0, [x19]
+	cmp w0, #'.'
+	b.eq num_frac
+	cmp w0, #'e'
+	b.eq num_exp
+	cmp w0, #'E'
+	b.eq num_exp
+	b num_ok
+num_frac:
+	add x19, x19, #1
+	cmp x19, x20
+	b.eq num_bad
+	ldrb w0, [x19]
+	cmp w0, #'0'
+	b.lo num_bad
+	cmp w0, #'9'
+	b.hi num_bad
+frac_digits:
+	add x19, x19, #1
+	cmp x19, x20
+	b.eq num_ok
+	ldrb w0, [x19]
+	cmp w0, #'0'
+	b.lo num_ok
+	cmp w0, #'9'
+	b.ls frac_digits
+	b num_suffix
+num_exp:
+	add x19, x19, #1
+	cmp x19, x20
+	b.eq num_bad
+	ldrb w0, [x19]
+	cmp w0, #'+'
+	b.eq exp_sign
+	cmp w0, #'-'
+	b.ne exp_first
+exp_sign:
+	add x19, x19, #1
+	cmp x19, x20
+	b.eq num_bad
+	ldrb w0, [x19]
+exp_first:
+	cmp w0, #'0'
+	b.lo num_bad
+	cmp w0, #'9'
+	b.hi num_bad
+exp_digits:
+	add x19, x19, #1
+	cmp x19, x20
+	b.eq num_ok
+	ldrb w0, [x19]
+	cmp w0, #'0'
+	b.lo num_ok
+	cmp w0, #'9'
+	b.ls exp_digits
+num_ok:
+	mov x0, #1
+	b num_done
+num_bad:
+	sub x1, x19, x23
+	mov x0, #0
+num_done:
+	ldp x29, x30, [sp], #16
+	ret
+
+parse_array:
+	stp x29, x30, [sp, #-16]!
+	mov x29, sp
+	add x19, x19, #1
+	bl skip_ws
+	cmp x19, x20
+	b.eq arr_bad
+	ldrb w0, [x19]
+	cmp w0, #']'
+	b.eq arr_empty
+arr_item:
+	bl parse_value
+	cmp x0, #0
+	b.eq arr_done
+	bl skip_ws
+	cmp x19, x20
+	b.eq arr_bad
+	ldrb w0, [x19]
+	cmp w0, #']'
+	b.eq arr_empty
+	cmp w0, #','
+	b.ne arr_bad
+	add x19, x19, #1
+	bl skip_ws
+	cmp x19, x20
+	b.eq arr_bad
+	b arr_item
+arr_empty:
+	add x19, x19, #1
+	mov x0, #1
+	b arr_done
+arr_bad:
+	sub x1, x19, x23
+	mov x0, #0
+arr_done:
+	ldp x29, x30, [sp], #16
+	ret
+
+parse_object:
+	stp x29, x30, [sp, #-16]!
+	mov x29, sp
+	add x19, x19, #1
+	bl skip_ws
+	cmp x19, x20
+	b.eq obj_bad
+	ldrb w0, [x19]
+	cmp w0, #'}'
+	b.eq obj_empty
+obj_member:
+	bl parse_string
+	cmp x0, #0
+	b.eq obj_done
+	bl skip_ws
+	cmp x19, x20
+	b.eq obj_bad
+	ldrb w0, [x19]
+	cmp w0, #':'
+	b.ne obj_bad
+	add x19, x19, #1
+	bl parse_value
+	cmp x0, #0
+	b.eq obj_done
+	bl skip_ws
+	cmp x19, x20
+	b.eq obj_bad
+	ldrb w0, [x19]
+	cmp w0, #'}'
+	b.eq obj_empty
+	cmp w0, #','
+	b.ne obj_bad
+	add x19, x19, #1
+	bl skip_ws
+	cmp x19, x20
+	b.eq obj_bad
+	b obj_member
+obj_empty:
+	add x19, x19, #1
+	mov x0, #1
+	b obj_done
+obj_bad:
+	sub x1, x19, x23
+	mov x0, #0
+obj_done:
+	ldp x29, x30, [sp], #16
+	ret

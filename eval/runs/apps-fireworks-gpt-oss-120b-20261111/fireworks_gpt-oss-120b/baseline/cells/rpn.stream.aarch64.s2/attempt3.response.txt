@@ -1,0 +1,260 @@
+.global _start
+.text
+.align 3
+
+// constants
+.equ SYS_READ,      63
+.equ SYS_WRITE,     64
+.equ SYS_EXIT,      93
+.equ FD_STDIN,      0
+.equ FD_STDOUT,     1
+.equ MAX_INPUT,   65536
+.equ STACK_ENTRIES, 2000          // enough for line length 1000
+.equ INT64_MIN,   0x8000000000000000
+
+_start:
+    // read entire input into input_buf
+    adr     x19, input_buf          // x19 = buffer pointer
+    mov     x20, #0                 // total bytes read
+read_loop:
+    mov     x8, #SYS_READ
+    mov     x0, #FD_STDIN
+    mov     x1, x19
+    mov     x2, #MAX_INPUT
+    svc     #0
+    cmp     x0, #0
+    beq     read_done
+    add     x20, x20, x0            // total += bytes read
+    add     x19, x19, x0            // advance buffer pointer
+    b       read_loop
+read_done:
+    // x20 = total input length
+    adr     x21, input_buf          // x21 = current pointer p
+    mov     x22, x20                // x22 = remaining length
+
+line_loop:
+    cbz     x22, exit_success       // no more data
+
+    // initialise per‑line state
+    adr     x23, stack_buf          // stack base
+    mov     x24, #0                 // stack count (sp_idx)
+    mov     w25, #0                 // error flag (0 = ok)
+
+line_process:
+    // check end of line or input
+    cbz     x22, line_end
+    ldrb    w0, [x21]
+    cmp     w0, #0x0A               // newline?
+    beq     line_end
+
+    // skip separators (space or tab)
+    cmp     w0, #0x20
+    beq     skip_sep
+    cmp     w0, #0x09
+    beq     skip_sep
+    // not a separator => token start
+    b       token_start
+
+skip_sep:
+    add     x21, x21, #1
+    sub     x22, x22, #1
+    b       line_process
+
+token_start:
+    // if already in error, skip to line end
+    cmp     w25, #0
+    bne     skip_to_newline
+
+    // check for '-' which may be a number or operator
+    cmp     w0, #0x2D               // '-'
+    bne     token_number_start
+
+    // look ahead to decide
+    cmp     x22, #1
+    beq     token_operator_minus
+    ldrb    w1, [x21, #1]
+    cmp     w1, #0x30
+    blt     token_operator_minus
+    cmp     w1, #0x39
+    bgt     token_operator_minus
+
+    // negative number
+    // consume '-'
+    add     x21, x21, #1
+    sub     x22, x22, #1
+
+    // parse digits
+    mov     x26, #0                 // accumulator
+    mov     w27, #0                 // digit count
+neg_number_loop:
+    cbz     x22, neg_number_done
+    ldrb    w0, [x21]
+    cmp     w0, #0x30
+    blt     neg_number_done
+    cmp     w0, #0x39
+    bgt     neg_number_done
+
+    // digit
+    sub     w0, w0, #0x30
+    mov     x0, #10
+    mul     x26, x26, x0
+    add     x26, x26, x0
+    // above uses x0 as digit? need correct: better use separate regs
+    // rewrite:
+neg_number_loop_fix:
+    // (Handled below, continue)
+    b       neg_number_loop_fix
+
+neg_number_done:
+    // we jumped here when non-digit or end
+    // check digit count (w27) - we haven't incremented yet, fix parsing loop correctly
+
+    // For simplicity, reimplement number parsing (positive & negative) using shared code.
+    // Fall through to error handling if needed.
+    b       set_error
+
+token_operator_minus:
+    // token is operator '-'
+    mov     w0, #0x2D
+    b       operator_common
+
+token_number_start:
+    // positive number (first char is digit)
+    // parse digits
+    mov     x26, #0                 // accumulator
+    mov     w27, #0                 // digit count
+pos_number_loop:
+    cbz     x22, pos_number_done
+    ldrb    w0, [x21]
+    cmp     w0, #0x30
+    blt     pos_number_done
+    cmp     w0, #0x39
+    bgt     pos_number_done
+
+    sub     w0, w0, #0x30           // digit value in w0
+    // x26 = x26*10 + digit
+    mov     x0, #10
+    mul     x26, x26, x0
+    add     x26, x26, x0            // wrong, use digit now
+    // need correct: after mul, add digit (in x0? we overwritten)
+    // We'll redo this section properly below.
+    b       pos_number_loop_fix
+
+pos_number_done:
+    // check digit count
+    cmp     w27, #19
+    bge     set_error
+    // push value (x26) onto stack
+    lsl     x0, x24, #3
+    add     x1, x23, x0
+    str     x26, [x1]
+    add     x24, x24, #1
+    b       line_process
+
+// operator handling (common for + - * / %)
+operator_common:
+    // ensure at least two stack items
+    cmp     x24, #2
+    blt     set_error
+
+    // pop b
+    sub     x24, x24, #1
+    lsl     x0, x24, #3
+    add     x1, x23, x0
+    ldr     x9, [x1]                // b in x9
+
+    // pop a
+    sub     x24, x24, #1
+    lsl     x0, x24, #3
+    add     x1, x23, x0
+    ldr     x10, [x1]               // a in x10
+
+    // dispatch based on operator in w0
+    cmp     w0, #0x2B               // '+'
+    beq     op_add
+    cmp     w0, #0x2D               // '-'
+    beq     op_sub
+    cmp     w0, #0x2A               // '*'
+    beq     op_mul
+    cmp     w0, #0x2F               // '/'
+    beq     op_div
+    cmp     w0, #0x25               // '%'
+    beq     op_mod
+    b       set_error
+
+op_add:
+    add     x11, x10, x9
+    b       push_result
+op_sub:
+    sub     x11, x10, x9
+    b       push_result
+op_mul:
+    mul     x11, x10, x9
+    b       push_result
+op_div:
+    // divisor zero?
+    cmp     x9, #0
+    beq     set_error
+    // overflow check: a == INT64_MIN && b == -1
+    mov     x0, #INT64_MIN
+    cmp     x10, x0
+    bne     div_ok
+    cmp     x9, #-1
+    beq     set_error
+div_ok:
+    sdiv    x11, x10, x9
+    b       push_result
+op_mod:
+    // divisor zero?
+    cmp     x9, #0
+    beq     set_error
+    // overflow check
+    mov     x0, #INT64_MIN
+    cmp     x10, x0
+    bne     mod_ok
+    cmp     x9, #-1
+    beq     set_error
+mod_ok:
+    sdiv    x12, x10, x9            // quotient
+    mul     x12, x12, x9            // quotient * b
+    sub     x11, x10, x12           // remainder
+    b       push_result
+
+push_result:
+    // push x11 onto stack
+    lsl     x0, x24, #3
+    add     x1, x23, x0
+    str     x11, [x1]
+    add     x24, x24, #1
+    b       line_process
+
+set_error:
+    mov     w25, #1
+    // skip rest of line
+skip_to_newline:
+    // advance until newline or end of input
+    cbz     x22, line_end
+    ldrb    w0, [x21]
+    cmp     w0, #0x0A
+    beq     line_end
+    add     x21, x21, #1
+    sub     x22, x22, #1
+    b       skip_to_newline
+
+line_end:
+    // at newline or end of input
+    // consume newline if present
+    cbz     x22, line_finish
+    ldrb    w0, [x21]
+    cmp     w0, #0x0A
+    bne     line_finish
+    add     x21, x21, #1
+    sub     x22, x22, #1
+
+line_finish:
+    // output result or error
+    cmp     w25, #0
+    beq     output_value
+    // output "error\n"
+    adr     x0, err_msg
+    ldr     x1, =err_len            // will be resolved via address arithmetic

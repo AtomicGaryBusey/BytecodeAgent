@@ -1,0 +1,216 @@
+.global _start
+.text
+_start:
+    // Load addresses of buffers
+    adr x9, prog_buf          // x9 = prog_buf base
+    adr x10, match_table      // x10 = match_table base
+    adr x11, bracket_stack    // x11 = bracket_stack base
+    adr x12, tape             // x12 = tape base
+
+    mov x13, #0                // total_len = 0
+
+read_loop:
+    mov x0, #0                 // fd = stdin
+    add x1, x9, x13            // buffer = prog_buf + total_len
+    mov x2, #65536
+    sub x2, x2, x13            // count = 65536 - total_len
+    mov x8, #63                // sys_read
+    svc #0
+    cbz x0, read_done          // if ret == 0, EOF
+    add x13, x13, x0           // total_len += ret
+    cmp x13, #65536
+    blo read_loop
+
+read_done:
+    // Find first '!' delimiter, if any
+    mov x17, #0                // i = 0
+    mov x14, x13               // prog_len = total_len (default)
+    add x16, x9, x13           // input_end = prog_buf + total_len
+
+find_bang:
+    cmp x17, x13
+    beq no_bang
+    ldrb w0, [x9, x17]
+    cmp w0, #'!'
+    beq bang_found
+    add x17, x17, #1
+    b find_bang
+
+bang_found:
+    mov x14, x17               // prog_len = i
+    add x15, x9, x17
+    add x15, x15, #1           // input_ptr = prog_buf + i + 1
+    b after_bang
+
+no_bang:
+    mov x15, x16               // input_ptr = input_end (empty input)
+
+after_bang:
+    // Bracket checking and building match table
+    mov x18, #0                // stack_idx = 0
+    mov x17, #0                // pc = 0
+
+bracket_loop:
+    cmp x17, x14
+    beq bracket_done
+    ldrb w0, [x9, x17]         // program byte
+    cmp w0, #'['
+    beq handle_lbracket
+    cmp w0, #']'
+    beq handle_rbracket
+    // other characters
+    add x17, x17, #1
+    b bracket_loop
+
+handle_lbracket:
+    str w17, [x11, x18, LSL #2]   // push pc onto stack (store 32-bit)
+    add x18, x18, #1
+    add x17, x17, #1
+    b bracket_loop
+
+handle_rbracket:
+    cmp x18, #0
+    beq unbalanced_error
+    sub x18, x18, #1
+    ldr w0, [x11, x18, LSL #2]   // matching '[' position
+    str w0, [x10, x17, LSL #2]   // match_table[']'] = '['
+    mov w1, w17
+    str w1, [x10, x0, LSL #2]    // match_table['['] = ']'
+    add x17, x17, #1
+    b bracket_loop
+
+unbalanced_error:
+    mov x0, #1
+    mov x8, #93
+    svc #0
+
+bracket_done:
+    cmp x18, #0
+    bne unbalanced_error
+
+    // Interpreter
+    mov x20, #0                // data pointer offset
+    mov x17, #0                // pc = 0
+
+interp_loop:
+    cmp x17, x14
+    beq interp_done
+    ldrb w0, [x9, x17]         // command
+
+    cmp w0, #'>'
+    beq cmd_inc_ptr
+    cmp w0, #'<'
+    beq cmd_dec_ptr
+    cmp w0, #'+'
+    beq cmd_inc_cell
+    cmp w0, #'-'
+    beq cmd_dec_cell
+    cmp w0, #'.'
+    beq cmd_output
+    cmp w0, #','
+    beq cmd_input
+    cmp w0, #'['
+    beq cmd_jump_forward
+    cmp w0, #']'
+    beq cmd_jump_back
+    // ignore other characters
+    add x17, x17, #1
+    b interp_loop
+
+cmd_inc_ptr:
+    add x20, x20, #1
+    add x17, x17, #1
+    b interp_loop
+
+cmd_dec_ptr:
+    sub x20, x20, #1
+    add x17, x17, #1
+    b interp_loop
+
+cmd_inc_cell:
+    add x1, x12, x20
+    ldrb w2, [x1]
+    add w2, w2, #1
+    strb w2, [x1]
+    add x17, x17, #1
+    b interp_loop
+
+cmd_dec_cell:
+    add x1, x12, x20
+    ldrb w2, [x1]
+    sub w2, w2, #1
+    strb w2, [x1]
+    add x17, x17, #1
+    b interp_loop
+
+cmd_output:
+    add x1, x12, x20        // buffer = cell address
+    mov x0, #1              // fd = stdout
+    mov x2, #1              // count = 1
+    mov x8, #64
+    svc #0
+    add x17, x17, #1
+    b interp_loop
+
+cmd_input:
+    cmp x15, x16
+    bge input_eof
+    ldrb w2, [x15]          // read byte from input buffer
+    add x1, x12, x20
+    strb w2, [x1]
+    add x15, x15, #1
+    b input_done
+
+input_eof:
+    add x1, x12, x20
+    mov w2, #0
+    strb w2, [x1]
+
+input_done:
+    add x17, x17, #1
+    b interp_loop
+
+cmd_jump_forward:
+    add x1, x12, x20
+    ldrb w2, [x1]
+    cbnz w2, jf_not_zero
+    // cell == 0, jump forward
+    ldr w3, [x10, x17, LSL #2]   // matching ']'
+    uxtw x3, w3
+    add x17, x3, #1
+    b interp_loop
+
+jf_not_zero:
+    add x17, x17, #1
+    b interp_loop
+
+cmd_jump_back:
+    add x1, x12, x20
+    ldrb w2, [x1]
+    cbz w2, jb_zero
+    // cell != 0, jump back
+    ldr w3, [x10, x17, LSL #2]   // matching '['
+    uxtw x3, w3
+    add x17, x3, #1
+    b interp_loop
+
+jb_zero:
+    add x17, x17, #1
+    b interp_loop
+
+interp_done:
+    mov x0, #0
+    mov x8, #93
+    svc #0
+
+.bss
+.align 8
+prog_buf:
+    .zero 65536
+match_table:
+    .zero 262144
+bracket_stack:
+    .zero 4096
+.align 8
+tape:
+    .zero 30000

@@ -1,0 +1,159 @@
+    .globl _start
+    .text
+    .equ    MAX_INPUT, 65536
+    .equ    MAX_STACK, 8192          // 1024 * 8 bytes
+    .equ    OUTBUF_SIZE, 32
+
+_start:
+    // -------- read entire input into input_buf ----------
+    mov     x9, #0                  // total_len = 0
+read_loop:
+    mov     x0, #0                  // fd = stdin
+    adr     x1, input_buf
+    add     x1, x1, x9              // buf = input_buf + total_len
+    mov     x2, #MAX_INPUT
+    sub     x2, x2, x9              // count = remaining space
+    mov     x8, #63                 // sys_read
+    svc     #0
+    cbz     x0, read_done           // ret == 0 -> EOF
+    add     x9, x9, x0              // total_len += ret
+    cmp     x9, #MAX_INPUT
+    bge     read_done
+    b       read_loop
+read_done:
+    // if no input, exit
+    cbz     x9, exit_success
+
+    // -------- main line processing loop ----------
+    mov     x10, #0                 // cur_offset = 0
+line_loop:
+    cmp     x10, x9
+    bge     exit_success            // all bytes processed
+
+    // find end of line (newline or end of input)
+    mov     x11, x10                // i = cur_offset
+find_nl:
+    cmp     x11, x9
+    bge     line_end_no_nl
+    adr     x12, input_buf
+    add     x12, x12, x11
+    ldrb    w13, [x12]
+    cmp     w13, #10                // '\n'
+    beq     line_end_nl
+    add     x11, x11, #1
+    b       find_nl
+line_end_nl:
+    // line_end = x11 (position of '\n')
+    b       line_process_start
+line_end_no_nl:
+    // line_end = total_len (x9), x11 already = x9
+    // fall through
+line_process_start:
+    // x11 = line_end, x10 = line_start
+    // -------- evaluate line [x10, x11) ----------
+    mov     x15, #0                 // stack depth
+    mov     x23, #0                 // error flag = 0
+    mov     x14, x10                // token_ptr = line_start
+
+token_loop:
+    cmp     x14, x11
+    bge     token_done
+
+    // skip separators (space 0x20, tab 0x09)
+skip_sep:
+    cmp     x14, x11
+    bge     token_done
+    adr     x12, input_buf
+    add     x12, x12, x14
+    ldrb    w13, [x12]
+    cmp     w13, #32
+    beq     inc_tok_ptr
+    cmp     w13, #9
+    beq     inc_tok_ptr
+    b       token_start
+inc_tok_ptr:
+    add     x14, x14, #1
+    b       skip_sep
+
+token_start:
+    // token_start = x14
+    mov     x16, x14                // token_end iterator
+find_tok_end:
+    cmp     x16, x11
+    bge     have_tok_end
+    adr     x12, input_buf
+    add     x12, x12, x16
+    ldrb    w13, [x12]
+    cmp     w13, #32
+    beq     have_tok_end
+    cmp     w13, #9
+    beq     have_tok_end
+    add     x16, x16, #1
+    b       find_tok_end
+have_tok_end:
+    sub     x17, x16, x14           // token_len = token_end - token_start
+
+    // load first byte of token
+    adr     x12, input_buf
+    add     x12, x12, x14
+    ldrb    w18, [x12]              // first char in w18
+
+    // ----- check for single-char operators -----
+    cmp     x17, #1
+    bne     not_operator
+    cmp     w18, #'+'               // '+'
+    beq     op_add
+    cmp     w18, #'-'               // '-'
+    beq     op_sub
+    cmp     w18, #'*'               // '*'
+    beq     op_mul
+    cmp     w18, #'/'               // '/'
+    beq     op_div
+    cmp     w18, #'%'               // '%'
+    beq     op_mod
+    // not an operator, fall through to literal parsing
+    b       parse_literal
+not_operator:
+    // ----- parse integer literal -----
+parse_literal:
+    mov     x19, #0                 // is_negative = 0
+    cmp     w18, #'-'
+    bne     lit_no_sign
+    mov     x19, #1                 // negative flag
+    // need at least one digit after sign
+    cmp     x17, #2
+    blt     set_error
+    // digit_start = token_start + 1
+    add     x20, x14, #1
+    b       lit_digit_loop_start
+lit_no_sign:
+    // first char must be digit
+    cmp     w18, #'0'
+    blt     set_error
+    cmp     w18, #'9'
+    bgt     set_error
+    // digit_start = token_start
+    mov     x20, x14
+lit_digit_loop_start:
+    // count digits, also ensure <=18 digits total
+    mov     x21, #0                 // digit count
+lit_digit_loop:
+    cmp     x20, x16
+    bge     lit_digits_done
+    adr     x12, input_buf
+    add     x12, x12, x20
+    ldrb    w22, [x12]
+    cmp     w22, #'0'
+    blt     set_error
+    cmp     w22, #'9'
+    bgt     set_error
+    add     x21, x21, #1
+    cmp     x21, #18
+    bgt     set_error
+    add     x20, x20, #1
+    b       lit_digit_loop
+lit_digits_done:
+    // pointer to first digit
+    cmp     w18, #'-'
+    bne     first_digit_is_start
+    add     x23_ptr, x14, #1

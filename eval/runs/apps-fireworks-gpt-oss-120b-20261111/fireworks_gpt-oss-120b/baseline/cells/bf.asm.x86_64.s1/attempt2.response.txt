@@ -1,0 +1,217 @@
+.globl _start
+.text
+_start:
+    # constants are defined later, but we can refer to them now
+    # set up base pointers
+    lea r12, [rip + buf]          # r12 = &buf
+    lea r13, [rip + match]        # r13 = &match
+    lea r14, [rip + tape]         # r14 = &tape
+
+    # read entire stdin into buf
+    xor rbx, rbx                  # rbx = total_len = 0
+    mov rdi, 0                    # fd = stdin
+    mov rsi, r12                  # buf pointer
+    mov rdx, BUF_SIZE
+read_loop:
+    mov rax, 0                    # sys_read
+    syscall
+    test rax, rax
+    jz read_done
+    add rbx, rax                  # total_len += rax
+    cmp rbx, BUF_SIZE
+    jae read_done
+    lea rsi, [r12 + rbx]          # buf + total_len
+    jmp read_loop
+read_done:
+    # split at first '!'
+    xor rcx, rcx                  # rcx = index i = 0
+    mov rdx, rbx                  # rdx = len = total_len
+find_excl:
+    cmp rcx, rdx
+    jae no_excl
+    mov al, byte [r12 + rcx]
+    cmp al, 0x21                  # '!'
+    je found_excl
+    inc rcx
+    jmp find_excl
+found_excl:
+    mov qword [rel prog_len], rcx
+    mov rax, rbx
+    sub rax, rcx
+    dec rax
+    mov qword [rel input_len], rax
+    lea rax, [rcx + 1]
+    mov qword [rel input_offset], rax
+    jmp after_split
+no_excl:
+    mov qword [rel prog_len], rbx
+    mov qword [rel input_len], 0
+    mov qword [rel input_offset], rbx
+after_split:
+    xor rax, rax
+    mov qword [rel input_pos], rax
+
+    # bracket matching
+    xor rbx, rbx                  # rbx = stack_ptr = 0
+    xor rcx, rcx                  # rcx = i = 0
+    mov rdx, qword [rel prog_len]
+match_loop:
+    cmp rcx, rdx
+    jae match_done
+    mov al, byte [r12 + rcx]
+    cmp al, '['
+    je push_bracket
+    cmp al, ']'
+    je pop_bracket
+    jmp inc_i
+push_bracket:
+    mov eax, ecx                  # store i
+    mov dword [r12 - buf + stack + rbx*4], eax   # stack[rbx] = i (address via .bss)
+    inc rbx
+    jmp inc_i
+pop_bracket:
+    dec rbx
+    jl unbalanced
+    mov eax, dword [r12 - buf + stack + rbx*4]   # j = stack[rbx]
+    mov edi, ecx                  # i index
+    # match[i] = j
+    mov rax, rcx
+    shl rax, 2
+    mov dword [r13 + rax], eax
+    # match[j] = i
+    mov rax, rax                 # reuse rax = j*4? actually need j*4
+    mov rax, rbx
+    shl rax, 2
+    mov dword [r13 + rax], edi
+    jmp inc_i
+inc_i:
+    inc rcx
+    jmp match_loop
+unbalanced:
+    mov rax, 60
+    mov rdi, 1
+    syscall
+match_done:
+    cmp rbx, 0
+    jne unbalanced
+
+    # execution
+    xor rsi, rsi                  # rsi = pc = 0
+    xor rdx, rdx                  # rdx = data_ptr = 0
+    mov r8, qword [rel prog_len]  # r8 = prog_len
+    mov r9, qword [rel input_len] # r9 = input_len
+    mov r10, qword [rel input_offset] # r10 = input_offset
+    xor r11, r11                  # r11 = input_pos = 0
+exec_loop:
+    cmp rsi, r8
+    jae exec_done
+    mov al, byte [r12 + rsi]
+    inc rsi
+    cmp al, '>'
+    je inc_ptr
+    cmp al, '<'
+    je dec_ptr
+    cmp al, '+'
+    je inc_cell
+    cmp al, '-'
+    je dec_cell
+    cmp al, '.'
+    je output_cell
+    cmp al, ','
+    je input_cell
+    cmp al, '['
+    je bracket_open
+    cmp al, ']'
+    je bracket_close
+    jmp exec_loop
+inc_ptr:
+    inc rdx
+    jmp exec_loop
+dec_ptr:
+    dec rdx
+    jmp exec_loop
+inc_cell:
+    mov bl, byte [r14 + rdx]
+    inc bl
+    mov byte [r14 + rdx], bl
+    jmp exec_loop
+dec_cell:
+    mov bl, byte [r14 + rdx]
+    dec bl
+    mov byte [r14 + rdx], bl
+    jmp exec_loop
+output_cell:
+    movzx edi, byte [r14 + rdx]
+    mov byte [out_buf], dil
+    mov rax, 1                    # sys_write
+    mov rdi, 1                    # stdout
+    lea rsi, [rip + out_buf]
+    mov rdx, 1
+    syscall
+    jmp exec_loop
+input_cell:
+    cmp r11, r9
+    jae input_eof
+    lea rax, [r12 + r10]          # base of input
+    add rax, r11
+    mov bl, byte [rax]
+    inc r11
+    mov byte [r14 + rdx], bl
+    jmp exec_loop
+input_eof:
+    mov byte [r14 + rdx], 0
+    jmp exec_loop
+bracket_open:
+    mov bl, byte [r14 + rdx]
+    test bl, bl
+    jne exec_loop
+    # pc is already after '[' (rsi)
+    mov rcx, rsi
+    dec rcx
+    mov rax, rcx
+    shl rax, 2
+    mov ebx, dword [r13 + rax]    # matching ']'
+    inc rbx
+    mov rsi, rbx
+    jmp exec_loop
+bracket_close:
+    mov bl, byte [r14 + rdx]
+    test bl, bl
+    je exec_loop
+    mov rcx, rsi
+    dec rcx
+    mov rax, rcx
+    shl rax, 2
+    mov ebx, dword [r13 + rax]    # matching '['
+    inc rbx
+    mov rsi, rbx
+    jmp exec_loop
+exec_done:
+    mov rax, 60
+    xor rdi, rdi
+    syscall
+
+# data sections
+.section .bss
+.align 8
+total_len:      .zero 8
+prog_len:       .zero 8
+input_len:      .zero 8
+input_offset:   .zero 8
+input_pos:      .zero 8
+
+.align 16
+buf:            .space BUF_SIZE
+.align 4
+match:          .space BUF_SIZE*4
+.align 1
+tape:           .space TAPE_SIZE
+.align 4
+stack:          .space MAX_STACK*4
+.align 1
+out_buf:        .byte 0
+
+# constants (must be before use in directives)
+.equ BUF_SIZE, 65536
+.equ TAPE_SIZE, 30000
+.equ MAX_STACK, 1000

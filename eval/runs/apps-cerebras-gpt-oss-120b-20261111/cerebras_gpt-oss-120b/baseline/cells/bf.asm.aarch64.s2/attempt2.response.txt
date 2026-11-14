@@ -1,0 +1,233 @@
+.global _start
+.text
+_start:
+    // Allocate buffers on the stack
+    // prog_buf (65536 bytes)
+    movz    x10, #0                // x10 = 0
+    movk    x10, #1, lsl #16      // x10 = 0x0001_0000 = 65536
+    sub     sp, sp, x10
+    mov     x27, sp               // x27 = prog_buf
+
+    // tape (30000 bytes)
+    movz    x10, #0x7530          // x10 = 30000
+    sub     sp, sp, x10
+    mov     x9, sp                // x9 = tape
+
+    // match_table (65536 * 4 = 262144 bytes)
+    movz    x10, #0
+    movk    x10, #4, lsl #16      // x10 = 0x0004_0000 = 262144
+    sub     sp, sp, x10
+    mov     x5, sp                // x5 = match_table
+
+    // bracket stack (4096 bytes)
+    movz    x10, #0x1000          // x10 = 4096
+    sub     sp, sp, x10
+    mov     x6, sp                // x6 = bracket stack
+
+    // ---------- read entire stdin ----------
+    mov     x19, #0               // total_len = 0
+
+read_loop:
+    // buf = prog_buf + total_len
+    add     x1, x27, x19
+    // count = 65536 - total_len
+    movz    x2, #65535
+    add     x2, x2, #1           // x2 = 65536
+    sub     x2, x2, x19
+    mov     x0, #0               // fd = stdin
+    mov     x8, #63              // sys_read
+    svc     #0
+    cbnz    x0, got_read
+    // read returned 0 -> EOF
+    b       read_done
+
+got_read:
+    add     x19, x19, x0        // total_len += ret
+    cmp     x19, #65536
+    blo     read_loop
+
+read_done:
+    // ---------- locate '!' ----------
+    mov     x24, #0             // i = 0
+    mov     x28, x19            // prog_len default = total_len
+    add     x22, x27, x19       // input_ptr default = prog_buf + total_len
+
+find_bang_loop:
+    cmp     x24, x19
+    bge     find_bang_done
+    ldrb    w26, [x27, x24]
+    cmp     w26, #'!'
+    beq     found_bang
+    add     x24, x24, #1
+    b       find_bang_loop
+
+found_bang:
+    mov     x28, x24            // prog_len = i
+    add     x22, x27, x24
+    add     x22, x22, #1        // input_ptr = prog_buf + i + 1
+
+find_bang_done:
+    add     x23, x27, x19       // input_end = prog_buf + total_len
+
+    // ---------- bracket checking and match table ----------
+    mov     x20, #0             // stack_idx = 0
+    mov     x24, #0             // pc = 0
+
+bracket_scan_loop:
+    cmp     x24, x28
+    bge     bracket_scan_done
+    ldrb    w25, [x27, x24]     // program byte
+    cmp     w25, #'['
+    beq     handle_lbracket
+    cmp     w25, #']'
+    beq     handle_rbracket
+    // other chars
+    add     x24, x24, #1
+    b       bracket_scan_loop
+
+handle_lbracket:
+    // store pc on stack (word)
+    str     w24, [x6, x20, LSL #2]
+    add     x20, x20, #1
+    add     x24, x24, #1
+    b       bracket_scan_loop
+
+handle_rbracket:
+    cmp     x20, #0
+    beq     unbalanced_error
+    sub     x20, x20, #1
+    ldr     w26, [x6, x20, LSL #2]   // matching '['
+    // store matches (both sides)
+    str     w26, [x5, x24, LSL #2]   // match_table[']'] = '['
+    mov     w27, w24
+    str     w27, [x5, x26, LSL #2]   // match_table['['] = ']'
+    add     x24, x24, #1
+    b       bracket_scan_loop
+
+unbalanced_error:
+    mov     x0, #1
+    mov     x8, #93
+    svc     #0
+
+bracket_scan_done:
+    cmp     x20, #0
+    bne     unbalanced_error
+
+    // ---------- interpreter execution ----------
+    mov     x21, #0            // data pointer index
+    mov     x24, #0            // pc = 0
+
+exec_loop:
+    cmp     x24, x28
+    bge     exec_done
+    ldrb    w25, [x27, x24]    // current command
+
+    cmp     w25, #'>'
+    beq     cmd_inc_ptr
+    cmp     w25, #'<'
+    beq     cmd_dec_ptr
+    cmp     w25, #'+'
+    beq     cmd_inc_cell
+    cmp     w25, #'-'
+    beq     cmd_dec_cell
+    cmp     w25, #'.'
+    beq     cmd_output
+    cmp     w25, #','
+    beq     cmd_input
+    cmp     w25, #'['
+    beq     cmd_jump_forward
+    cmp     w25, #']'
+    beq     cmd_jump_back
+    // ignore other characters
+    add     x24, x24, #1
+    b       exec_loop
+
+cmd_inc_ptr:
+    add     x21, x21, #1
+    add     x24, x24, #1
+    b       exec_loop
+
+cmd_dec_ptr:
+    sub     x21, x21, #1
+    add     x24, x24, #1
+    b       exec_loop
+
+cmd_inc_cell:
+    add     x25, x9, x21
+    ldrb    w26, [x25]
+    add     w26, w26, #1
+    strb    w26, [x25]
+    add     x24, x24, #1
+    b       exec_loop
+
+cmd_dec_cell:
+    add     x25, x9, x21
+    ldrb    w26, [x25]
+    sub     w26, w26, #1
+    strb    w26, [x25]
+    add     x24, x24, #1
+    b       exec_loop
+
+cmd_output:
+    add     x1, x9, x21        // buffer = cell address
+    mov     x0, #1             // fd = stdout
+    mov     x2, #1             // count = 1
+    mov     x8, #64            // sys_write
+    svc     #0
+    add     x24, x24, #1
+    b       exec_loop
+
+cmd_input:
+    cmp     x22, x23
+    bge     input_eof
+    ldrb    w26, [x22]         // read byte from input buffer
+    add     x25, x9, x21
+    strb    w26, [x25]
+    add     x22, x22, #1
+    b       input_done
+
+input_eof:
+    add     x25, x9, x21
+    mov     w26, #0
+    strb    w26, [x25]
+
+input_done:
+    add     x24, x24, #1
+    b       exec_loop
+
+cmd_jump_forward:
+    add     x25, x9, x21
+    ldrb    w26, [x25]
+    cbnz    w26, jf_not_zero
+    // cell == 0 -> jump forward
+    ldr     w27, [x5, x24, LSL #2]   // matching ']'
+    add     x24, x27, #1
+    b       exec_loop
+
+jf_not_zero:
+    add     x24, x24, #1
+    b       exec_loop
+
+cmd_jump_back:
+    add     x25, x9, x21
+    ldrb    w26, [x25]
+    cbz     w26, jb_zero
+    // cell != 0 -> jump back
+    ldr     w27, [x5, x24, LSL #2]   // matching '['
+    add     x24, x27, #1
+    b       exec_loop
+
+jb_zero:
+    add     x24, x24, #1
+    b       exec_loop
+
+exec_done:
+    mov     x0, #0
+    mov     x8, #93
+    svc     #0
+
+    // End of program
+
+    // No .bss needed; all buffers allocated on stack
+
+    .end

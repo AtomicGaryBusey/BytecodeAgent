@@ -1,0 +1,539 @@
+	.global	_start
+	.text
+
+// syscall numbers
+.equ	SYS_READ, 63
+.equ	SYS_WRITE, 64
+.equ	SYS_EXIT, 93
+
+// buffer size
+.equ	BUF_SIZE, 65536
+
+_start:
+	// x20 = base of input buffer
+	adrp	x20, buf
+	add	x20, x20, :lo12:buf
+
+	// x21 = total bytes read = 0
+	mov	x21, #0
+	// x22 = write pointer = base
+	mov	x22, x20
+
+read_loop:
+	// remaining = BUF_SIZE - total_read
+	mov	x0, #BUF_SIZE
+	sub	x0, x0, x21          // x0 = remaining space
+	cmp	x0, #0
+	beq	read_done
+
+	// syscall read(fd=0, buf=x22, count=x0)
+	mov	x0, #0                // fd
+	mov	x1, x22               // buffer
+	mov	x2, x0                // count (already in x0)
+	mov	x8, #SYS_READ
+	svc	#0
+	cmp	x0, #0
+	beq	read_done
+	// x0 = bytes read
+	add	x21, x21, x0          // total += ret
+	add	x22, x22, x0          // advance write pointer
+	b	read_loop
+
+read_done:
+	// set up pointers
+	adrp	x20, buf
+	add	x20, x20, :lo12:buf   // x20 = base
+	mov	x21, x21              // x21 = length (already)
+	add	x23, x20, x21         // x23 = end pointer (base + length)
+	mov	x22, x20              // x22 = current pointer
+
+	// ---- parse document ----
+	bl	skip_ws
+	bl	parse_value
+	bl	skip_ws
+	cmp	x22, x23
+	beq	ok_path
+	b	error_path
+
+// -------------------------------------------------
+skip_ws:
+	// while (ptr < end && byte is whitespace) ptr++
+1:
+	cmp	x22, x23
+	bcs	2f
+	ldrb	w0, [x22]
+	// whitespace: space, tab, LF, CR
+	cmp	w0, #0x20
+	beq	inc_ptr
+	cmp	w0, #0x09
+	beq	inc_ptr
+	cmp	w0, #0x0A
+	beq	inc_ptr
+	cmp	w0, #0x0D
+	beq	inc_ptr
+	b	2f
+inc_ptr:
+	add	x22, x22, #1
+	b	1b
+2:
+	ret
+
+// -------------------------------------------------
+parse_value:
+	// need at least one byte
+	cmp	x22, x23
+	bcs	parse_error
+	ldrb	w0, [x22]
+
+	// dispatch
+	cmp	w0, #'{'          // 0x7b
+	beq	parse_object
+	cmp	w0, #'['
+	beq	parse_array
+	cmp	w0, #'"'
+	beq	parse_string
+	cmp	w0, #'-'
+	beq	parse_number
+	cmp	w0, #'t'
+	beq	parse_literal_true
+	cmp	w0, #'f'
+	beq	parse_literal_false
+	cmp	w0, #'n'
+	beq	parse_literal_null
+	b	parse_error
+
+parse_error:
+	b	error_path
+
+// -------------------------------------------------
+parse_object:
+	// consume '{'
+	add	x22, x22, #1
+	bl	skip_ws
+	// check for empty object
+	cmp	x22, x23
+	bcs	parse_error
+	ldrb	w0, [x22]
+	cmp	w0, #'}'
+	beq	empty_object
+	// otherwise parse first member
+	bl	parse_member
+	bl	skip_ws
+object_loop:
+	cmp	x22, x23
+	bcs	parse_error
+	ldrb	w0, [x22]
+	cmp	w0, #','
+	bne	object_close_check
+	// consume ','
+	add	x22, x22, #1
+	bl	skip_ws
+	bl	parse_member
+	bl	skip_ws
+	b	object_loop
+object_close_check:
+	cmp	w0, #'}'
+	bne	parse_error
+	// consume '}'
+	add	x22, x22, #1
+	ret
+
+empty_object:
+	// consume '}'
+	add	x22, x22, #1
+	ret
+
+// -------------------------------------------------
+parse_member:
+	// key must be a string
+	bl	parse_string
+	bl	skip_ws
+	// expect ':'
+	cmp	x22, x23
+	bcs	parse_error
+	ldrb	w0, [x22]
+	cmp	w0, #':'
+	bne	parse_error
+	add	x22, x22, #1
+	bl	skip_ws
+	bl	parse_value
+	ret
+
+// -------------------------------------------------
+parse_array:
+	// consume '['
+	add	x22, x22, #1
+	bl	skip_ws
+	// check empty array
+	cmp	x22, x23
+	bcs	parse_error
+	ldrb	w0, [x22]
+	cmp	w0, #']'
+	bne	array_nonempty
+	// empty array
+	add	x22, x22, #1
+	ret
+array_nonempty:
+	bl	parse_value
+	bl	skip_ws
+array_loop:
+	cmp	x22, x23
+	bcs	parse_error
+	ldrb	w0, [x22]
+	cmp	w0, #','
+	bne	array_close_check
+	// consume ','
+	add	x22, x22, #1
+	bl	skip_ws
+	bl	parse_value
+	bl	skip_ws
+	b	array_loop
+array_close_check:
+	cmp	w0, #']'
+	bne	parse_error
+	// consume ']'
+	add	x22, x22, #1
+	ret
+
+// -------------------------------------------------
+parse_string:
+	// expect opening '"'
+	cmp	x22, x23
+	bcs	parse_error
+	ldrb	w0, [x22]
+	cmp	w0, #'"'
+	bne	parse_error
+	add	x22, x22, #1   // skip opening quote
+
+string_loop:
+	cmp	x22, x23
+	bcs	parse_error
+	ldrb	w0, [x22]
+	cmp	w0, #'"'          // end of string
+	beq	string_end
+	cmp	w0, #0x5C         // backslash '\'
+	bne	normal_char
+	// escape sequence
+	add	x22, x22, #1
+	cmp	x22, x23
+	bcs	parse_error
+	ldrb	w1, [x22]
+	// check allowed escapes
+	cmp	w1, #'u'
+	beq	escape_u
+	cmp	w1, #'"'
+	beq	escape_ok
+	cmp	w1, #'\\'
+	beq	escape_ok
+	cmp w1, #'/'
+	beq	escape_ok
+	cmp	w1, #'b'
+	beq	escape_ok
+	cmp w1, #'f'
+	beq	escape_ok
+	cmp w1, #'n'
+	beq	escape_ok
+	cmp w1, #'r'
+	beq	escape_ok
+	cmp w1, #'t'
+	beq	escape_ok
+	b	parse_error
+escape_ok:
+	add	x22, x22, #1
+	b	string_loop
+escape_u:
+	// need exactly 4 hex digits
+	add	x22, x22, #1
+	mov	x9, #4               // remaining hex digits
+escape_u_loop:
+	cmp	x9, #0
+	beq	escape_u_done
+	cmp	x22, x23
+	bcs	parse_error
+	ldrb	w0, [x22]
+	// check 0-9, a-f, A-F
+	cmp	w0, #'0'
+	blt	parse_error
+	cmp	w0, #'9'
+	ble	hex_ok
+	cmp	w0, #'a'
+	blt	parse_error
+	cmp	w0, #'f'
+	ble	hex_ok
+	cmp	w0, #'A'
+	blt	parse_error
+	cmp	w0, #'F'
+	ble	hex_ok
+	b	parse_error
+hex_ok:
+	add	x22, x22, #1
+	sub	x9, x9, #1
+	b	escape_u_loop
+escape_u_done:
+	b	string_loop
+
+normal_char:
+	// reject control characters 0x00-0x1F
+	cmp	w0, #0x20
+	blo	parse_error
+	add	x22, x22, #1
+	b	string_loop
+
+string_end:
+	// consume closing '"'
+	add	x22, x22, #1
+	ret
+
+// -------------------------------------------------
+parse_number:
+	// optional '-'
+	cmp	x22, x23
+	bcs	parse_error
+	ldrb	w0, [x22]
+	cmp	w0, #'-'
+	bne	num_int_start
+	add	x22, x22, #1
+	// after '-', must have a digit
+	cmp	x22, x23
+	bcs	parse_error
+	ldrb	w0, [x22]
+
+num_int_start:
+	// first digit
+	cmp	w0, #'0'
+	beq	num_zero
+	// must be 1-9
+	cmp	w0, #'1'
+	blt	parse_error
+	cmp	w0, #'9'
+	bgt	parse_error
+	// consume leading non-zero digit
+	add	x22, x22, #1
+	// consume following digits
+num_int_digits:
+	cmp	x22, x23
+	bcs	num_frac_check
+	ldrb	w0, [x22]
+	cmp	w0, #'0'
+	blt	num_frac_check
+	cmp	w0, #'9'
+	bgt	num_frac_check
+	// digit, stay in integer part
+	add	x22, x22, #1
+	b	num_int_digits
+
+num_zero:
+	// consume '0'
+	add	x22, x22, #1
+	// cannot have more digits before fraction
+	cmp	x22, x23
+	bcs	num_frac_check
+	ldrb	w0, [x22]
+	cmp	w0, #'0'
+	bne	num_frac_check   // if next is digit, it's error later
+	// if next is digit (0-9) that would be invalid (leading zeros)
+	cmp	w0, #'0'
+	blt	num_frac_check
+	cmp	w0, #'9'
+	ble	parse_error
+
+num_frac_check:
+	// check for optional fraction
+	cmp	x22, x23
+	bcs	num_exp_check
+	ldrb	w0, [x22]
+	cmp	w0, #'.'
+	bne	num_exp_check
+	// consume '.'
+	add	x22, x22, #1
+	// must have at least one digit
+	cmp	x22, x23
+	bcs	parse_error
+	ldrb	w0, [x22]
+	cmp	w0, #'0'
+	blt	parse_error
+	cmp	w0, #'9'
+	bgt	parse_error
+	// consume first fraction digit
+	add	x22, x22, #1
+	// consume any further digits
+num_frac_digits:
+	cmp	x22, x23
+	bcs	num_exp_check
+	ldrb	w0, [x22]
+	cmp	w0, #'0'
+	blt	num_exp_check
+	cmp	w0, #'9'
+	bgt	num_exp_check
+	add	x22, x22, #1
+	b	num_frac_digits
+
+num_exp_check:
+	// optional exponent
+	cmp	x22, x23
+	bcs	num_end
+	ldrb	w0, [x22]
+	cmp	w0, #'e'
+	beq	num_exp_start
+	cmp	w0, #'E'
+	bne	num_end
+num_exp_start:
+	// consume e/E
+	add	x22, x22, #1
+	// optional sign
+	cmp	x22, x23
+	bcs	parse_error
+	ldrb	w0, [x22]
+	cmp	w0, #'+'
+	beq	exp_sign
+	cmp	w0, #'-'
+	beq	exp_sign
+	b	exp_digits   // no sign
+exp_sign:
+	add	x22, x22, #1
+exp_digits:
+	// need at least one digit
+	cmp	x22, x23
+	bcs	parse_error
+	ldrb	w0, [x22]
+	cmp	w0, #'0'
+	blt	parse_error
+	cmp	w0, #'9'
+	bgt	parse_error
+	// consume first exponent digit
+	add	x22, x22, #1
+	// consume further digits
+exp_digit_loop:
+	cmp	x22, x23
+	bcs	num_end
+	ldrb	w0, [x22]
+	cmp	w0, #'0'
+	blt	num_end
+	cmp	w0, #'9'
+	bgt	num_end
+	add	x22, x22, #1
+	b	exp_digit_loop
+
+num_end:
+	ret
+
+// -------------------------------------------------
+parse_literal_true:
+	// expect "true"
+	add	x22, x22, #1          // consume 't'
+	// check 'r'
+	cmp	x22, x23
+	bcs	parse_error
+	ldrb	w0, [x22]
+	cmp	w0, #'r'
+	bne	parse_error
+	add	x22, x22, #1
+	// check 'u'
+	cmp	x22, x23
+	bcs	parse_error
+	ldrb	w0, [x22]
+	cmp	w0, #'u'
+	bne	parse_error
+	add	x22, x22, #1
+	// check 'e'
+	cmp	x22, x23
+	bcs	parse_error
+	ldrb	w0, [x22]
+	cmp	w0, #'e'
+	bne	parse_error
+	add	x22, x22, #1
+	ret
+
+parse_literal_false:
+	// expect "false"
+	add	x22, x22, #1          // consume 'f'
+	// check 'a'
+	cmp	x22, x23
+	bcs	parse_error
+	ldrb	w0, [x22]
+	cmp	w0, #'a'
+	bne	parse_error
+	add	x22, x22, #1
+	// check 'l'
+	cmp	x22, x23
+	bcs	parse_error
+	ldrb	w0, [x22]
+	cmp	w0, #'l'
+	bne	parse_error
+	add	x22, x22, #1
+	// check 's'
+	cmp	x22, x23
+	bcs	parse_error
+	ldrb	w0, [x22]
+	cmp	w0, #'s'
+	bne	parse_error
+	add	x22, x22, #1
+	// check 'e'
+	cmp	x22, x23
+	bcs	parse_error
+	ldrb	w0, [x22]
+	cmp	w0, #'e'
+	bne	parse_error
+	add	x22, x22, #1
+	ret
+
+parse_literal_null:
+	// expect "null"
+	add	x22, x22, #1          // consume 'n'
+	// check 'u'
+	cmp	x22, x23
+	bcs	parse_error
+	ldrb	w0, [x22]
+	cmp	w0, #'u'
+	bne	parse_error
+	add	x22, x22, #1
+	// check 'l'
+	cmp	x22, x23
+	bcs	parse_error
+	ldrb	w0, [x22]
+	cmp	w0, #'l'
+	bne	parse_error
+	add	x22, x22, #1
+	// check 'l'
+	cmp	x22, x23
+	bcs	parse_error
+	ldrb	w0, [x22]
+	cmp	w0, #'l'
+	bne	parse_error
+	add	x22, x22, #1
+	ret
+
+// -------------------------------------------------
+ok_path:
+	// write "ok\n"
+	adrp	x0, ok_msg
+	add	x0, x0, :lo12:ok_msg
+	mov	x1, #4              // length
+	mov	x2, #1              // fd stdout
+	mov	x8, #SYS_WRITE
+	svc	#0
+	// exit 0
+	mov	x0, #0
+	mov	x8, #SYS_EXIT
+	svc	#0
+
+// -------------------------------------------------
+error_path:
+	// compute offset = x22 - x20
+	sub	x0, x22, x20          // x0 = offset
+	// convert to decimal string in buf_decimal (reverse)
+	adrp	x1, buf_decimal
+	add	x1, x1, :lo12:buf_decimal
+	add	x1, x1, #20          // point to end of buffer
+	mov	x2, x0               // copy original number
+	cmp	x2, #0
+	bne	dec_loop
+	// number is zero, store '0'
+	sub	x1, x1, #1
+	mov	w3, #'0'
+	strb	w3, [x1]
+	b	dec_done
+dec_loop:
+	// compute quotient and remainder
+	udiv	x3, x2, #10          // x3 = quotient
+	mul	x4,

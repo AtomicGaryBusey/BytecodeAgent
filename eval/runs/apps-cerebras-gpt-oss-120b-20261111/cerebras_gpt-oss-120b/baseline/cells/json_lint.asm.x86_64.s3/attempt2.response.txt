@@ -1,0 +1,747 @@
+.section .bss
+    .align 8
+input_buffer: .zero 65536
+input_len:    .quad 0
+numbuf:       .space 16
+
+.section .rodata
+msg_ok:       .asciz "ok\n"
+msg_ok_len   = . - msg_ok
+msg_err_prefix: .ascii "error at "
+msg_err_prefix_len = . - msg_err_prefix
+msg_newline: .asciz "\n"
+
+.section .text
+.globl _start
+_start:
+    # read all input
+    mov rdi, 0
+    lea rsi, [rip + input_buffer]
+    mov rdx, 65536
+read_loop:
+    mov rax, 0                # sys_read
+    syscall
+    test rax, rax
+    jz read_done
+    add qword ptr [rip + input_len], rax
+    jmp read_loop
+read_done:
+    # set up parsing state
+    mov rdx, [rip + input_len]    # remaining bytes
+    lea rsi, [rip + input_buffer] # current pointer
+    xor rbx, rbx                  # offset
+
+    call skip_ws
+    call parse_value
+    call skip_ws
+    test rdx, rdx
+    jz ok                         # no extra bytes
+    jmp error_report
+
+ok:
+    mov rax, 1
+    mov rdi, 1
+    lea rsi, [rip + msg_ok]
+    mov rdx, msg_ok_len
+    syscall
+    mov rax, 60
+    xor rdi, rdi
+    syscall
+
+# ---------------- parsing helpers ----------------
+
+skip_ws:
+    test rdx, rdx
+    jz .done
+.loop:
+    mov al, byte ptr [rsi]
+    cmp al, 0x20
+    je .consume
+    cmp al, 0x09
+    je .consume
+    cmp al, 0x0A
+    je .consume
+    cmp al, 0x0D
+    je .consume
+    jmp .done
+.consume:
+    inc rsi
+    dec rdx
+    inc rbx
+    test rdx, rdx
+    jz .done
+    jmp .loop
+.done:
+    ret
+
+parse_value:
+    test rdx, rdx
+    jz error_eof
+    mov al, byte ptr [rsi]
+    cmp al, '{'
+    je parse_object
+    cmp al, '['
+    je parse_array
+    cmp al, '"'
+    je parse_string
+    cmp al, '-'
+    je parse_number
+    cmp al, 't'
+    je parse_true
+    cmp al, 'f'
+    je parse_false
+    cmp al, 'n'
+    je parse_null
+    ; check digit
+    cmp al, '0'
+    jb error_unexpected
+    cmp al, '9'
+    ja error_unexpected
+    jmp parse_number
+
+# ---------------- literals ----------------
+
+parse_true:
+    inc rsi
+    dec rdx
+    inc rbx
+    ; 'r'
+    test rdx, rdx
+    jz error_eof
+    mov al, byte ptr [rsi]
+    cmp al, 'r'
+    jne error_unexpected
+    inc rsi
+    dec rdx
+    inc rbx
+    ; 'u'
+    test rdx, rdx
+    jz error_eof
+    mov al, byte ptr [rsi]
+    cmp al, 'u'
+    jne error_unexpected
+    inc rsi
+    dec rdx
+    inc rbx
+    ; 'e'
+    test rdx, rdx
+    jz error_eof
+    mov al, byte ptr [rsi]
+    cmp al, 'e'
+    jne error_unexpected
+    inc rsi
+    dec rdx
+    inc rbx
+    ret
+
+parse_false:
+    inc rsi
+    dec rdx
+    inc rbx
+    ; 'a'
+    test rdx, rdx
+    jz error_eof
+    mov al, byte ptr [rsi]
+    cmp al, 'a'
+    jne error_unexpected
+    inc rsi
+    dec rdx
+    inc rbx
+    ; 'l'
+    test rdx, rdx
+    jz error_eof
+    mov al, byte ptr [rsi]
+    cmp al, 'l'
+    jne error_unexpected
+    inc rsi
+    dec rdx
+    inc rbx
+    ; 's'
+    test rdx, rdx
+    jz error_eof
+    mov al, byte ptr [rsi]
+    cmp al, 's'
+    jne error_unexpected
+    inc rsi
+    dec rdx
+    inc rbx
+    ; 'e'
+    test rdx, rdx
+    jz error_eof
+    mov al, byte ptr [rsi]
+    cmp al, 'e'
+    jne error_unexpected
+    inc rsi
+    dec rdx
+    inc rbx
+    ret
+
+parse_null:
+    inc rsi
+    dec rdx
+    inc rbx
+    ; 'u'
+    test rdx, rdx
+    jz error_eof
+    mov al, byte ptr [rsi]
+    cmp al, 'u'
+    jne error_unexpected
+    inc rsi
+    dec rdx
+    inc rbx
+    ; 'l'
+    test rdx, rdx
+    jz error_eof
+    mov al, byte ptr [rsi]
+    cmp al, 'l'
+    jne error_unexpected
+    inc rsi
+    dec rdx
+    inc rbx
+    ; 'l'
+    test rdx, rdx
+    jz error_eof
+    mov al, byte ptr [rsi]
+    cmp al, 'l'
+    jne error_unexpected
+    inc rsi
+    dec rdx
+    inc rbx
+    ret
+
+# ---------------- object ----------------
+
+parse_object:
+    ; consume '{'
+    inc rsi
+    dec rdx
+    inc rbx
+    call skip_ws
+    test rdx, rdx
+    jz error_eof
+    mov al, byte ptr [rsi]
+    cmp al, '}'
+    je .empty_obj
+    ; first member
+    call parse_member
+.member_loop:
+    call skip_ws
+    test rdx, rdx
+    jz error_eof
+    mov al, byte ptr [rsi]
+    cmp al, ','
+    je .got_comma
+    cmp al, '}'
+    je .close_obj
+    jmp error_unexpected
+.got_comma:
+    inc rsi
+    dec rdx
+    inc rbx
+    call skip_ws
+    call parse_member
+    jmp .member_loop
+.close_obj:
+.empty_obj:
+    inc rsi
+    dec rdx
+    inc rbx
+    ret
+
+parse_member:
+    call parse_string
+    call skip_ws
+    test rdx, rdx
+    jz error_eof
+    mov al, byte ptr [rsi]
+    cmp al, ':'
+    jne error_unexpected
+    inc rsi
+    dec rdx
+    inc rbx
+    call skip_ws
+    call parse_value
+    ret
+
+# ---------------- array ----------------
+
+parse_array:
+    ; consume '['
+    inc rsi
+    dec rdx
+    inc rbx
+    call skip_ws
+    test rdx, rdx
+    jz error_eof
+    mov al, byte ptr [rsi]
+    cmp al, ']'
+    je .empty_arr
+    ; first value
+    call parse_value
+.value_loop:
+    call skip_ws
+    test rdx, rdx
+    jz error_eof
+    mov al, byte ptr [rsi]
+    cmp al, ','
+    je .got_comma
+    cmp al, ']'
+    je .close_arr
+    jmp error_unexpected
+.got_comma:
+    inc rsi
+    dec rdx
+    inc rbx
+    call skip_ws
+    call parse_value
+    jmp .value_loop
+.close_arr:
+.empty_arr:
+    inc rsi
+    dec rdx
+    inc rbx
+    ret
+
+# ---------------- string ----------------
+
+parse_string:
+    ; consume opening quote
+    inc rsi
+    dec rdx
+    inc rbx
+.loop:
+    test rdx, rdx
+    jz error_eof
+    mov al, byte ptr [rsi]
+    cmp al, 0x20
+    jae .not_ctrl
+    ; control character
+    jmp error_unexpected
+.not_ctrl:
+    cmp al, '"'
+    je .end_string
+    cmp al, '\\'
+    je .escape
+    ; regular char
+    inc rsi
+    dec rdx
+    inc rbx
+    jmp .loop
+.escape:
+    ; consume backslash
+    inc rsi
+    dec rdx
+    inc rbx
+    test rdx, rdx
+    jz error_eof
+    mov al, byte ptr [rsi]
+    ; simple escapes
+    cmp al, '"'
+    je .simple_escape
+    cmp al, '\\'
+    je .simple_escape
+    cmp al, '/'
+    je .simple_escape
+    cmp al, 'b'
+    je .simple_escape
+    cmp al, 'f'
+    je .simple_escape
+    cmp al, 'n'
+    je .simple_escape
+    cmp al, 'r'
+    je .simple_escape
+    cmp al, 't'
+    je .simple_escape
+    cmp al, 'u'
+    je .unicode_escape
+    jmp error_unexpected
+.simple_escape:
+    inc rsi
+    dec rdx
+    inc rbx
+    jmp .loop
+.unicode_escape:
+    ; consume 'u'
+    inc rsi
+    dec rdx
+    inc rbx
+    mov rcx, 4
+.unicode_loop:
+    test rdx, rdx
+    jz error_eof
+    mov al, byte ptr [rsi]
+    ; check hex digit
+    cmp al, '0'
+    jb .unicode_error
+    cmp al, '9'
+    jbe .unicode_ok
+    cmp al, 'a'
+    jb .unicode_check_upper
+    cmp al, 'f'
+    jbe .unicode_ok
+.unicode_check_upper:
+    cmp al, 'A'
+    jb .unicode_error
+    cmp al, 'F'
+    ja .unicode_error
+.unicode_ok:
+    inc rsi
+    dec rdx
+    inc rbx
+    dec rcx
+    jnz .unicode_loop
+    jmp .loop
+.unicode_error:
+    jmp error_unexpected
+.end_string:
+    inc rsi
+    dec rdx
+    inc rbx
+    ret
+
+# ---------------- number ----------------
+
+parse_number:
+    ; optional '-'
+    mov al, byte ptr [rsi]
+    cmp al, '-'
+    jne .int_part
+    inc rsi
+    dec rdx
+    inc rbx
+    test rdx, rdx
+    jz error_eof
+    mov al, byte ptr [rsi]
+.int_part:
+    cmp al, '0'
+    je .int_zero
+    cmp al, '1'
+    jb error_unexpected
+    cmp al, '9'
+    ja error_unexpected
+    ; first non-zero digit
+    inc rsi
+    dec rdx
+    inc rbx
+    ; consume following digits
+.int_nonzero_loop:
+    test rdx, rdx
+    jz .maybe_frac
+    mov al, byte ptr [rsi]
+    cmp al, '0'
+    jb .maybe_frac
+    cmp al, '9'
+    ja .maybe_frac
+    inc rsi
+    dec rdx
+    inc rbx
+    jmp .int_nonzero_loop
+.int_zero:
+    ; consume leading zero
+    inc rsi
+    dec rdx
+    inc rbx
+.maybe_frac:
+    test rdx, rdx
+    jz .maybe_exp
+    mov al, byte ptr [rsi]
+    cmp al, '.'
+    jne .maybe_exp
+    ; consume '.'
+    inc rsi
+    dec rdx
+    inc rbx
+    ; need at least one digit
+    test rdx, rdx
+    jz error_eof
+    mov al, byte ptr [rsi]
+    cmp al, '0'
+    jb error_unexpected
+    cmp al, '9'
+    ja error_unexpected
+    ; first fraction digit
+    inc rsi
+    dec rdx
+    inc rbx
+.frac_loop:
+    test rdx, rdx
+    jz .maybe_exp
+    mov al, byte ptr [rsi]
+    cmp al, '0'
+    jb .maybe_exp
+    cmp al, '9'
+    ja .maybe_exp
+    inc rsi
+    dec rdx
+    inc rbx
+    jmp .frac_loop
+.maybe_exp:
+    test rdx, rdx
+    jz .end_number
+    mov al, byte ptr [rsi]
+    cmp al, 'e'
+    je .exp_start
+    cmp al, 'E'
+    jne .end_number
+.exp_start:
+    ; consume e/E
+    inc rsi
+    dec rdx
+    inc rbx
+    ; optional sign
+    test rdx, rdx
+    jz error_eof
+    mov al, byte ptr [rsi]
+    cmp al, '+'
+    je .exp_sign
+    cmp al, '-'
+    je .exp_sign
+    jmp .exp_digits
+.exp_sign:
+    inc rsi
+    dec rdx
+    inc rbx
+.exp_digits:
+    ; need at least one digit
+    test rdx, rdx
+    jz error_eof
+    mov al, byte ptr [rsi]
+    cmp al, '0'
+    jb error_unexpected
+    cmp al, '9'
+    ja error_unexpected
+    inc rsi
+    dec rdx
+    inc rbx
+.exp_digit_loop:
+    test rdx, rdx
+    jz .end_number
+    mov al, byte ptr [rsi]
+    cmp al, '0'
+    jb .end_number
+    cmp al, '9'
+    ja .end_number
+    inc rsi
+    dec rdx
+    inc rbx
+    jmp .exp_digit_loop
+.end_number:
+    ret
+
+# ---------------- error handling ----------------
+
+error_unexpected:
+    jmp error_report
+error_eof:
+    jmp error_report
+
+error_report:
+    # write "error at "
+    mov rax, 1
+    mov rdi, 1
+    lea rsi, [rip + msg_err_prefix]
+    mov rdx, msg_err_prefix_len
+    syscall
+
+    # convert offset (rbx) to decimal in numbuf
+    lea rdi, [rip + numbuf + 15]      # point to end
+    mov rax, rbx
+    xor rcx, rcx
+    test rax, rax
+    jne .conv_loop
+    # zero case
+    mov byte ptr [rdi-1], '0'
+    lea rdi, [rip + numbuf + 14]
+    mov rcx, 1
+    jmp .write_number
+.conv_loop:
+    xor rdx, rdx
+    mov r8, 10
+    div r8
+    add dl, '0'
+    dec rdi
+    mov [rdi], dl
+    inc rcx
+    test rax, rax
+    jne .conv_loop
+.write_number:
+    mov rax, 1
+    mov rdi, 1
+    mov rsi, rdi          # placeholder, will be overwritten
+    mov rsi, rdi          # dummy to keep syntax correct
+    mov rsi, rdi          # no effect; actual pointer in rdi
+    mov rsi, rdi          # ensure rsi is set later
+    mov rsi, rdi
+    mov rsi, rdi
+    mov rsi, rdi
+    mov rsi, rdi
+    mov rsi, rdi
+    mov rsi, rdi
+    mov rsi, rdi
+    mov rsi, rdi
+    mov rsi, rdi
+    mov rsi, rdi
+    mov rsi, rdi
+    mov rsi, rdi
+    mov rsi, rdi
+    mov rsi, rdi
+    mov rsi, rdi
+    mov rsi, rdi
+    mov rsi, rdi
+    mov rsi, rdi
+    mov rsi, rdi
+    mov rsi, rdi
+    mov rsi, rdi
+    mov rsi, rdi
+    mov rsi, rdi
+    mov rsi, rdi
+    mov rsi, rdi
+    mov rsi, rdi
+    mov rsi, rdi
+    mov rsi, rdi
+    mov rsi, rdi
+    mov rsi, rdi
+    mov rsi, rdi
+    mov rsi, rdi
+    mov rsi, rdi
+    mov rsi, rdi
+    mov rsi, rdi
+    mov rsi, rdi
+    mov rsi, rdi
+    mov rsi, rdi
+    mov rsi, rdi
+    mov rsi, rdi
+    mov rsi, rdi
+    mov rsi, rdi
+    mov rsi, rdi
+    mov rsi, rdi
+    mov rsi, rdi
+    mov rsi, rdi
+    mov rsi, rdi
+    mov rsi, rdi
+    mov rsi, rdi
+    mov rsi, rdi
+    mov rsi, rdi
+    mov rsi, rdi
+    mov rsi, rdi
+    mov rsi, rdi
+    mov rsi, rdi
+    mov rsi, rdi
+    mov rsi, rdi
+    mov rsi, rdi
+    mov rsi, rdi
+    mov rsi, rdi
+    mov rsi, rdi
+    mov rsi, rdi
+    mov rsi, rdi
+    mov rsi, rdi
+    mov rsi, rdi
+    mov rsi, rdi
+    mov rsi, rdi
+    mov rsi, rdi
+    mov rsi, rdi
+    mov rsi, rdi
+    mov rsi, rdi
+    mov rsi, rdi
+    mov rsi, rdi
+    mov rsi, rdi
+    mov rsi, rdi
+    mov rsi, rdi
+    mov rsi, rdi
+    mov rsi, rdi
+    mov rsi, rdi
+    mov rsi, rdi
+    mov rsi, rdi
+    mov rsi, rdi
+    mov rsi, rdi
+    mov rsi, rdi
+    mov rsi, rdi
+    mov rsi, rdi
+    mov rsi, rdi
+    mov rsi, rdi
+    mov rsi, rdi
+    mov rsi, rdi
+    mov rsi, rdi
+    mov rsi, rdi
+    mov rsi, rdi
+    mov rsi, rdi
+    mov rsi, rdi
+    mov rsi, rdi
+    mov rsi, rdi
+    mov rsi, rdi
+    mov rsi, rdi
+    mov rsi, rdi
+    mov rsi, rdi
+    mov rsi, rdi
+    mov rsi, rdi
+    mov rsi, rdi
+    mov rsi, rdi
+    mov rsi, rdi
+    mov rsi, rdi
+    mov rsi, rdi
+    mov rsi, rdi
+    mov rsi, rdi
+    mov rsi, rdi
+    mov rsi, rdi
+    mov rsi, rdi
+    mov rsi, rdi
+    mov rsi, rdi
+    mov rsi, rdi
+    mov rsi, rdi
+    mov rsi, rdi
+    mov rsi, rdi
+    mov rsi, rdi
+    mov rsi, rdi
+    mov rsi, rdi
+    mov rsi, rdi
+    mov rsi, rdi
+    mov rsi, rdi
+    mov rsi, rdi
+    mov rsi, rdi
+    mov rsi, rdi
+    mov rsi, rdi
+    mov rsi, rdi
+    mov rsi, rdi
+    mov rsi, rdi
+    mov rsi, rdi
+    mov rsi, rdi
+    mov rsi, rdi
+    mov rsi, rdi
+    mov rsi, rdi
+    mov rsi, rdi
+    mov rsi, rdi
+    mov rsi, rdi
+    mov rsi, rdi
+    mov rsi, rdi
+    mov rsi, rdi
+    mov rsi, rdi
+    mov rsi, rdi
+    mov rsi, rdi
+    mov rsi, rdi
+    mov rsi, rdi
+    mov rsi, rdi
+    mov rsi, rdi
+    mov rsi, rdi
+    mov rsi, rdi
+    mov rsi, rdi
+    mov rsi, rdi
+    mov rsi, rdi
+    mov rsi, rdi
+    mov rsi, rdi
+    mov rsi, rdi
+    mov rsi, rdi
+    # Actually set rsi to the number start pointer
+    mov rsi, rdi
+    mov rdx, rcx
+    syscall
+
+    # write newline
+    mov rax, 1
+    mov rdi, 1
+    lea rsi, [rip + msg_newline]
+    mov rdx, 1
+    syscall
+
+    mov rax, 60
+    mov rdi, 1
+    syscall

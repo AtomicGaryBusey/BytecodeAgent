@@ -1,0 +1,334 @@
+.globl _start
+.text
+_start:
+    # -------------------------------------------------
+    # Read entire stdin into input_buf (max 65536)
+    # -------------------------------------------------
+    xor     rbx, rbx                # total bytes read = 0
+read_loop:
+    mov     rax, 0                  # sys_read
+    mov     rdi, 0                  # fd = stdin
+    lea     rsi, [rip + input_buf]  # buffer base
+    add     rsi, rbx                # current write pointer
+    mov     rdx, INPUT_BUF_SIZE
+    sub     rdx, rbx                # remaining space
+    syscall
+    test    rax, rax
+    jz      read_done
+    add     rbx, rax                # accumulate
+    cmp     rbx, INPUT_BUF_SIZE
+    jae     read_done
+    jmp     read_loop
+read_done:
+    # rbx = total bytes read
+    # -------------------------------------------------
+    # Set pointers for line processing
+    # -------------------------------------------------
+    lea     r12, [rip + input_buf]          # r12 = current pointer (start of line)
+    lea     r13, [rip + input_buf]
+    add     r13, rbx                        # r13 = end pointer (input_buf + total)
+
+line_loop:
+    cmp     r12, r13
+    jae     exit_program
+
+    # r14 = line start
+    mov     r14, r12
+
+    # Find end of line (newline or end of input)
+    mov     r15, r12                # scan pointer
+scan_nl:
+    cmp     r15, r13
+    jae     no_newline
+    mov     al, byte ptr [r15]
+    cmp     al, 0x0A
+    je      have_newline
+    inc     r15
+    jmp     scan_nl
+have_newline:
+    mov     r10, r15                # r10 = line end (exclusive)
+    inc     r15                     # r15 = start of next line
+    jmp     line_start
+no_newline:
+    mov     r10, r13                # line end = end of input
+    mov     r15, r13                # next line start = end (will exit after this)
+line_start:
+    # -------------------------------------------------
+    # Evaluate the line [r14, r10)
+    # -------------------------------------------------
+    xor     r11d, r11d                # r11 = error flag (0 = no error)
+    xor     r9d, r9d                  # r9 = stack size (count)
+    lea     r8, [rip + stack]       # r8 = stack base address
+
+    mov     rdx, r14                # rdx = token pointer
+
+token_loop:
+    # skip separators (space 0x20, tab 0x09)
+    cmp     rdx, r10
+    jae     token_done
+    mov     al, byte ptr [rdx]
+    cmp     al, 0x20
+    je      inc_token_ptr
+    cmp     al, 0x09
+    je      inc_token_ptr
+    jmp     token_start
+inc_token_ptr:
+    inc     rdx
+    jmp     token_loop
+
+token_start:
+    # rdx points to start of token
+    mov     rsi, rdx                # rsi = token start copy
+    mov     rcx, rdx                # rcx = token end finder
+find_token_end:
+    cmp     rcx, r10
+    jae     token_end_found
+    mov     al, byte ptr [rcx]
+    cmp     al, 0x20
+    je      token_end_found
+    cmp     al, 0x09
+    je      token_end_found
+    inc     rcx
+    jmp     find_token_end
+token_end_found:
+    mov     rbx, rcx                # rbx = token end (exclusive)
+    mov     rsi, rdx                # rsi = token start
+    mov     rdx, rbx                # rdx = token end (used later)
+    mov     rax, rbx
+    sub     rax, rsi                # rax = token length
+    mov     r8d, eax                # r8d = token_len (fits in 32)
+
+    # -------------------------------------------------
+    # Check if token is an operator (single char and one of + - * / %)
+    # -------------------------------------------------
+    cmp     r8d, 1
+    jne     maybe_literal
+    mov     al, byte ptr [rsi]
+    cmp     al, '+'
+    je      op_add
+    cmp     al, '-'
+    je      op_sub
+    cmp     al, '*'
+    je      op_mul
+    cmp     al, '/'
+    je      op_div
+    cmp     al, '%'
+    je      op_mod
+    # not a recognized operator => error
+    jmp     set_error
+
+maybe_literal:
+    # -------------------------------------------------
+    # Parse integer literal
+    # -------------------------------------------------
+    xor     r12b, r12b             # sign flag = 0
+    mov     rcx, rsi               # rcx = cursor
+    xor     rdx, rdx               # digit count = 0
+    xor     rax, rax               # accumulator (unsigned)
+    mov     al, byte ptr [rcx]
+    cmp     al, '-'
+    jne     parse_digits
+    inc     rcx
+    mov     r12b, 1                # sign = 1
+parse_digits:
+    cmp     rcx, rbx
+    jae     digits_done
+    mov     al, byte ptr [rcx]
+    cmp     al, '0'
+    jb      set_error
+    cmp     al, '9'
+    ja      set_error
+    imul    rax, rax, 10
+    sub     al, '0'
+    movzx   rdx, al
+    add     rax, rdx
+    inc     rdx                     # digit count
+    inc     rcx
+    jmp     parse_digits
+digits_done:
+    cmp     rdx, 1
+    jb      set_error               # no digits
+    cmp     rdx, 18
+    ja      set_error               # too many digits
+    cmp     r12b, 0
+    je      literal_ok
+    neg     rax                     # apply sign
+literal_ok:
+    # push literal onto stack
+    mov     rdx, r9
+    shl     rdx, 3                  # *8
+    mov     [r8 + rdx], rax
+    inc     r9
+    jmp     after_token
+
+# -------------------------------------------------
+# Operator implementations (pop two values, compute, push)
+# -------------------------------------------------
+op_add:
+    cmp     r9, 2
+    jb      set_error
+    dec     r9
+    mov     rdx, r9
+    shl     rdx, 3
+    mov     rbx, [r8 + rdx]        # b
+    dec     r9
+    mov     rcx, r9
+    shl     rcx, 3
+    mov     rax, [r8 + rcx]        # a
+    add     rax, rbx
+    jmp     push_result
+
+op_sub:
+    cmp     r9, 2
+    jb      set_error
+    dec     r9
+    mov     rdx, r9
+    shl     rdx, 3
+    mov     rbx, [r8 + rdx]        # b
+    dec     r9
+    mov     rcx, r9
+    shl     rcx, 3
+    mov     rax, [r8 + rcx]        # a
+    sub     rax, rbx
+    jmp     push_result
+
+op_mul:
+    cmp     r9, 2
+    jb      set_error
+    dec     r9
+    mov     rdx, r9
+    shl     rdx, 3
+    mov     rbx, [r8 + rdx]        # b
+    dec     r9
+    mov     rcx, r9
+    shl     rcx, 3
+    mov     rax, [r8 + rcx]        # a
+    imul    rax, rbx               # low 64 bits
+    jmp     push_result
+
+op_div:
+    cmp     r9, 2
+    jb      set_error
+    dec     r9
+    mov     rdx, r9
+    shl     rdx, 3
+    mov     rbx, [r8 + rdx]        # b (divisor)
+    dec     r9
+    mov     rcx, r9
+    shl     rcx, 3
+    mov     rax, [r8 + rcx]        # a (dividend)
+    cmp     rbx, 0
+    je      set_error
+    mov     rdx, rax
+    mov     rsi, MIN_INT64
+    cmp     rdx, rsi
+    jne     div_ok
+    cmp     rbx, -1
+    je      set_error
+div_ok:
+    cqo
+    idiv    rbx
+    # quotient in rax
+    jmp     push_result
+
+op_mod:
+    cmp     r9, 2
+    jb      set_error
+    dec     r9
+    mov     rdx, r9
+    shl     rdx, 3
+    mov     rbx, [r8 + rdx]        # b (divisor)
+    dec     r9
+    mov     rcx, r9
+    shl     rcx, 3
+    mov     rax, [r8 + rcx]        # a (dividend)
+    cmp     rbx, 0
+    je      set_error
+    mov     rdx, rax
+    mov     rsi, MIN_INT64
+    cmp     rdx, rsi
+    jne     mod_ok
+    cmp     rbx, -1
+    je      set_error
+mod_ok:
+    cqo
+    idiv    rbx
+    # remainder in rdx
+    mov     rax, rdx
+    jmp     push_result
+
+push_result:
+    mov     rdx, r9
+    shl     rdx, 3
+    mov     [r8 + rdx], rax
+    inc     r9
+    jmp     after_token
+
+set_error:
+    mov     r11d, 1                # set error flag
+    jmp     token_done
+
+after_token:
+    # advance token pointer to token end for next iteration
+    mov     rdx, rbx                # rdx = token end
+    jmp     token_loop
+
+token_done:
+    # -------------------------------------------------
+    # End of token processing for this line
+    # -------------------------------------------------
+    cmp     r11d, 0
+    jne     line_error
+
+    # verify exactly one value on stack
+    cmp     r9, 1
+    jne     line_error
+
+    # retrieve the single result
+    mov     rax, [r8]               # result in rax
+
+    # -------------------------------------------------
+    # Output the integer result
+    # -------------------------------------------------
+    lea     rdi, [rip + out_buf]    # rdi = output buffer pointer
+    mov     rcx, rdi                # save start for length calculation
+
+    # handle sign
+    xor     rdx, rdx                # rdx = sign flag (0 = positive)
+    test    rax, rax
+    jge     conv_number
+    mov     byte ptr [rdi], '-'
+    inc     rdi
+    mov     rdx, 1
+    mov     rsi, rax
+    mov     rax, 0
+    sub     rax, rsi                # rax = -original (absolute value)
+    # special case INT64_MIN already handled by two's complement wrap
+
+conv_number:
+    mov     rbx, rax                # magnitude
+    mov     r9, rdi                 # r9 = current write pointer
+
+    mov     rax, rbx
+    test    rax, rax
+    jne     conv_loop
+    # value is zero
+    mov     byte ptr [r9], '0'
+    inc     r9
+    jmp     write_newline
+conv_loop:
+    lea     rsi, [rip + digit_buf_end]   # rsi = end of temporary digit buffer
+conv_digit:
+    xor     rdx, rdx
+    mov     rcx, 10
+    div     rcx                     # rax /= 10, rdx = remainder
+    dec     rsi
+    add     dl, '0'
+    mov     byte ptr [rsi], dl
+    test    rax, rax
+    jne     conv_digit
+    # copy digits forward
+copy_digits:
+    cmp     rsi, rip + digit_buf_end
+    jae     copy_done
+    mov     al, byte

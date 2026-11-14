@@ -1,0 +1,235 @@
+	.globl	_start
+	.text
+_start:
+	// ----- read entire stdin into buffer -----
+	adrp	x9, buf                 // x9 = base of buffer (page aligned)
+	add	x9, x9, :lo12:buf
+	mov	x10, x9                 // x10 = current write pointer
+	mov	x11, #65536            // total buffer size
+	mov	x12, #0                // total bytes read
+
+read_loop:
+	// remaining = bufsize - total_read
+	sub	x13, x11, x12          // x13 = remaining space
+	cmp	x13, #0
+	beq	read_done
+
+	// syscall read(fd=0, buf=x10, count=x13)
+	mov	x0, #0
+	mov	x1, x10
+	mov	x2, x13
+	mov	x8, #63
+	svc	#0
+	cmp	x0, #0
+	beq	read_done
+	add	x12, x12, x0           // total += ret
+	add	x10, x10, x0           // advance write pointer
+	b	read_loop
+
+read_done:
+	// x9 = base pointer, x12 = length, x24 = end pointer
+	adrp	x9, buf
+	add	x9, x9, :lo12:buf
+	mov	x20, x9                // x20 = base pointer (for later offset calc)
+	mov	x21, x12               // x21 = length
+	add	x24, x9, x21           // x24 = end pointer
+	mov	x22, x9                // x22 = current pointer
+
+	// ----- parse document -----
+	bl	skip_ws
+	bl	parse_value
+	bl	skip_ws
+	cmp	x22, x24
+	beq	ok_path
+	// extra data after valid JSON
+	b	error_path
+
+// -------------------------------------------------
+skip_ws:
+	// while (ptr < end && byte is whitespace) ptr++
+1:	cmp	x22, x24
+	bcs	2f                     // ptr >= end
+	ldrb	w0, [x22]
+	// whitespace chars: 0x20, 0x09, 0x0A, 0x0D
+	cmp	w0, #0x20
+	beq	inc_ptr
+	cmp	w0, #0x09
+	beq	inc_ptr
+	cmp	w0, #0x0A
+	beq	inc_ptr
+	cmp	w0, #0x0D
+	beq	inc_ptr
+	b	2f
+inc_ptr:
+	add	x22, x22, #1
+	b	1b
+2:	ret
+
+// -------------------------------------------------
+parse_value:
+	// must have at least one byte
+	cmp	x22, x24
+	bcs	parse_error
+	ldrb	w0, [x22]
+
+	// dispatch based on first byte
+	cmp	w0, #'{'          // 0x7b
+	beq	parse_object_entry
+	cmp	w0, #'['
+	beq	parse_array_entry
+	cmp	w0, #'"'
+	beq	parse_string_entry
+	cmp	w0, #'-'
+	beq	parse_number_entry
+	cmp	w0, #'t'
+	beq	parse_literal_t
+	cmp	w0, #'f'
+	beq	parse_literal_f
+	cmp	w0, #'n'
+	beq	parse_literal_n
+	// not a valid start
+	b	parse_error
+
+parse_object_entry:
+	// consume '{'
+	add	x22, x22, #1
+	bl	skip_ws
+	// check for empty object
+	cmp	x22, x24
+	bcs	parse_error
+	ldrb	w0, [x22]
+	cmp	w0, #'}'
+	beq	empty_object_ok
+	// otherwise parse first member
+	bl	parse_member
+	bl	skip_ws
+1:	// loop for additional members
+	cmp	x22, x24
+	bcs	parse_error
+	ldrb	w0, [x22]
+	cmp	w0, #','
+	bne	object_close_check
+	// consume ','
+	add	x22, x22, #1
+	bl	skip_ws
+	bl	parse_member
+	bl	skip_ws
+	b	1b
+object_close_check:
+	cmp	w0, #'}'
+	bne	parse_error
+	// consume '}'
+	add	x22, x22, #1
+	ret
+
+empty_object_ok:
+	// consume '}'
+	add	x22, x22, #1
+	ret
+
+// -------------------------------------------------
+parse_member:
+	// key must be a string
+	bl	parse_string
+	bl	skip_ws
+	// expect ':'
+	cmp	x22, x24
+	bcs	parse_error
+	ldrb	w0, [x22]
+	cmp	w0, #':'
+	bne	parse_error
+	add	x22, x22, #1
+	bl	skip_ws
+	bl	parse_value
+	ret
+
+// -------------------------------------------------
+parse_array_entry:
+	// consume '['
+	add	x22, x22, #1
+	bl	skip_ws
+	// check empty array
+	cmp	x22, x24
+	bcs	parse_error
+	ldrb	w0, [x22]
+	cmp	w0, #']'
+	beq	empty_array_ok
+	// parse first element
+	bl	parse_value
+	bl	skip_ws
+1:	// loop for additional elements
+	cmp	x22, x24
+	bcs	parse_error
+	ldrb	w0, [x22]
+	cmp	w0, #','
+	bne	array_close_check
+	add	x22, x22, #1
+	bl	skip_ws
+	bl	parse_value
+	bl	skip_ws
+	b	1b
+array_close_check:
+	cmp	w0, #']'
+	bne	parse_error
+	add	x22, x22, #1
+	ret
+
+empty_array_ok:
+	// consume ']'
+	add	x22, x22, #1
+	ret
+
+// -------------------------------------------------
+parse_string_entry:
+	bl	parse_string
+	ret
+
+parse_string:
+	// expect opening '"'
+	cmp	x22, x24
+	bcs	parse_error
+	ldrb	w0, [x22]
+	cmp	w0, #'"'
+	bne	parse_error
+	add	x22, x22, #1   // skip opening quote
+
+1:	cmp	x22, x24
+	bcs	parse_error
+	ldrb	w0, [x22]
+	cmp	w0, #'"'          // end of string
+	beq	string_end
+	cmp	w0, #'\\'         // escape
+	bne	normal_char
+	// handle escape
+	add	x22, x22, #1
+	cmp	x22, x24
+	bcs	parse_error
+	ldrb	w1, [x22]
+	// allowed escape chars: "\" \" / b f n r t or 'u'
+	cmp	w1, #'u'
+	beq	escape_u
+	cmp	w1, #'"'
+	beq	escape_ok
+	cmp	w1, #'\\'
+	beq	escape_ok
+	cmp	w1, #'/'
+	beq	escape_ok
+	cmp	w1, #'b'
+	beq	escape_ok
+	cmp	w1, #'f'
+	beq	escape_ok
+	cmp	w1, #'n'
+	beq	escape_ok
+	cmp	w1, #'r'
+	beq	escape_ok
+	cmp	w1, #'t'
+	beq	escape_ok
+	b	parse_error
+escape_ok:
+	add	x22, x22, #1
+	b	1b
+escape_u:
+	// \uXXXX, need 4 hex digits
+	add	x22, x22, #1
+	mov	x2, #4               // count of hex digits
+1u:	cmp	x2, #0

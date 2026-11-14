@@ -1,0 +1,300 @@
+.globl _start
+
+.equ INBUF_CAP, 65536
+.equ OUTBUF_CAP, 65536
+
+.section .rodata
+errmsg:
+    .ascii "error\n"
+.equ errmsg_len, . - errmsg
+
+.bss
+.balign 16
+inbuf:
+    .zero 65552
+.balign 16
+outbuf:
+    .zero 65552
+.balign 16
+outlen:
+    .zero 8
+.balign 16
+numbuf:
+    .zero 32
+.balign 16
+vstack:
+    .zero 262152
+
+.text
+_start:
+    mov byte ptr [rip + numbuf + 24], 10
+    xor r8, r8
+read_loop:
+    mov rdx, INBUF_CAP
+    sub rdx, r8
+    test rdx, rdx
+    jle read_done
+    lea rsi, [rip + inbuf]
+    add rsi, r8
+    xor eax, eax
+    xor edi, edi
+    syscall
+    test rax, rax
+    jle read_done
+    add r8, rax
+    jmp read_loop
+read_done:
+
+    lea r12, [rip + inbuf]
+    mov rbx, r12
+    add rbx, r8
+
+line_loop:
+    cmp r12, rbx
+    jae all_done
+    mov rbp, r12
+scan_nl:
+    cmp rbp, rbx
+    jae scan_nl_done
+    cmp byte ptr [rbp], 10
+    je scan_nl_done
+    inc rbp
+    jmp scan_nl
+scan_nl_done:
+    call proc_line
+    mov r12, rbp
+    cmp r12, rbx
+    jae all_done
+    inc r12
+    jmp line_loop
+
+all_done:
+    call flush
+    mov eax, 231
+    xor edi, edi
+    syscall
+    hlt
+
+# ---------------------------------------------------------------
+# proc_line: process bytes [r12, rbp) as one line, emit result.
+# preserves rbx, rbp; leaves r12 somewhere inside/at rbp
+# ---------------------------------------------------------------
+proc_line:
+    xor r13d, r13d
+
+tok_loop:
+    cmp r12, rbp
+    jae tok_end
+    movzx eax, byte ptr [r12]
+    cmp al, 32
+    je sep_skip
+    cmp al, 9
+    jne tok_start
+sep_skip:
+    inc r12
+    jmp tok_loop
+
+tok_start:
+    mov r14, r12
+scan_tok:
+    cmp r12, rbp
+    jae scan_tok_done
+    movzx eax, byte ptr [r12]
+    cmp al, 32
+    je scan_tok_done
+    cmp al, 9
+    je scan_tok_done
+    inc r12
+    jmp scan_tok
+scan_tok_done:
+    mov r15, r12
+    sub r15, r14
+    cmp r15, 1
+    jne not_op
+    movzx eax, byte ptr [r14]
+    cmp al, 43
+    je do_op
+    cmp al, 45
+    je do_op
+    cmp al, 42
+    je do_op
+    cmp al, 47
+    je do_op
+    cmp al, 37
+    je do_op
+
+not_op:
+    mov rsi, r14
+    xor r8d, r8d
+    movzx eax, byte ptr [rsi]
+    cmp al, 45
+    jne lit_nonneg
+    mov r8d, 1
+    inc rsi
+lit_nonneg:
+    mov rcx, r12
+    sub rcx, rsi
+    cmp rcx, 1
+    jl err_line
+    cmp rcx, 18
+    jg err_line
+    xor eax, eax
+dig_loop:
+    movzx edx, byte ptr [rsi]
+    sub edx, 48
+    cmp edx, 9
+    ja err_line
+    lea rax, [rax + rax*4]
+    add rax, rax
+    add rax, rdx
+    inc rsi
+    dec rcx
+    jnz dig_loop
+    test r8d, r8d
+    jz push_val
+    neg rax
+push_val:
+    lea rdx, [rip + vstack]
+    mov qword ptr [rdx + r13*8], rax
+    inc r13
+    jmp tok_loop
+
+do_op:
+    cmp r13, 2
+    jb err_line
+    lea rdx, [rip + vstack]
+    mov rcx, qword ptr [rdx + r13*8 - 8]
+    mov r9, qword ptr [rdx + r13*8 - 16]
+    sub r13, 2
+    cmp al, 43
+    je op_add
+    cmp al, 45
+    je op_sub
+    cmp al, 42
+    je op_mul
+    cmp al, 47
+    je op_div
+    jmp op_mod
+
+op_add:
+    mov rax, r9
+    add rax, rcx
+    jmp push_res
+op_sub:
+    mov rax, r9
+    sub rax, rcx
+    jmp push_res
+op_mul:
+    mov rax, r9
+    imul rax, rcx
+    jmp push_res
+op_div:
+    test rcx, rcx
+    jz err_line
+    mov rax, r9
+    cmp rcx, -1
+    jne op_div2
+    mov rdx, 0x8000000000000000
+    cmp rax, rdx
+    je err_line
+op_div2:
+    cqo
+    idiv rcx
+    jmp push_res
+op_mod:
+    test rcx, rcx
+    jz err_line
+    mov rax, r9
+    cmp rcx, -1
+    jne op_mod2
+    mov rdx, 0x8000000000000000
+    cmp rax, rdx
+    je err_line
+op_mod2:
+    cqo
+    idiv rcx
+    mov rax, rdx
+    jmp push_res
+
+push_res:
+    lea rdx, [rip + vstack]
+    mov qword ptr [rdx + r13*8], rax
+    inc r13
+    jmp tok_loop
+
+tok_end:
+    cmp r13, 1
+    jne err_line
+    mov rax, qword ptr [rip + vstack]
+    jmp print_num
+
+err_line:
+    mov r12, rbp
+    lea rsi, [rip + errmsg]
+    mov rdx, errmsg_len
+    call emit
+    ret
+
+# print signed rax in decimal plus newline, then ret
+print_num:
+    lea rdi, [rip + numbuf + 25]
+    lea rsi, [rip + numbuf + 24]
+    xor r8d, r8d
+    test rax, rax
+    jns pn_pos
+    mov r8d, 1
+    neg rax
+pn_pos:
+    mov rcx, 10
+pn_loop:
+    xor edx, edx
+    div rcx
+    add dl, 48
+    dec rsi
+    mov byte ptr [rsi], dl
+    test rax, rax
+    jnz pn_loop
+    test r8d, r8d
+    jz pn_nosign
+    dec rsi
+    mov byte ptr [rsi], 45
+pn_nosign:
+    mov rdx, rdi
+    sub rdx, rsi
+    call emit
+    ret
+
+# ---------------------------------------------------------------
+# emit: rsi = ptr, rdx = len
+# ---------------------------------------------------------------
+emit:
+    mov rcx, qword ptr [rip + outlen]
+    lea rax, [rcx + rdx]
+    cmp rax, OUTBUF_CAP
+    jbe emit_ok
+    push rsi
+    push rdx
+    call flush
+    pop rdx
+    pop rsi
+    xor ecx, ecx
+emit_ok:
+    lea rdi, [rip + outbuf]
+    add rdi, rcx
+    add rcx, rdx
+    mov qword ptr [rip + outlen], rcx
+    mov rcx, rdx
+    rep movsb
+    ret
+
+flush:
+    mov rdx, qword ptr [rip + outlen]
+    test rdx, rdx
+    jz flush_ret
+    mov eax, 1
+    mov edi, 1
+    lea rsi, [rip + outbuf]
+    syscall
+    mov qword ptr [rip + outlen], 0
+flush_ret:
+    ret

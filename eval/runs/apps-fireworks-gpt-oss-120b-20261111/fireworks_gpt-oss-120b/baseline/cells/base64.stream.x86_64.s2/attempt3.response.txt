@@ -1,0 +1,205 @@
+.global _start
+.section .bss
+.align 16
+input_buf:
+    .space 49152
+output_buf:
+    .space 67000
+
+.section .rodata
+alphabet:
+    .ascii "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/"
+
+.section .text
+_start:
+    # ----- read entire input -----
+    lea rsi, [rip + input_buf]          # rsi = write pointer
+    mov rdx, 49152                      # max read size
+    xor rbx, rbx                        # total bytes read
+read_loop:
+    mov rax, 0                          # sys_read
+    xor rdi, rdi                        # fd = 0 (stdin)
+    syscall
+    test rax, rax
+    jz read_done
+    add rbx, rax                        # total += bytes read
+    add rsi, rax                        # advance write pointer
+    jmp read_loop
+read_done:
+    # rbx = total input size
+    # ----- prepare encoding -----
+    lea rsi, [rip + input_buf]          # rsi = input pointer
+    lea rdi, [rip + output_buf]         # rdi = output write pointer
+    xor rcx, rcx                        # column counter (0..75)
+
+    # rbx = remaining bytes
+encode_loop:
+    cmp rbx, 3
+    jb encode_remaining
+
+    # load three bytes
+    movzx eax, byte ptr [rsi]
+    movzx ebp, byte ptr [rsi+1]
+    movzx r8d, byte ptr [rsi+2]
+
+    # index0 = a >> 2
+    mov edx, eax
+    shr edx, 2
+    mov al, dl
+    call store_char
+
+    # index1 = ((a & 3) << 4) | (b >> 4)
+    mov edx, eax
+    and edx, 3
+    shl edx, 4
+    mov ebx, ebp
+    shr ebx, 4
+    or edx, ebx
+    mov al, dl
+    call store_char
+
+    # index2 = ((b & 0xF) << 2) | (c >> 6)
+    mov edx, ebp
+    and edx, 0xF
+    shl edx, 2
+    mov ebx, r8d
+    shr ebx, 6
+    or edx, ebx
+    mov al, dl
+    call store_char
+
+    # index3 = c & 0x3F
+    mov edx, r8d
+    and edx, 0x3F
+    mov al, dl
+    call store_char
+
+    add rsi, 3
+    sub rbx, 3
+    jmp encode_loop
+
+encode_remaining:
+    cmp rbx, 0
+    je finish_output
+
+    cmp rbx, 1
+    je encode_one_byte
+
+    # rbx == 2
+    movzx eax, byte ptr [rsi]
+    movzx ebp, byte ptr [rsi+1]
+
+    # index0 = a >> 2
+    mov edx, eax
+    shr edx, 2
+    mov al, dl
+    call store_char
+
+    # index1 = ((a & 3) << 4) | (b >> 4)
+    mov edx, eax
+    and edx, 3
+    shl edx, 4
+    mov ebx, ebp
+    shr ebx, 4
+    or edx, ebx
+    mov al, dl
+    call store_char
+
+    # index2 = (b & 0xF) << 2
+    mov edx, ebp
+    and edx, 0xF
+    shl edx, 2
+    mov al, dl
+    call store_char
+
+    # padding '='
+    mov al, '='
+    call store_char
+    jmp finish_output
+
+encode_one_byte:
+    movzx eax, byte ptr [rsi]
+
+    # index0 = a >> 2
+    mov edx, eax
+    shr edx, 2
+    mov al, dl
+    call store_char
+
+    # index1 = (a & 3) << 4
+    mov edx, eax
+    and edx, 3
+    shl edx, 4
+    mov al, dl
+    call store_char
+
+    # padding '=' twice
+    mov al, '='
+    call store_char
+    mov al, '='
+    call store_char
+    jmp finish_output
+
+# -------------------------------------------------
+# store_char: al = index (0..63) or literal character
+# uses r8 as temporary, preserves rbx and rcx
+store_char:
+    push rbx                # preserve rbx (may hold input size)
+    cmp al, 63
+    jg .literal_char
+    movzx ebx, al           # ebx = index
+    lea r8, [rip + alphabet]
+    mov bl, [r8 + rbx]      # bl = alphabet[index]
+    mov al, bl
+    jmp .store
+.literal_char:
+    # al already contains literal (e.g., '=')
+    nop
+.store:
+    mov [rdi], al
+    inc rdi
+    inc rcx
+    cmp rcx, 76
+    jne .no_newline
+    mov byte ptr [rdi], 0x0A
+    inc rdi
+    xor rcx, rcx
+.no_newline:
+    pop rbx
+    ret
+
+# -------------------------------------------------
+finish_output:
+    # if column not zero, terminate line with newline
+    cmp rcx, 0
+    je prepare_write
+    mov byte ptr [rdi], 0x0A
+    inc rdi
+prepare_write:
+    # r9 = start of output buffer
+    lea r9, [rip + output_buf]
+    mov rdx, rdi
+    sub rdx, r9            # rdx = output length
+    # ----- write output -----
+    mov rax, 1             # sys_write
+    mov rdi, 1             # stdout
+    mov rsi, r9
+    mov r8, rdx            # total to write
+write_loop:
+    test r8, r8
+    jz write_done
+    mov rax, 1
+    mov rdi, 1
+    mov rsi, r9
+    mov rdx, r8
+    syscall
+    test rax, rax
+    jz write_done          # should not happen
+    add r9, rax
+    sub r8, rax
+    jmp write_loop
+write_done:
+    # ----- exit -----
+    mov rax, 60            # sys_exit
+    xor rdi, rdi           # status 0
+    syscall

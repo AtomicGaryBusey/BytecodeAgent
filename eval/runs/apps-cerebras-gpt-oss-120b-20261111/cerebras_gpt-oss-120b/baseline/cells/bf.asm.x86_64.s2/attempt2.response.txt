@@ -1,0 +1,195 @@
+.globl _start
+.section .bss
+.align 16
+buf:            .space 65536
+total_len:      .zero 8
+prog_len:       .zero 8
+input_len:      .zero 8
+input_ptr:      .zero 8
+.stack:         .space 1000*4
+jump_fwd:       .space 65536*4
+jump_back:      .space 65536*4
+tape:           .space 30000
+
+.text
+_start:
+    # read all input into buf
+    xor    rax, rax                # sys_read = 0
+    mov    rdi, 0                  # fd = stdin
+    lea    rsi, [rip + buf]
+    mov    rdx, 65536
+    syscall
+    test   rax, rax
+    je     read_done
+    mov    rbx, rax
+    mov    rax, [rip + total_len]
+    add    rax, rbx
+    mov    [rip + total_len], rax
+read_loop:
+    xor    rax, rax
+    mov    rdi, 0
+    lea    rsi, [rip + buf]
+    mov    rdx, 65536
+    syscall
+    test   rax, rax
+    je     read_done
+    mov    rbx, rax
+    mov    rax, [rip + total_len]
+    add    rax, rbx
+    mov    [rip + total_len], rax
+    jmp    read_loop
+read_done:
+    # split program / input at first '!'
+    xor    rcx, rcx                # i = 0
+    mov    rax, [rip + total_len]  # total_len
+    mov    r8, rax                 # r8 = total_len
+find_excl:
+    cmp    rcx, r8
+    jge    no_excl
+    mov    al, byte ptr [rip + buf + rcx]
+    cmp    al, 0x21                # '!'
+    je     found_excl
+    inc    rcx
+    jmp    find_excl
+found_excl:
+    mov    rax, rcx
+    mov    [rip + prog_len], rax
+    mov    rbx, r8
+    mov    rdx, rcx
+    inc    rdx
+    sub    rbx, rdx
+    mov    [rip + input_len], rbx
+    lea    rax, [rip + buf + rcx + 1]
+    mov    [rip + input_ptr], rax
+    jmp    after_split
+no_excl:
+    mov    rax, r8
+    mov    [rip + prog_len], rax
+    xor    rbx, rbx
+    mov    [rip + input_len], rbx
+    xor    rax, rax
+    mov    [rip + input_ptr], rax
+after_split:
+    # verify brackets and build jump tables
+    xor    rcx, rcx                # pc = 0
+    xor    r8, r8                  # stack depth = 0
+bracket_loop:
+    mov    rax, [rip + prog_len]
+    cmp    rcx, rax
+    jge    bracket_done
+    mov    al, byte ptr [rip + buf + rcx]
+    cmp    al, '['
+    je     bracket_push
+    cmp    al, ']'
+    je     bracket_pop
+    jmp    bracket_next
+bracket_push:
+    mov    eax, ecx                # store opening index (low 32 bits)
+    mov    [rip + .stack + r8*4], eax
+    inc    r8
+    jmp    bracket_next
+bracket_pop:
+    dec    r8
+    js     bracket_imbalance
+    mov    eax, [rip + .stack + r8*4]   # opening index
+    mov    ebx, ecx                     # closing index
+    mov    [rip + jump_fwd + rax*4], ebx
+    mov    [rip + jump_back + rbx*4], eax
+    jmp    bracket_next
+bracket_next:
+    inc    rcx
+    jmp    bracket_loop
+bracket_done:
+    test   r8, r8
+    jne    bracket_imbalance
+    jmp    exec_start
+bracket_imbalance:
+    mov    rax, 60                 # sys_exit
+    mov    rdi, 1                  # exit status 1
+    syscall
+
+exec_start:
+    lea    r10, [rip + tape]       # data pointer
+    xor    rcx, rcx                # program counter = 0
+    xor    rdx, rdx                # input offset = 0
+    mov    rbx, [rip + prog_len]   # prog_len
+    mov    rsi, [rip + input_len]  # input_len
+    mov    rdi, [rip + input_ptr]  # input_ptr
+
+exec_loop:
+    cmp    rcx, rbx
+    jge    exec_exit
+    mov    al, byte ptr [rip + buf + rcx]
+    inc    rcx
+    cmp    al, '>'
+    je     inc_dp
+    cmp    al, '<'
+    je     dec_dp
+    cmp    al, '+'
+    je     inc_cell
+    cmp    al, '-'
+    je     dec_cell
+    cmp    al, '.'
+    je     do_output
+    cmp    al, ','
+    je     do_input
+    cmp    al, '['
+    je     do_bracket_open
+    cmp    al, ']'
+    je     do_bracket_close
+    jmp    exec_loop
+
+inc_dp:
+    inc    r10
+    jmp    exec_loop
+dec_dp:
+    dec    r10
+    jmp    exec_loop
+inc_cell:
+    inc    byte ptr [r10]
+    jmp    exec_loop
+dec_cell:
+    dec    byte ptr [r10]
+    jmp    exec_loop
+do_output:
+    mov    rax, 1                  # sys_write
+    mov    rdi, 1                  # stdout
+    mov    rsi, r10                # &cell
+    mov    rdx, 1
+    syscall
+    jmp    exec_loop
+do_input:
+    cmp    rdx, rsi
+    jae    input_zero
+    mov    al, byte ptr [rdi + rdx]
+    inc    rdx
+    mov    [r10], al
+    jmp    exec_loop
+input_zero:
+    mov    byte ptr [r10], 0
+    jmp    exec_loop
+do_bracket_open:
+    mov    al, byte ptr [r10]
+    test   al, al
+    jne    exec_loop
+    mov    ebx, ecx
+    dec    ebx
+    mov    eax, dword ptr [rip + jump_fwd + rbx*4]
+    inc    eax
+    mov    ecx, eax
+    jmp    exec_loop
+do_bracket_close:
+    mov    al, byte ptr [r10]
+    test   al, al
+    je     exec_loop
+    mov    ebx, ecx
+    dec    ebx
+    mov    eax, dword ptr [rip + jump_back + rbx*4]
+    inc    eax
+    mov    ecx, eax
+    jmp    exec_loop
+
+exec_exit:
+    mov    rax, 60                 # sys_exit
+    xor    rdi, rdi                # status 0
+    syscall

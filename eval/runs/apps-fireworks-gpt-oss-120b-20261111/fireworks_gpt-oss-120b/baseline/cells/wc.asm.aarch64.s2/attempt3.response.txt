@@ -1,0 +1,179 @@
+.global _start
+.text
+
+.equ    SYS_READ,        63
+.equ    SYS_WRITE,       64
+.equ    SYS_EXIT,        93
+.equ    BUF_SIZE,        65536
+
+// registers:
+// x19 - total bytes
+// x20 - line count
+// x21 - word count
+// x22 - in_word flag (0/1)
+// x23 - remaining bytes in chunk
+// x24 - pointer to current byte
+// x25 - loaded byte
+
+_start:
+    // initialise counters
+    mov     x19, xzr
+    mov     x20, xzr
+    mov     x21, xzr
+    mov     x22, xzr
+
+read_loop:
+    // read(fd=0, buf, BUF_SIZE)
+    mov     x0, #0
+    adr     x1, buf
+    mov     x2, #BUF_SIZE
+    mov     x8, #SYS_READ
+    svc     #0
+    cbz     x0, done               // EOF when read returns 0
+    // x0 = bytes read
+    mov     x23, x0                // remaining bytes in this chunk
+    adr     x24, buf               // pointer to current byte
+
+process_byte:
+    ldrb    w25, [x24], #1         // load byte and advance pointer
+    add     x19, x19, #1           // total bytes++
+
+    // newline check
+    cmp     w25, #10
+    bne     not_newline
+    add     x20, x20, #1           // line count++
+not_newline:
+
+    // whitespace test
+    cmp     w25, #' '
+    beq     is_ws
+    cmp     w25, #9                // tab
+    beq     is_ws
+    cmp     w25, #10               // newline
+    beq     is_ws
+    cmp     w25, #11               // vertical tab
+    beq     is_ws
+    cmp     w25, #12               // form feed
+    beq     is_ws
+    cmp     w25, #13               // carriage return
+    beq     is_ws
+    b       not_ws
+
+is_ws:
+    // whitespace => not inside a word
+    mov     x22, xzr
+    b       after_ws
+
+not_ws:
+    // non‑whitespace
+    cbnz    x22, after_ws          // already in a word?
+    add     x21, x21, #1           // start new word
+    mov     x22, #1
+after_ws:
+    subs    x23, x23, #1
+    bne     process_byte
+
+    b       read_loop
+
+done:
+    // prepare output in outbuf
+    adr     x0, outbuf              // x0 = destination pointer (will also hold result)
+
+    // lines
+    mov     x1, x0                  // save current dest pointer
+    mov     x0, x20                 // number to convert
+    bl      convert
+    // x0 now points after written number, x1 holds start (unused)
+
+    // space separator
+    mov     w5, #' '
+    strb    w5, [x0], #1
+
+    // words
+    mov     x1, x0
+    mov     x0, x21
+    bl      convert
+
+    // space separator
+    mov     w5, #' '
+    strb    w5, [x0], #1
+
+    // bytes
+    mov     x1, x0
+    mov     x0, x19
+    bl      convert
+
+    // newline
+    mov     w5, #10
+    strb    w5, [x0], #1
+
+    // length = x0 - outbuf
+    adr     x1, outbuf
+    sub     x2, x0, x1           // x2 = length
+
+    // write(fd=1, outbuf, length)
+    mov     x0, #1
+    mov     x8, #SYS_WRITE
+    svc     #0
+
+    // exit(0)
+    mov     x0, #0
+    mov     x8, #SYS_EXIT
+    svc     #0
+
+// ------------------------------------------------------------
+// convert: x0 = number, x1 = destination pointer (unused)
+// returns x0 = pointer after written number
+// clobbers: x2‑x10, w5
+// ------------------------------------------------------------
+convert:
+    // handle zero quickly
+    cbnz    x0, .Lconvert_loop
+    // number == 0
+    mov     w5, #'0'
+    strb    w5, [x1], #1
+    mov     x0, x1
+    ret
+
+.Lconvert_loop:
+    // divisor constant 10
+    mov     w10, #10
+
+    // revbuf base
+    adr     x2, revbuf
+    mov     x3, xzr               // digit count = 0
+
+.Ldiv_loop:
+    udiv    x4, x0, x10
+    mul     x5, x4, x10
+    sub     x5, x0, x5            // remainder
+    add     w5, w5, #'0'
+    strb    w5, [x2, x3]          // store digit
+    add     x3, x3, #1
+    mov     x0, x4
+    cbnz    x0, .Ldiv_loop
+
+    // copy digits in reverse order to destination
+.Lcopy_loop:
+    subs    x3, x3, #1
+    blt     .Lcopy_done
+    ldrb    w5, [x2, x3]
+    strb    w5, [x1], #1
+    b       .Lcopy_loop
+
+.Lcopy_done:
+    mov     x0, x1
+    ret
+
+.bss
+.p2align 6
+buf:
+    .space  BUF_SIZE
+
+.p2align 3
+outbuf:
+    .space  64
+
+.p2align 3
+revbuf:
+    .space  32

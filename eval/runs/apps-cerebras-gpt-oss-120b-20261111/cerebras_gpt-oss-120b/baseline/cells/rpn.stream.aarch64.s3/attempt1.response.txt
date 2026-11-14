@@ -1,0 +1,387 @@
+	.globl	_start
+	.text
+	.align	2
+
+// System call numbers
+.equ	SYS_READ,	63
+.equ	SYS_WRITE,	64
+.equ	SYS_EXIT,	93
+
+// Limits
+.equ	INPUT_MAX,	65536
+.equ	STACK_MAX,	512		// max values per line
+.equ	OUT_BUF_SIZE,	32
+
+_start:
+	// x19 = address of stack buffer
+	adrp	x19, stack
+	add	x19, x19, :lo12:stack
+
+	// x20 = stack element count (initially 0)
+	mov	x20, #0
+
+	// x23 = input buffer pointer
+	adrp	x23, input_buf
+	add	x23, x23, :lo12:input_buf
+
+	// x24 = total bytes read (0)
+	mov	x24, #0
+
+	// -----------------------------------------------------------------
+	// Read entire input into input_buf
+read_loop:
+	// x0 = fd = 0
+	mov	x0, #0
+	// x1 = buffer = input_buf + total_read
+	add	x1, x23, x24
+	// x2 = remaining space
+	mov	x2, #INPUT_MAX
+	sub	x2, x2, x24
+	cmp	x2, #0
+	beq	read_done		// should not happen (input too big)
+
+	// syscall read
+	mov	x8, #SYS_READ
+	svc	#0
+	// x0 = bytes read, 0 = EOF
+	cbnz	x0, have_read
+	b	read_done
+have_read:
+	add	x24, x24, x0
+	b	read_loop
+read_done:
+	// x25 = end pointer = input_buf + total_len
+	add	x25, x23, x24
+
+	// -----------------------------------------------------------------
+	// Load constant INT64_MIN into x21
+	adrp	x21, int64_min
+	add	x21, x21, :lo12:int64_min
+
+	// Main line processing loop
+line_loop:
+	// if cur >= end -> exit
+	cmp	x23, x25
+	bge	exit_prog
+
+	// Find end of current line (newline or end)
+	mov	x26, x23			// x26 = line_end pointer (will stop at newline)
+find_nl:
+	cmp	x26, x25
+	beq	line_end_found
+	ldrb	w0, [x26]
+	cmp	w0, #0x0A
+	beq	line_end_found
+	add	x26, x26, #1
+	b	find_nl
+line_end_found:
+	// x26 now points to newline or end (exclusive)
+
+	// Reset stack for this line
+	mov	x20, #0
+	// error flag in w27 = 0
+	mov	w27, #0
+
+	// x28 = token pointer = line start (x23)
+	mov	x28, x23
+
+token_loop:
+	cmp	x28, x26
+	bge	tokens_done
+
+	// skip spaces and tabs
+	ldrb	w0, [x28]
+	cmp	w0, #' '
+	beq	skip_sep
+	cmp	w0, #'\t'
+	beq	skip_sep
+	b	token_start
+skip_sep:
+	add	x28, x28, #1
+	b	token_loop
+
+token_start:
+	cmp	x28, x26
+	bge	tokens_done
+	ldrb	w0, [x28]
+
+	// Check for operators '+', '*', '/', '%', '-'
+	cmp	w0, #'+'
+	beq	op_plus
+	cmp	w0, #'*'
+	beq	op_mul
+	cmp	w0, #'/'
+	beq	op_div
+	cmp	w0, #'%'
+	beq	op_mod
+	cmp	w0, #'-'
+	beq	op_minus_maybe
+	// Check if digit (number literal)
+	cmp	w0, #'0'
+	blt	invalid_token
+	cmp	w0, #'9'
+	bgt	invalid_token
+	// Number literal (positive)
+	b	number_literal
+
+// ----------------------------------------------------------
+// Operator '+' handling (single char '+')
+op_plus:
+	add	x28, x28, #1		// advance past '+'
+	b	check_op_delim
+// ----------------------------------------------------------
+// Operator '*' handling
+op_mul:
+	add	x28, x28, #1
+	b	check_op_delim
+// ----------------------------------------------------------
+// Operator '/' handling
+op_div:
+	add	x28, x28, #1
+	b	check_op_delim
+// ----------------------------------------------------------
+// Operator '%' handling
+op_mod:
+	add	x28, x28, #1
+	b	check_op_delim
+// ----------------------------------------------------------
+// Operator '-' handling: could be minus operator or signed number
+op_minus_maybe:
+	// Look ahead to see if next char is digit
+	add	x0, x28, #1
+	cmp	x0, x26
+	beq	op_minus		// '-' at end of line -> operator
+	ldrb	w1, [x0]
+	cmp	w1, #'0'
+	blt	op_minus
+	cmp	w1, #'9'
+	bgt	op_minus
+	// It's a signed number
+	b	number_literal_minus
+
+// ----------------------------------------------------------
+// Check that operator token is properly delimited
+check_op_delim:
+	// If next char is end of line or separator, it's a valid operator
+	cmp	x28, x26
+	beq	execute_op
+	ldrb	w0, [x28]
+	cmp	w0, #' '
+	beq	execute_op
+	cmp	w0, #'\t'
+	beq	execute_op
+	// otherwise, invalid token
+	b	invalid_token
+
+// ----------------------------------------------------------
+// Execute operator based on previously examined char in w0 (previous op)
+// We'll re-load the operator char from previous step using a saved register.
+// Simpler: we branch directly from each op label to common exec code with identifier in x30? Instead, handle each op separately with duplicated stack logic.
+
+// For each operator, we will perform the stack operation and then continue token_loop.
+
+execute_op_plus:
+	bl	perform_binop
+	// x0 returned with result, push already done
+	b	token_loop
+
+execute_op_mul:
+	bl	perform_binop
+	b	token_loop
+
+execute_op_minus:
+	bl	perform_binop
+	b	token_loop
+
+execute_op_div:
+	bl	perform_binop_divmod
+	b	token_loop
+
+execute_op_mod:
+	bl	perform_binop_divmod
+	b	token_loop
+
+// ----------------------------------------------------------
+// Perform generic binary operation (+,*, -) shared code
+// Input: x30 holds address of operation label? We'll instead have separate wrappers.
+// We'll implement separate routines for each op.
+
+perform_binop:
+	// x30 contains address to return after push (ignored)
+	// Stack count in x20, base in x19
+	// Check at least 2 elements
+	cmp	x20, #2
+	blt	set_error_flag
+	// pop b
+	sub	x20, x20, #1
+	lsl	x1, x20, #3
+	add	x1, x19, x1
+	ldr	x2, [x1]		// x2 = b
+	// pop a
+	sub	x20, x20, #1
+	lsl	x1, x20, #3
+	add	x1, x19, x1
+	ldr	x3, [x1]		// x3 = a
+	// Determine op via x30 (return address). We'll use x4 as opcode identifier:
+	// We'll place opcode in w4 before call.
+	// For '+' set w4=0, '-'=1, '*'=2
+	// Then:
+	cmp	w4, #0
+	beq	op_add
+	cmp	w4, #1
+	beq	op_sub
+	// else mul
+op_mul_op:
+	mul	x0, x3, x2
+	b	push_result
+op_add:
+	add	x0, x3, x2
+	b	push_result
+op_sub:
+	sub	x0, x3, x2
+	b	push_result
+
+push_result:
+	// push result onto stack
+	lsl	x1, x20, #3
+	add	x1, x19, x1
+	str	x0, [x1]
+	add	x20, x20, #1
+	ret
+
+// ----------------------------------------------------------
+// Perform division or modulo operation with error checks
+perform_binop_divmod:
+	// w4 = 0 for div, 1 for mod (set before call)
+	// Ensure at least 2 elements
+	cmp	x20, #2
+	blt	set_error_flag
+	// pop b
+	sub	x20, x20, #1
+	lsl	x1, x20, #3
+	add	x1, x19, x1
+	ldr	x2, [x1]		// x2 = b
+	// pop a
+	sub	x20, x20, #1
+	lsl	x1, x20, #3
+	add	x1, x19, x1
+	ldr	x3, [x1]		// x3 = a
+
+	// b == 0 ?
+	cbz	x2, set_error_flag
+
+	// overflow check: a == INT64_MIN && b == -1
+	cmp	x3, x21
+	bne	no_overflow
+	cmp	x2, #-1
+	bne	no_overflow
+	// overflow case
+	b	set_error_flag
+no_overflow:
+	// Determine op
+	cmp	w4, #0
+	beq	do_div
+	// else mod
+	// remainder = a - (a/b)*b
+	do_mod:
+	sdiv	x4, x3, x2
+	mul	x5, x4, x2
+	sub	x0, x3, x5
+	b	push_result
+do_div:
+	sdiv	x0, x3, x2
+	b	push_result
+
+// ----------------------------------------------------------
+// Number literal (positive)
+number_literal:
+	// x28 points to first digit
+	// x31 (temp) = 0 accumulator
+	mov	x0, #0
+digit_loop:
+	cmp	x28, x26
+	bge	digit_done
+	ldrb	w1, [x28]
+	cmp	w1, #'0'
+	blt	invalid_token
+	cmp	w1, #'9'
+	bgt	invalid_token
+	// digit = w1 - '0'
+	sub	w1, w1, #'0'
+	// acc = acc*10 + digit
+	mov	x2, #10
+	mul	x0, x0, x2
+	add	x0, x0, x1
+	add	x28, x28, #1
+	b	digit_loop
+digit_done:
+	// push x0 onto stack
+	lsl	x1, x20, #3
+	add	x1, x19, x1
+	str	x0, [x1]
+	add	x20, x20, #1
+	b	token_loop
+
+// ----------------------------------------------------------
+// Number literal with leading minus
+number_literal_minus:
+	// skip leading '-'
+	add	x28, x28, #1
+	// parse digits as in number_literal, result in x0
+	mov	x0, #0
+digit_loop2:
+	cmp	x28, x26
+	bge	digit_done2
+	ldrb	w1, [x28]
+	cmp	w1, #'0'
+	blt	invalid_token
+	cmp	w1, #'9'
+	bgt	invalid_token
+	sub	w1, w1, #'0'
+	mov	x2, #10
+	mul	x0, x0, x2
+	add	x0, x0, x1
+	add	x28, x28, #1
+	b	digit_loop2
+digit_done2:
+	// negate to get signed value
+	neg	x0, x0
+	// push onto stack
+	lsl	x1, x20, #3
+	add	x1, x19, x1
+	str	x0, [x1]
+	add	x20, x20, #1
+	b	token_loop
+
+// ----------------------------------------------------------
+// Invalid token handling
+invalid_token:
+	// set error flag
+	mov	w27, #1
+	// skip rest of line
+	mov	x28, x26
+	b	token_loop
+
+// ----------------------------------------------------------
+// Set error flag and skip to line end
+set_error_flag:
+	mov	w27, #1
+	mov	x28, x26
+	b	token_loop
+
+tokens_done:
+	// After processing all tokens in the line
+	// If error flag set, output "error\n"
+	cbnz	w27, output_error
+	// else check stack count == 1
+	cmp	x20, #1
+	bne	output_error
+
+	// Load the single result
+	ldr	x0, [x19]		// x0 = result
+
+	// Convert to string and write (including newline)
+	// x0 = signed value
+	// x31 = sign flag = 0
+	mov	x31, #0
+	t

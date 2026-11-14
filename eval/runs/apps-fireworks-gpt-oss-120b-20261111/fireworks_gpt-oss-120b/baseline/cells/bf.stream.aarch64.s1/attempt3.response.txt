@@ -1,0 +1,111 @@
+.equ SYS_READ,    63
+.equ SYS_WRITE,   64
+.equ SYS_EXIT,    93
+.equ BUF_SIZE,    65536
+.equ MAX_PROG,    65536
+.equ TAPE_SIZE,   30000
+.equ MAX_NEST,    1000
+
+    .global _start
+    .text
+_start:
+    // addresses of static data
+    adrp    x5, tape            // x5 = tape base
+    add     x5, x5, :lo12:tape
+    adrp    x23, loop_stack     // x23 = loop stack base
+    add     x23, x23, :lo12:loop_stack
+    adrp    x24, jump_table     // x24 = jump table base
+    add     x24, x24, :lo12:jump_table
+    adrp    x25, out_byte       // x25 = output byte buffer
+    add     x25, x25, :lo12:out_byte
+    adrp    x26, input_buf      // x26 = input buffer base
+    add     x26, x26, :lo12:input_buf
+
+    // read entire stdin into input_buf
+    mov     x9, #0              // total_len = 0
+    mov     x10, x26            // write_ptr = input_buf
+    mov     x11, #BUF_SIZE      // remaining = BUF_SIZE
+
+read_loop:
+    mov     x0, #0              // fd = stdin
+    mov     x1, x10             // buf = write_ptr
+    mov     x2, x11             // count = remaining
+    mov     x8, #SYS_READ
+    svc     #0
+    cbz     x0, read_done       // if read returned 0 -> eof
+    add     x9, x9, x0          // total_len += ret
+    add     x10, x10, x0        // write_ptr += ret
+    sub     x11, x11, x0        // remaining -= ret
+    cbnz    x11, read_loop
+
+read_done:
+    // find first '!' separator
+    mov     x12, x26            // ptr = input_buf
+    mov     x13, #0             // idx = 0
+    mov     x14, #0             // prog_len = 0
+    mov     x15, #0             // prog_input_len = 0
+    mov     x16, #0             // prog_input_ptr (filled later)
+
+find_loop:
+    cmp     x13, x9
+    b.ge    no_excl_found
+    ldrb    w0, [x12]
+    cmp     w0, #0x21           // '!'
+    b.eq    excl_found
+    add     x12, x12, #1
+    add     x13, x13, #1
+    b       find_loop
+
+excl_found:
+    mov     x14, x13            // prog_len = idx before '!'
+    add     x16, x12, #1        // prog_input_ptr = ptr+1
+    sub     x15, x9, x13
+    sub     x15, x15, #1        // prog_input_len = total_len - prog_len - 1
+    b       after_split
+
+no_excl_found:
+    mov     x14, x9            // whole buffer is program
+    mov     x15, #0            // no input
+    add     x16, x12, #0       // prog_input_ptr = end (unused)
+
+after_split:
+    // validate brackets and build jump table
+    mov     x17, #0            // i = 0
+    mov     x18, #0            // depth = 0
+
+val_loop:
+    cmp     x17, x14
+    b.ge    val_done
+    // load program byte
+    add     x19, x26, x17
+    ldrb    w0, [x19]
+
+    cmp     w0, #'['
+    b.eq    val_push
+    cmp     w0, #']'
+    b.eq    val_pop
+    // other chars
+    b       val_next
+
+val_push:
+    // store i on loop stack
+    mov     x20, x18
+    lsl     x20, x20, #3
+    add     x21, x23, x20
+    str     x17, [x21]
+    add     x18, x18, #1
+    b       val_next
+
+val_pop:
+    cmp     x18, #0
+    b.eq    brackets_error
+    sub     x18, x18, #1
+    // retrieve matching '[' index
+    mov     x20, x18
+    lsl     x20, x20, #3
+    add     x21, x23, x20
+    ldr     x22, [x21]        // matching '[' index
+
+    // store jump for both brackets
+    // jump_table[i] = matching ']'
+    mov     x23_tmp, x17

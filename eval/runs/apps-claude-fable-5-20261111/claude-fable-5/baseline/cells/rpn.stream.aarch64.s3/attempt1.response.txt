@@ -1,0 +1,218 @@
+.equ SYS_read, 63
+.equ SYS_write, 64
+.equ SYS_exit, 93
+
+.section .rodata
+errmsg: .ascii "error\n"
+errlen = . - errmsg
+
+.bss
+.balign 8
+inbuf:  .space 65537
+vstack: .space 8008
+
+.text
+.globl _start
+_start:
+    adrp x19, inbuf
+    add x19, x19, :lo12:inbuf
+    mov x20, #0                 // total bytes read
+.Lread:
+    mov x2, #65536
+    sub x2, x2, x20
+    cbz x2, .Lread_done
+    mov x0, #0
+    add x1, x19, x20
+    mov x8, #SYS_read
+    svc #0
+    cmp x0, #0
+    b.le .Lread_done
+    add x20, x20, x0
+    b .Lread
+.Lread_done:
+    mov x21, #0                 // current position
+.Lline:
+    cmp x21, x20
+    b.ge .Ldone
+    mov x22, x21                // find end of line
+.Lfindnl:
+    cmp x22, x20
+    b.ge .Lgot
+    ldrb w0, [x19, x22]
+    cmp w0, #10
+    b.eq .Lgot
+    add x22, x22, #1
+    b .Lfindnl
+.Lgot:
+    bl eval_line                // line = [x21, x22)
+    add x21, x22, #1
+    b .Lline
+.Ldone:
+    mov x0, #0
+    mov x8, #SYS_exit
+    svc #0
+
+// evaluate one line: x19 = buffer base, [x21, x22) = line
+eval_line:
+    stp x29, x30, [sp, #-16]!
+    mov x29, sp
+    adrp x25, vstack
+    add x25, x25, :lo12:vstack
+    mov x24, #0                 // value stack count
+    mov x23, x21                // cursor
+.Ltok:
+    cmp x23, x22                // skip separators
+    b.ge .Lend
+    ldrb w0, [x19, x23]
+    cmp w0, #32
+    b.eq .Lsep
+    cmp w0, #9
+    b.ne .Ltokstart
+.Lsep:
+    add x23, x23, #1
+    b .Ltok
+.Ltokstart:
+    mov x26, x23                // token start
+.Lscan:
+    add x23, x23, #1
+    cmp x23, x22
+    b.ge .Lscand
+    ldrb w0, [x19, x23]
+    cmp w0, #32
+    b.eq .Lscand
+    cmp w0, #9
+    b.ne .Lscan
+.Lscand:
+    sub x27, x23, x26           // token length
+    cmp x27, #1
+    b.ne .Lnumber
+    ldrb w0, [x19, x26]
+    cmp w0, #'+'
+    b.eq .Lbinop
+    cmp w0, #'-'
+    b.eq .Lbinop
+    cmp w0, #'*'
+    b.eq .Lbinop
+    cmp w0, #'/'
+    b.eq .Lbinop
+    cmp w0, #'%'
+    b.eq .Lbinop
+.Lnumber:
+    mov x1, x26                 // parse index
+    mov x5, #0                  // negative flag
+    ldrb w0, [x19, x1]
+    cmp w0, #'-'
+    b.ne 1f
+    mov x5, #1
+    add x1, x1, #1
+1:
+    sub x2, x23, x1             // digit count
+    cmp x2, #1
+    b.lt .Lerror
+    cmp x2, #18
+    b.gt .Lerror
+    mov x3, #0                  // value
+    mov x6, #10
+.Ldig:
+    ldrb w0, [x19, x1]
+    sub w0, w0, #'0'
+    cmp w0, #9
+    b.hi .Lerror
+    mul x3, x3, x6
+    add x3, x3, x0
+    add x1, x1, #1
+    cmp x1, x23
+    b.lt .Ldig
+    cbz x5, 2f
+    neg x3, x3
+2:
+    str x3, [x25, x24, lsl #3]  // push
+    add x24, x24, #1
+    b .Ltok
+
+.Lbinop:                        // w0 = operator char
+    cmp x24, #2
+    b.lt .Lerror
+    sub x24, x24, #1
+    ldr x2, [x25, x24, lsl #3]  // b
+    sub x4, x24, #1
+    ldr x1, [x25, x4, lsl #3]   // a
+    cmp w0, #'+'
+    b.ne 1f
+    add x3, x1, x2
+    b .Lpushres
+1:  cmp w0, #'-'
+    b.ne 2f
+    sub x3, x1, x2
+    b .Lpushres
+2:  cmp w0, #'*'
+    b.ne 3f
+    mul x3, x1, x2
+    b .Lpushres
+3:                              // / or %
+    cbz x2, .Lerror
+    movz x6, #0x8000, lsl #48   // INT64_MIN
+    cmp x1, x6
+    b.ne 4f
+    cmn x2, #1
+    b.eq .Lerror
+4:
+    sdiv x3, x1, x2
+    cmp w0, #'/'
+    b.eq .Lpushres
+    msub x3, x3, x2, x1         // remainder
+.Lpushres:
+    str x3, [x25, x4, lsl #3]
+    b .Ltok
+
+.Lend:
+    cmp x24, #1
+    b.ne .Lerror
+    ldr x0, [x25]
+    bl print_num
+    b .Lret
+.Lerror:
+    mov x0, #1
+    adrp x1, errmsg
+    add x1, x1, :lo12:errmsg
+    mov x2, #errlen
+    mov x8, #SYS_write
+    svc #0
+.Lret:
+    ldp x29, x30, [sp], #16
+    ret
+
+// print signed 64-bit value in x0, followed by newline
+print_num:
+    sub sp, sp, #32
+    add x4, sp, #31
+    mov w1, #10
+    strb w1, [x4]               // trailing newline
+    mov x2, x0
+    mov x5, #0                  // sign flag
+    tbz x0, #63, .Lpn_pos
+    mov x5, #1
+    neg x2, x2                  // unsigned magnitude (INT64_MIN ok)
+.Lpn_pos:
+    mov x3, #10
+.Lpn_dig:
+    udiv x6, x2, x3
+    msub x7, x6, x3, x2
+    add w7, w7, #'0'
+    sub x4, x4, #1
+    strb w7, [x4]
+    mov x2, x6
+    cbnz x2, .Lpn_dig
+    cbz x5, .Lpn_nosign
+    mov w7, #'-'
+    sub x4, x4, #1
+    strb w7, [x4]
+.Lpn_nosign:
+    mov x0, #1
+    mov x1, x4
+    add x2, sp, #32
+    sub x2, x2, x4
+    mov x8, #SYS_write
+    svc #0
+    add sp, sp, #32
+    ret

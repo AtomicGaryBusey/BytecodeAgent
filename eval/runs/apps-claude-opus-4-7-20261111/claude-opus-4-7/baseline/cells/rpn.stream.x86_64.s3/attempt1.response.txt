@@ -1,0 +1,352 @@
+.equ OUTBUF_SIZE, 65536
+
+.bss
+.p2align 4
+input_buf: .zero 65536
+.p2align 4
+output_buf: .zero 65536
+.p2align 4
+rpn_stack_mem: .zero 8192
+input_len_var: .zero 8
+output_pos_var: .zero 8
+num_buf: .zero 32
+
+.section .rodata
+error_str: .ascii "error\n"
+intmin_str: .ascii "-9223372036854775808\n"
+.p2align 3
+intmin_quad: .quad 0x8000000000000000
+
+.text
+.globl _start
+
+_start:
+    xor r12d, r12d
+rd_loop:
+    mov eax, 0
+    xor edi, edi
+    lea rsi, [rip + input_buf]
+    add rsi, r12
+    mov rdx, 65536
+    sub rdx, r12
+    jle rd_done
+    syscall
+    test rax, rax
+    jle rd_done
+    add r12, rax
+    jmp rd_loop
+rd_done:
+    mov qword ptr [rip + input_len_var], r12
+
+    xor r13d, r13d
+pl_loop:
+    mov rax, qword ptr [rip + input_len_var]
+    cmp r13, rax
+    jae pl_end
+
+    lea r14, [rip + input_buf]
+    add r14, r13
+    mov r15, r14
+    lea rbx, [rip + input_buf]
+    add rbx, rax
+nl_scan:
+    cmp r15, rbx
+    jae nl_not
+    cmp byte ptr [r15], 0x0a
+    je nl_got
+    inc r15
+    jmp nl_scan
+nl_not:
+    mov r13, qword ptr [rip + input_len_var]
+    jmp nl_eval
+nl_got:
+    lea r13, [r15 + 1]
+    lea rax, [rip + input_buf]
+    sub r13, rax
+nl_eval:
+    mov rsi, r14
+    mov rdi, r15
+    call eval_line
+    jmp pl_loop
+
+pl_end:
+    mov rdx, qword ptr [rip + output_pos_var]
+    test rdx, rdx
+    jz pl_noflush
+    mov eax, 1
+    mov edi, 1
+    lea rsi, [rip + output_buf]
+    syscall
+pl_noflush:
+    mov eax, 60
+    xor edi, edi
+    syscall
+
+
+eval_line:
+    push rbx
+    push rbp
+    push r12
+    mov rbx, rsi
+    mov r12, rdi
+    lea rbp, [rip + rpn_stack_mem]
+
+el_tok:
+el_skip:
+    cmp rbx, r12
+    jae el_done
+    movzx eax, byte ptr [rbx]
+    cmp al, 0x20
+    je el_skipone
+    cmp al, 0x09
+    jne el_tokstart
+el_skipone:
+    inc rbx
+    jmp el_skip
+
+el_tokstart:
+    mov rsi, rbx
+el_scan:
+    cmp rbx, r12
+    jae el_scanend
+    movzx eax, byte ptr [rbx]
+    cmp al, 0x20
+    je el_scanend
+    cmp al, 0x09
+    je el_scanend
+    inc rbx
+    jmp el_scan
+el_scanend:
+    mov rcx, rbx
+    sub rcx, rsi
+
+    cmp rcx, 1
+    jne el_num
+    movzx eax, byte ptr [rsi]
+    cmp al, 0x2b
+    je el_plus
+    cmp al, 0x2d
+    je el_minus
+    cmp al, 0x2a
+    je el_mul
+    cmp al, 0x2f
+    je el_div
+    cmp al, 0x25
+    je el_mod
+
+el_num:
+    call parse_int
+    jc el_error
+    mov qword ptr [rbp], rax
+    add rbp, 8
+    jmp el_tok
+
+el_plus:
+    lea rdx, [rip + rpn_stack_mem]
+    mov rax, rbp
+    sub rax, rdx
+    cmp rax, 16
+    jb el_error
+    mov rax, qword ptr [rbp - 16]
+    add rax, qword ptr [rbp - 8]
+    mov qword ptr [rbp - 16], rax
+    sub rbp, 8
+    jmp el_tok
+
+el_minus:
+    lea rdx, [rip + rpn_stack_mem]
+    mov rax, rbp
+    sub rax, rdx
+    cmp rax, 16
+    jb el_error
+    mov rax, qword ptr [rbp - 16]
+    sub rax, qword ptr [rbp - 8]
+    mov qword ptr [rbp - 16], rax
+    sub rbp, 8
+    jmp el_tok
+
+el_mul:
+    lea rdx, [rip + rpn_stack_mem]
+    mov rax, rbp
+    sub rax, rdx
+    cmp rax, 16
+    jb el_error
+    mov rax, qword ptr [rbp - 16]
+    imul rax, qword ptr [rbp - 8]
+    mov qword ptr [rbp - 16], rax
+    sub rbp, 8
+    jmp el_tok
+
+el_div:
+    lea rdx, [rip + rpn_stack_mem]
+    mov rax, rbp
+    sub rax, rdx
+    cmp rax, 16
+    jb el_error
+    mov rax, qword ptr [rbp - 16]
+    mov rcx, qword ptr [rbp - 8]
+    test rcx, rcx
+    jz el_error
+    cmp rcx, -1
+    jne el_divok
+    cmp rax, qword ptr [rip + intmin_quad]
+    je el_error
+el_divok:
+    cqo
+    idiv rcx
+    mov qword ptr [rbp - 16], rax
+    sub rbp, 8
+    jmp el_tok
+
+el_mod:
+    lea rdx, [rip + rpn_stack_mem]
+    mov rax, rbp
+    sub rax, rdx
+    cmp rax, 16
+    jb el_error
+    mov rax, qword ptr [rbp - 16]
+    mov rcx, qword ptr [rbp - 8]
+    test rcx, rcx
+    jz el_error
+    cmp rcx, -1
+    jne el_modok
+    cmp rax, qword ptr [rip + intmin_quad]
+    je el_error
+el_modok:
+    cqo
+    idiv rcx
+    mov qword ptr [rbp - 16], rdx
+    sub rbp, 8
+    jmp el_tok
+
+el_error:
+    call put_error
+    jmp el_ret
+
+el_done:
+    lea rdx, [rip + rpn_stack_mem]
+    mov rax, rbp
+    sub rax, rdx
+    cmp rax, 8
+    jne el_error
+    mov rax, qword ptr [rbp - 8]
+    call print_signed
+
+el_ret:
+    pop r12
+    pop rbp
+    pop rbx
+    ret
+
+
+parse_int:
+    test rcx, rcx
+    jz pi_fail
+    xor r8d, r8d
+    cmp byte ptr [rsi], 0x2d
+    jne pi_pos
+    mov r8d, 1
+    inc rsi
+    dec rcx
+pi_pos:
+    test rcx, rcx
+    jz pi_fail
+    cmp rcx, 18
+    ja pi_fail
+    xor eax, eax
+pi_loop:
+    test rcx, rcx
+    jz pi_done
+    movzx edx, byte ptr [rsi]
+    sub edx, 0x30
+    cmp edx, 9
+    ja pi_fail
+    lea rax, [rax + rax*4]
+    add rax, rax
+    add rax, rdx
+    inc rsi
+    dec rcx
+    jmp pi_loop
+pi_done:
+    test r8d, r8d
+    jz pi_ok
+    neg rax
+pi_ok:
+    clc
+    ret
+pi_fail:
+    stc
+    ret
+
+
+print_signed:
+    cmp rax, qword ptr [rip + intmin_quad]
+    je ps_intmin
+    xor r9d, r9d
+    test rax, rax
+    jns ps_pos
+    mov r9d, 1
+    neg rax
+ps_pos:
+    mov byte ptr [rip + num_buf + 30], 0x0a
+    lea rdi, [rip + num_buf + 29]
+    mov ecx, 10
+ps_dl:
+    xor edx, edx
+    div rcx
+    add dl, 0x30
+    mov byte ptr [rdi], dl
+    test rax, rax
+    jz ps_de
+    dec rdi
+    jmp ps_dl
+ps_de:
+    test r9d, r9d
+    jz ps_nosign
+    dec rdi
+    mov byte ptr [rdi], 0x2d
+ps_nosign:
+    lea rcx, [rip + num_buf + 31]
+    sub rcx, rdi
+    mov rsi, rdi
+    call put_bytes
+    ret
+
+ps_intmin:
+    lea rsi, [rip + intmin_str]
+    mov ecx, 21
+    call put_bytes
+    ret
+
+
+put_bytes:
+    mov rax, qword ptr [rip + output_pos_var]
+    mov r8, rax
+    add r8, rcx
+    cmp r8, OUTBUF_SIZE
+    jbe pb_copy
+    push rsi
+    push rcx
+    mov eax, 1
+    mov edi, 1
+    lea rsi, [rip + output_buf]
+    mov rdx, qword ptr [rip + output_pos_var]
+    syscall
+    mov qword ptr [rip + output_pos_var], 0
+    pop rcx
+    pop rsi
+    xor eax, eax
+pb_copy:
+    lea rdi, [rip + output_buf]
+    add rdi, rax
+    rep movsb
+    lea rdx, [rip + output_buf]
+    sub rdi, rdx
+    mov qword ptr [rip + output_pos_var], rdi
+    ret
+
+
+put_error:
+    lea rsi, [rip + error_str]
+    mov ecx, 6
+    jmp put_bytes

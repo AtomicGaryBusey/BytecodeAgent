@@ -1,0 +1,281 @@
+.global _start
+	.text
+_start:
+	// ------------------- read all stdin into prog_buf -------------------
+	// x3 = total length (initial 0)
+	mov	x3, #0
+
+read_loop:
+	cmp	x3, #65536
+	bge	read_done
+	// x0 = fd = 0
+	mov	x0, #0
+	// x1 = prog_buf + total_len
+	adrp	x1, prog_buf
+	add	x1, x1, :lo12:prog_buf
+	add	x1, x1, x3
+	// x2 = remaining space = 65536 - total_len
+	mov	x2, #65536
+	sub	x2, x2, x3
+	// syscall read
+	mov	x8, #63
+	svc	#0
+	cmp	x0, #0
+	beq	read_done
+	add	x3, x3, x0
+	b	read_loop
+
+read_done:
+	// ------------------- split program and input at first '!' -------------------
+	// x5 = total_len
+	mov	x5, x3
+	// x6 = index i = 0
+	mov	x6, #0
+	// x9 = prog_len (default total_len)
+	mov	x9, x5
+	// x10 = input_start offset (default total_len)
+	mov	x10, x5
+	// x11 = input_len (default 0)
+	mov	x11, #0
+
+find_excl:
+	cmp	x6, x5
+	bge	no_excl
+	adrp	x7, prog_buf
+	add	x7, x7, :lo12:prog_buf
+	add	x7, x7, x6
+	ldrb	w8, [x7]
+	cmp	w8, #33			// '!'
+	bne	inc_find
+	// found '!': prog_len = i, input_start = i+1, input_len = total_len - (i+1)
+	mov	x9, x6
+	add	x10, x6, #1
+	sub	x11, x5, x10
+	b	after_split
+
+inc_find:
+	add	x6, x6, #1
+	b	find_excl
+
+no_excl:
+	// prog_len, input_start, input_len already set to defaults
+	b	after_split
+
+after_split:
+	// ------------------- set up pointers -------------------
+	// tape base in x12, data pointer in x13
+	adrp	x12, tape
+	add	x12, x12, :lo12:tape
+	mov	x13, x12
+
+	// program base in x14
+	adrp	x14, prog_buf
+	add	x14, x14, :lo12:prog_buf
+
+	// input_ptr in x15 = prog_buf + input_start
+	adrp	x15, prog_buf
+	add	x15, x15, :lo12:prog_buf
+	add	x15, x15, x10
+
+	// input_end in x16 = input_ptr + input_len
+	add	x16, x15, x11
+
+	// bracket map base in x17
+	adrp	x17, br_map
+	add	x17, x17, :lo12:br_map
+
+	// ------------------- bracket balance check and map -------------------
+	// x18 = stack depth = 0
+	mov	x18, #0
+	// x19 = i = 0
+	mov	x19, #0
+
+bracket_loop:
+	cmp	x19, x9
+	bge	brackets_done
+	// load program byte at prog_buf + i
+	adrp	x20, prog_buf
+	add	x20, x20, :lo12:prog_buf
+	add	x20, x20, x19
+	ldrb	w21, [x20]
+
+	// '[' ?
+	cmp	w21, #0x5b
+	bne	not_open
+	// push i onto stack
+	adrp	x22, br_stack
+	add	x22, x22, :lo12:br_stack
+	lsl	x23, x18, #2
+	add	x23, x23, x22
+	str	w19, [x23]
+	add	x18, x18, #1
+	b	inc_i
+
+not_open:
+	// ']' ?
+	cmp	w21, #0x5d
+	bne	not_close
+	cmp	x18, #0
+	beq	bracket_unbalanced
+	// pop matching '['
+	sub	x18, x18, #1
+	adrp	x22, br_stack
+	add	x22, x22, :lo12:br_stack
+	lsl	x23, x18, #2
+	add	x23, x23, x22
+	ldr	w24, [x23]			// open index
+
+	// forward map: '[' -> i+1
+	add	w25, w19, #1			// target = i+1
+	uxtw	x24, w24
+	lsl	x26, x24, #2
+	add	x26, x26, x17
+	str	w25, [x26]
+
+	// backward map: ']' -> open+1
+	add	w25, w24, #1
+	lsl	x26, x19, #2
+	add	x26, x26, x17
+	str	w25, [x26]
+
+	b	inc_i
+
+not_close:
+	// other byte, ignore
+	// fall through
+
+inc_i:
+	add	x19, x19, #1
+	b	bracket_loop
+
+bracket_unbalanced:
+	// exit status 1
+	mov	x0, #1
+	mov	x8, #93
+	svc	#0
+
+brackets_done:
+	cmp	x18, #0
+	bne	bracket_unbalanced
+
+	// ------------------- execution -------------------
+	// x28 = pc = 0
+	mov	x28, #0
+
+exec_loop:
+	cmp	x28, x9
+	bge	exec_done
+	// load command byte
+	adrp	x29, prog_buf
+	add	x29, x29, :lo12:prog_buf
+	add	x29, x29, x28
+	ldrb	w30, [x29]
+
+	// switch on command
+	cmp	w30, #0x3e		// '>'
+	beq	cmd_inc_ptr
+	cmp	w30, #0x3c		// '<'
+	beq	cmd_dec_ptr
+	cmp	w30, #0x2b		// '+'
+	beq	cmd_inc_cell
+	cmp	w30, #0x2d		// '-'
+	beq	cmd_dec_cell
+	cmp	w30, #0x2e		// '.'
+	beq	cmd_output
+	cmp	w30, #0x2c		// ','
+	beq	cmd_input
+	cmp	w30, #0x5b		// '['
+	beq	cmd_bracket_open
+	cmp	w30, #0x5d		// ']'
+	beq	cmd_bracket_close
+	// ignore any other byte
+	add	x28, x28, #1
+	b	exec_loop
+
+cmd_inc_ptr:
+	add	x13, x13, #1
+	add	x28, x28, #1
+	b	exec_loop
+
+cmd_dec_ptr:
+	sub	x13, x13, #1
+	add	x28, x28, #1
+	b	exec_loop
+
+cmd_inc_cell:
+	ldrb	w0, [x13]
+	add	w0, w0, #1
+	and	w0, w0, #0xff
+	strb	w0, [x13]
+	add	x28, x28, #1
+	b	exec_loop
+
+cmd_dec_cell:
+	ldrb	w0, [x13]
+	sub	w0, w0, #1
+	and	w0, w0, #0xff
+	strb	w0, [x13]
+	add	x28, x28, #1
+	b	exec_loop
+
+cmd_output:
+	mov	x0, #1			// fd = stdout
+	mov	x1, x13			// buffer = cell address
+	mov	x2, #1
+	mov	x8, #64			// sys_write
+	svc	#0
+	add	x28, x28, #1
+	b	exec_loop
+
+cmd_input:
+	cmp	x15, x16
+	bge	input_eof
+	ldrb	w0, [x15]
+	strb	w0, [x13]
+	add	x15, x15, #1
+	b	input_done
+input_eof:
+	mov	w0, #0
+	strb	w0, [x13]
+input_done:
+	add	x28, x28, #1
+	b	exec_loop
+
+cmd_bracket_open:
+	ldrb	w0, [x13]
+	cbnz	w0, bracket_open_continue
+	// cell == 0, jump forward
+	ldr	w3, [x17, x28, lsl #2]	// load target
+	uxtw	x28, w3
+	b	exec_loop
+bracket_open_continue:
+	add	x28, x28, #1
+	b	exec_loop
+
+cmd_bracket_close:
+	ldrb	w0, [x13]
+	cbz	w0, bracket_close_continue
+	// cell != 0, jump back
+	ldr	w3, [x17, x28, lsl #2]	// load target
+	uxtw	x28, w3
+	b	exec_loop
+bracket_close_continue:
+	add	x28, x28, #1
+	b	exec_loop
+
+exec_done:
+	mov	x0, #0
+	mov	x8, #93
+	svc	#0
+
+	// ------------------- data -------------------
+	.bss
+	.align 4
+prog_buf:
+	.zero 65536
+tape:
+	.zero 30000
+br_map:
+	.zero 262144
+br_stack:
+	.zero 4000

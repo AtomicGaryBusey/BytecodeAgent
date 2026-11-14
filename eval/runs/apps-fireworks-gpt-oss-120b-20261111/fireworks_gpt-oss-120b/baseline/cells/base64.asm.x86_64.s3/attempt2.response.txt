@@ -1,0 +1,175 @@
+.globl _start
+.section .bss
+.align 16
+buf_in:
+    .zero 49152
+buf_out:
+    .zero 70000
+
+.section .rodata
+b64_table:
+    .ascii "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/"
+
+.text
+_start:
+    xor     r8, r8                # total input length
+    xor     r9d, r9d              # line length counter
+
+read_loop:
+    mov     rax, 0                # sys_read
+    mov     rdi, 0                # fd = stdin
+    lea     rsi, [rip + buf_in]
+    add     rsi, r8               # offset = total length
+    mov     rdx, 49152
+    sub     rdx, r8               # remaining space
+    syscall
+    test    rax, rax
+    jz      read_done
+    add     r8, rax               # accumulate length
+    cmp     r8, 49152
+    jae     read_done
+    jmp     read_loop
+
+read_done:
+    test    r8, r8
+    jz      exit_success          # empty input -> no output
+
+    lea     rsi, [rip + buf_in]   # src pointer
+    mov     rcx, r8               # remaining bytes
+    lea     rdi, [rip + buf_out]  # dst pointer
+
+encode_main_loop:
+    cmp     rcx, 3
+    jl      encode_leftover
+
+    # load three bytes
+    movzx   eax, byte ptr [rsi]          # b0
+    movzx   ebx, byte ptr [rsi+1]        # b1
+    movzx   edx, byte ptr [rsi+2]        # b2
+
+    # idx0 = b0 >> 2
+    movzx   rdx, al
+    shr     rdx, 2
+    call    write_idx
+
+    # idx1 = ((b0 & 3) << 4) | (b1 >> 4)
+    movzx   rdx, al
+    and     rdx, 3
+    shl     rdx, 4
+    movzx   rax, bl
+    shr     rax, 4
+    or      rdx, rax
+    call    write_idx
+
+    # idx2 = ((b1 & 0xF) << 2) | (b2 >> 6)
+    movzx   rdx, bl
+    and     rdx, 0xF
+    shl     rdx, 2
+    movzx   rax, dl          # b2 is in dl (from edx)
+    shr     rax, 6
+    or      rdx, rax
+    call    write_idx
+
+    # idx3 = b2 & 0x3F
+    movzx   rdx, dl
+    and     rdx, 0x3F
+    call    write_idx
+
+    add     rsi, 3
+    sub     rcx, 3
+    jmp     encode_main_loop
+
+encode_leftover:
+    cmp     rcx, 0
+    je      finish_output
+    cmp     rcx, 1
+    je      encode_one_byte
+
+    # rcx == 2
+    movzx   eax, byte ptr [rsi]          # b0
+    movzx   ebx, byte ptr [rsi+1]        # b1
+
+    # idx0 = b0 >> 2
+    movzx   rdx, al
+    shr     rdx, 2
+    call    write_idx
+
+    # idx1 = ((b0 & 3) << 4) | (b1 >> 4)
+    movzx   rdx, al
+    and     rdx, 3
+    shl     rdx, 4
+    movzx   rax, bl
+    shr     rax, 4
+    or      rdx, rax
+    call    write_idx
+
+    # idx2 = ((b1 & 0xF) << 2)
+    movzx   rdx, bl
+    and     rdx, 0xF
+    shl     rdx, 2
+    call    write_idx
+
+    # padding '=' twice
+    mov     al, '='
+    call    write_char_al
+    call    write_char_al
+    jmp     finish_output
+
+encode_one_byte:
+    movzx   eax, byte ptr [rsi]          # b0
+
+    # idx0 = b0 >> 2
+    movzx   rdx, al
+    shr     rdx, 2
+    call    write_idx
+
+    # idx1 = (b0 & 3) << 4
+    movzx   rdx, al
+    and     rdx, 3
+    shl     rdx, 4
+    call    write_idx
+
+    # padding '=' twice
+    mov     al, '='
+    call    write_char_al
+    call    write_char_al
+    jmp     finish_output
+
+# -------------------------------------------------
+# write_idx: rdx holds index 0..63, writes the corresponding Base64 character
+write_idx:
+    lea     rbx, [rip + b64_table]
+    movzx   rcx, dl
+    mov     al, byte ptr [rbx + rcx]
+    # fall through to write_char_al
+
+# write_char_al: AL holds character to output
+write_char_al:
+    mov     [rdi], al
+    inc     rdi
+    inc     r9d                # line length counter
+    cmp     r9d, 76
+    jne     .no_nl
+    mov     byte ptr [rdi], 0x0A
+    inc     rdi
+    xor     r9d, r9d
+.no_nl:
+    ret
+
+finish_output:
+    cmp     r9d, 0
+    je      output_done
+    mov     byte ptr [rdi], 0x0A
+    inc     rdi
+output_done:
+    lea     rsi, [rip + buf_out]
+    mov     rdx, rdi
+    sub     rdx, rsi                # output length
+    mov     rax, 1                  # sys_write
+    mov     rdi, 1                  # stdout
+    syscall
+
+exit_success:
+    mov     rax, 60                 # sys_exit
+    xor     rdi, rdi
+    syscall

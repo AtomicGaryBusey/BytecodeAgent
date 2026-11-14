@@ -1,0 +1,322 @@
+Write the complete program `sort_lines`: a static Linux executable for x86-64 (AMD64), written in assembly. There is no C library, no C runtime and no helper code: you write the entry point `_start`, every function, every table and string, and make the system calls yourself.
+
+Entry state (as the Linux kernel sets it up): execution starts at the label `_start`. rsp is 16-byte aligned and points at argc = 0, followed by the NULL terminators of an empty argv, an empty envp and an empty auxiliary vector: the program gets no arguments. Every other general-purpose register is zero, and the direction flag is clear. There is no return address: `_start` must never return with `ret`; the program ends only through the exit system call.
+
+System calls: the `syscall` instruction, with the system call number in rax and the arguments in rdi, rsi, rdx; the result comes back in rax. The kernel overwrites rcx and r11; every other register is preserved. Exactly these four are available:
+- read = 0: read(fd = 0, buf, count) reads up to count bytes of standard input into buf; returns the number of bytes read, 0 at end of input.
+- write = 1: write(fd, buf, count) with fd 1 (standard output) or 2 (standard error); returns count.
+- exit = 60: exit(status) ends the program; the exit status is the low 8 bits of status.
+- exit_group = 231: the same as exit.
+Any other system call number, another file descriptor, `int 0x80` or `sysenter` stops the program with an error, and so does a buffer that is not entirely inside the program's memory.
+
+Memory: the program's own sections plus a stack of 1 MiB below the entry sp. There is no heap (no brk, no mmap, no malloc): put working storage in `.bss` (zero-initialised), at most 1 MiB in total, or on the stack. Code is not writable. Any access outside these areas stops the program. Each test run may execute at most 200,000,000 instructions.
+
+Output format: one complete assembly source file in GNU assembler (GNU as) syntax, Intel flavour without register prefixes: the harness puts `.intel_syntax noprefix` in front of your text, so do not write it yourself. Examples: `mov rax, qword ptr [rbx + rcx*8]`, `movzx eax, byte ptr [rsi]`, `lea rsi, [rip + buffer]`. Comments start with `#`; do not use `;`.
+Allowed in the file:
+- Sections: `.text` (code), `.section .rodata` (read-only data), `.data` (initialised writable data), `.bss` (zero-initialised space: only `.zero`/`.space` and alignment). Instructions go in `.text` only.
+- Data directives: `.byte`, `.short`/`.2byte`, `.word` (2 bytes on this target), `.long`/`.int`/`.4byte`, `.quad`/`.8byte`, `.ascii`, `.asciz`/`.string`, `.zero`/`.space`, alignment with `.align`/`.balign`/`.p2align`, and `.globl`/`.global` (write `.globl _start`).
+- Labels `name:` in any section, and GNU local labels `1:` referenced as `1f` (next) / `1b` (previous).
+- Constants: `.equ name, value` (or `.set name, value`, or `name = value`), where value is a number or a difference of labels defined earlier in the same section (e.g. `msg_len = . - msg`). Define every constant before its first use.
+- Addressing data: rip-relative, `lea rdi, [rip + table]` or `mov al, byte ptr [rip + table + 3]`. The program is linked at fixed low addresses, so absolute forms (`mov esi, offset buffer`, `movzx eax, byte ptr [table + rcx]`) work as well.
+Not allowed: macros (`.macro`, `.rept`, `.irp`), conditional assembly (`.if`), `.include`, `.incbin`, `.fill`, `.org`, `.comm`/`.lcomm`, `.inst`, `.cfi_*` directives, section stacks (`.pushsection`) and any other section. No libc and no other library: there is nothing to link against, so every symbol you use must be defined in your file.
+Instruction set: x86-64 with SSE up to SSE4.2 (including SSSE3, SSE4.1 and crc32), POPCNT, LZCNT, BMI1/BMI2 (andn, bextr, blsi, blsr, tzcnt, bzhi, mulx, pdep, pext, rorx, sarx, shlx, shrx), MOVBE, AES-NI and PCLMULQDQ. Not supported (rejected): AVX, AVX2, AVX-512, FMA, F16C and every other VEX/EVEX vector instruction, ADX (adcx/adox; use adc) and SHA.
+Output ONLY the assembly source: no Markdown fences, no prose before or after it.
+
+Specification: Task `sort_lines`: print the lines of standard input sorted in ascending byte-wise order.
+
+- Lines are defined as follows: a line is a (possibly empty) sequence of bytes terminated by a newline 0x0A; if
+  the input does not end with a newline, the bytes after the last newline form one more, final line. Empty input
+  has no lines, and the empty remainder after a final newline is not a line.
+- Order: compare two lines byte by byte as UNSIGNED values 0x00-0xFF (like C `memcmp`); the first differing
+  byte decides. If one line is a prefix of the other, the shorter line comes first (so the empty line sorts
+  before every non-empty line). Equal lines are all printed (duplicates are kept).
+- Print every line followed by one newline 0x0A (the final line gets a newline even if it had none in the
+  input). Empty input prints nothing. A carriage return 0x0D and every other byte value are ordinary bytes.
+
+Example: `pear\napple\nPear\n\napple` prints `\nPear\napple\napple\npear\n`.
+
+Limits: the input is at most 32768 bytes and has at most 1000 lines. Exit status 0.
+
+Input and output (applies to this whole task):
+- The input is the complete contents of standard input (file descriptor 0). Read it with `read` until `read`
+  returns 0 (end of input). A `read` may return FEWER bytes than requested, at any position (in the middle of a
+  line, a token or a group of bytes), so keep calling it; only a return value of 0 means end of input.
+- Write the output to standard output (file descriptor 1). Only the bytes this task describes may appear on
+  standard output (standard error is ignored). Every output byte must be written before the program exits.
+- Finish with `exit` (or `exit_group`) and the exit status this task gives. The program must not run off the end
+  of its code or crash.
+
+Your previous attempt was:
+<previous>
+.equ INPUT_SIZE, 32768
+.equ MAX_TASKS, 2048
+
+.section .bss
+.align 8
+input_buffer:
+.zero INPUT_SIZE
+records:
+.zero 16000
+aux_records:
+.zero 16000
+counts:
+.zero 2056
+positions:
+.zero 2056
+task_stack:
+.zero 49152
+task_count:
+.zero 8
+
+.section .rodata
+newline:
+.byte 10
+
+.text
+.globl _start
+_start:
+    lea rsi, [rip + input_buffer]
+    xor r12, r12
+
+read_loop:
+    mov rdx, INPUT_SIZE
+    sub rdx, r12
+    mov eax, 0
+    xor edi, edi
+    syscall
+    test rax, rax
+    jz parse_input
+    add r12, rax
+    jmp read_loop
+
+parse_input:
+    xor rbx, rbx
+    xor r10, r10
+    xor r9, r9
+    lea rdi, [rip + records]
+
+parse_loop:
+    cmp rbx, r12
+    jae parse_done
+    movzx eax, byte ptr [rsi + rbx]
+    cmp al, 10
+    jne parse_next
+    mov qword ptr [rdi + r9*16], r10
+    mov rax, rbx
+    sub rax, r10
+    mov qword ptr [rdi + r9*16 + 8], rax
+    inc r9
+    lea r10, [rbx + 1]
+
+parse_next:
+    inc rbx
+    jmp parse_loop
+
+parse_done:
+    cmp r10, r12
+    je start_sort
+    mov qword ptr [rdi + r9*16], r10
+    mov rax, r12
+    sub rax, r10
+    mov qword ptr [rdi + r9*16 + 8], rax
+    inc r9
+
+start_sort:
+    test r9, r9
+    jz exit_zero
+    mov qword ptr [rip + task_count], 1
+    lea rdi, [rip + task_stack]
+    mov qword ptr [rdi], 0
+    mov qword ptr [rdi + 8], r9
+    mov qword ptr [rdi + 16], 0
+
+sort_task:
+    mov rax, qword ptr [rip + task_count]
+    test rax, rax
+    jz output_start
+    dec rax
+    mov qword ptr [rip + task_count], rax
+    lea rbx, [rip + task_stack]
+    lea rbx, [rbx + rax*24]
+    mov r8, qword ptr [rbx]
+    mov r9, qword ptr [rbx + 8]
+    mov r10, qword ptr [rbx + 16]
+    mov rax, r9
+    sub rax, r8
+    cmp rax, 1
+    jbe sort_task
+
+    lea rdi, [rip + counts]
+    xor ecx, ecx
+clear_counts:
+    mov qword ptr [rdi + rcx*8], 0
+    inc rcx
+    cmp rcx, 257
+    jb clear_counts
+
+    lea rdi, [rip + records]
+    xor r11, r11
+count_records:
+    cmp r11, r9
+    jae make_positions
+    mov r12, qword ptr [rdi + r11*16]
+    mov r13, qword ptr [rdi + r11*16 + 8]
+    cmp r10, r13
+    jae record_terminated
+    mov rdx, r12
+    add rdx, r10
+    lea rsi, [rip + input_buffer]
+    movzx eax, byte ptr [rsi + rdx]
+    inc eax
+    jmp record_key_ready
+record_terminated:
+    xor eax, eax
+record_key_ready:
+    lea rsi, [rip + counts]
+    inc qword ptr [rsi + rax*8]
+    inc r11
+    jmp count_records
+
+make_positions:
+    lea rsi, [rip + positions]
+    lea rdi, [rip + counts]
+    xor ecx, ecx
+    mov rdx, r8
+make_positions_loop:
+    mov qword ptr [rsi + rcx*8], rdx
+    add rdx, qword ptr [rdi + rcx*8]
+    inc rcx
+    cmp rcx, 257
+    jb make_positions_loop
+
+    lea rdi, [rip + records]
+    lea rsi, [rip + aux_records]
+    xor r11, r11
+distribute_records:
+    cmp r11, r9
+    jae copy_records
+    mov r12, qword ptr [rdi + r11*16]
+    mov r13, qword ptr [rdi + r11*16 + 8]
+    cmp r10, r13
+    jae distribute_terminated
+    mov rdx, r12
+    add rdx, r10
+    lea rbx, [rip + input_buffer]
+    movzx eax, byte ptr [rbx + rdx]
+    inc eax
+    jmp distribute_key_ready
+distribute_terminated:
+    xor eax, eax
+distribute_key_ready:
+    lea rbx, [rip + positions]
+    mov rdx, qword ptr [rbx + rax*8]
+    inc qword ptr [rbx + rax*8]
+    mov qword ptr [rsi + rdx*16], r12
+    mov qword ptr [rsi + rdx*16 + 8], r13
+    inc r11
+    jmp distribute_records
+
+copy_records:
+    lea rdi, [rip + records]
+    lea rsi, [rip + aux_records]
+    mov r11, r8
+copy_loop:
+    cmp r11, r9
+    jae push_groups
+    mov r12, qword ptr [rsi + r11*16]
+    mov r13, qword ptr [rsi + r11*16 + 8]
+    mov qword ptr [rdi + r11*16], r12
+    mov qword ptr [rdi + r11*16 + 8], r13
+    inc r11
+    jmp copy_loop
+
+push_groups:
+    lea rdi, [rip + counts]
+    lea rsi, [rip + positions]
+    mov r14, 1
+push_group_loop:
+    cmp r14, 257
+    jae sort_task
+    mov r15, qword ptr [rdi + r14*8]
+    cmp r15, 1
+    jbe next_group
+    mov rax, qword ptr [rip + task_count]
+    lea rbx, [rip + task_stack]
+    lea rbx, [rbx + rax*24]
+    mov rdx, qword ptr [rsi + r14*8]
+    sub rdx, r15
+    mov qword ptr [rbx], rdx
+    mov qword ptr [rbx + 8], qword ptr [rsi + r14*8]
+    lea rdx, [r10 + 1]
+    mov qword ptr [rbx + 16], rdx
+    inc rax
+    mov qword ptr [rip + task_count], rax
+next_group:
+    inc r14
+    jmp push_group_loop
+
+output_start:
+    xor r12, r12
+    lea rdi, [rip + records]
+
+output_record:
+    cmp r12, r9
+    jae exit_zero
+    mov r8, qword ptr [rdi + r12*16]
+    mov r9, qword ptr [rdi + r12*16 + 8]
+
+write_line:
+    test r9, r9
+    jz write_newline
+    mov eax, 1
+    mov edi, 1
+    lea rsi, [rip + input_buffer]
+    add rsi, r8
+    mov rdx, r9
+    syscall
+    test rax, rax
+    jz write_line
+    add r8, rax
+    sub r9, rax
+    jmp write_line
+
+write_newline:
+    mov eax, 1
+    mov edi, 1
+    lea rsi, [rip + newline]
+    mov edx, 1
+    syscall
+    inc r12
+    lea rdi, [rip + records]
+    jmp output_record
+
+exit_zero:
+    mov eax, 60
+    xor edi, edi
+    syscall
+    hlt
+</previous>
+It failed:
+<failure>
+GNU as rejected the program:
+line 54: `qword ptr [rdi+r9*16]' is not a valid base/index expression
+line 57: `qword ptr [rdi+r9*16+8]' is not a valid base/index expression
+line 68: `qword ptr [rdi+r9*16]' is not a valid base/index expression
+line 71: `qword ptr [rdi+r9*16+8]' is not a valid base/index expression
+line 90: `[rbx+rax*24]' is not a valid base/index expression
+line 112: `qword ptr [rdi+r11*16]' is not a valid base/index expression
+line 113: `qword ptr [rdi+r11*16+8]' is not a valid base/index expression
+line 148: `qword ptr [rdi+r11*16]' is not a valid base/index expression
+line 149: `qword ptr [rdi+r11*16+8]' is not a valid base/index expression
+line 164: `qword ptr [rsi+rdx*16]' is not a valid base/index expression
+line 165: `qword ptr [rsi+rdx*16+8]' is not a valid base/index expression
+line 176: `qword ptr [rsi+r11*16]' is not a valid base/index expression
+line 177: `qword ptr [rsi+r11*16+8]' is not a valid base/index expression
+line 178: `qword ptr [rdi+r11*16]' is not a valid base/index expression
+line 179: `qword ptr [rdi+r11*16+8]' is not a valid base/index expression
+line 195: `[rbx+rax*24]' is not a valid base/index expression
+line 199: operand type mismatch for `mov'
+line 215: `qword ptr [rdi+r12*16]' is not a valid base/index expression
+line 216: `qword ptr [rdi+r12*16+8]' is not a valid base/index expression
+</failure>
+Write a corrected, complete version. Same output format; output only the code.

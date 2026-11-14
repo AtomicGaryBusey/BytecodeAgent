@@ -1,0 +1,329 @@
+```
+.globl _start
+
+.bss
+.balign 8
+input_buf: .zero 65536
+output_buf: .zero 65536
+rpn_stack: .zero 4096
+output_pos: .zero 8
+
+.section .rodata
+err_msg: .ascii "error\n"
+
+.text
+_start:
+    mov x19, #0
+read_loop:
+    adrp x1, input_buf
+    add x1, x1, :lo12:input_buf
+    add x1, x1, x19
+    mov x2, #0x10000
+    sub x2, x2, x19
+    cbz x2, read_end
+    mov x0, #0
+    mov x8, #63
+    svc #0
+    cmp x0, #0
+    b.le read_end
+    add x19, x19, x0
+    b read_loop
+read_end:
+    adrp x20, input_buf
+    add x20, x20, :lo12:input_buf
+    add x21, x20, x19
+process_line:
+    cmp x20, x21
+    b.hs all_done
+    mov x22, x20
+find_nl:
+    cmp x22, x21
+    b.hs eval_it
+    ldrb w0, [x22]
+    cmp w0, #0x0A
+    b.eq eval_it
+    add x22, x22, #1
+    b find_nl
+eval_it:
+    mov x0, x20
+    mov x1, x22
+    bl eval_line
+    cmp x22, x21
+    b.hs all_done
+    add x20, x22, #1
+    b process_line
+all_done:
+    bl flush_output
+    mov x8, #93
+    mov x0, #0
+    svc #0
+hang:
+    b hang
+
+eval_line:
+    stp x29, x30, [sp, #-64]!
+    mov x29, sp
+    stp x19, x20, [sp, #16]
+    stp x21, x22, [sp, #32]
+    stp x23, x24, [sp, #48]
+    mov x19, x0
+    mov x20, x1
+    adrp x21, rpn_stack
+    add x21, x21, :lo12:rpn_stack
+    mov x22, #0
+tok_loop:
+    cmp x19, x20
+    b.hs line_finish
+    ldrb w0, [x19]
+    cmp w0, #0x20
+    b.eq skip_sep
+    cmp w0, #0x09
+    b.ne have_token
+skip_sep:
+    add x19, x19, #1
+    b tok_loop
+have_token:
+    mov x23, x19
+    mov x24, x19
+tok_find_end:
+    cmp x24, x20
+    b.hs tok_got_end
+    ldrb w0, [x24]
+    cmp w0, #0x20
+    b.eq tok_got_end
+    cmp w0, #0x09
+    b.eq tok_got_end
+    add x24, x24, #1
+    b tok_find_end
+tok_got_end:
+    sub x5, x24, x23
+    cmp x5, #1
+    b.ne try_number
+    ldrb w0, [x23]
+    cmp w0, #'+'
+    b.eq op_add
+    cmp w0, #'-'
+    b.eq op_sub
+    cmp w0, #'*'
+    b.eq op_mul
+    cmp w0, #'/'
+    b.eq op_div
+    cmp w0, #'%'
+    b.eq op_mod
+try_number:
+    mov x5, x23
+    mov x6, #0
+    mov x7, #0
+    mov x8, #0
+    ldrb w0, [x5]
+    cmp w0, #'-'
+    b.ne parse_digits
+    mov x6, #1
+    add x5, x5, #1
+parse_digits:
+    cmp x5, x24
+    b.eq parse_done
+    ldrb w0, [x5]
+    sub w0, w0, #'0'
+    cmp w0, #9
+    b.hi line_err
+    mov w9, #10
+    madd x7, x7, x9, x0
+    add x8, x8, #1
+    add x5, x5, #1
+    cmp x8, #18
+    b.hi line_err
+    b parse_digits
+parse_done:
+    cbz x8, line_err
+    cbz x6, push_val
+    neg x7, x7
+push_val:
+    str x7, [x21, x22, lsl #3]
+    add x22, x22, #1
+    mov x19, x24
+    b tok_loop
+
+op_add:
+    cmp x22, #2
+    b.lt line_err
+    sub x22, x22, #1
+    ldr x5, [x21, x22, lsl #3]
+    sub x6, x22, #1
+    ldr x7, [x21, x6, lsl #3]
+    add x7, x7, x5
+    str x7, [x21, x6, lsl #3]
+    mov x19, x24
+    b tok_loop
+op_sub:
+    cmp x22, #2
+    b.lt line_err
+    sub x22, x22, #1
+    ldr x5, [x21, x22, lsl #3]
+    sub x6, x22, #1
+    ldr x7, [x21, x6, lsl #3]
+    sub x7, x7, x5
+    str x7, [x21, x6, lsl #3]
+    mov x19, x24
+    b tok_loop
+op_mul:
+    cmp x22, #2
+    b.lt line_err
+    sub x22, x22, #1
+    ldr x5, [x21, x22, lsl #3]
+    sub x6, x22, #1
+    ldr x7, [x21, x6, lsl #3]
+    mul x7, x7, x5
+    str x7, [x21, x6, lsl #3]
+    mov x19, x24
+    b tok_loop
+op_div:
+    cmp x22, #2
+    b.lt line_err
+    sub x22, x22, #1
+    ldr x5, [x21, x22, lsl #3]
+    cbz x5, line_err
+    sub x6, x22, #1
+    ldr x7, [x21, x6, lsl #3]
+    cmn x5, #1
+    b.ne do_div
+    movz x8, #0x8000, lsl #48
+    cmp x7, x8
+    b.eq line_err
+do_div:
+    sdiv x7, x7, x5
+    str x7, [x21, x6, lsl #3]
+    mov x19, x24
+    b tok_loop
+op_mod:
+    cmp x22, #2
+    b.lt line_err
+    sub x22, x22, #1
+    ldr x5, [x21, x22, lsl #3]
+    cbz x5, line_err
+    sub x6, x22, #1
+    ldr x7, [x21, x6, lsl #3]
+    cmn x5, #1
+    b.ne do_mod
+    movz x8, #0x8000, lsl #48
+    cmp x7, x8
+    b.eq line_err
+do_mod:
+    sdiv x8, x7, x5
+    msub x7, x8, x5, x7
+    str x7, [x21, x6, lsl #3]
+    mov x19, x24
+    b tok_loop
+
+line_finish:
+    cmp x22, #1
+    b.ne line_err
+    ldr x0, [x21]
+    bl emit_number
+    mov w0, #0x0A
+    bl emit_byte
+    b eval_done
+line_err:
+    adrp x0, err_msg
+    add x0, x0, :lo12:err_msg
+    mov x1, #6
+    bl emit_bytes
+eval_done:
+    adrp x0, output_pos
+    add x0, x0, :lo12:output_pos
+    ldr x1, [x0]
+    mov w2, #0xFFC0
+    cmp x1, x2
+    b.lo no_flush
+    bl flush_output
+no_flush:
+    ldp x23, x24, [sp, #48]
+    ldp x21, x22, [sp, #32]
+    ldp x19, x20, [sp, #16]
+    ldp x29, x30, [sp], #64
+    ret
+
+flush_output:
+    stp x29, x30, [sp, #-16]!
+    adrp x9, output_pos
+    add x9, x9, :lo12:output_pos
+    ldr x10, [x9]
+    cbz x10, flush_done
+    adrp x11, output_buf
+    add x11, x11, :lo12:output_buf
+flush_loop:
+    mov x8, #64
+    mov x0, #1
+    mov x1, x11
+    mov x2, x10
+    svc #0
+    cmp x0, #0
+    b.le flush_done
+    add x11, x11, x0
+    subs x10, x10, x0
+    b.ne flush_loop
+flush_done:
+    str xzr, [x9]
+    ldp x29, x30, [sp], #16
+    ret
+
+emit_byte:
+    adrp x1, output_pos
+    add x1, x1, :lo12:output_pos
+    ldr x2, [x1]
+    adrp x3, output_buf
+    add x3, x3, :lo12:output_buf
+    strb w0, [x3, x2]
+    add x2, x2, #1
+    str x2, [x1]
+    ret
+
+emit_bytes:
+    adrp x2, output_pos
+    add x2, x2, :lo12:output_pos
+    ldr x3, [x2]
+    adrp x4, output_buf
+    add x4, x4, :lo12:output_buf
+    add x4, x4, x3
+    add x3, x3, x1
+    str x3, [x2]
+    cbz x1, emit_bytes_done
+eb_loop:
+    ldrb w5, [x0], #1
+    strb w5, [x4], #1
+    subs x1, x1, #1
+    b.ne eb_loop
+emit_bytes_done:
+    ret
+
+emit_number:
+    stp x29, x30, [sp, #-48]!
+    sub sp, sp, #32
+    mov x11, #0
+    tbz x0, #63, en_pos
+    mov x11, #1
+    neg x0, x0
+en_pos:
+    mov x9, #10
+    add x10, sp, #32
+en_loop:
+    udiv x12, x0, x9
+    msub x13, x12, x9, x0
+    add w13, w13, #'0'
+    sub x10, x10, #1
+    strb w13, [x10]
+    mov x0, x12
+    cbnz x0, en_loop
+    cbz x11, en_emit
+    mov w13, #'-'
+    sub x10, x10, #1
+    strb w13, [x10]
+en_emit:
+    mov x0, x10
+    add x1, sp, #32
+    sub x1, x1, x10
+    bl emit_bytes
+    add sp, sp, #32
+    ldp x29, x30, [sp], #48
+    ret
+```

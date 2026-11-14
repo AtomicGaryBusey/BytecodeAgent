@@ -1,0 +1,229 @@
+.globl _start
+.text
+_start:
+    # ---------- read all stdin ----------
+    lea rsi, [rip + buf]          # buffer pointer
+    xor rbx, rbx                  # total_len = 0
+read_loop:
+    mov rdx, 65536
+    sub rdx, rbx                  # remaining space
+    test rdx, rdx
+    je read_done
+    mov rdi, 0                    # fd = stdin
+    xor rax, rax                  # sys_read = 0
+    syscall
+    test rax, rax
+    je read_done
+    add rbx, rax                  # total_len += bytes_read
+    jmp read_loop
+read_done:
+    mov [rip + total_len], rbx
+
+    # ---------- split program / input ----------
+    lea rsi, [rip + buf]          # base pointer
+    xor rcx, rcx                  # i = 0
+    mov rdx, rbx                  # total_len
+find_excl:
+    cmp rcx, rdx
+    jae no_excl
+    mov al, byte ptr [rsi + rcx]
+    cmp al, 0x21                  # '!'
+    je found_excl
+    inc rcx
+    jmp find_excl
+found_excl:
+    mov [rip + prog_len], rcx
+    lea rax, [rcx + 1]
+    mov [rip + input_offset], rax
+    mov rax, [rip + total_len]
+    sub rax, [rip + input_offset]
+    mov [rip + input_len], rax
+    jmp after_split
+no_excl:
+    mov [rip + prog_len], rbx
+    mov [rip + input_offset], rbx
+    mov qword ptr [rip + input_len], 0
+after_split:
+
+    # ---------- set up pointers ----------
+    lea r8, [rip + buf]           # program base
+    lea r9, [rip + tape]          # tape base
+    mov rsi, r9                   # data pointer = tape base
+    xor rbx, rbx                  # pc = 0
+    mov qword ptr [rip + input_pos], 0
+
+    # ---------- bracket balance check ----------
+    xor rcx, rcx                  # i = 0
+    xor rdx, rdx                  # depth = 0
+bal_check_loop:
+    cmp rcx, [rip + prog_len]
+    jge bal_check_done
+    mov al, byte ptr [r8 + rcx]
+    cmp al, '['
+    je bal_inc
+    cmp al, ']'
+    je bal_dec
+    inc rcx
+    jmp bal_check_loop
+bal_inc:
+    inc rdx
+    inc rcx
+    jmp bal_check_loop
+bal_dec:
+    test rdx, rdx
+    je unbalanced_error
+    dec rdx
+    inc rcx
+    jmp bal_check_loop
+bal_check_done:
+    test rdx, rdx
+    jne unbalanced_error
+
+    # ---------- execution ----------
+exec_loop:
+    cmp rbx, [rip + prog_len]
+    jge exec_done
+
+    mov al, byte ptr [r8 + rbx]
+
+    cmp al, '>'
+    je inc_ptr
+    cmp al, '<'
+    je dec_ptr
+    cmp al, '+'
+    je inc_cell
+    cmp al, '-'
+    je dec_cell
+    cmp al, '.'
+    je out_cell
+    cmp al, ','
+    je in_cell
+    cmp al, '['
+    je open_bracket
+    cmp al, ']'
+    je close_bracket
+
+    # ignore any other character
+    inc rbx
+    jmp exec_loop
+
+inc_ptr:
+    inc rsi
+    inc rbx
+    jmp exec_loop
+
+dec_ptr:
+    dec rsi
+    inc rbx
+    jmp exec_loop
+
+inc_cell:
+    inc byte ptr [rsi]
+    inc rbx
+    jmp exec_loop
+
+dec_cell:
+    dec byte ptr [rsi]
+    inc rbx
+    jmp exec_loop
+
+out_cell:
+    mov rax, 1                    # sys_write
+    mov rdi, 1                    # fd = stdout
+    mov rdx, 1                    # count = 1
+    # rsi already points to the byte to write
+    syscall
+    inc rbx
+    jmp exec_loop
+
+in_cell:
+    mov rax, [rip + input_pos]
+    cmp rax, [rip + input_len]
+    jae in_eof
+    mov rcx, [rip + input_offset]
+    lea rcx, [r8 + rcx]            # rcx = input base
+    mov al, byte ptr [rcx + rax]
+    mov byte ptr [rsi], al
+    inc rax
+    mov [rip + input_pos], rax
+    inc rbx
+    jmp exec_loop
+in_eof:
+    mov byte ptr [rsi], 0
+    inc rbx
+    jmp exec_loop
+
+open_bracket:
+    mov al, byte ptr [rsi]
+    test al, al
+    jne ob_not_zero
+    # cell == 0, skip forward
+    mov rcx, 1
+ob_forward:
+    inc rbx
+    cmp rbx, [rip + prog_len]
+    jge unbalanced_error
+    mov al, byte ptr [r8 + rbx]
+    cmp al, '['
+    je ob_inc_nest
+    cmp al, ']'
+    je ob_dec_nest
+    jmp ob_forward_check
+ob_inc_nest:
+    inc rcx
+    jmp ob_forward_check
+ob_dec_nest:
+    dec rcx
+ob_forward_check:
+    cmp rcx, 0
+    jne ob_forward
+    inc rbx
+    jmp exec_loop
+ob_not_zero:
+    inc rbx
+    jmp exec_loop
+
+close_bracket:
+    mov al, byte ptr [rsi]
+    test al, al
+    je cb_zero
+    # cell != 0, jump back
+    mov rcx, 1
+cb_backward:
+    dec rbx
+    cmp rbx, 0
+    jl unbalanced_error
+    mov al, byte ptr [r8 + rbx]
+    cmp al, ']'
+    je cb_inc_nest
+    cmp al, '['
+    je cb_dec_nest
+    jmp cb_backward_check
+cb_inc_nest:
+    inc rcx
+    jmp cb_backward_check
+cb_dec_nest:
+    dec rcx
+cb_backward_check:
+    cmp rcx, 0
+    jne cb_backward
+    jmp exec_loop
+cb_zero:
+    inc rbx
+    jmp exec_loop
+
+unbalanced_error:
+    mov edi, 1
+    mov eax, 60
+    syscall
+
+exec_done:
+    mov edi, 0
+    mov eax, 60
+    syscall
+
+.section .bss
+buf:            .zero 65536
+tape:           .zero 30000
+total_len:      .quad 0
+prog_len:       .

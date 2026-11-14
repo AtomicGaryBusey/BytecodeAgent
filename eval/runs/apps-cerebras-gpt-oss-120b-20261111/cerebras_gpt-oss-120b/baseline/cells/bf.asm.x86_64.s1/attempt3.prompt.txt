@@ -1,0 +1,275 @@
+Write the complete program `bf`: a static Linux executable for x86-64 (AMD64), written in assembly. There is no C library, no C runtime and no helper code: you write the entry point `_start`, every function, every table and string, and make the system calls yourself.
+
+Entry state (as the Linux kernel sets it up): execution starts at the label `_start`. rsp is 16-byte aligned and points at argc = 0, followed by the NULL terminators of an empty argv, an empty envp and an empty auxiliary vector: the program gets no arguments. Every other general-purpose register is zero, and the direction flag is clear. There is no return address: `_start` must never return with `ret`; the program ends only through the exit system call.
+
+System calls: the `syscall` instruction, with the system call number in rax and the arguments in rdi, rsi, rdx; the result comes back in rax. The kernel overwrites rcx and r11; every other register is preserved. Exactly these four are available:
+- read = 0: read(fd = 0, buf, count) reads up to count bytes of standard input into buf; returns the number of bytes read, 0 at end of input.
+- write = 1: write(fd, buf, count) with fd 1 (standard output) or 2 (standard error); returns count.
+- exit = 60: exit(status) ends the program; the exit status is the low 8 bits of status.
+- exit_group = 231: the same as exit.
+Any other system call number, another file descriptor, `int 0x80` or `sysenter` stops the program with an error, and so does a buffer that is not entirely inside the program's memory.
+
+Memory: the program's own sections plus a stack of 1 MiB below the entry sp. There is no heap (no brk, no mmap, no malloc): put working storage in `.bss` (zero-initialised), at most 1 MiB in total, or on the stack. Code is not writable. Any access outside these areas stops the program. Each test run may execute at most 200,000,000 instructions.
+
+Output format: one complete assembly source file in GNU assembler (GNU as) syntax, Intel flavour without register prefixes: the harness puts `.intel_syntax noprefix` in front of your text, so do not write it yourself. Examples: `mov rax, qword ptr [rbx + rcx*8]`, `movzx eax, byte ptr [rsi]`, `lea rsi, [rip + buffer]`. Comments start with `#`; do not use `;`.
+Allowed in the file:
+- Sections: `.text` (code), `.section .rodata` (read-only data), `.data` (initialised writable data), `.bss` (zero-initialised space: only `.zero`/`.space` and alignment). Instructions go in `.text` only.
+- Data directives: `.byte`, `.short`/`.2byte`, `.word` (2 bytes on this target), `.long`/`.int`/`.4byte`, `.quad`/`.8byte`, `.ascii`, `.asciz`/`.string`, `.zero`/`.space`, alignment with `.align`/`.balign`/`.p2align`, and `.globl`/`.global` (write `.globl _start`).
+- Labels `name:` in any section, and GNU local labels `1:` referenced as `1f` (next) / `1b` (previous).
+- Constants: `.equ name, value` (or `.set name, value`, or `name = value`), where value is a number or a difference of labels defined earlier in the same section (e.g. `msg_len = . - msg`). Define every constant before its first use.
+- Addressing data: rip-relative, `lea rdi, [rip + table]` or `mov al, byte ptr [rip + table + 3]`. The program is linked at fixed low addresses, so absolute forms (`mov esi, offset buffer`, `movzx eax, byte ptr [table + rcx]`) work as well.
+Not allowed: macros (`.macro`, `.rept`, `.irp`), conditional assembly (`.if`), `.include`, `.incbin`, `.fill`, `.org`, `.comm`/`.lcomm`, `.inst`, `.cfi_*` directives, section stacks (`.pushsection`) and any other section. No libc and no other library: there is nothing to link against, so every symbol you use must be defined in your file.
+Instruction set: x86-64 with SSE up to SSE4.2 (including SSSE3, SSE4.1 and crc32), POPCNT, LZCNT, BMI1/BMI2 (andn, bextr, blsi, blsr, tzcnt, bzhi, mulx, pdep, pext, rorx, sarx, shlx, shrx), MOVBE, AES-NI and PCLMULQDQ. Not supported (rejected): AVX, AVX2, AVX-512, FMA, F16C and every other VEX/EVEX vector instruction, ADX (adcx/adox; use adc) and SHA.
+Output ONLY the assembly source: no Markdown fences, no prose before or after it.
+
+Specification: Task `bf`: a Brainfuck interpreter. Standard input holds the program, then a `!` byte (0x21), then the program's
+input: the program is every byte before the FIRST `!`; the program's input is every byte after it (it may itself
+contain `!`). If there is no `!` at all, the whole of standard input is the program and its input is empty.
+
+Machine: a tape of 30000 byte cells, all 0 initially, and a data pointer at cell 0. The eight commands:
+`>` pointer + 1; `<` pointer - 1; `+` cell + 1 (255 wraps to 0); `-` cell - 1 (0 wraps to 255); `.` write the
+cell's byte to the output; `,` read the next byte of the program's input into the cell, or store 0 if the
+program's input is exhausted (every later `,` also stores 0); `[` if the cell is 0, jump to just after the
+matching `]`; `]` if the cell is not 0, jump back to just after the matching `[`. Every other byte of the program
+(letters, digits, spaces, newlines, any value) is a comment and is ignored.
+
+Brackets: before running anything, check that the program's `[` and `]` are balanced (every `]` closes an
+earlier unmatched `[`, and no `[` is left open). If they are not, print NOTHING and exit with status 1.
+Otherwise run the program to its end and exit with status 0 (the output is exactly the bytes written by `.`).
+
+Limits: the whole standard input is at most 65536 bytes; bracket nesting is at most 1000 deep; the test
+programs never move the pointer outside cells 0..29999, write at most 65536 output bytes, and execute at
+most 5000000 commands.
+
+Input and output (applies to this whole task):
+- The input is the complete contents of standard input (file descriptor 0). Read it with `read` until `read`
+  returns 0 (end of input). A `read` may return FEWER bytes than requested, at any position (in the middle of a
+  line, a token or a group of bytes), so keep calling it; only a return value of 0 means end of input.
+- Write the output to standard output (file descriptor 1). Only the bytes this task describes may appear on
+  standard output (standard error is ignored). Every output byte must be written before the program exits.
+- Finish with `exit` (or `exit_group`) and the exit status this task gives. The program must not run off the end
+  of its code or crash.
+
+Your previous attempt was:
+<previous>
+.equ BUF_SIZE, 65536
+.equ TAPE_SIZE, 30000
+.equ STACK_MAX, 1000
+
+.global _start
+.text
+_start:
+    xor     rbx, rbx                 # rbx = total bytes read so far
+
+read_loop:
+    mov     rax, 0                  # sys_read
+    mov     rdi, 0                  # fd = stdin
+    lea     rsi, [rip + buf]
+    add     rsi, rbx                # buf + offset
+    mov     rdx, BUF_SIZE
+    sub     rdx, rbx                # space left
+    cmp     rdx, 0
+    jle     read_done
+    syscall
+    cmp     rax, 0
+    je      read_done
+    add     rbx, rax                # accumulate length
+    jmp     read_loop
+
+read_done:
+    mov     rcx, rbx                # total_len -> rcx
+    xor     rsi, rsi                # i = 0
+find_excl:
+    cmp     rsi, rcx
+    jae     no_excl
+    mov     al, byte ptr [rip + buf + rsi]
+    cmp     al, 0x21                # '!'
+    je      found_excl
+    inc     rsi
+    jmp     find_excl
+found_excl:
+    mov     r14, rsi                # prog_len = i
+    mov     r15, rcx                # total_len
+    sub     r15, r14                # remaining = total_len - prog_len
+    dec     r15                     # input_len = total_len - prog_len - 1
+    lea     r11, [r14 + 1]          # input_offset = prog_len + 1
+    jmp     after_split
+no_excl:
+    mov     r14, rcx                # prog_len = total_len
+    xor     r15, r15                # input_len = 0
+    xor     r11, r11                # input_offset = 0
+after_split:
+    # bracket checking
+    xor     rsi, rsi                # stack_ptr = 0
+    xor     rax, rax                # i = 0
+bracket_loop:
+    cmp     rax, r14
+    jae     bracket_done
+    mov     dl, byte ptr [rip + buf + rax]
+    cmp     dl, '['
+    je      bracket_push
+    cmp     dl, ']'
+    je      bracket_pop
+    jmp     bracket_next
+bracket_push:
+    mov     rcx, rsi
+    shl     rcx, 2                  # *4
+    lea     rdx, [rip + stack]
+    add     rdx, rcx
+    mov     dword ptr [rdx], eax   # store i
+    inc     rsi                     # stack_ptr++
+    jmp     bracket_next
+bracket_pop:
+    test    rsi, rsi
+    jz      unbalanced
+    dec     rsi                     # pop
+    mov     rcx, rsi
+    shl     rcx, 2
+    lea     rdx, [rip + stack]
+    add     rdx, rcx
+    mov     ecx, dword ptr [rdx]   # matching '[' index
+    # store jump for ']'
+    mov     rcx, rax                # i = ']'
+    shl     rcx, 2
+    lea     rdx, [rip + jump_table]
+    add     rdx, rcx
+    mov     dword ptr [rdx], ecx   # jump_table[']'] = '['
+    # store jump for '['
+    mov     rcx, ecx                # '[' index
+    shl     rcx, 2
+    lea     rdx, [rip + jump_table]
+    add     rdx, rcx
+    mov     dword ptr [rdx], eax   # jump_table['['] = ']'
+    jmp     bracket_next
+unbalanced:
+    mov     rax, 60
+    mov     rdi, 1
+    syscall
+bracket_next:
+    inc     rax
+    jmp     bracket_loop
+bracket_done:
+    test    rsi, rsi
+    jnz     unbalanced
+
+    # execution start
+    xor     rbx, rbx                # pc = 0
+    xor     r8, r8                  # data pointer = 0
+    xor     r12, r12                # input_ptr = 0
+    mov     r13, r15                # input_remaining = input_len
+
+exec_loop:
+    cmp     rbx, r14                # pc vs prog_len
+    jae     exit_ok
+    mov     al, byte ptr [rip + buf + rbx]
+
+    cmp     al, '>'
+    je      cmd_inc_dp
+    cmp     al, '<'
+    je      cmd_dec_dp
+    cmp     al, '+'
+    je      cmd_inc_cell
+    cmp     al, '-'
+    je      cmd_dec_cell
+    cmp     al, '.'
+    je      cmd_output
+    cmp     al, ','
+    je      cmd_input
+    cmp     al, '['
+    je      cmd_bracket_open
+    cmp     al, ']'
+    je      cmd_bracket_close
+    # ignore any other character
+    inc     rbx
+    jmp     exec_loop
+
+cmd_inc_dp:
+    inc     r8
+    inc     rbx
+    jmp     exec_loop
+cmd_dec_dp:
+    dec     r8
+    inc     rbx
+    jmp     exec_loop
+cmd_inc_cell:
+    inc     byte ptr [rip + tape + r8]
+    inc     rbx
+    jmp     exec_loop
+cmd_dec_cell:
+    dec     byte ptr [rip + tape + r8]
+    inc     rbx
+    jmp     exec_loop
+cmd_output:
+    mov     rax, 1                  # sys_write
+    mov     rdi, 1                  # fd = stdout
+    lea     rsi, [rip + tape]
+    add     rsi, r8                 # address of cell
+    mov     rdx, 1
+    syscall
+    inc     rbx
+    jmp     exec_loop
+cmd_input:
+    cmp     r13, 0
+    je      input_eof
+    mov     al, byte ptr [rip + buf + r11 + r12]
+    mov     byte ptr [rip + tape + r8], al
+    inc     r12
+    dec     r13
+    jmp     input_done
+input_eof:
+    mov     byte ptr [rip + tape + r8], 0
+input_done:
+    inc     rbx
+    jmp     exec_loop
+cmd_bracket_open:
+    movzx   eax, byte ptr [rip + tape + r8]
+    test    al, al
+    jne     bracket_open_continue
+    # jump forward to after matching ']'
+    mov     ecx, dword ptr [rip + jump_table + rbx*4]
+    lea     rbx, [rcx + 1]
+    jmp     exec_loop
+bracket_open_continue:
+    inc     rbx
+    jmp     exec_loop
+cmd_bracket_close:
+    movzx   eax, byte ptr [rip + tape + r8]
+    test    al, al
+    je      bracket_close_continue
+    # jump back to after matching '['
+    mov     ecx, dword ptr [rip + jump_table + rbx*4]
+    lea     rbx, [rcx + 1]
+    jmp     exec_loop
+bracket_close_continue:
+    inc     rbx
+    jmp     exec_loop
+
+exit_ok:
+    mov     rax, 60
+    xor     rdi, rdi
+    syscall
+
+.section .bss
+buf:                .zero BUF_SIZE
+jump_table:         .zero BUF_SIZE*4
+stack:              .zero STACK_MAX*4
+tape:               .zero TAPE_SIZE
+</previous>
+It failed:
+<failure>
+GNU as rejected the program:
+line 31: `byte ptr [rip+buf+rsi]' is not a valid base/index expression
+line 54: `byte ptr [rip+buf+rax]' is not a valid base/index expression
+line 84: operand type mismatch for `mov'
+line 110: `byte ptr [rip+buf+rbx]' is not a valid base/index expression
+line 141: `byte ptr [rip+tape+r8]' is not a valid base/index expression
+line 145: `byte ptr [rip+tape+r8]' is not a valid base/index expression
+line 160: `byte ptr [rip+buf+r11+r12]' is not a valid base/index expression
+line 161: `byte ptr [rip+tape+r8]' is not a valid base/index expression
+line 166: `byte ptr [rip+tape+r8]' is not a valid base/index expression
+line 171: `byte ptr [rip+tape+r8]' is not a valid base/index expression
+line 175: `dword ptr [rip+jump_table+rbx*4]' is not a valid base/index expression
+line 182: `byte ptr [rip+tape+r8]' is not a valid base/index expression
+line 186: `dword ptr [rip+jump_table+rbx*4]' is not a valid base/index expression
+</failure>
+Write a corrected, complete version. Same output format; output only the code.

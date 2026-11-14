@@ -1,0 +1,180 @@
+.globl _start
+.section .bss
+.align 16
+buf_in:
+    .zero 49152
+buf_out:
+    .zero 70000
+
+.section .rodata
+b64_table:
+    .ascii "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/"
+
+.text
+_start:
+    xor     r8, r8                # total input length = 0
+    xor     r9d, r9d              # line length counter = 0
+
+read_loop:
+    mov     rax, 0                # sys_read
+    mov     rdi, 0                # fd = stdin
+    lea     rsi, [rip + buf_in]
+    add     rsi, r8               # offset = total length
+    mov     rdx, 49152
+    sub     rdx, r8               # remaining buffer space
+    syscall
+    test    rax, rax
+    jz      read_done
+    add     r8, rax               # accumulate length
+    cmp     r8, 49152
+    jae     read_done
+    jmp     read_loop
+
+read_done:
+    test    r8, r8
+    jz      exit_success          # empty input, exit without output
+
+    lea     rsi, [rip + buf_in]   # src pointer
+    mov     rcx, r8               # remaining bytes
+    lea     rdi, [rip + buf_out]  # dest pointer
+
+encode_loop:
+    cmp     rcx, 3
+    jl      encode_leftover
+
+    mov     al, [rsi]             # b0
+    mov     bl, [rsi+1]           # b1
+    mov     dl, [rsi+2]           # b2
+    movzx   eax, al
+    movzx   ebx, bl
+    movzx   edx, dl
+
+    # s0 = b0 >> 2
+    mov     ecx, eax
+    shr     ecx, 2
+    call    output_char_reg_ecx
+
+    # s1 = ((b0 & 3) << 4) | (b1 >> 4)
+    mov     ecx, eax
+    and     ecx, 3
+    shl     ecx, 4
+    mov     ebp, ebx
+    shr     ebp, 4
+    or      ecx, ebp
+    call    output_char_reg_ecx
+
+    # s2 = ((b1 & 0xF) << 2) | (b2 >> 6)
+    mov     ecx, ebx
+    and     ecx, 0xF
+    shl     ecx, 2
+    mov     ebp, edx
+    shr     ebp, 6
+    or      ecx, ebp
+    call    output_char_reg_ecx
+
+    # s3 = b2 & 0x3F
+    mov     ecx, edx
+    and     ecx, 0x3F
+    call    output_char_reg_ecx
+
+    add     rsi, 3
+    sub     rcx, 3
+    jmp     encode_loop
+
+encode_leftover:
+    cmp     rcx, 0
+    je      finish_output
+    cmp     rcx, 1
+    je      encode_one
+
+    # rcx == 2
+    mov     al, [rsi]
+    mov     bl, [rsi+1]
+    movzx   eax, al
+    movzx   ebx, bl
+
+    # s0 = b0 >> 2
+    mov     ecx, eax
+    shr     ecx, 2
+    call    output_char_reg_ecx
+
+    # s1 = ((b0 & 3) << 4) | (b1 >> 4)
+    mov     ecx, eax
+    and     ecx, 3
+    shl     ecx, 4
+    mov     ebp, ebx
+    shr     ebp, 4
+    or      ecx, ebp
+    call    output_char_reg_ecx
+
+    # s2 = ((b1 & 0xF) << 2)
+    mov     ecx, ebx
+    and     ecx, 0xF
+    shl     ecx, 2
+    call    output_char_reg_ecx
+
+    mov     al, '='
+    call    output_char_al
+    jmp     finish_output
+
+encode_one:
+    # rcx == 1
+    mov     al, [rsi]
+    movzx   eax, al
+
+    # s0 = b0 >> 2
+    mov     ecx, eax
+    shr     ecx, 2
+    call    output_char_reg_ecx
+
+    # s1 = (b0 & 3) << 4
+    mov     ecx, eax
+    and     ecx, 3
+    shl     ecx, 4
+    call    output_char_reg_ecx
+
+    mov     al, '='
+    call    output_char_al
+    mov     al, '='
+    call    output_char_al
+    jmp     finish_output
+
+# -------------------------------------------------
+# Output a character whose index (0..63) is in ECX
+output_char_reg_ecx:
+    lea     rbx, [rip + b64_table]
+    movzx   edx, cl
+    mov     al, byte ptr [rbx + rdx]
+    # fall through
+
+# Output a character already in AL
+output_char_al:
+    mov     [rdi], al
+    inc     rdi
+    inc     r9d               # line length++
+    cmp     r9d, 76
+    jne     .no_nl
+    mov     byte ptr [rdi], 0x0A
+    inc     rdi
+    xor     r9d, r9d
+.no_nl:
+    ret
+
+finish_output:
+    cmp     r9d, 0
+    je      output_done        # line already ended with newline
+    mov     byte ptr [rdi], 0x0A
+    inc     rdi
+output_done:
+    lea     rsi, [rip + buf_out]
+    mov     rdx, rdi
+    sub     rdx, rsi          # output length in RDX
+
+    mov     rax, 1            # sys_write
+    mov     rdi, 1            # stdout
+    syscall
+
+exit_success:
+    mov     rax, 60           # sys_exit
+    xor     rdi, rdi
+    syscall

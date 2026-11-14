@@ -1,0 +1,260 @@
+.globl _start
+
+.text
+
+_start:
+    // ---- read all of stdin into inbuf ----
+    adrp    x19, inbuf
+    add     x19, x19, :lo12:inbuf
+    mov     x20, x19                // write pointer
+    mov     x21, #65536             // remaining capacity
+1:  cbz     x21, 2f
+    mov     x0, #0
+    mov     x1, x20
+    mov     x2, x21
+    mov     x8, #63
+    svc     #0
+    cmp     x0, #0
+    b.le    2f
+    add     x20, x20, x0
+    sub     x21, x21, x0
+    b       1b
+2:
+    // x19 = input start, x20 = input end
+    adrp    x25, outbuf
+    add     x25, x25, :lo12:outbuf
+    mov     x23, x25
+    adrp    x24, vstack
+    add     x24, x24, :lo12:vstack
+
+line_loop:
+    cmp     x19, x20
+    b.hs    all_done
+    mov     x21, x19
+1:  cmp     x21, x20
+    b.hs    2f
+    ldrb    w0, [x21]
+    cmp     w0, #10
+    b.eq    2f
+    add     x21, x21, #1
+    b       1b
+2:
+    bl      eval_line
+    cmp     x21, x20
+    csinc   x19, x21, x21, hs
+    // flush if output buffer is getting full
+    sub     x2, x23, x25
+    mov     x9, #4096
+    cmp     x2, x9
+    b.lo    line_loop
+    mov     x0, #1
+    mov     x1, x25
+    mov     x8, #64
+    svc     #0
+    mov     x23, x25
+    b       line_loop
+
+all_done:
+    sub     x2, x23, x25
+    cbz     x2, 1f
+    mov     x0, #1
+    mov     x1, x25
+    mov     x8, #64
+    svc     #0
+1:  mov     x0, #0
+    mov     x8, #93
+    svc     #0
+    mov     x0, #0
+    mov     x8, #94
+    svc     #0
+
+// ---------------------------------------------------------------
+// eval_line: evaluate line [x19, x21), append output at x23
+// ---------------------------------------------------------------
+eval_line:
+    stp     x29, x30, [sp, #-16]!
+    mov     x10, x19
+    mov     x22, #0
+
+tok_loop:
+1:  cmp     x10, x21
+    b.hs    line_end
+    ldrb    w0, [x10]
+    cmp     w0, #32
+    b.eq    2f
+    cmp     w0, #9
+    b.ne    3f
+2:  add     x10, x10, #1
+    b       1b
+
+3:  mov     x11, x10
+4:  cmp     x10, x21
+    b.hs    5f
+    ldrb    w0, [x10]
+    cmp     w0, #32
+    b.eq    5f
+    cmp     w0, #9
+    b.eq    5f
+    add     x10, x10, #1
+    b       4b
+5:
+    sub     x12, x10, x11
+    cmp     x12, #1
+    b.ne    parse_num
+    ldrb    w0, [x11]
+    cmp     w0, #43
+    b.eq    do_op
+    cmp     w0, #45
+    b.eq    do_op
+    cmp     w0, #42
+    b.eq    do_op
+    cmp     w0, #47
+    b.eq    do_op
+    cmp     w0, #37
+    b.eq    do_op
+    b       parse_num
+
+parse_num:
+    mov     x13, #0
+    mov     x14, x11
+    ldrb    w0, [x14]
+    cmp     w0, #45
+    b.ne    1f
+    mov     x13, #1
+    add     x14, x14, #1
+1:  sub     x15, x10, x14
+    cmp     x15, #1
+    b.lt    err
+    cmp     x15, #18
+    b.gt    err
+    mov     x16, #0
+    mov     x17, #10
+2:  cmp     x14, x10
+    b.hs    3f
+    ldrb    w0, [x14], #1
+    sub     w0, w0, #48
+    cmp     w0, #9
+    b.hi    err
+    madd    x16, x16, x17, x0
+    b       2b
+3:  cbz     x13, 4f
+    neg     x16, x16
+4:  str     x16, [x24, x22, lsl #3]
+    add     x22, x22, #1
+    b       tok_loop
+
+do_op:
+    cmp     x22, #2
+    b.lt    err
+    sub     x22, x22, #1
+    ldr     x2, [x24, x22, lsl #3]      // b
+    sub     x22, x22, #1
+    ldr     x1, [x24, x22, lsl #3]      // a
+    cmp     w0, #43
+    b.eq    op_add
+    cmp     w0, #45
+    b.eq    op_sub
+    cmp     w0, #42
+    b.eq    op_mul
+    cmp     w0, #47
+    b.eq    op_div
+    b       op_mod
+
+op_add:
+    add     x3, x1, x2
+    b       push_res
+op_sub:
+    sub     x3, x1, x2
+    b       push_res
+op_mul:
+    mul     x3, x1, x2
+    b       push_res
+op_div:
+    cbz     x2, err
+    cmn     x2, #1
+    b.ne    1f
+    mov     x4, #1
+    lsl     x4, x4, #63
+    cmp     x1, x4
+    b.eq    err
+1:  sdiv    x3, x1, x2
+    b       push_res
+op_mod:
+    cbz     x2, err
+    cmn     x2, #1
+    b.ne    1f
+    mov     x4, #1
+    lsl     x4, x4, #63
+    cmp     x1, x4
+    b.eq    err
+1:  sdiv    x4, x1, x2
+    msub    x3, x4, x2, x1
+    b       push_res
+
+push_res:
+    str     x3, [x24, x22, lsl #3]
+    add     x22, x22, #1
+    b       tok_loop
+
+line_end:
+    cmp     x22, #1
+    b.ne    err
+    ldr     x0, [x24]
+    bl      print_num
+    ldp     x29, x30, [sp], #16
+    ret
+
+err:
+    mov     w0, #101
+    strb    w0, [x23], #1
+    mov     w0, #114
+    strb    w0, [x23], #1
+    strb    w0, [x23], #1
+    mov     w0, #111
+    strb    w0, [x23], #1
+    mov     w0, #114
+    strb    w0, [x23], #1
+    mov     w0, #10
+    strb    w0, [x23], #1
+    ldp     x29, x30, [sp], #16
+    ret
+
+// ---------------------------------------------------------------
+// print_num: x0 = signed value, append decimal + '\n' at x23
+// ---------------------------------------------------------------
+print_num:
+    mov     x9, x0
+    tbz     x9, #63, 1f
+    mov     w0, #45
+    strb    w0, [x23], #1
+    neg     x9, x9
+1:  sub     sp, sp, #32
+    add     x11, sp, #32
+    mov     x12, #10
+2:  udiv    x13, x9, x12
+    msub    x14, x13, x12, x9
+    add     x14, x14, #48
+    sub     x11, x11, #1
+    strb    w14, [x11]
+    mov     x9, x13
+    cbnz    x9, 2b
+    add     x15, sp, #32
+3:  ldrb    w0, [x11], #1
+    strb    w0, [x23], #1
+    cmp     x11, x15
+    b.lo    3b
+    add     sp, sp, #32
+    mov     w0, #10
+    strb    w0, [x23], #1
+    ret
+
+.bss
+.balign 16
+inbuf:
+    .zero   65552
+.balign 16
+outbuf:
+    .zero   16384
+.balign 16
+vstack:
+    .zero   262400

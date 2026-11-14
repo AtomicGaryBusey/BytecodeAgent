@@ -1,0 +1,284 @@
+.section .rodata
+error_msg:
+.asciz "error\n"
+error_len = . - error_msg - 1
+
+.bss
+.balign 16
+input_buf:
+.space 65537
+.balign 16
+value_stack:
+.space 8192
+.balign 16
+out_buf:
+.space 32
+
+.text
+.globl _start
+_start:
+adrp x19, input_buf
+add x19, x19, :lo12:input_buf
+mov x20, #0
+
+read_loop:
+movz x3, #1, lsl #16
+cmp x20, x3
+b.eq read_probe
+sub x2, x3, x20
+add x1, x19, x20
+mov x0, #0
+mov x8, #63
+svc #0
+cbz x0, read_done
+add x20, x20, x0
+b read_loop
+
+read_probe:
+add x1, x19, x20
+mov x2, #1
+mov x0, #0
+mov x8, #63
+svc #0
+
+read_done:
+add x20, x19, x20
+adrp x24, value_stack
+add x24, x24, :lo12:value_stack
+
+line_loop:
+cmp x19, x20
+b.eq program_exit
+mov x22, x19
+
+find_newline:
+cmp x22, x20
+b.eq process_final
+ldrb w0, [x22]
+cmp w0, #10
+b.eq process_newline
+add x22, x22, #1
+b find_newline
+
+process_newline:
+mov x0, x19
+mov x1, x22
+bl process_line
+add x19, x22, #1
+b line_loop
+
+process_final:
+mov x0, x19
+mov x1, x20
+bl process_line
+mov x19, x20
+b line_loop
+
+program_exit:
+mov x0, #0
+mov x8, #93
+svc #0
+
+process_line:
+mov x2, x0
+mov x3, #0
+
+token_next:
+cmp x2, x1
+b.eq tokens_done
+ldrb w4, [x2]
+cmp w4, #32
+b.eq skip_byte
+cmp w4, #9
+b.eq skip_byte
+b token_start
+
+skip_byte:
+add x2, x2, #1
+b token_next
+
+token_start:
+mov x5, x2
+mov x6, x2
+
+token_scan:
+cmp x6, x1
+b.eq token_classify
+ldrb w4, [x6]
+cmp w4, #32
+b.eq token_classify
+cmp w4, #9
+b.eq token_classify
+add x6, x6, #1
+b token_scan
+
+token_classify:
+sub x7, x6, x5
+cmp x7, #1
+b.ne try_literal
+ldrb w8, [x5]
+cmp w8, #'+'
+b.eq do_operator
+cmp w8, #'-'
+b.eq do_operator
+cmp w8, #'*'
+b.eq do_operator
+cmp w8, #'/'
+b.eq do_operator
+cmp w8, #'%'
+b.eq do_operator
+
+try_literal:
+ldrb w8, [x5]
+mov x11, #0
+cmp w8, #'-'
+b.ne literal_positive
+mov x11, #1
+add x12, x5, #1
+cmp x12, x6
+b.hs line_error
+b literal_init
+
+literal_positive:
+mov x12, x5
+
+literal_init:
+mov x9, #0
+mov x13, #0
+mov x10, #10
+
+literal_digits:
+cmp x12, x6
+b.eq literal_done
+ldrb w8, [x12], #1
+sub w14, w8, #'0'
+cmp w14, #9
+b.hi line_error
+add x13, x13, #1
+cmp x13, #18
+b.hi line_error
+madd x9, x9, x10, x14
+b literal_digits
+
+literal_done:
+cbz x11, literal_push
+neg x9, x9
+
+literal_push:
+str x9, [x24, x3, lsl #3]
+add x3, x3, #1
+mov x2, x6
+b token_next
+
+do_operator:
+cmp x3, #2
+b.lo line_error
+sub x18, x3, #2
+add x16, x18, #1
+ldr x17, [x24, x18, lsl #3]
+ldr x15, [x24, x16, lsl #3]
+ldrb w8, [x5]
+
+cmp w8, #'+'
+b.eq op_add
+cmp w8, #'-'
+b.eq op_sub
+cmp w8, #'*'
+b.eq op_mul
+cmp w8, #'/'
+b.eq op_div
+b op_mod
+
+op_add:
+add x17, x17, x15
+b op_store
+
+op_sub:
+sub x17, x17, x15
+b op_store
+
+op_mul:
+mul x17, x17, x15
+b op_store
+
+op_div:
+cbz x15, line_error
+movz x16, #0x8000, lsl #48
+cmp x17, x16
+b.ne div_ok
+cmn x15, #1
+b.eq line_error
+div_ok:
+sdiv x17, x17, x15
+b op_store
+
+op_mod:
+cbz x15, line_error
+movz x16, #0x8000, lsl #48
+cmp x17, x16
+b.ne mod_ok
+cmn x15, #1
+b.eq line_error
+mod_ok:
+sdiv x16, x17, x15
+msub x17, x16, x15, x17
+
+op_store:
+str x17, [x24, x18, lsl #3]
+add x3, x18, #1
+mov x2, x6
+b token_next
+
+tokens_done:
+cmp x3, #1
+b.ne line_error
+ldr x9, [x24]
+b print_number
+
+line_error:
+adrp x1, error_msg
+add x1, x1, :lo12:error_msg
+mov x0, #1
+mov x2, #error_len
+mov x8, #64
+svc #0
+ret
+
+print_number:
+adrp x12, out_buf
+add x12, x12, :lo12:out_buf
+add x13, x12, #32
+sub x12, x13, #1
+mov w14, #10
+strb w14, [x12]
+
+mov x11, #0
+cmp x9, #0
+b.ge number_positive
+neg x9, x9
+mov x11, #1
+
+number_positive:
+mov x10, #10
+
+digit_loop:
+udiv x15, x9, x10
+msub x16, x15, x10, x9
+sub x12, x12, #1
+add w16, w16, #'0'
+strb w16, [x12]
+mov x9, x15
+cbnz x9, digit_loop
+
+cbz x11, number_write
+sub x12, x12, #1
+mov w14, #'-'
+strb w14, [x12]
+
+number_write:
+sub x2, x13, x12
+mov x1, x12
+mov x0, #1
+mov x8, #64
+svc #0
+ret

@@ -1,0 +1,342 @@
+.section .rodata
+int64_min:
+    .quad 0x8000000000000000
+err_msg:
+    .ascii "error\n"
+
+.section .bss
+    .align 3
+input_buf:
+    .zero 65536
+    .align 3
+stack:
+    .zero 8192
+    .align 3
+outbuf:
+    .zero 32
+
+.section .text
+.global _start
+_start:
+    // read whole input
+    mov x0, #0                     // fd = 0
+    adr x1, input_buf
+    mov x2, #65536
+    bl read_loop                    // returns length in x0
+    // compute end pointer = input_buf + length
+    adr x19, input_buf
+    add x19, x19, x0                // x19 = end of input
+    adr x20, input_buf              // x20 = current pointer
+
+main_loop:
+    cmp x20, x19
+    bge exit_program                // no more data
+
+    // find end of line (newline or end of input)
+    mov x21, x20                    // line_end pointer
+find_nl:
+    cmp x21, x19
+    bge line_has_end
+    ldrb w22, [x21]
+    cmp w22, #10                    // '\n'
+    beq line_has_end
+    add x21, x21, #1
+    b find_nl
+line_has_end:
+    // evaluate line [x20, x21)
+    adr x5, stack                   // stack base for this line
+    mov x23, #0                     // stack size
+    mov x24, #0                     // error flag
+
+    // token processing
+    mov x25, x20                    // token_ptr
+token_loop:
+    // skip spaces/tabs
+    cmp x25, x21
+    bge token_done
+    ldrb w26, [x25]
+    cmp w26, #32                    // space
+    beq skip_sep
+    cmp w26, #9                     // tab
+    beq skip_sep
+    b token_start
+skip_sep:
+    add x25, x25, #1
+    b token_loop
+token_start:
+    mov x27, x25                    // token_start
+    mov x28, x25
+scan_tok_end:
+    cmp x28, x21
+    bge tok_end_found
+    ldrb w29, [x28]
+    cmp w29, #32
+    beq tok_end_found
+    cmp w29, #9
+    beq tok_end_found
+    add x28, x28, #1
+    b scan_tok_end
+tok_end_found:
+    sub x30, x28, x27               // token_len in x30
+    mov x25, x28                    // advance token_ptr
+    // load first byte
+    ldrb w0, [x27]
+
+    // check for operator (len==1 and one of + - * / %)
+    cmp x30, #1
+    bne check_literal
+    cmp w0, #'+'                    // '+'
+    beq is_operator
+    cmp w0, #'-'                    // '-'
+    beq is_operator
+    cmp w0, #'*'                    // '*'
+    beq is_operator
+    cmp w0, #'/'                    // '/'
+    beq is_operator
+    cmp w0, #'%'                    // '%'
+    beq is_operator
+    // not operator, treat as literal
+    b check_literal
+is_operator:
+    // need at least two stack items
+    cmp x23, #2
+    blt set_error
+    // pop b
+    sub x23, x23, #1
+    ldr x2, [x5, x23, lsl #3]       // b
+    // pop a
+    sub x23, x23, #1
+    ldr x1, [x5, x23, lsl #3]       // a
+    // decide which op
+    cmp w0, #'+'
+    beq op_add
+    cmp w0, #'-'
+    beq op_sub
+    cmp w0, #'*'
+    beq op_mul
+    cmp w0, #'/'
+    beq op_div
+    cmp w0, #'%' 
+    beq op_mod
+    // unknown (shouldn't happen)
+    b set_error
+
+op_add:
+    add x3, x1, x2
+    b push_result
+op_sub:
+    sub x3, x1, x2
+    b push_result
+op_mul:
+    mul x3, x1, x2
+    b push_result
+op_div:
+    cbz x2, set_error              // division by zero
+    adr x4, int64_min
+    ldr x4, [x4]
+    cmp x1, x4
+    bne div_ok
+    mov x6, #-1
+    cmp x2, x6
+    beq set_error
+div_ok:
+    sdiv x3, x1, x2
+    b push_result
+op_mod:
+    cbz x2, set_error              // modulo by zero
+    adr x4, int64_min
+    ldr x4, [x4]
+    cmp x1, x4
+    bne mod_ok
+    mov x6, #-1
+    cmp x2, x6
+    beq set_error
+mod_ok:
+    sdiv x6, x1, x2
+    mul x7, x6, x2
+    sub x3, x1, x7
+    b push_result
+push_result:
+    str x3, [x5, x23, lsl #3]
+    add x23, x23, #1
+    b token_loop
+
+check_literal:
+    // token must be optional '-' followed by digits
+    // sign flag x2 = 0 positive, 1 negative
+    mov x2, #0
+    ldrb w3, [x27]
+    cmp w3, #'-'
+    bne lit_no_sign
+    mov x2, #1
+    add x9, x27, #1                // digit start
+    b lit_parse_start
+lit_no_sign:
+    mov x9, x27
+lit_parse_start:
+    // need at least one digit
+    cmp x9, x28
+    bge set_error
+    mov x0, #0                     // accumulator
+lit_digit_loop:
+    cmp x9, x28
+    bge lit_done
+    ldrb w4, [x9]
+    cmp w4, #'0'
+    blt set_error
+    cmp w4, #'9'
+    bgt set_error
+    sub w4, w4, #'0'
+    mov x6, #10
+    mul x0, x0, x6
+    add x0, x0, x4
+    add x9, x9, #1
+    b lit_digit_loop
+lit_done:
+    cmp x2, #0
+    beq lit_push
+    // negative: x0 = -x0 (wrap works for INT64_MIN)
+    mov x7, #0
+    sub x0, x7, x0
+lit_push:
+    str x0, [x5, x23, lsl #3]
+    add x23, x23, #1
+    b token_loop
+
+set_error:
+    mov x24, #1
+    mov x25, x21                    // skip rest of line
+    b token_loop
+
+token_done:
+    cmp x24, #0
+    bne line_error_output
+    cmp x23, #1
+    bne line_error_output
+    // correct result on stack[0]
+    ldr x0, [x5, #0]
+    bl print_int64
+    b line_continue
+
+line_error_output:
+    adr x0, err_msg
+    mov x1, #6
+    bl write_str
+
+line_continue:
+    // advance to next line
+    mov x20, x21
+    cmp x20, x19
+    bge exit_program
+    ldrb w0, [x20]
+    cmp w0, #10
+    bne exit_program
+    add x20, x20, #1
+    b main_loop
+
+exit_program:
+    mov x0, #0
+    mov x8, #93
+    svc #0
+
+// ------------------------------------------------
+// Helper: read_loop - reads until EOF, returns length in x0
+// x0=fd (0), x1=buf, x2=bufsize
+read_loop:
+    mov x3, #0                       // total bytes
+read_loop_body:
+    mov x0, #0
+    mov x8, #63
+    svc #0
+    cbz x0, read_done
+    add x3, x3, x0
+    add x1, x1, x0
+    sub x2, x2, x0
+    cbz x2, read_done
+    b read_loop_body
+read_done:
+    mov x0, x3
+    ret
+
+// ------------------------------------------------
+// Helper: write_str - writes x0=addr, x1=len to stdout
+write_str:
+    // use caller-saved temporaries
+    mov x22, x0               // base address
+    mov x23, x1               // total length
+    mov x24, #0               // offset
+ws_loop:
+    cmp x24, x23
+    bge ws_done
+    sub x8, x23, x24          // remaining
+    mov x0, #1
+    add x1, x22, x24
+    mov x2, x8
+    mov x8, #64
+    svc #0
+    cbz x0, ws_done
+    add x24, x24, x0
+    b ws_loop
+ws_done:
+    ret
+
+// ------------------------------------------------
+// Helper: print_int64 - prints signed 64-bit integer in x0, followed by newline
+print_int64:
+    // buffer end
+    adr x9, outbuf
+    add x10, x9, #32          // ptr = end
+    // sign handling
+    mov x11, #0               // sign flag
+    cmp x0, #0
+    bge pi_positive
+    mov x11, #1
+    // magnitude = -x0 (wrap works for INT64_MIN)
+    mov x12, #0
+    sub x12, x12, x0
+    b pi_convert
+pi_positive:
+    mov x12, x0
+pi_convert:
+    // if magnitude == 0, output single '0'
+    cmp x12, #0
+    bne pi_loop_start
+    mov w14, #'0'
+    sub x10, x10, #1
+    strb w14, [x10]
+    b pi_finish
+pi_loop_start:
+    mov x15, #10
+pi_loop:
+    udiv x16, x12, x15        // quotient
+    mul x17, x16, x15
+    sub x17, x12, x17         // remainder
+    add w18, w17, #'0'
+    sub x10, x10, #1
+    strb w18, [x10]
+    mov x12, x16
+    cmp x12, #0
+    bne pi_loop
+pi_finish:
+    cmp x11, #0
+    beq pi_no_sign
+    mov w19, #'-'
+    sub x10, x10, #1
+    strb w19, [x10]
+pi_no_sign:
+    // length = outbuf+32 - x10
+    add x20, x9, #32
+    sub x21, x20, x10
+    // write number
+    mov x0, x10
+    mov x1, x21
+    bl write_str
+    // write newline
+    adr x0, nl_char
+    mov x1, #1
+    bl write_str
+    ret
+
+    .data
+nl_char:
+    .byte 0x0A

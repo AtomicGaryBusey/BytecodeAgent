@@ -1,0 +1,250 @@
+.globl _start
+
+.equ INPUT_BUF_SIZE, 65536
+.equ STACK_MAX, 1024
+.equ TOKEN_MAX, 32
+.equ OUT_BUF_SIZE, 32
+
+.section .bss
+input_buf:
+    .zero INPUT_BUF_SIZE
+stack:
+    .zero STACK_MAX*8
+token_buf:
+    .zero TOKEN_MAX
+out_buf:
+    .zero OUT_BUF_SIZE
+
+.section .rodata
+err_str:
+    .ascii "error\n"
+err_len = . - err_str
+newline_chr:
+    .byte 0x0A
+
+.section .text
+_start:
+    xor r12, r12                # total bytes read = 0
+
+read_loop:
+    mov rdi, 0                  # fd = stdin
+    lea rsi, [rip + input_buf]
+    add rsi, r12                # buffer + offset
+    mov rdx, INPUT_BUF_SIZE
+    sub rdx, r12                # remaining space
+    mov rax, 0                  # sys_read
+    syscall
+    test rax, rax
+    jz read_done
+    add r12, rax                # increase total length
+    cmp r12, INPUT_BUF_SIZE
+    jl read_loop
+
+read_done:
+    lea rsi, [rip + input_buf]  # current pointer
+    lea rdi, [rsi + r12]        # end pointer
+    lea r13, [rip + stack]      # stack base
+    jmp line_start
+
+line_start:
+    xor rbx, rbx                # stack size = 0
+    xor r8b, r8b                # error flag = 0
+    xor rcx, rcx                # token length = 0
+    jmp line_loop
+
+line_loop:
+    cmp rsi, rdi
+    je line_end                 # end of input => treat as line end
+    mov al, byte ptr [rsi]
+    inc rsi
+    cmp al, 0x0A                # newline ?
+    je line_finish_newline
+    cmp al, 0x20                # space
+    je token_delim
+    cmp al, 0x09                # tab
+    je token_delim
+
+    # normal character, store in token_buf
+    lea rdx, [rip + token_buf]
+    mov byte ptr [rdx + rcx], al
+    inc rcx
+    cmp rcx, TOKEN_MAX
+    ja token_invalid_set
+    jmp line_loop
+
+token_delim:
+    test rcx, rcx
+    je line_loop                # no token accumulated
+    # process token
+process_token:
+    mov r9, rcx                 # token length
+    lea r10, [rip + token_buf] # token pointer
+    cmp r9, 1
+    jne check_literal
+    mov bl, byte ptr [r10]
+    cmp bl, '+'
+    je op_add
+    cmp bl, '-'
+    je op_sub
+    cmp bl, '*'
+    je op_mul
+    cmp bl, '/'
+    je op_div
+    cmp bl, '%'
+    je op_mod
+    # not an operator, fall through to literal
+check_literal:
+    xor r11d, r11d              # sign flag = 0 (positive)
+    mov al, byte ptr [r10]
+    cmp al, '-'
+    jne parse_digits_start
+    mov r11b, 1                 # negative sign
+    lea r10, [r10 + 1]
+    dec r9
+parse_digits_start:
+    cmp r9, 0
+    je token_invalid_set
+    xor rdx, rdx                # accumulator = 0
+    xor rax, rax                # digit index = 0
+digit_loop:
+    cmp rax, r9
+    je digits_done
+    cmp rax, 18
+    ja token_invalid_set
+    mov bl, byte ptr [r10 + rax]
+    sub bl, '0'
+    cmp bl, 9
+    ja token_invalid_set
+    imul rdx, rdx, 10
+    add rdx, rbx
+    inc rax
+    jmp digit_loop
+digits_done:
+    test r11b, r11b
+    je literal_ok
+    neg rdx
+literal_ok:
+    mov [r13 + rbx*8], rdx
+    inc rbx
+    jmp token_done
+
+token_invalid_set:
+    mov r8b, 1
+    jmp token_done
+
+token_done:
+    xor rcx, rcx                # reset token length
+    jmp line_loop
+
+line_finish_newline:
+    # finish current line (newline just consumed)
+    call handle_line_result
+    jmp line_start
+
+line_end:
+    # end of input without trailing newline, treat as line end if any data processed
+    call handle_line_result
+    jmp exit_program
+
+# ---------------------------------------------------------
+# handle_line_result: output result or error for the line
+# preserves rsi, rdi, r13 (stack base)
+# ---------------------------------------------------------
+handle_line_result:
+    push rax
+    push rdx
+    push rcx
+    push rbx
+    push r8               # error flag
+    # if error flag set or stack size != 1 => error
+    mov al, r8b
+    cmp al, 0
+    jne .output_error
+    cmp rbx, 1
+    jne .output_error
+
+    # output the integer at stack[0]
+    mov rax, [r13]         # value to print
+    call print_int
+    jmp .done
+
+.output_error:
+    # write "error\n"
+    mov rax, 1                 # sys_write
+    mov rdi, 1                 # stdout
+    lea rsi, [rip + err_str]
+    mov rdx, err_len
+    syscall
+
+.done:
+    pop r8
+    pop rbx
+    pop rcx
+    pop rdx
+    pop rax
+    ret
+
+# ---------------------------------------------------------
+# print_int: prints signed 64-bit integer in rax followed by newline
+# uses out_buf; clobbers rbx, rcx, rdx, rsi, rdi, r8, r9
+# ---------------------------------------------------------
+print_int:
+    push rax
+    push rbx
+    push rcx
+    push rdx
+    push rsi
+    push rdi
+    push r8
+    push r9
+
+    mov rbx, rax                 # original value
+    xor r8d, r8d                 # sign flag 0 = positive
+    test rbx, rbx
+    jge .positive
+    mov r8b, 1                  # negative
+    neg rbx                     # two's complement, works for all values
+
+.positive:
+    lea rdi, [rip + out_buf]    # buffer start
+    lea rdx, [rdi + OUT_BUF_SIZE]  # pointer to buffer end (after buffer)
+    mov rsi, rdx                # rsi will move backwards
+    dec rsi                     # position for newline
+    mov byte ptr [rsi], 0x0A    # newline
+
+    cmp rbx, 0
+    jne .convert_loop
+    # value is zero
+    dec rsi
+    mov byte ptr [rsi], '0'
+    jmp .maybe_sign
+
+.convert_loop:
+    mov rcx, 10
+.convert_digit:
+    xor rdx, rdx
+    div rcx                     # rdx = remainder, rax = quotient
+    add dl, '0'
+    dec rsi
+    mov byte ptr [rsi], dl
+    cmp rax, 0
+    jne .convert_digit
+
+.maybe_sign:
+    cmp r8b, 0
+    je .prepare_write
+    dec rsi
+    mov byte ptr [rsi], '-'
+
+.prepare_write:
+    # rsi now points to first character
+    mov rdx, rdx                # length placeholder
+    lea rdx, [rdi + OUT_BUF_SIZE]   # end ptr
+    sub rdx, rsi               # length = end - start
+    mov rax, 1                 # sys_write
+    mov rdi, 1                 # stdout
+    ; rsi already has pointer to start
+    syscall
+
+    pop r9
+    pop r8

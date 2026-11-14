@@ -1,0 +1,442 @@
+.global _start
+    .text
+_start:
+    // read entire input (max 65536 bytes) into input_buf
+    adr     x1, input_buf          // buffer pointer
+    mov     x2, #65536             // max bytes to read
+    mov     x3, #0                 // total bytes read
+
+read_loop:
+    mov     x0, #0                 // stdin
+    mov     x8, #63                // sys_read
+    svc     #0
+    cbnz    x0, read_continue
+    // x0 == 0 => EOF
+    b       read_done
+read_continue:
+    add     x3, x3, x0            // total += bytes read
+    add     x1, x1, x0            // advance buffer pointer
+    cmp     x3, #65536
+    blt     read_loop
+read_done:
+    // pointers to input buffer
+    adr     x4, input_buf          // start
+    add     x5, x4, x3            // end = start + total
+    mov     x6, x4                // current pointer
+
+line_loop:
+    cmp     x6, x5
+    bge     exit                  // no more data
+
+    // find line end (newline or end)
+    mov     x7, x6                // line_end candidate
+find_nl:
+    cmp     x7, x5
+    bge     line_end_set
+    ldrb    w0, [x7]
+    cmp     w0, #10               // '\n'
+    beq     line_end_set
+    add     x7, x7, #1
+    b       find_nl
+line_end_set:
+    // x7 points to newline or end
+    // process line [x6, x7)
+    // stack index in x12 (sp_idx)
+    mov     x12, #0
+    // error flag in w9
+    mov     w9, #0
+    // token pointer in x11
+    mov     x11, x6
+
+token_loop:
+    cmp     x11, x7
+    bge     token_done
+    ldrb    w0, [x11]
+    cmp     w0, #32               // space
+    beq     skip_sep
+    cmp     w0, #9                // tab
+    beq     skip_sep
+    // token start at x13
+    mov     x13, x11
+    // find token end
+    mov     x14, x13
+token_find_end:
+    cmp     x14, x7
+    bge     token_end_found
+    ldrb    w1, [x14]
+    cmp     w1, #32
+    beq     token_end_found
+    cmp     w1, #9
+    beq     token_end_found
+    add     x14, x14, #1
+    b       token_find_end
+token_end_found:
+    // token is [x13, x14)
+    sub     x15, x14, x13          // token length
+    ldrb    w0, [x13]             // first byte
+
+    // check for single-char operators
+    cmp     x15, #1
+    bne     not_single_char
+    cmp     w0, #'+'
+    beq     handle_op_plus
+    cmp     w0, #'-'
+    beq     handle_op_minus
+    cmp     w0, #'*'
+    beq     handle_op_mul
+    cmp     w0, #'/'
+    beq     handle_op_div
+    cmp     w0, #'%'
+    beq     handle_op_mod
+    // not an operator, treat as number later
+    b       not_single_char
+
+handle_op_plus:
+    bl      op_add
+    b       after_token
+handle_op_minus:
+    bl      op_sub
+    b       after_token
+handle_op_mul:
+    bl      op_mul
+    b       after_token
+handle_op_div:
+    bl      op_div
+    b       after_token
+handle_op_mod:
+    bl      op_mod
+    b       after_token
+
+not_single_char:
+    // parse number literal
+    // sign flag in w2 (0 pos, 1 neg)
+    mov     w2, #0
+    cmp     w0, #'-'
+    bne     parse_digits
+    // leading '-'
+    cmp     x15, #1
+    ble     set_error_invalid_token   // lone '-' already handled, but protect
+    mov     w2, #1
+    add     x13, x13, #1
+    sub     x15, x15, #1
+
+parse_digits:
+    cmp     x15, #0
+    beq     set_error_invalid_token
+    cmp     x15, #18
+    bgt     set_error_invalid_token
+    mov     x16, #0                // accumulator
+parse_digit_loop:
+    cmp     x15, #0
+    beq     parse_digit_done
+    ldrb    w3, [x13]
+    cmp     w3, #'0'
+    blt     set_error_invalid_token
+    cmp     w3, #'9'
+    bgt     set_error_invalid_token
+    // x16 = x16*10 + (w3-'0')
+    mov     x4, x16
+    mov     x5, #10
+    mul     x16, x4, x5
+    sub     w3, w3, #'0'
+    add     x16, x16, x3
+    add     x13, x13, #1
+    sub     x15, x15, #1
+    b       parse_digit_loop
+parse_digit_done:
+    cmp     w2, #0
+    beq     push_number
+    neg     x16, x16               // apply sign
+push_number:
+    adr     x0, rpn_stack
+    lsl     x1, x12, #3
+    add     x0, x0, x1
+    str     x16, [x0]
+    add     x12, x12, #1
+    b       after_token
+
+after_token:
+    mov     x11, x14                // advance to after token
+    b       token_loop
+
+skip_sep:
+    add     x11, x11, #1
+    b       token_loop
+
+token_done:
+    // line finished
+    cmp     w9, #0
+    bne     line_error
+    cmp     x12, #1
+    bne     line_error
+    adr     x0, rpn_stack
+    ldr     x0, [x0]               // result
+    bl      write_number
+    b       after_line
+
+line_error:
+    adr     x0, err_msg
+    adr     x1, err_len
+    ldr     x2, [x1]
+    bl      write_buf
+
+after_line:
+    // move to next line
+    cmp     x7, x5
+    bge     exit
+    add     x6, x7, #1              // skip newline
+    b       line_loop
+
+exit:
+    mov     x0, #0
+    mov     x8, #93                // exit
+    svc     #0
+
+// ---------- operations ----------
+set_error_invalid_token:
+    mov     w9, #1
+    ret
+
+set_error_stack_underflow:
+    mov     w9, #1
+    ret
+
+op_add:
+    cmp     x12, #2
+    blt     set_error_stack_underflow
+    sub     x12, x12, #1
+    adr     x0, rpn_stack
+    lsl     x1, x12, #3
+    add     x0, x0, x1
+    ldr     x1, [x0]               // b
+    sub     x12, x12, #1
+    adr     x0, rpn_stack
+    lsl     x2, x12, #3
+    add     x0, x0, x2
+    ldr     x2, [x0]               // a
+    add     x2, x2, x1
+    adr     x0, rpn_stack
+    lsl     x3, x12, #3
+    add     x0, x0, x3
+    str     x2, [x0]
+    add     x12, x12, #1
+    ret
+
+op_sub:
+    cmp     x12, #2
+    blt     set_error_stack_underflow
+    sub     x12, x12, #1
+    adr     x0, rpn_stack
+    lsl     x1, x12, #3
+    add     x0, x0, x1
+    ldr     x1, [x0]               // b
+    sub     x12, x12, #1
+    adr     x0, rpn_stack
+    lsl     x2, x12, #3
+    add     x0, x0, x2
+    ldr     x2, [x0]               // a
+    sub     x2, x2, x1
+    adr     x0, rpn_stack
+    lsl     x3, x12, #3
+    add     x0, x0, x3
+    str     x2, [x0]
+    add     x12, x12, #1
+    ret
+
+op_mul:
+    cmp     x12, #2
+    blt     set_error_stack_underflow
+    sub     x12, x12, #1
+    adr     x0, rpn_stack
+    lsl     x1, x12, #3
+    add     x0, x0, x1
+    ldr     x1, [x0]               // b
+    sub     x12, x12, #1
+    adr     x0, rpn_stack
+    lsl     x2, x12, #3
+    add     x0, x0, x2
+    ldr     x2, [x0]               // a
+    mul     x2, x2, x1
+    adr     x0, rpn_stack
+    lsl     x3, x12, #3
+    add     x0, x0, x3
+    str     x2, [x0]
+    add     x12, x12, #1
+    ret
+
+op_div:
+    cmp     x12, #2
+    blt     set_error_stack_underflow
+    sub     x12, x12, #1
+    adr     x0, rpn_stack
+    lsl     x1, x12, #3
+    add     x0, x0, x1
+    ldr     x1, [x0]               // b
+    sub     x12, x12, #1
+    adr     x0, rpn_stack
+    lsl     x2, x12, #3
+    add     x0, x0, x2
+    ldr     x2, [x0]               // a
+    cbnz    x1, div_not_zero
+    // division by zero
+    mov     w9, #1
+    ret
+div_not_zero:
+    adr     x3, int64_min
+    ldr     x3, [x3]
+    cmp     x2, x3
+    bne     div_no_overflow
+    cmp     x1, #-1
+    bne     div_no_overflow
+    // overflow case
+    mov     w9, #1
+    ret
+div_no_overflow:
+    sdiv    x5, x2, x1              // quotient
+    adr     x0, rpn_stack
+    lsl     x6, x12, #3
+    add     x0, x0, x6
+    str     x5, [x0]
+    add     x12, x12, #1
+    ret
+
+op_mod:
+    cmp     x12, #2
+    blt     set_error_stack_underflow
+    sub     x12, x12, #1
+    adr     x0, rpn_stack
+    lsl     x1, x12, #3
+    add     x0, x0, x1
+    ldr     x1, [x0]               // b
+    sub     x12, x12, #1
+    adr     x0, rpn_stack
+    lsl     x2, x12, #3
+    add     x0, x0, x2
+    ldr     x2, [x0]               // a
+    cbnz    x1, mod_not_zero
+    // modulo by zero
+    mov     w9, #1
+    ret
+mod_not_zero:
+    adr     x3, int64_min
+    ldr     x3, [x3]
+    cmp     x2, x3
+    bne     mod_no_overflow
+    cmp     x1, #-1
+    bne     mod_no_overflow
+    // overflow case
+    mov     w9, #1
+    ret
+mod_no_overflow:
+    sdiv    x5, x2, x1              // quotient
+    mul     x6, x5, x1
+    sub     x5, x2, x6              // remainder
+    adr     x0, rpn_stack
+    lsl     x7, x12, #3
+    add     x0, x0, x7
+    str     x5, [x0]
+    add     x12, x12, #1
+    ret
+
+// ---------- I/O ----------
+write_buf:
+    // x0 = address, x2 = length
+    mov     x1, x0                 // buf
+    mov     x0, #1                 // stdout
+    mov     x8, #64                // sys_write
+    svc     #0
+    ret
+
+write_number:
+    // x0 = signed 64-bit value to print
+    // buffer layout: out_buf, then newline added
+    // Use rev_buf for digit reversal
+    // Determine sign
+    mov     x9, x0                 // copy value
+    cmp     x9, #0
+    bge     positive_number
+    // negative
+    neg     x10, x9                // absolute value
+    mov     x11, #1                // sign flag
+    b       convert_loop_start
+positive_number:
+    mov     x10, x9
+    mov     x11, #0                // sign flag
+convert_loop_start:
+    // if x10 == 0, skip loop
+    cmp     x10, #0
+    bne     convert_digits
+    // zero case: single '0'
+    adr     x12, out_buf
+    mov     w13, #'0'
+    strb    w13, [x12]
+    add     x12, x12, #1
+    b       after_convert
+convert_digits:
+    adr     x14, rev_buf           // rev buffer base
+    mov     x15, #0                // digit count
+    mov     x16, #10               // divisor
+conv_digit_loop:
+    cmp     x10, #0
+    beq     digits_done
+    udiv    x17, x10, x16          // quotient
+    mul     x18, x17, x16
+    sub     x19, x10, x18          // remainder
+    // store remainder digit
+    add     x20, x14, x15
+    add     w21, w19, #'0'
+    strb    w21, [x20]
+    add     x15, x15, #1           // count++
+    mov     x10, x17
+    b       conv_digit_loop
+digits_done:
+    adr     x12, out_buf
+    // sign
+    cmp     x11, #0
+    beq     no_sign
+    mov     w13, #'-'
+    strb    w13, [x12]
+    add     x12, x12, #1
+no_sign:
+    // copy digits reverse
+    sub     x15, x15, #1           // index = count-1
+copy_rev:
+    cmp     x15, #-1
+    blt     copy_done
+    add     x20, x14, x15
+    ldrb    w21, [x20]
+    strb    w21, [x12]
+    add     x12, x12, #1
+    sub     x15, x15, #1
+    b       copy_rev
+copy_done:
+after_convert:
+    // newline
+    mov     w13, #10
+    strb    w13, [x12]
+    add     x12, x12, #1
+    // length = x12 - out_buf
+    adr     x0, out_buf
+    sub     x2, x12, x0
+    bl      write_buf
+    ret
+
+    .section .bss
+    .align 3
+input_buf:
+    .space 65536
+rpn_stack:
+    .space 8192                 // enough for 1000 tokens * 8 bytes
+rev_buf:
+    .space 32
+out_buf:
+    .space 32
+
+    .section .rodata
+    .align 3
+err_msg:
+    .asciz "error\n"
+err_len:
+    .quad . - err_msg
+int64_min:
+    .quad 0x8000000000000000

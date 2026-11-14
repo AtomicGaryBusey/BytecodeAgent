@@ -1,0 +1,212 @@
+.text
+.globl _start
+
+_start:
+    // ---- read all of stdin into buf ----
+    adrp    x19, buf
+    add     x19, x19, :lo12:buf
+    mov     x20, #0                 // total bytes read
+read_loop:
+    mov     x2, #32768
+    sub     x2, x2, x20
+    cbz     x2, read_done
+    mov     x8, #63                 // read
+    mov     x0, #0
+    add     x1, x19, x20
+    svc     #0
+    cmp     x0, #0
+    ble     read_done
+    add     x20, x20, x0
+    b       read_loop
+read_done:
+
+    // ---- parse lines into table of (ptr, len) pairs ----
+    adrp    x21, lines
+    add     x21, x21, :lo12:lines
+    mov     x22, #0                 // number of lines
+    mov     x3, #0                  // index
+    mov     x4, #0                  // start of current line
+parse_loop:
+    cmp     x3, x20
+    bge     parse_end
+    ldrb    w5, [x19, x3]
+    cmp     w5, #10
+    bne     1f
+    add     x6, x19, x4             // line pointer
+    sub     x7, x3, x4              // line length
+    add     x9, x21, x22, lsl #4
+    stp     x6, x7, [x9]
+    add     x22, x22, #1
+    add     x4, x3, #1
+1:
+    add     x3, x3, #1
+    b       parse_loop
+parse_end:
+    cmp     x4, x20
+    bge     sort
+    add     x6, x19, x4             // final line without newline
+    sub     x7, x20, x4
+    add     x9, x21, x22, lsl #4
+    stp     x6, x7, [x9]
+    add     x22, x22, #1
+
+    // ---- bottom-up merge sort of the line table ----
+sort:
+    adrp    x23, aux
+    add     x23, x23, :lo12:aux
+    mov     x24, #1                 // width
+width_loop:
+    cmp     x24, x22
+    bge     sort_done
+    mov     x25, #0                 // block start i
+block_loop:
+    cmp     x25, x22
+    bge     pass_done
+    add     x26, x25, x24           // mid = min(i+width, n)
+    cmp     x26, x22
+    csel    x26, x26, x22, lt
+    add     x27, x25, x24, lsl #1   // right = min(i+2*width, n)
+    cmp     x27, x22
+    csel    x27, x27, x22, lt
+    mov     x15, x25                // a index
+    mov     x16, x26                // b index
+    mov     x17, x25                // out index
+merge_loop:
+    cmp     x15, x26
+    bge     a_empty
+    cmp     x16, x27
+    bge     do_take_a
+    add     x9, x21, x15, lsl #4
+    ldp     x10, x11, [x9]          // a: ptr, len
+    add     x9, x21, x16, lsl #4
+    ldp     x12, x13, [x9]          // b: ptr, len
+    bl      cmp_lines
+    cmp     x0, #0
+    ble     do_take_a
+do_take_b:
+    add     x9, x21, x16, lsl #4
+    ldp     x5, x6, [x9]
+    add     x9, x23, x17, lsl #4
+    stp     x5, x6, [x9]
+    add     x16, x16, #1
+    add     x17, x17, #1
+    b       merge_loop
+do_take_a:
+    add     x9, x21, x15, lsl #4
+    ldp     x5, x6, [x9]
+    add     x9, x23, x17, lsl #4
+    stp     x5, x6, [x9]
+    add     x15, x15, #1
+    add     x17, x17, #1
+    b       merge_loop
+a_empty:
+    cmp     x16, x27
+    blt     do_take_b
+    // copy merged block back from aux
+    mov     x3, x25
+copy_loop:
+    cmp     x3, x27
+    bge     copy_done
+    add     x9, x23, x3, lsl #4
+    ldp     x5, x6, [x9]
+    add     x9, x21, x3, lsl #4
+    stp     x5, x6, [x9]
+    add     x3, x3, #1
+    b       copy_loop
+copy_done:
+    add     x25, x25, x24, lsl #1
+    b       block_loop
+pass_done:
+    lsl     x24, x24, #1
+    b       width_loop
+sort_done:
+
+    // ---- build output buffer ----
+    adrp    x19, outbuf
+    add     x19, x19, :lo12:outbuf
+    mov     x20, #0                 // output length
+    mov     x3, #0                  // line index
+out_loop:
+    cmp     x3, x22
+    bge     out_write
+    add     x9, x21, x3, lsl #4
+    ldp     x5, x6, [x9]            // ptr, len
+    mov     x7, #0
+cpy_loop:
+    cmp     x7, x6
+    bge     cpy_done
+    ldrb    w10, [x5, x7]
+    strb    w10, [x19, x20]
+    add     x20, x20, #1
+    add     x7, x7, #1
+    b       cpy_loop
+cpy_done:
+    mov     w10, #10
+    strb    w10, [x19, x20]
+    add     x20, x20, #1
+    add     x3, x3, #1
+    b       out_loop
+
+    // ---- write output ----
+out_write:
+    mov     x3, #0                  // bytes written
+wr_loop:
+    cmp     x3, x20
+    bge     done
+    mov     x8, #64                 // write
+    mov     x0, #1
+    add     x1, x19, x3
+    sub     x2, x20, x3
+    svc     #0
+    cmp     x0, #0
+    ble     done
+    add     x3, x3, x0
+    b       wr_loop
+
+done:
+    mov     x8, #93                 // exit
+    mov     x0, #0
+    svc     #0
+
+// compare line a (ptr x10, len x11) with line b (ptr x12, len x13)
+// returns x0 < 0, == 0, > 0; clobbers x0, x5, x6, x14
+cmp_lines:
+    mov     x14, #0
+cl_loop:
+    cmp     x14, x11
+    bge     cl_a_end
+    cmp     x14, x13
+    bge     cl_b_short
+    ldrb    w5, [x10, x14]
+    ldrb    w6, [x12, x14]
+    cmp     w5, w6
+    bne     cl_diff
+    add     x14, x14, #1
+    b       cl_loop
+cl_a_end:
+    sub     x0, x11, x13            // <= 0 here
+    ret
+cl_b_short:
+    mov     x0, #1                  // b is a proper prefix of a
+    ret
+cl_diff:
+    blo     1f
+    mov     x0, #1
+    ret
+1:
+    mov     x0, #-1
+    ret
+
+.bss
+.balign 16
+buf:
+    .space  32768
+.balign 16
+lines:
+    .space  16000                   // 1000 * (8-byte ptr + 8-byte len)
+.balign 16
+aux:
+    .space  16000
+.balign 16
+outbuf:
+    .space  33768                   // 32768 bytes + up to 1000 newlines

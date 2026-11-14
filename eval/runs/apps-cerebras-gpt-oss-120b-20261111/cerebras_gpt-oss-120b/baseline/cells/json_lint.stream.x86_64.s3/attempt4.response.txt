@@ -1,0 +1,480 @@
+.globl _start
+.section .rodata
+err_prefix:
+    .ascii "error at "
+err_prefix_len = . - err_prefix
+msg_ok:
+    .ascii "ok\n"
+msg_ok_len = . - msg_ok
+newline:
+    .ascii "\n"
+newline_len = . - newline
+
+.bss
+buffer:
+    .space 65536
+dec_buf:
+    .space 20
+
+.text
+_start:
+    # read stdin into buffer
+    lea r8, [rip + buffer]        # r8 = buffer base
+    xor rbx, rbx                  # rbx = total length
+    mov rsi, r8
+    mov rdx, 65536
+read_loop:
+    xor rax, rax                  # sys_read = 0
+    syscall
+    test rax, rax
+    jz after_read
+    add rbx, rax                  # length += bytes read
+    add rsi, rax                  # advance pointer
+    sub rdx, rax                  # decrease remaining
+    jmp read_loop
+after_read:
+    xor rcx, rcx                  # rcx = current position
+
+    call skip_ws
+    call parse_value
+    call skip_ws
+    cmp rcx, rbx
+    jne error
+
+    # success: write "ok\n"
+    mov rdx, msg_ok_len
+    lea rsi, [rip + msg_ok]
+    mov rdi, 1
+    mov rax, 1
+    syscall
+    xor edi, edi                  # status 0
+    mov rax, 60
+    syscall
+
+#-------------------------------------------------
+# Helper routines
+#-------------------------------------------------
+skip_ws:
+    cmp rcx, rbx
+    jae .ws_done
+    mov al, byte ptr [r8 + rcx]
+    cmp al, 0x20
+    je .ws_inc
+    cmp al, 0x09
+    je .ws_inc
+    cmp al, 0x0A
+    je .ws_inc
+    cmp al, 0x0D
+    je .ws_inc
+    jmp .ws_done
+.ws_inc:
+    inc rcx
+    jmp skip_ws
+.ws_done:
+    ret
+
+parse_value:
+    call skip_ws
+    cmp rcx, rbx
+    jae eof_error
+    mov al, byte ptr [r8 + rcx]
+    cmp al, '"'
+    je parse_string
+    cmp al, '{'
+    je parse_object
+    cmp al, '['
+    je parse_array
+    cmp al, 't'
+    je parse_true
+    cmp al, 'f'
+    je parse_false
+    cmp al, 'n'
+    je parse_null
+    cmp al, '-'
+    je parse_number
+    cmp al, '0'
+    je parse_number
+    cmp al, '1'
+    jb error_invalid
+    cmp al, '9'
+    jbe parse_number
+    jmp error_invalid
+
+parse_true:
+    inc rcx
+    cmp rcx, rbx
+    jae eof_error
+    mov al, byte ptr [r8 + rcx]
+    cmp al, 'r'
+    jne error_invalid
+    inc rcx
+    cmp rcx, rbx
+    jae eof_error
+    mov al, byte ptr [r8 + rcx]
+    cmp al, 'u'
+    jne error_invalid
+    inc rcx
+    cmp rcx, rbx
+    jae eof_error
+    mov al, byte ptr [r8 + rcx]
+    cmp al, 'e'
+    jne error_invalid
+    inc rcx
+    ret
+
+parse_false:
+    inc rcx
+    cmp rcx, rbx
+    jae eof_error
+    mov al, byte ptr [r8 + rcx]
+    cmp al, 'a'
+    jne error_invalid
+    inc rcx
+    cmp rcx, rbx
+    jae eof_error
+    mov al, byte ptr [r8 + rcx]
+    cmp al, 'l'
+    jne error_invalid
+    inc rcx
+    cmp rcx, rbx
+    jae eof_error
+    mov al, byte ptr [r8 + rcx]
+    cmp al, 's'
+    jne error_invalid
+    inc rcx
+    cmp rcx, rbx
+    jae eof_error
+    mov al, byte ptr [r8 + rcx]
+    cmp al, 'e'
+    jne error_invalid
+    inc rcx
+    ret
+
+parse_null:
+    inc rcx
+    cmp rcx, rbx
+    jae eof_error
+    mov al, byte ptr [r8 + rcx]
+    cmp al, 'u'
+    jne error_invalid
+    inc rcx
+    cmp rcx, rbx
+    jae eof_error
+    mov al, byte ptr [r8 + rcx]
+    cmp al, 'l'
+    jne error_invalid
+    inc rcx
+    cmp rcx, rbx
+    jae eof_error
+    mov al, byte ptr [r8 + rcx]
+    cmp al, 'l'
+    jne error_invalid
+    inc rcx
+    ret
+
+parse_number:
+    mov al, byte ptr [r8 + rcx]
+    cmp al, '-'
+    jne .pn_int_start
+    inc rcx
+    cmp rcx, rbx
+    jae eof_error
+.pn_int_start:
+    mov al, byte ptr [r8 + rcx]
+    cmp al, '0'
+    je .pn_zero
+    cmp al, '1'
+    jb error_invalid
+    cmp al, '9'
+    ja error_invalid
+.pn_int_digits:
+    inc rcx
+    cmp rcx, rbx
+    jae .pn_after_int
+    mov al, byte ptr [r8 + rcx]
+    cmp al, '0'
+    jb .pn_after_int
+    cmp al, '9'
+    ja .pn_after_int
+    jmp .pn_int_digits
+.pn_zero:
+    inc rcx
+    cmp rcx, rbx
+    jae .pn_after_int
+    mov al, byte ptr [r8 + rcx]
+    cmp al, '0'
+    jb .pn_after_int
+    cmp al, '9'
+    jle error_invalid
+.pn_after_int:
+    cmp rcx, rbx
+    jae .pn_done
+    mov al, byte ptr [r8 + rcx]
+    cmp al, '.'
+    jne .pn_check_exp
+    inc rcx
+    cmp rcx, rbx
+    jae eof_error
+    mov al, byte ptr [r8 + rcx]
+    cmp al, '0'
+    jb error_invalid
+    cmp al, '9'
+    ja error_invalid
+.pn_frac_loop:
+    inc rcx
+    cmp rcx, rbx
+    jae .pn_check_exp
+    mov al, byte ptr [r8 + rcx]
+    cmp al, '0'
+    jb .pn_check_exp
+    cmp al, '9'
+    ja .pn_check_exp
+    jmp .pn_frac_loop
+.pn_check_exp:
+    cmp rcx, rbx
+    jae .pn_done
+    mov al, byte ptr [r8 + rcx]
+    cmp al, 'e'
+    je .pn_exp_start
+    cmp al, 'E'
+    jne .pn_done
+.pn_exp_start:
+    inc rcx
+    cmp rcx, rbx
+    jae eof_error
+    mov al, byte ptr [r8 + rcx]
+    cmp al, '+'
+    je .pn_exp_sign
+    cmp al, '-'
+    je .pn_exp_sign
+    jmp .pn_exp_digit
+.pn_exp_sign:
+    inc rcx
+    cmp rcx, rbx
+    jae eof_error
+.pn_exp_digit:
+    cmp rcx, rbx
+    jae eof_error
+    mov al, byte ptr [r8 + rcx]
+    cmp al, '0'
+    jb error_invalid
+    cmp al, '9'
+    ja error_invalid
+.pn_exp_digits:
+    inc rcx
+    cmp rcx, rbx
+    jae .pn_done
+    mov al, byte ptr [r8 + rcx]
+    cmp al, '0'
+    jb .pn_done
+    cmp al, '9'
+    ja .pn_done
+    jmp .pn_exp_digits
+.pn_done:
+    ret
+
+parse_string:
+    inc rcx
+.str_loop:
+    cmp rcx, rbx
+    jae eof_error
+    mov al, byte ptr [r8 + rcx]
+    cmp al, '"'
+    je .str_end
+    cmp al, '\\'
+    je .str_escape
+    cmp al, 0x20
+    jb error_invalid
+    inc rcx
+    jmp .str_loop
+.str_escape:
+    inc rcx
+    cmp rcx, rbx
+    jae eof_error
+    mov al, byte ptr [r8 + rcx]
+    cmp al, '"'
+    je .inc_continue
+    cmp al, '\\'
+    je .inc_continue
+    cmp al, '/'
+    je .inc_continue
+    cmp al, 'b'
+    je .inc_continue
+    cmp al, 'f'
+    je .inc_continue
+    cmp al, 'n'
+    je .inc_continue
+    cmp al, 'r'
+    je .inc_continue
+    cmp al, 't'
+    je .inc_continue
+    cmp al, 'u'
+    je .unicode_escape
+    jmp error_invalid
+.inc_continue:
+    inc rcx
+    jmp .str_loop
+.unicode_escape:
+    # after 'u' character
+    inc rcx
+    mov r9, 4
+.unicode_digit:
+    cmp rcx, rbx
+    jae eof_error
+    mov al, byte ptr [r8 + rcx]
+    cmp al, '0'
+    jl .unicode_invalid
+    cmp al, '9'
+    jle .unicode_next
+    cmp al, 'a'
+    jl .unicode_invalid
+    cmp al, 'f'
+    jle .unicode_next
+    cmp al, 'A'
+    jl .unicode_invalid
+    cmp al, 'F'
+    jle .unicode_next
+    jmp .unicode_invalid
+.unicode_next:
+    inc rcx
+    dec r9
+    jne .unicode_digit
+    jmp .str_loop
+.unicode_invalid:
+    jmp error_invalid
+.str_end:
+    inc rcx
+    ret
+
+parse_array:
+    inc rcx
+    call skip_ws
+    cmp rcx, rbx
+    jae eof_error
+    mov al, byte ptr [r8 + rcx]
+    cmp al, ']'
+    je .empty_array
+.value_loop:
+    call parse_value
+    call skip_ws
+    cmp rcx, rbx
+    jae eof_error
+    mov al, byte ptr [r8 + rcx]
+    cmp al, ','
+    je .after_comma
+    cmp al, ']'
+    je .close_array
+    jmp error_invalid
+.after_comma:
+    inc rcx
+    call skip_ws
+    cmp rcx, rbx
+    jae eof_error
+    mov al, byte ptr [r8 + rcx]
+    cmp al, ']'
+    je error_invalid
+    jmp .value_loop
+.close_array:
+    inc rcx
+    ret
+.empty_array:
+    inc rcx
+    ret
+
+parse_object:
+    inc rcx
+    call skip_ws
+    cmp rcx, rbx
+    jae eof_error
+    mov al, byte ptr [r8 + rcx]
+    cmp al, '}'
+    je .empty_object
+.member_loop:
+    mov al, byte ptr [r8 + rcx]
+    cmp al, '"'
+    jne error_invalid
+    call parse_string
+    call skip_ws
+    cmp rcx, rbx
+    jae eof_error
+    mov al, byte ptr [r8 + rcx]
+    cmp al, ':'
+    jne error_invalid
+    inc rcx
+    call skip_ws
+    call parse_value
+    call skip_ws
+    cmp rcx, rbx
+    jae eof_error
+    mov al, byte ptr [r8 + rcx]
+    cmp al, ','
+    je .after_comma_obj
+    cmp al, '}'
+    je .close_object
+    jmp error_invalid
+.after_comma_obj:
+    inc rcx
+    call skip_ws
+    cmp rcx, rbx
+    jae eof_error
+    mov al, byte ptr [r8 + rcx]
+    cmp al, '}'
+    je error_invalid
+    jmp .member_loop
+.close_object:
+    inc rcx
+    ret
+.empty_object:
+    inc rcx
+    ret
+
+eof_error:
+    mov rcx, rbx
+    jmp error
+
+error_invalid:
+    jmp error
+
+error:
+    # write "error at "
+    mov rdx, err_prefix_len
+    lea rsi, [rip + err_prefix]
+    mov rdi, 1
+    mov rax, 1
+    syscall
+    # convert rcx (offset) to decimal string in dec_buf
+    mov rax, rcx                # offset to convert
+    lea rdi, [rip + dec_buf + 20]   # point past end of buffer
+    mov rbx, 10
+    xor rcx, rcx                # digit count = 0
+    test rax, rax
+    jnz .conv_loop
+    # zero case
+    mov byte ptr [rdi-1], '0'
+    dec rdi
+    inc rcx
+    jmp .write_digits
+.conv_loop:
+    xor rdx, rdx
+    div rbx                     # rax = rax/10, rdx = remainder
+    dec rdi
+    add dl, '0'
+    mov byte ptr [rdi], dl
+    inc rcx
+    test rax, rax
+    jne .conv_loop
+.write_digits:
+    mov rdx, rcx
+    mov rsi, rdi
+    mov rdi, 1
+    mov rax, 1
+    syscall
+    # write newline
+    mov rdx, newline_len
+    lea rsi, [rip + newline]
+    mov rdi, 1
+    mov rax, 1
+    syscall
+    mov edi, 1
+    mov rax, 60
+    syscall

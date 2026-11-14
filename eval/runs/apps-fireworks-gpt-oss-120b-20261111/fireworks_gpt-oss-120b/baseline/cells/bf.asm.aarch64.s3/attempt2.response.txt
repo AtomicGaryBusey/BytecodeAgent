@@ -1,0 +1,238 @@
+.global _start
+	.text
+_start:
+	// x19 = input buffer base
+	adrp	x19, input_buf
+	add	x19, x19, :lo12:input_buf
+
+	// read loop
+	mov	x5, #0			// total length = 0
+read_loop:
+	// read(fd=0, buf=input_buf+len, count=65536-len)
+	mov	x0, #0
+	add	x1, x19, x5
+	mov	x2, #65536
+	sub	x2, x2, x5
+	mov	x8, #63
+	svc	#0
+	cmp	x0, #0
+	beq	read_done
+	add	x5, x5, x0
+	b	read_loop
+read_done:
+	// x5 = input_len
+	// Find first '!' character
+	mov	x6, #0			// index i
+	mov	x7, #0			// program_len (default to input_len)
+	mov	x8, #0			// program_input_offset after '!'
+	mov	x10, #0			// program_input_len
+find_excl:
+	cmp	x6, x5
+	b.ge	no_excl
+	ldrb	w0, [x19, x6]
+	cmp	w0, #0x21		// '!'
+	b.eq	found_excl
+	add	x6, x6, #1
+	b	find_excl
+found_excl:
+	mov	x7, x6			// program_len = index of '!'
+	add	x8, x6, #1		// program_input_offset
+	sub	x10, x5, x8		// program_input_len
+	b	after_find
+no_excl:
+	mov	x7, x5			// whole input is program
+	mov	x8, x5			// input offset = end
+	// x10 already zero
+after_find:
+
+	// Prepare addresses
+	adrp	x11, jump_table
+	add	x11, x11, :lo12:jump_table
+	adrp	x12, bracket_stack
+	add	x12, x12, :lo12:bracket_stack
+
+	// Bracket validation
+	mov	x13, #0			// stack_pos = 0
+	mov	x14, #0			// pc = 0
+validate_loop:
+	cmp	x14, x7
+	b.ge	validate_done
+	ldrb	w0, [x19, x14]
+	cmp	w0, #'['
+	b.eq	push_bracket
+	cmp	w0, #']'
+	b.eq	pop_bracket
+	// other character
+	add	x14, x14, #1
+	b	validate_loop
+push_bracket:
+	// check stack overflow (max 1000)
+	cmp	x13, #1000
+	b.ge	error_exit
+	lsl	x15, x13, #2
+	str	w14, [x12, x15]		// store pc on stack
+	add	x13, x13, #1
+	add	x14, x14, #1
+	b	validate_loop
+pop_bracket:
+	cmp	x13, #0
+	b.eq	error_exit
+	sub	x13, x13, #1
+	lsl	x15, x13, #2
+	ldr	w16, [x12, x15]		// matched '[' position (32-bit)
+	// extend to 64-bit
+	uxtw	x16, w16			// x16 = matched '[' index
+
+	// forward jump for '[' : target = pc+1 (x14+1)
+	add	x17, x14, #1
+	// store at index = matched '[' *4
+	lsl	x15, x16, #2
+	str	w17, [x11, x15]
+
+	// back jump for ']' : target = matched '[' +1
+	add	x18, x16, #1
+	// store at index = pc *4
+	lsl	x15, x14, #2
+	str	w18, [x11, x15]
+
+	add	x14, x14, #1
+	b	validate_loop
+validate_done:
+	cmp	x13, #0
+	b.ne	error_exit
+
+	// Prepare execution environment
+	adrp	x20, tape
+	add	x20, x20, :lo12:tape	// tape base
+	mov	x21, #0			// data pointer dp
+	mov	x22, #0			// input pointer ip
+	mov	x23, #0			// pc
+
+exec_loop:
+	cmp	x23, x7
+	b.ge	exec_done
+	ldrb	w0, [x19, x23]		// command byte
+
+	// dispatch
+	cmp	w0, #'>'
+	beq	cmd_gt
+	cmp	w0, #'<'
+	beq	cmd_lt
+	cmp	w0, #'+'
+	beq	cmd_plus
+	cmp	w0, #'-'
+	beq	cmd_minus
+	cmp	w0, #'.'
+	beq	cmd_dot
+	cmp	w0, #','
+	beq	cmd_comma
+	cmp	w0, #'['
+	beq	cmd_lbracket
+	cmp	w0, #']'
+	beq	cmd_rbracket
+	// ignore other characters
+	add	x23, x23, #1
+	b	exec_loop
+
+cmd_gt:
+	add	x21, x21, #1
+	add	x23, x23, #1
+	b	exec_loop
+
+cmd_lt:
+	sub	x21, x21, #1
+	add	x23, x23, #1
+	b	exec_loop
+
+cmd_plus:
+	add	x24, x20, x21
+	ldrb	w1, [x24]
+	add	w1, w1, #1
+	strb	w1, [x24]
+	add	x23, x23, #1
+	b	exec_loop
+
+cmd_minus:
+	add	x24, x20, x21
+	ldrb	w1, [x24]
+	sub	w1, w1, #1
+	strb	w1, [x24]
+	add	x23, x23, #1
+	b	exec_loop
+
+cmd_dot:
+	mov	x0, #1
+	add	x1, x20, x21
+	mov	x2, #1
+	mov	x8, #64
+	svc	#0
+	add	x23, x23, #1
+	b	exec_loop
+
+cmd_comma:
+	cmp	x22, x10
+	b.ge	comma_eof
+	// load from program input
+	add	x24, x19, x8
+	add	x24, x24, x22
+	ldrb	w1, [x24]
+	b	comma_store
+comma_eof:
+	mov	w1, #0
+comma_store:
+	add	x24, x20, x21
+	strb	w1, [x24]
+	add	x22, x22, #1
+	add	x23, x23, #1
+	b	exec_loop
+
+cmd_lbracket:
+	add	x24, x20, x21
+	ldrb	w1, [x24]
+	cbnz	w1, lbracket_nojump
+	// cell == 0, jump forward
+	lsl	x15, x23, #2
+	ldr	w25, [x11, x15]
+	// w25 holds target pc
+	// zero-extend and set pc
+	uxtw	x23, w25
+	b	exec_loop
+lbracket_nojump:
+	add	x23, x23, #1
+	b	exec_loop
+
+cmd_rbracket:
+	add	x24, x20, x21
+	ldrb	w1, [x24]
+	cbnz	w1, rbracket_jump
+	// cell == 0, continue
+	add	x23, x23, #1
+	b	exec_loop
+rbracket_jump:
+	lsl	x15, x23, #2
+	ldr	w25, [x11, x15]
+	uxtw	x23, w25
+	b	exec_loop
+
+exec_done:
+	// exit status 0
+	mov	x0, #0
+	mov	x8, #93
+	svc	#0
+
+error_exit:
+	// exit status 1
+	mov	x0, #1
+	mov	x8, #93
+	svc	#0
+
+	.section .bss
+	.p2align 3
+input_buf:
+	.space 65536
+jump_table:
+	.space 262144        // 65536 * 4
+bracket_stack:
+	.space 4000          // 1000 * 4
+tape:
+	.space 30000

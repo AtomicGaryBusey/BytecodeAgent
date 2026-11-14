@@ -1,0 +1,320 @@
+Write the complete program `sort_lines`: a static Linux executable for x86-64 (AMD64), written in assembly. There is no C library, no C runtime and no helper code: you write the entry point `_start`, every function, every table and string, and make the system calls yourself.
+
+Entry state (as the Linux kernel sets it up): execution starts at the label `_start`. rsp is 16-byte aligned and points at argc = 0, followed by the NULL terminators of an empty argv, an empty envp and an empty auxiliary vector: the program gets no arguments. Every other general-purpose register is zero, and the direction flag is clear. There is no return address: `_start` must never return with `ret`; the program ends only through the exit system call.
+
+System calls: the `syscall` instruction, with the system call number in rax and the arguments in rdi, rsi, rdx; the result comes back in rax. The kernel overwrites rcx and r11; every other register is preserved. Exactly these four are available:
+- read = 0: read(fd = 0, buf, count) reads up to count bytes of standard input into buf; returns the number of bytes read, 0 at end of input.
+- write = 1: write(fd, buf, count) with fd 1 (standard output) or 2 (standard error); returns count.
+- exit = 60: exit(status) ends the program; the exit status is the low 8 bits of status.
+- exit_group = 231: the same as exit.
+Any other system call number, another file descriptor, `int 0x80` or `sysenter` stops the program with an error, and so does a buffer that is not entirely inside the program's memory.
+
+Memory: the program's own sections plus a stack of 1 MiB below the entry sp. There is no heap (no brk, no mmap, no malloc): put working storage in `.bss` (zero-initialised), at most 1 MiB in total, or on the stack. Code is not writable. Any access outside these areas stops the program. Each test run may execute at most 200,000,000 instructions.
+
+Output format: one complete assembly source file in GNU assembler (GNU as) syntax, Intel flavour without register prefixes: the harness puts `.intel_syntax noprefix` in front of your text, so do not write it yourself. Examples: `mov rax, qword ptr [rbx + rcx*8]`, `movzx eax, byte ptr [rsi]`, `lea rsi, [rip + buffer]`. Comments start with `#`; do not use `;`.
+Allowed in the file:
+- Sections: `.text` (code), `.section .rodata` (read-only data), `.data` (initialised writable data), `.bss` (zero-initialised space: only `.zero`/`.space` and alignment). Instructions go in `.text` only.
+- Data directives: `.byte`, `.short`/`.2byte`, `.word` (2 bytes on this target), `.long`/`.int`/`.4byte`, `.quad`/`.8byte`, `.ascii`, `.asciz`/`.string`, `.zero`/`.space`, alignment with `.align`/`.balign`/`.p2align`, and `.globl`/`.global` (write `.globl _start`).
+- Labels `name:` in any section, and GNU local labels `1:` referenced as `1f` (next) / `1b` (previous).
+- Constants: `.equ name, value` (or `.set name, value`, or `name = value`), where value is a number or a difference of labels defined earlier in the same section (e.g. `msg_len = . - msg`). Define every constant before its first use.
+- Addressing data: rip-relative, `lea rdi, [rip + table]` or `mov al, byte ptr [rip + table + 3]`. The program is linked at fixed low addresses, so absolute forms (`mov esi, offset buffer`, `movzx eax, byte ptr [table + rcx]`) work as well.
+Not allowed: macros (`.macro`, `.rept`, `.irp`), conditional assembly (`.if`), `.include`, `.incbin`, `.fill`, `.org`, `.comm`/`.lcomm`, `.inst`, `.cfi_*` directives, section stacks (`.pushsection`) and any other section. No libc and no other library: there is nothing to link against, so every symbol you use must be defined in your file.
+Instruction set: x86-64 with SSE up to SSE4.2 (including SSSE3, SSE4.1 and crc32), POPCNT, LZCNT, BMI1/BMI2 (andn, bextr, blsi, blsr, tzcnt, bzhi, mulx, pdep, pext, rorx, sarx, shlx, shrx), MOVBE, AES-NI and PCLMULQDQ. Not supported (rejected): AVX, AVX2, AVX-512, FMA, F16C and every other VEX/EVEX vector instruction, ADX (adcx/adox; use adc) and SHA.
+Output ONLY the assembly source: no Markdown fences, no prose before or after it.
+
+Specification: Task `sort_lines`: print the lines of standard input sorted in ascending byte-wise order.
+
+- Lines are defined as follows: a line is a (possibly empty) sequence of bytes terminated by a newline 0x0A; if
+  the input does not end with a newline, the bytes after the last newline form one more, final line. Empty input
+  has no lines, and the empty remainder after a final newline is not a line.
+- Order: compare two lines byte by byte as UNSIGNED values 0x00-0xFF (like C `memcmp`); the first differing
+  byte decides. If one line is a prefix of the other, the shorter line comes first (so the empty line sorts
+  before every non-empty line). Equal lines are all printed (duplicates are kept).
+- Print every line followed by one newline 0x0A (the final line gets a newline even if it had none in the
+  input). Empty input prints nothing. A carriage return 0x0D and every other byte value are ordinary bytes.
+
+Example: `pear\napple\nPear\n\napple` prints `\nPear\napple\napple\npear\n`.
+
+Limits: the input is at most 32768 bytes and has at most 1000 lines. Exit status 0.
+
+Input and output (applies to this whole task):
+- The input is the complete contents of standard input (file descriptor 0). Read it with `read` until `read`
+  returns 0 (end of input). A `read` may return FEWER bytes than requested, at any position (in the middle of a
+  line, a token or a group of bytes), so keep calling it; only a return value of 0 means end of input.
+- Write the output to standard output (file descriptor 1). Only the bytes this task describes may appear on
+  standard output (standard error is ignored). Every output byte must be written before the program exits.
+- Finish with `exit` (or `exit_group`) and the exit status this task gives. The program must not run off the end
+  of its code or crash.
+
+Your previous attempt was:
+<previous>
+.globl _start
+.text
+
+# -------------------------------------------------
+# constants
+.equ    MAX_INPUT, 32768
+.equ    MAX_LINES, 1000
+
+# -------------------------------------------------
+# _start entry point
+_start:
+    # read all input into buffer
+    xor     rbx, rbx                # total_read = 0
+read_loop:
+    mov     rax, 0                  # sys_read
+    mov     rdi, 0                  # fd = stdin
+    lea     rsi, [rip + input_buf]
+    add     rsi, rbx                # buf + total_read
+    mov     rdx, MAX_INPUT
+    sub     rdx, rbx                # remaining space
+    syscall
+    test    rax, rax
+    jz      read_done               # EOF
+    js      exit_err                # negative = error
+    add     rbx, rax                # total_read += nread
+    cmp     rbx, MAX_INPUT
+    jb      read_loop
+read_done:
+    test    rbx, rbx
+    jz      exit_success            # empty input, nothing to do
+
+    # parse lines, store offsets and lengths
+    xor     rcx, rcx                # scan index i = 0
+    xor     rdx, rdx                # line_count = 0
+    xor     r8,  r8                 # start = 0 (offset of current line)
+parse_loop:
+    cmp     rcx, rbx
+    jae     parse_done
+    lea     rsi, [rip + input_buf]
+    add     rsi, rcx
+    mov     al, byte ptr [rsi]
+    cmp     al, 0x0A                # newline ?
+    jne     not_newline
+    # newline found, store line [start, rcx)
+    mov     r9, rcx
+    sub     r9, r8                  # length = rcx - start
+    mov     rax, rdx                # line index
+    lea     rsi, [rip + line_offsets]
+    mov     [rsi + rax*8], r8
+    lea     rsi, [rip + line_lengths]
+    mov     [rsi + rax*8], r9
+    inc     rdx                     # line_count++
+    lea     r8, [rcx + 1]           # start = rcx+1 (next char)
+not_newline:
+    inc     rcx
+    jmp     parse_loop
+parse_done:
+    # handle final line if any bytes after last newline
+    cmp     r8, rbx
+    jae     store_linecnt           # start >= total_read => no remainder
+    mov     r9, rbx
+    sub     r9, r8                  # length = total_read - start
+    mov     rax, rdx
+    lea     rsi, [rip + line_offsets]
+    mov     [rsi + rax*8], r8
+    lea     rsi, [rip + line_lengths]
+    mov     [rsi + rax*8], r9
+    inc     rdx                     # line_count++
+store_linecnt:
+    mov     dword ptr [rip + line_cnt], edx
+
+    # -------------------------------------------------
+    # sort lines using insertion sort (ascending)
+    xor     r14, r14                # i = 0
+    inc     r14                     # start from 1
+sort_i_loop:
+    mov     eax, dword ptr [rip + line_cnt]
+    cmp     r14d, eax
+    jge     sort_done
+    mov     r15, r14                # j = i
+sort_j_loop:
+    cmp     r15, 0
+    je      sort_i_next
+    mov     rax, r15
+    dec     rax                     # a_index = j-1
+    mov     rbx, r15                # b_index = j
+
+    # load offsets
+    lea     rsi, [rip + line_offsets]
+    mov     r8,  [rsi + rax*8]      # off_a
+    mov     r9,  [rsi + rbx*8]      # off_b
+    # load lengths
+    lea     rsi, [rip + line_lengths]
+    mov     r10, [rsi + rax*8]      # len_a
+    mov     r11, [rsi + rbx*8]      # len_b
+
+    # compare a vs b
+    mov     rdi, r8                 # off_a
+    mov     rsi, r10                # len_a
+    mov     rdx, r9                 # off_b
+    mov     rcx, r11                # len_b
+    call    compare
+    test    rax, rax
+    jle     sort_i_next             # a <= b, keep order
+
+    # swap entries at indices a_index (rax) and b_index (rbx)
+    # save indices
+    mov     r12d, eax               # a_index (low dword)
+    mov     r13d, ebx               # b_index
+
+    lea     rsi, [rip + line_offsets]
+    mov     rax, [rsi + r12*8]
+    mov     rdx, [rsi + r13*8]
+    mov     [rsi + r12*8], rdx
+    mov     [rsi + r13*8], rax
+
+    lea     rsi, [rip + line_lengths]
+    mov     rax, [rsi + r12*8]
+    mov     rdx, [rsi + r13*8]
+    mov     [rsi + r12*8], rdx
+    mov     [rsi + r13*8], rax
+
+    dec     r15
+    jmp     sort_j_loop
+
+sort_i_next:
+    inc     r14
+    jmp     sort_i_loop
+
+sort_done:
+
+    # -------------------------------------------------
+    # output sorted lines
+    xor     rcx, rcx                # idx = 0
+output_loop:
+    mov     eax, dword ptr [rip + line_cnt]
+    cmp     rcxd, eax
+    jge     exit_success
+    lea     rsi, [rip + line_offsets]
+    mov     r8,  [rsi + rcx*8]       # offset
+    lea     rsi, [rip + line_lengths]
+    mov     r9,  [rsi + rcx*8]       # length
+
+    # write line content if length > 0
+    test    r9, r9
+    jz      write_nl
+    mov     rdi, 1                  # stdout
+    lea     rsi, [rip + input_buf]
+    add     rsi, r8
+    mov     rdx, r9
+    call    write_all
+write_nl:
+    # write newline
+    mov     rdi, 1
+    lea     rsi, [rip + newline]
+    mov     rdx, 1
+    call    write_all
+
+    inc     rcx
+    jmp     output_loop
+
+# -------------------------------------------------
+# compare: rdi=off_a, rsi=len_a, rdx=off_b, rcx=len_b
+# returns signed difference in rax (>0 if a>b)
+compare:
+    push    rbx
+    push    r8
+    push    r9
+    push    r10
+    push    r11
+
+    # min_len = min(len_a, len_b) in r10
+    mov     r10, rsi
+    cmp     r10, rcx
+    jle     .min_ok
+    mov     r10, rcx
+.min_ok:
+    xor     rbx, rbx                # idx = 0
+.cmp_loop:
+    cmp     rbx, r10
+    jae     .cmp_done
+    # byte a
+    lea     r8, [rip + input_buf]
+    add     r8, rdi
+    add     r8, rbx
+    mov     al, byte ptr [r8]
+    # byte b
+    lea     r9, [rip + input_buf]
+    add     r9, rdx
+    add     r9, rbx
+    mov     bl, byte ptr [r9]
+    cmp     al, bl
+    jne     .cmp_diff
+    inc     rbx
+    jmp     .cmp_loop
+.cmp_diff:
+    movzx   eax, al
+    movzx   ebx, bl
+    sub     eax, ebx                # signed diff
+    jmp     .cmp_ret
+.cmp_done:
+    # equal up to min_len, compare lengths
+    mov     rax, rsi
+    sub     rax, rcx                # len_a - len_b
+.cmp_ret:
+    pop     r11
+    pop     r10
+    pop     r9
+    pop     r8
+    pop     rbx
+    ret
+
+# -------------------------------------------------
+# write_all: rdi=fd, rsi=buf, rdx=count
+write_all:
+    test    rdx, rdx
+    jz      .wa_done
+.wa_loop:
+    mov     rax, 1                  # sys_write
+    syscall
+    test    rax, rax
+    jz      .wa_error
+    sub     rdx, rax
+    add     rsi, rax
+    test    rdx, rdx
+    jne     .wa_loop
+.wa_done:
+    ret
+.wa_error:
+    mov     rax, 60                 # exit
+    xor     rdi, rdi
+    syscall
+
+# -------------------------------------------------
+exit_success:
+    mov     rax, 60                 # sys_exit
+    xor     rdi, rdi
+    syscall
+
+exit_err:
+    mov     rax, 60
+    mov     rdi, 1
+    syscall
+
+# -------------------------------------------------
+.section .rodata
+newline:
+    .byte   0x0A
+
+# -------------------------------------------------
+.section .bss
+.align 8
+input_buf:
+    .zero   MAX_INPUT
+line_offsets:
+    .zero   MAX_LINES*8
+line_lengths:
+    .zero   MAX_LINES*8
+
+# -------------------------------------------------
+.section .data
+.align 4
+line_cnt:
+    .long   0
+</previous>
+It failed:
+<failure>
+The program cannot be linked: undefined label 'rcxd' (line 137: 'cmp rcxd, eax')
+</failure>
+Write a corrected, complete version. Same output format; output only the code.

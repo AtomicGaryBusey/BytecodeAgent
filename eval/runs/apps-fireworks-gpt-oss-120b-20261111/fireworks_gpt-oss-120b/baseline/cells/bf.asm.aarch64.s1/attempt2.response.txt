@@ -1,0 +1,241 @@
+	.globl _start
+	.text
+_start:
+	// read whole stdin into buffer
+	adr	x24, buffer          // x24 = buffer base
+	mov	x11, #0              // total bytes read = 0
+read_loop:
+	mov	x0, #0               // fd = stdin
+	add	x1, x24, x11         // buf = buffer + total
+	mov	x2, #65536
+	sub	x2, x2, x11          // count = remaining space
+	mov	x8, #63              // sys_read
+	svc	#0
+	cbnz	x0, read_more
+	b	read_done
+read_more:
+	add	x11, x11, x0
+	b	read_loop
+read_done:
+	// locate first '!' (0x21)
+	mov	x12, #0                // index
+search_loop:
+	cmp	x12, x11
+	b.ge	no_excl
+	add	x13, x24, x12
+	ldrb	w14, [x13]
+	cmp	w14, #0x21
+	b.eq	found_excl
+	add	x12, x12, #1
+	b	search_loop
+found_excl:
+	// x12 = index of '!'
+	b	after_search
+no_excl:
+	// x12 == total length (no '!'), keep as is
+after_search:
+	// program length = x12
+	mov	x19, x12
+	// compute input offset and length
+	cmp	x12, x11
+	b.ge	no_input
+	add	x20, x12, #1          // input offset
+	sub	x21, x11, x20         // input length
+	b	after_input
+no_input:
+	mov	x20, x11              // input offset = total
+	mov	x21, #0               // input length = 0
+after_input:
+	// input read position
+	mov	x27, #0               // input index
+
+	// bracket matching, build jump table
+	adr	x25, bracket_stack    // stack base
+	mov	x26, #0               // stack count
+	mov	x22, #0               // program index i
+bracket_check_loop:
+	cmp	x22, x19
+	b.ge	bracket_check_done
+	add	x28, x24, x22
+	ldrb	w28, [x28]
+	cmp	w28, #'['
+	b.eq	push_bracket
+	cmp	w28, #']'
+	b.eq	pop_bracket
+	// ignore other chars
+	add	x22, x22, #1
+	b	bracket_check_loop
+push_bracket:
+	lsl	x0, x26, #2           // offset = count*4
+	add	x1, x25, x0
+	str	w22, [x1]
+	add	x26, x26, #1
+	add	x22, x22, #1
+	b	bracket_check_loop
+pop_bracket:
+	cbnz	x26, have_stack
+	// unbalanced
+	mov	x0, #1
+	mov	x8, #93
+	svc	#0
+have_stack:
+	sub	x26, x26, #1
+	lsl	x0, x26, #2
+	add	x1, x25, x0
+	ldr	w0, [x1]              // matching '[' index in w0
+	// store jump for '[' -> i+1
+	adr	x4, jump_table
+	lsl	x3, x0, #2
+	add	x4, x4, x3
+	add	x5, x22, #1
+	str	w5, [x4]
+	// store jump for ']' -> matching '[' +1
+	adr	x7, jump_table
+	lsl	x6, x22, #2
+	add	x7, x7, x6
+	add	x5, x0, #1
+	str	w5, [x7]
+	add	x22, x22, #1
+	b	bracket_check_loop
+bracket_check_done:
+	cbnz	x26, bracket_error   // leftover '['
+	// start execution
+	mov	x22, #0               // instruction pointer
+	mov	x23, #0               // data pointer
+execution_loop:
+	cmp	x22, x19
+	b.ge	execution_done
+	add	x0, x24, x22
+	ldrb	w1, [x0]               // command in w1
+	cmp	w1, #'>'
+	b.eq	cmd_inc_ptr
+	cmp	w1, #'<'
+	b.eq	cmd_dec_ptr
+	cmp	w1, #'+'
+	b.eq	cmd_inc_cell
+	cmp	w1, #'-'
+	b.eq	cmd_dec_cell
+	cmp	w1, #'.'
+	b.eq	cmd_output
+	cmp	w1, #','
+	b.eq	cmd_input
+	cmp	w1, #'['
+	b.eq	cmd_bracket_open
+	cmp	w1, #']'
+	b.eq	cmd_bracket_close
+	// ignore other characters
+	add	x22, x22, #1
+	b	execution_loop
+
+cmd_inc_ptr:
+	add	x23, x23, #1
+	add	x22, x22, #1
+	b	execution_loop
+
+cmd_dec_ptr:
+	sub	x23, x23, #1
+	add	x22, x22, #1
+	b	execution_loop
+
+cmd_inc_cell:
+	adr	x5, tape
+	add	x6, x5, x23
+	ldrb	w7, [x6]
+	add	w7, w7, #1
+	strb	w7, [x6]
+	add	x22, x22, #1
+	b	execution_loop
+
+cmd_dec_cell:
+	adr	x5, tape
+	add	x6, x5, x23
+	ldrb	w7, [x6]
+	sub	w7, w7, #1
+	strb	w7, [x6]
+	add	x22, x22, #1
+	b	execution_loop
+
+cmd_output:
+	adr	x5, tape
+	add	x6, x5, x23
+	ldrb	w7, [x6]
+	adr	x8, out_buf
+	strb	w7, [x8]
+	mov	x0, #1                // stdout
+	mov	x1, x8
+	mov	x2, #1
+	mov	x8, #64               // sys_write
+	svc	#0
+	add	x22, x22, #1
+	b	execution_loop
+
+cmd_input:
+	cmp	x27, x21
+	b.ge	input_eof
+	// load byte from input buffer
+	add	x0, x20, x27
+	add	x0, x24, x0
+	ldrb	w1, [x0]
+	adr	x5, tape
+	add	x6, x5, x23
+	strb	w1, [x6]
+	add	x27, x27, #1
+	b	input_done
+input_eof:
+	adr	x5, tape
+	add	x6, x5, x23
+	mov	w1, #0
+	strb	w1, [x6]
+input_done:
+	add	x22, x22, #1
+	b	execution_loop
+
+cmd_bracket_open:
+	adr	x5, tape
+	add	x6, x5, x23
+	ldrb	w7, [x6]
+	cbnz	w7, open_continue
+	// jump forward
+	adr	x1, jump_table
+	lsl	x0, x22, #2
+	add	x1, x1, x0
+	ldr	w2, [x1]
+	mov	x22, x2
+	b	execution_loop
+open_continue:
+	add	x22, x22, #1
+	b	execution_loop
+
+cmd_bracket_close:
+	adr	x5, tape
+	add	x6, x5, x23
+	ldrb	w7, [x6]
+	cbnz	w7, close_jump
+	// continue after ]
+	add	x22, x22, #1
+	b	execution_loop
+close_jump:
+	adr	x1, jump_table
+	lsl	x0, x22, #2
+	add	x1, x1, x0
+	ldr	w2, [x1]
+	mov	x22, x2
+	b	execution_loop
+
+execution_done:
+	mov	x0, #0
+	mov	x8, #93               // sys_exit
+	svc	#0
+
+bracket_error:
+	mov	x0, #1
+	mov	x8, #93
+	svc	#0
+
+	.bss
+	.align 8
+buffer:          .zero 65536
+bracket_stack:   .space 4000          // 1000 * 4 bytes
+jump_table:      .space 262144        // 65536 * 4 bytes
+tape:            .zero 30000
+out_buf:         .zero 1

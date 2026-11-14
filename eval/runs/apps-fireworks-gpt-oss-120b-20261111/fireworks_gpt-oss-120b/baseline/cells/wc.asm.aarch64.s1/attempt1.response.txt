@@ -1,0 +1,217 @@
+	.globl _start
+	.text
+	.p2align 2
+
+	.equ BUF_SIZE, 65536
+	.equ STDIN, 0
+	.equ STDOUT, 1
+	.equ SYS_READ, 63
+	.equ SYS_WRITE, 64
+	.equ SYS_EXIT, 93
+
+_start:
+	// zero counters
+	mov	x19, #0			// lines
+	mov	x20, #0			// words
+	mov	x21, #0			// bytes
+	mov	x6, #0			// in_word flag = false
+
+	// load addresses of buffers
+	adrp	x22, input_buf@page
+	add	x22, x22, :lo12:input_buf	// x22 = input buffer
+	adrp	x23, out_buf@page
+	add	x23, x23, :lo12:out_buf	// x23 = output buffer (will be used later)
+
+read_loop:
+	// sys_read(stdin, buf, BUF_SIZE)
+	mov	x8, #SYS_READ
+	mov	x0, #STDIN
+	mov	x1, x22
+	mov	x2, #BUF_SIZE
+	svc	#0
+	cbz	x0, after_read		// nread == 0 => EOF
+
+	// add to total byte count
+	add	x21, x21, x0
+
+	// set up pointers for processing this chunk
+	mov	x27, x0			// remaining byte count
+	mov	x24, x22		// pointer to current byte
+
+process_byte:
+	cbz	x27, read_loop		// if no more bytes, read next chunk
+
+	ldrb	w25, [x24], #1		// load byte, post-increment pointer
+	subs	x27, x27, #1
+
+	// line count (newline = 0x0A)
+	cmp	w25, #0x0A
+	bne	not_newline
+	add	x19, x19, #1
+not_newline:
+
+	// whitespace test
+	cmp	w25, #0x20		// space
+	b.eq	is_ws
+	cmp	w25, #0x09		// tab
+	b.eq	is_ws
+	cmp	w25, #0x0A		// newline
+	b.eq	is_ws
+	cmp	w25, #0x0B		// vertical tab
+	b.eq	is_ws
+	cmp	w25, #0x0C		// form feed
+	b.eq	is_ws
+	cmp	w25, #0x0D		// carriage return
+	b.eq	is_ws
+	b	not_ws
+
+is_ws:
+	// whitespace => not inside a word
+	mov	x6, #0
+	b	not_ws_done
+
+not_ws:
+	// non‑whitespace
+	cbz	x6, new_word		// if not already in a word, start new word
+	b	not_ws_done
+
+new_word:
+	add	x20, x20, #1		// increment word count
+	mov	x6, #1			// now inside a word
+
+not_ws_done:
+	b	process_byte
+
+after_read:
+	// x23 still points to out_buf start (base address)
+	adrp	x24, out_buf@page
+	add	x24, x24, :lo12:out_buf	// x24 = start of output buffer
+
+	// ---- convert lines (x19) ----
+	mov	x0, x19
+	mov	x1, x23
+	// allocate temporary space on stack
+	sub	sp, sp, #32
+	mov	x9, sp			// base of temp area
+	mov	x10, x0			// number to convert
+	cbz	x10, conv0_lines
+conv_loop_lines:
+	udiv	x11, x10, #10
+	mul	x12, x11, #10
+	sub	x12, x10, x12		// remainder
+	add	w12, w12, #'0'
+	strb	w12, [sp], #1
+	mov	x10, x11
+	cbnz	x10, conv_loop_lines
+	b	conv_done_lines
+conv0_lines:
+	mov	w12, #'0'
+	strb	w12, [sp], #1
+conv_done_lines:
+	// copy digits in correct order to output buffer
+conv_copy_loop_lines:
+	cmp	sp, x9
+	beq	conv_copy_done_lines
+	sub	sp, sp, #1
+	ldrb	w12, [sp]
+	strb	w12, [x1], #1
+	b	conv_copy_loop_lines
+conv_copy_done_lines:
+	add	sp, sp, #32		// restore stack
+
+	// space after first number
+	mov	w12, #' '
+	strb	w12, [x1], #1
+
+	// ---- convert words (x20) ----
+	mov	x0, x20
+	// x1 already points after space
+	sub	sp, sp, #32
+	mov	x9, sp
+	mov	x10, x0
+	cbz	x10, conv0_words
+conv_loop_words:
+	udiv	x11, x10, #10
+	mul	x12, x11, #10
+	sub	x12, x10, x12
+	add	w12, w12, #'0'
+	strb	w12, [sp], #1
+	mov	x10, x11
+	cbnz	x10, conv_loop_words
+	b	conv_done_words
+conv0_words:
+	mov	w12, #'0'
+	strb	w12, [sp], #1
+conv_done_words:
+conv_copy_loop_words:
+	cmp	sp, x9
+	beq	conv_copy_done_words
+	sub	sp, sp, #1
+	ldrb	w12, [sp]
+	strb	w12, [x1], #1
+	b	conv_copy_loop_words
+conv_copy_done_words:
+	add	sp, sp, #32
+
+	// space after second number
+	mov	w12, #' '
+	strb	w12, [x1], #1
+
+	// ---- convert bytes (x21) ----
+	mov	x0, x21
+	sub	sp, sp, #32
+	mov	x9, sp
+	mov	x10, x0
+	cbz	x10, conv0_bytes
+conv_loop_bytes:
+	udiv	x11, x10, #10
+	mul	x12, x11, #10
+	sub	x12, x10, x12
+	add	w12, w12, #'0'
+	strb	w12, [sp], #1
+	mov	x10, x11
+	cbnz	x10, conv_loop_bytes
+	b	conv_done_bytes
+conv0_bytes:
+	mov	w12, #'0'
+	strb	w12, [sp], #1
+conv_done_bytes:
+conv_copy_loop_bytes:
+	cmp	sp, x9
+	beq	conv_copy_done_bytes
+	sub	sp, sp, #1
+	ldrb	w12, [sp]
+	strb	w12, [x1], #1
+	b	conv_copy_loop_bytes
+conv_copy_done_bytes:
+	add	sp, sp, #32
+
+	// newline after third number
+	mov	w12, #10
+	strb	w12, [x1], #1
+
+	// compute length of output string
+	sub	x25, x1, x24		// x25 = length
+
+	// write result to stdout
+	mov	x8, #SYS_WRITE
+	mov	x0, #STDOUT
+	mov	x1, x24
+	mov	x2, x25
+	svc	#0
+
+	// exit with status 0
+	mov	x8, #SYS_EXIT
+	mov	x0, #0
+	svc	#0
+
+	// -------------------------------------------------------------------------
+	.section .bss
+	.p2align 3
+input_buf:
+	.space BUF_SIZE
+
+out_buf:
+	.space 32
+
+	.end

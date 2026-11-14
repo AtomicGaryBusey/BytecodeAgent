@@ -1,0 +1,444 @@
+.section .rodata
+ok_msg:
+.ascii "ok\n"
+ok_len = . - ok_msg
+err_msg:
+.ascii "error at "
+err_len = . - err_msg
+newline:
+.ascii "\n"
+str_true:
+.ascii "true"
+str_false:
+.ascii "false"
+str_null:
+.ascii "null"
+
+.text
+.globl _start
+_start:
+lea r14, [rip + buffer]
+xor r13, r13
+.read_more:
+cmp r13, 65536
+jae .read_done
+mov eax, 0
+xor edi, edi
+lea rsi, [r14 + r13]
+mov rdx, 65536
+sub rdx, r13
+syscall
+test rax, rax
+jle .read_done
+add r13, rax
+jmp .read_more
+.read_done:
+lea r15, [r14 + r13]
+mov rsi, r14
+call parse_document
+test eax, eax
+jnz .print_error
+mov eax, 1
+mov edi, 1
+lea rsi, [rip + ok_msg]
+mov edx, ok_len
+syscall
+mov eax, 60
+xor edi, edi
+syscall
+.print_error:
+mov eax, 1
+mov edi, 1
+lea rsi, [rip + err_msg]
+mov edx, err_len
+syscall
+mov rax, qword ptr [rip + error_pos]
+call print_uint
+mov eax, 1
+mov edi, 1
+lea rsi, [rip + newline]
+mov edx, 1
+syscall
+mov eax, 60
+mov edi, 1
+syscall
+
+print_uint:
+push rbp
+mov rbp, rsp
+sub rsp, 16
+lea rdi, [rbp]
+mov ecx, 10
+test rax, rax
+jz .pu_zero
+.pu_divloop:
+xor edx, edx
+div rcx
+add dl, '0'
+dec rdi
+mov byte ptr [rdi], dl
+test rax, rax
+jnz .pu_divloop
+jmp .pu_do_write
+.pu_zero:
+dec rdi
+mov byte ptr [rdi], '0'
+.pu_do_write:
+mov rdx, rbp
+sub rdx, rdi
+mov rsi, rdi
+mov eax, 1
+mov edi, 1
+syscall
+leave
+ret
+
+error_at_current:
+mov rax, rsi
+sub rax, r14
+mov qword ptr [rip + error_pos], rax
+mov eax, 1
+ret
+
+error_at_end:
+mov rax, r13
+mov qword ptr [rip + error_pos], rax
+mov eax, 1
+ret
+
+skip_ws:
+.sw_again:
+cmp rsi, r15
+jae .sw_ret
+movzx eax, byte ptr [rsi]
+cmp al, 0x20
+je .sw_eat
+cmp al, 9
+je .sw_eat
+cmp al, 10
+je .sw_eat
+cmp al, 13
+je .sw_eat
+.sw_ret:
+ret
+.sw_eat:
+inc rsi
+jmp .sw_again
+
+parse_literal:
+mov rax, r15
+sub rax, rsi
+cmp rax, rcx
+jb error_at_end
+.lit_loop:
+movzx eax, byte ptr [rsi]
+cmp al, byte ptr [rdx]
+jne error_at_current
+inc rsi
+inc rdx
+dec rcx
+jnz .lit_loop
+xor eax, eax
+ret
+
+parse_document:
+call skip_ws
+cmp rsi, r15
+jae error_at_end
+call parse_value
+test eax, eax
+jnz .pd_ret
+call skip_ws
+cmp rsi, r15
+je .pd_ok
+jmp error_at_current
+.pd_ok:
+xor eax, eax
+.pd_ret:
+ret
+
+parse_value:
+cmp rsi, r15
+jae error_at_end
+movzx eax, byte ptr [rsi]
+cmp al, '{'
+je parse_object
+cmp al, '['
+je parse_array
+cmp al, '"'
+je parse_string
+cmp al, '-'
+je parse_number
+cmp al, '0'
+jb .pv_try_lit
+cmp al, '9'
+jbe parse_number
+.pv_try_lit:
+cmp al, 't'
+je .pv_true
+cmp al, 'f'
+je .pv_false
+cmp al, 'n'
+je .pv_null
+jmp error_at_current
+.pv_true:
+mov ecx, 4
+lea rdx, [rip + str_true]
+jmp parse_literal
+.pv_false:
+mov ecx, 5
+lea rdx, [rip + str_false]
+jmp parse_literal
+.pv_null:
+mov ecx, 4
+lea rdx, [rip + str_null]
+jmp parse_literal
+
+parse_string:
+inc rsi
+.ps_loop:
+cmp rsi, r15
+jae error_at_end
+movzx eax, byte ptr [rsi]
+cmp al, '"'
+je .ps_close
+cmp al, '\\'
+je .ps_esc
+cmp al, 0x20
+jb error_at_current
+inc rsi
+jmp .ps_loop
+.ps_close:
+inc rsi
+xor eax, eax
+ret
+.ps_esc:
+inc rsi
+cmp rsi, r15
+jae error_at_end
+movzx eax, byte ptr [rsi]
+cmp al, '"'
+je .ps_esc_ok
+cmp al, '\\'
+je .ps_esc_ok
+cmp al, '/'
+je .ps_esc_ok
+cmp al, 'b'
+je .ps_esc_ok
+cmp al, 'f'
+je .ps_esc_ok
+cmp al, 'n'
+je .ps_esc_ok
+cmp al, 'r'
+je .ps_esc_ok
+cmp al, 't'
+je .ps_esc_ok
+cmp al, 'u'
+je .ps_uni
+jmp error_at_current
+.ps_esc_ok:
+inc rsi
+jmp .ps_loop
+.ps_uni:
+inc rsi
+mov ecx, 4
+.ps_uni_loop:
+cmp rsi, r15
+jae error_at_end
+movzx eax, byte ptr [rsi]
+cmp al, '0'
+jb error_at_current
+cmp al, '9'
+jbe .ps_uni_ok
+or al, 0x20
+cmp al, 'a'
+jb error_at_current
+cmp al, 'f'
+ja error_at_current
+.ps_uni_ok:
+inc rsi
+dec ecx
+jnz .ps_uni_loop
+jmp .ps_loop
+
+parse_number:
+cmp byte ptr [rsi], '-'
+jne .pn_no_minus
+inc rsi
+cmp rsi, r15
+jae error_at_end
+.pn_no_minus:
+movzx eax, byte ptr [rsi]
+cmp al, '0'
+je .pn_is_zero
+cmp al, '1'
+jb error_at_current
+cmp al, '9'
+ja error_at_current
+.pn_int_loop:
+inc rsi
+cmp rsi, r15
+jae .pn_after_int
+movzx eax, byte ptr [rsi]
+cmp al, '0'
+jb .pn_after_int
+cmp al, '9'
+ja .pn_after_int
+jmp .pn_int_loop
+.pn_is_zero:
+inc rsi
+cmp rsi, r15
+jae .pn_after_int
+movzx eax, byte ptr [rsi]
+cmp al, '0'
+jb .pn_after_int
+cmp al, '9'
+ja .pn_after_int
+jmp error_at_current
+.pn_after_int:
+cmp rsi, r15
+jae .pn_success
+cmp byte ptr [rsi], '.'
+jne .pn_exp_check
+inc rsi
+cmp rsi, r15
+jae error_at_end
+movzx eax, byte ptr [rsi]
+cmp al, '0'
+jb error_at_current
+cmp al, '9'
+ja error_at_current
+.pn_frac_loop:
+inc rsi
+cmp rsi, r15
+jae .pn_exp_check
+movzx eax, byte ptr [rsi]
+cmp al, '0'
+jb .pn_exp_check
+cmp al, '9'
+ja .pn_exp_check
+jmp .pn_frac_loop
+.pn_exp_check:
+cmp rsi, r15
+jae .pn_success
+movzx eax, byte ptr [rsi]
+cmp al, 'e'
+je .pn_do_exp
+cmp al, 'E'
+je .pn_do_exp
+jmp .pn_success
+.pn_do_exp:
+inc rsi
+cmp rsi, r15
+jae error_at_end
+movzx eax, byte ptr [rsi]
+cmp al, '+'
+je .pn_exp_sign
+cmp al, '-'
+je .pn_exp_sign
+jmp .pn_exp_need_dig
+.pn_exp_sign:
+inc rsi
+.pn_exp_need_dig:
+cmp rsi, r15
+jae error_at_end
+movzx eax, byte ptr [rsi]
+cmp al, '0'
+jb error_at_current
+cmp al, '9'
+ja error_at_current
+.pn_exp_loop:
+inc rsi
+cmp rsi, r15
+jae .pn_success
+movzx eax, byte ptr [rsi]
+cmp al, '0'
+jb .pn_success
+cmp al, '9'
+ja .pn_success
+jmp .pn_exp_loop
+.pn_success:
+xor eax, eax
+ret
+
+parse_object:
+inc rsi
+call skip_ws
+cmp rsi, r15
+jae error_at_end
+cmp byte ptr [rsi], '}'
+je .po_close
+.po_next_member:
+cmp byte ptr [rsi], '"'
+jne error_at_current
+call parse_string
+test eax, eax
+jnz .po_retfail
+call skip_ws
+cmp rsi, r15
+jae error_at_end
+cmp byte ptr [rsi], ':'
+jne error_at_current
+inc rsi
+call skip_ws
+call parse_value
+test eax, eax
+jnz .po_retfail
+call skip_ws
+cmp rsi, r15
+jae error_at_end
+movzx eax, byte ptr [rsi]
+cmp al, '}'
+je .po_close
+cmp al, ','
+jne error_at_current
+inc rsi
+call skip_ws
+cmp rsi, r15
+jae error_at_end
+jmp .po_next_member
+.po_close:
+inc rsi
+xor eax, eax
+ret
+.po_retfail:
+ret
+
+parse_array:
+inc rsi
+call skip_ws
+cmp rsi, r15
+jae error_at_end
+cmp byte ptr [rsi], ']'
+je .pa_close
+.pa_next_value:
+call parse_value
+test eax, eax
+jnz .pa_retfail
+call skip_ws
+cmp rsi, r15
+jae error_at_end
+movzx eax, byte ptr [rsi]
+cmp al, ']'
+je .pa_close
+cmp al, ','
+jne error_at_current
+inc rsi
+call skip_ws
+cmp rsi, r15
+jae error_at_end
+jmp .pa_next_value
+.pa_close:
+inc rsi
+xor eax, eax
+ret
+.pa_retfail:
+ret
+
+.bss
+.align 8
+error_pos:
+.zero 8
+.align 16
+buffer:
+.zero 65536

@@ -1,0 +1,187 @@
+.globl _start
+.text
+_start:
+    # ---------- read whole input (max 65536 bytes) ----------
+    xor     rcx, rcx                     # rcx = current length
+read_loop:
+    mov     rax, 0                       # sys_read
+    mov     rdi, 0                       # stdin
+    lea     rsi, [rip + input_buf]       # base address
+    add     rsi, rcx                     # rsi = base + len
+    mov     rdx, INPUT_MAX
+    sub     rdx, rcx                     # remaining space
+    syscall
+    test    rax, rax
+    jz      after_read
+    add     rcx, rax
+    cmp     rcx, INPUT_MAX
+    jae     after_read
+    jmp     read_loop
+after_read:
+    mov     [rip + input_len], rcx
+
+    # ---------- pointers ----------
+    lea     rbx, [rip + input_buf]       # rbx = cur ptr
+    mov     r12, rbx
+    add     r12, rcx                     # r12 = end ptr
+
+line_loop:
+    cmp     rbx, r12
+    jae     exit_program
+
+    # ---------- find end of line ----------
+    mov     r13, rbx                     # r13 = line start
+    mov     r14, rbx                     # r14 = scan ptr
+find_nl:
+    cmp     r14, r12
+    jae     no_nl
+    mov     al, byte ptr [r14]
+    cmp     al, 0x0A
+    je      has_nl
+    inc     r14
+    jmp     find_nl
+has_nl:
+    # r14 points to newline, line bytes are [r13, r14)
+    jmp     process_line
+no_nl:
+    # line ends at end of input
+    mov     r14, r12
+process_line:
+    # reset stack
+    xor     rax, rax
+    mov     [rip + stack_ptr], rax
+
+    # error flag = 0
+    xor     r15, r15                     # r15 = error (0 = ok)
+
+    # token pointer
+    mov     rsi, r13                     # rsi = cur token ptr
+
+token_skip_sep:
+    cmp     rsi, r14
+    jae     token_done_line
+    mov     al, byte ptr [rsi]
+    cmp     al, 0x20
+    je      inc_skip
+    cmp     al, 0x09
+    je      inc_skip
+    jmp     token_start
+inc_skip:
+    inc     rsi
+    jmp     token_skip_sep
+
+token_start:
+    mov     rdx, rsi                     # rdx = token start
+scan_token:
+    cmp     rsi, r14
+    jae     token_end
+    mov     al, byte ptr [rsi]
+    cmp     al, 0x20
+    je      token_end
+    cmp     al, 0x09
+    je      token_end
+    inc     rsi
+    jmp     scan_token
+token_end:
+    mov     r11, rsi                     # r11 = token end
+    sub     r11, rdx                     # r11 = token_len
+    cmp     r11, 0
+    je      token_skip_sep               # empty token (should not happen)
+
+    # --- check for single-char operator ---
+    cmp     r11, 1
+    jne     not_operator
+    mov     al, byte ptr [rdx]
+    cmp     al, '+'
+    je      do_plus
+    cmp     al, '-'
+    je      do_minus
+    cmp     al, '*'
+    je      do_mul
+    cmp     al, '/'
+    je      do_div
+    cmp     al, '%'
+    je      do_mod
+    jmp     not_operator
+
+# ---------- operators ----------
+do_plus:
+    call    pop_two
+    add     rax, rcx
+    jmp     push_result
+do_minus:
+    call    pop_two
+    sub     rax, rcx
+    jmp     push_result
+do_mul:
+    call    pop_two
+    mul     rcx          # rdx:rax = rax*rcx, low part in rax
+    jmp     push_result
+do_div:
+    call    pop_two
+    test    rcx, rcx
+    jne     div_check
+    mov     r15, 1
+    jmp     after_op
+div_check:
+    mov     rdx, rax
+    mov     r8, 0x8000000000000000
+    cmp     rdx, r8
+    jne     do_idiv
+    cmp     rcx, -1
+    jne     do_idiv
+    mov     r15, 1
+    jmp     after_op
+do_idiv:
+    cqo                       # sign-extend rax into rdx
+    idiv    rcx
+    # quotient in rax
+    jmp     push_result
+do_mod:
+    call    pop_two
+    test    rcx, rcx
+    jne     mod_check
+    mov     r15, 1
+    jmp     after_op
+mod_check:
+    mov     rdx, rax
+    mov     r8, 0x8000000000000000
+    cmp     rdx, r8
+    jne     do_idiv_mod
+    cmp     rcx, -1
+    jne     do_idiv_mod
+    mov     r15, 1
+    jmp     after_op
+do_idiv_mod:
+    cqo
+    idiv    rcx
+    # remainder in rdx
+    mov     rax, rdx
+    jmp     push_result
+after_op:
+    jmp     token_continue
+
+# ---------- not an operator: parse integer literal ----------
+not_operator:
+    # rdx = token start, r11 = token_len
+    mov     r8, rdx          # r8 = ptr
+    mov     al, byte ptr [r8]
+    cmp     al, '-'
+    jne     lit_positive
+    mov     r9, 1            # sign flag
+    inc     r8               # skip '-'
+    jmp     lit_digits
+lit_positive:
+    xor     r9, r9           # sign = 0
+lit_digits:
+    mov     rax, r11
+    sub     rax, r9          # digit_len = token_len - sign
+    cmp     rax, 1
+    jl      token_error
+    cmp     rax, 18
+    jg      token_error
+    xor     rbx, rbx         # accumulator = 0
+digit_loop:
+    cmp     r8, rdx
+    add     r8, r9           # move to first digit (if sign was present)
+    ; actually we need a proper loop:

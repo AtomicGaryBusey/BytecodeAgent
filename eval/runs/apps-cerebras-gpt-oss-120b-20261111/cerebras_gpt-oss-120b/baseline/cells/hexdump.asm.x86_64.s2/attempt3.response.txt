@@ -1,0 +1,202 @@
+.globl _start
+
+.section .rodata
+hex_digits:
+    .ascii "0123456789abcdef"
+
+.section .bss
+buffer:
+    .space 65536
+line_buf:
+    .space 80
+
+.text
+_start:
+    # r12 = address of hex_digits
+    lea r12, [rip + hex_digits]
+
+    # ----- read all input -----
+    lea rbx, [rip + buffer]          # rbx = write pointer into buffer
+    xor rdx, rdx                     # rdx = total bytes read (len)
+read_loop:
+    mov rax, 0                       # sys_read
+    mov rdi, 0                       # fd = stdin
+    mov rsi, rbx                     # buf = current pointer
+    mov rdx, 65536
+    sub rdx, rdx                     # compute remaining space = 65536 - len
+    sub rdx, rdx                     # placeholder, will be overwritten by correct calc
+    # correct remaining = 65536 - len
+    mov rax, 65536
+    sub rax, rdx                     # rax = 65536 - len
+    mov rdx, rax                     # rdx = remaining
+    test rdx, rdx
+    jle read_done
+    syscall
+    test rax, rax
+    je read_done
+    add rdx, rax                     # total += bytes_read (using rdx as len)
+    add rbx, rax                     # advance write pointer
+    jmp read_loop
+
+read_done:
+    # rdx = total length, r8 = total length copy
+    mov r8, rdx                      # r8 = total_len
+    xor rdx, rdx                     # rdx = offset = 0
+    lea rsi, [rip + buffer]          # rsi = data pointer
+
+process_rows:
+    cmp rdx, r8
+    jae final_offset
+
+    # compute n = min(16, total_len - offset)
+    mov r10, r8
+    sub r10, rdx                     # r10 = remaining
+    cmp r10, 16
+    jae have_full
+    # n = remaining (<16)
+    jmp have_n
+have_full:
+    mov r10, 16                      # n = 16
+have_n:
+    # ----- build one output line -----
+    lea r13, [rip + line_buf]        # r13 = line buffer base
+    lea r14, [rip + line_buf]        # r14 = line pointer
+
+    # write offset (8 hex digits)
+    mov rax, rdx                     # rax = offset
+    mov rcx, 8
+offset_loop:
+    mov r9d, eax
+    shr r9d, 28
+    and r9d, 0xF
+    mov al, [r12 + r9]               # hex digit
+    mov [r14], al
+    inc r14
+    shl rax, 4
+    dec rcx
+    jnz offset_loop
+
+    # two spaces after offset
+    mov byte [r14], 0x20
+    inc r14
+    mov byte [r14], 0x20
+    inc r14
+
+    # hex byte slots (0..15)
+    xor rcx, rcx                     # i = 0
+hex_loop:
+    cmp rcx, 16
+    je hex_done
+    cmp rcx, r10
+    jae hex_empty_slot
+
+    # byte present
+    mov al, [rsi + rcx]
+    movzx ebx, al
+    mov edx, ebx
+    shr ebx, 4
+    and ebx, 0xF
+    and edx, 0xF
+    mov al, [r12 + rbx]              # high nibble
+    mov [r14], al
+    inc r14
+    mov al, [r12 + rdx]              # low nibble
+    mov [r14], al
+    inc r14
+    mov byte [r14], 0x20
+    inc r14
+    jmp after_hex_slot
+
+hex_empty_slot:
+    # three spaces
+    mov byte [r14], 0x20
+    inc r14
+    mov byte [r14], 0x20
+    inc r14
+    mov byte [r14], 0x20
+    inc r14
+
+after_hex_slot:
+    inc rcx
+    cmp rcx, 8
+    jne hex_loop
+    # extra space after eighth slot
+    mov byte [r14], 0x20
+    inc r14
+    jmp hex_loop
+
+hex_done:
+    # space and '|'
+    mov byte [r14], 0x20
+    inc r14
+    mov byte [r14], 0x7c
+    inc r14
+
+    # ASCII representation
+    xor rcx, rcx                     # i = 0
+ascii_loop:
+    cmp rcx, r10
+    je ascii_done
+    mov al, [rsi + rcx]
+    cmp al, 0x20
+    jl ascii_dot
+    cmp al, 0x7e
+    jg ascii_dot
+    mov [r14], al
+    inc r14
+    jmp ascii_next
+ascii_dot:
+    mov byte [r14], 0x2e
+    inc r14
+ascii_next:
+    inc rcx
+    jmp ascii_loop
+ascii_done:
+    mov byte [r14], 0x7c
+    inc r14
+    mov byte [r14], 0x0a
+    inc r14
+
+    # write the line
+    mov rax, r14
+    sub rax, r13                     # rax = line length
+    mov rdx, rax
+    mov rax, 1                       # sys_write
+    mov rdi, 1                       # fd = stdout
+    mov rsi, r13
+    syscall
+
+    # advance data pointer and offset
+    add rsi, r10
+    add rdx, r10                     # rdx was offset, now offset+=n
+    jmp process_rows
+
+final_offset:
+    # print total length as 8 hex digits + newline
+    lea r13, [rip + line_buf]        # base
+    lea r14, [rip + line_buf]        # pointer
+    mov rax, r8                      # total length
+    mov rcx, 8
+final_off_loop:
+    mov r9d, eax
+    shr r9d, 28
+    and r9d, 0xF
+    mov al, [r12 + r9]
+    mov [r14], al
+    inc r14
+    shl rax, 4
+    dec rcx
+    jnz final_off_loop
+    mov byte [r14], 0x0a
+    inc r14
+    mov rdx, r14
+    sub rdx, r13                     # length
+    mov rax, 1
+    mov rdi, 1
+    mov rsi, r13
+    syscall
+
+    # exit
+    mov rax, 60                      # sys_exit
+    xor rdi, rdi
+    syscall

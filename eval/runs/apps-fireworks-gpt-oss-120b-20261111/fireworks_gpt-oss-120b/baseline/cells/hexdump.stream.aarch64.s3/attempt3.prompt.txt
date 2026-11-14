@@ -1,0 +1,294 @@
+Write the complete program `hexdump`: a static Linux executable for AArch64 (ARMv8-A, little-endian), written in assembly. There is no C library, no C runtime and no helper code: you write the entry point `_start`, every function, every table and string, and make the system calls yourself.
+
+Entry state (as the Linux kernel sets it up): execution starts at the label `_start`. sp is 16-byte aligned and points at argc = 0, followed by the NULL terminators of an empty argv, an empty envp and an empty auxiliary vector: the program gets no arguments. Every other general-purpose register (x0-x30) is zero; x30 is not a return address, so `_start` must never return with `ret`; the program ends only through the exit system call.
+
+System calls: the `svc #0` instruction, with the system call number in x8 and the arguments in x0, x1, x2; the result comes back in x0. Every other register is preserved. Exactly these four are available:
+- read = 63: read(fd = 0, buf, count) reads up to count bytes of standard input into buf; returns the number of bytes read, 0 at end of input.
+- write = 64: write(fd, buf, count) with fd 1 (standard output) or 2 (standard error); returns count.
+- exit = 93: exit(status) ends the program; the exit status is the low 8 bits of status.
+- exit_group = 94: the same as exit.
+Any other system call number or file descriptor stops the program with an error, and so does a buffer that is not entirely inside the program's memory.
+
+Memory: the program's own sections plus a stack of 1 MiB below the entry sp. There is no heap (no brk, no mmap, no malloc): put working storage in `.bss` (zero-initialised), at most 1 MiB in total, or on the stack. Code is not writable. Any access outside these areas stops the program. Each test run may execute at most 50,000,000 instructions.
+
+Output format: one complete assembly source file in GNU assembler (GNU as) syntax for AArch64. Examples: `ldr x2, [x0, x1, lsl #3]`, `ldrb w3, [x1], #1`, `stp x29, x30, [sp, #-16]!`. Comments start with `//`; do not use `;`.
+Allowed in the file:
+- Sections: `.text` (code), `.section .rodata` (read-only data), `.data` (initialised writable data), `.bss` (zero-initialised space: only `.zero`/`.space` and alignment). Instructions go in `.text` only.
+- Data directives: `.byte`, `.short`/`.2byte`, `.word` (4 bytes on this target), `.long`/`.int`/`.4byte`, `.quad`/`.8byte`, `.ascii`, `.asciz`/`.string`, `.zero`/`.space`, alignment with `.align`/`.balign`/`.p2align`, and `.globl`/`.global` (write `.globl _start`).
+- Labels `name:` in any section, and GNU local labels `1:` referenced as `1f` (next) / `1b` (previous).
+- Constants: `.equ name, value` (or `.set name, value`, or `name = value`), where value is a number or a difference of labels defined earlier in the same section (e.g. `msg_len = . - msg`). Define every constant before its first use.
+- Addressing data: `adrp x0, label` followed by `add x0, x0, :lo12:label` (or a load/store `ldr x1, [x0, :lo12:label]`); `adr x0, label` also works within +-1 MiB. Literal pools are NOT allowed: no `ldr x0, =label` and no `ldr x0, =constant` (build constants with mov/movz/movk).
+Not allowed: macros (`.macro`, `.rept`, `.irp`), conditional assembly (`.if`), `.include`, `.incbin`, `.fill`, `.org`, `.comm`/`.lcomm`, `.inst`, `.cfi_*` directives, section stacks (`.pushsection`) and any other section. No libc and no other library: there is nothing to link against, so every symbol you use must be defined in your file.
+Instruction set: ARMv8.0-A with floating point and Advanced SIMD (NEON). Not supported (rejected): CRC32, LSE atomics, dot product, half-precision, crypto (AES/SHA/PMULL) and SVE.
+Output ONLY the assembly source: no Markdown fences, no prose before or after it.
+
+Specification: Task `hexdump`: print a canonical hex+ASCII dump of standard input (like `hexdump -C`, but with NO squeezing of
+repeated lines and with the final offset line always printed).
+
+The input is shown in rows of 16 bytes; the last row may be shorter (1 to 15 bytes). For a row of n bytes that
+starts at byte offset `off`, print exactly:
+1. `off` as 8 lowercase hexadecimal digits (zero-padded), then two spaces;
+2. for each position i = 0..15: if i < n, the byte as 2 lowercase hex digits followed by one space; otherwise
+   three spaces. After position 7 (the eighth byte slot) print one extra space;
+3. one space, `|`, then the n bytes as characters: a byte 0x20-0x7E is printed as itself, every other byte
+   (0x00-0x1F and 0x7F-0xFF) is printed as `.`; then `|` and a newline. The character column is NOT padded for
+   a short row.
+
+After all rows, print the total input length as 8 lowercase hex digits and a newline. Empty input therefore
+prints only `00000000\n`. Identical rows are printed in full (never replaced by `*`).
+
+Example: input `0123456789abcdefXYZ\n` (20 bytes) prints
+`00000000  30 31 32 33 34 35 36 37  38 39 61 62 63 64 65 66  |0123456789abcdef|\n`
+`00000010  58 59 5a 0a                                       |XYZ.|\n`
+`00000014\n`
+(each full row is exactly 78 characters plus the newline).
+
+Limits: the input is at most 65536 bytes. Exit status 0.
+
+Input and output (applies to this whole task):
+- The input is the complete contents of standard input (file descriptor 0). Read it with `read` until `read`
+  returns 0 (end of input). A `read` may return FEWER bytes than requested, at any position (in the middle of a
+  line, a token or a group of bytes), so keep calling it; only a return value of 0 means end of input.
+- Write the output to standard output (file descriptor 1). Only the bytes this task describes may appear on
+  standard output (standard error is ignored). Every output byte must be written before the program exits.
+- Finish with `exit` (or `exit_group`) and the exit status this task gives. The program must not run off the end
+  of its code or crash.
+
+Your previous attempt was:
+<previous>
+	.global _start
+	.text
+	.align 2
+
+	.equ SYS_READ,   63
+	.equ SYS_WRITE,  64
+	.equ SYS_EXIT,   93
+	.equ BUF_SIZE,   65536
+
+	// hex digits table
+	.section .rodata
+hex_table:
+	.ascii "0123456789abcdef"
+
+	// buffers
+	.bss
+	.align 4
+buf:        .skip 65536
+rowbuf:     .skip 80
+
+	.text
+_start:
+	// x19 = total length = 0
+	mov	x19, #0
+
+	// load addresses
+	adrp	x20, buf                // x20 = &buf
+	add	x20, x20, :lo12:buf
+
+	adrp	x10, hex_table          // x10 = &hex_table
+	add	x10, x10, :lo12:hex_table
+
+	adrp	x11, rowbuf             // x11 = &rowbuf
+
+read_loop:
+	// read(fd=0, buf+total_len, BUF_SIZE)
+	mov	x0, #0
+	add	x1, x20, x19            // dest = buf + total_len
+	mov	x2, #BUF_SIZE
+	mov	x8, #SYS_READ
+	svc	#0
+	cbnz	x0, read_continue
+	b	read_done
+read_continue:
+	add	x19, x19, x0            // total_len += bytes read
+	b	read_loop
+
+read_done:
+	// offset = 0
+	mov	x21, #0                 // x21 = offset
+
+row_loop:
+	cmp	x21, x19
+	b.ge	rows_done
+
+	// remaining = total_len - offset
+	sub	x22, x19, x21           // x22 = remaining
+	// row_len = min(16, remaining)
+	mov	x24, #16
+	mov	x23, x22                // assume row_len = remaining
+	cmp	x22, #16
+	csel	x23, x23, x24, hi       // if remaining > 16 then row_len = 16
+
+	// p = rowbuf, start = rowbuf
+	mov	x25, x11                // x25 = ptr (write position)
+	mov	x9,  x11                // x9 = start of rowbuf
+
+	// ---- offset 8 hex digits (high to low)
+	mov	x26, x21                // value to convert
+	mov	x28, #8                 // digit count
+offset_loop:
+	subs	x28, x28, #1
+	lsl	x0, x28, #2             // shift = (digit)*4
+	lsr	x1, x26, x0
+	and	x1, x1, #0xF
+	add	x2, x10, x1
+	ldrb	w3, [x2]
+	strb	w3, [x25], #1
+	cbnz	x28, offset_loop
+
+	// two spaces
+	mov	w3, #' '
+	strb	w3, [x25], #1
+	strb	w3, [x25], #1
+
+	// ---- hex bytes (0..15)
+	mov	x28, #0                 // i = 0
+hex_byte_loop:
+	cmp	x28, #16
+	b.eq	hex_bytes_done
+
+	// if i < row_len ?
+	cmp	x28, x23
+	b.ge	hex_blank
+
+	// load byte = buf[offset + i]
+	add	x0, x20, x21
+	add	x0, x0, x28
+	ldrb	w1, [x0]
+
+	// high nibble
+	ubfx	x2, x1, #4, #4
+	// low nibble
+	and	x4, x1, #0xF
+
+	// high char
+	add	x5, x10, x2
+	ldrb	w6, [x5]
+	strb	w6, [x25], #1
+	// low char
+	add	x5, x10, x4
+	ldrb	w6, [x5]
+	strb	w6, [x25], #1
+	// space
+	mov	w6, #' '
+	strb	w6, [x25], #1
+	b	hex_next
+
+hex_blank:
+	// three spaces
+	mov	w6, #' '
+	strb	w6, [x25], #1
+	strb	w6, [x25], #1
+	strb	w6, [x25], #1
+
+hex_next:
+	// extra space after 8th byte
+	cmp	x28, #7
+	b.ne	hex_cont
+	mov	w6, #' '
+	strb	w6, [x25], #1
+hex_cont:
+	add	x28, x28, #1
+	b	hex_byte_loop
+
+hex_bytes_done:
+	// space and '|'
+	mov	w6, #' '
+	strb	w6, [x25], #1
+	mov	w6, #'|'
+	strb	w6, [x25], #1
+
+	// ---- ASCII representation
+	mov	x28, #0                 // i = 0
+ascii_loop:
+	cmp	x28, x23
+	b.ge	ascii_done
+
+	// load byte
+	add	x0, x20, x21
+	add	x0, x0, x28
+	ldrb	w1, [x0]
+
+	// printable?
+	cmp	w1, #0x20
+	blt	print_dot
+	cmp	w1, #0x7e
+	bgt	print_dot
+	// printable
+	strb	w1, [x25], #1
+	b	ascii_next
+
+print_dot:
+	mov	w1, #'.'
+	strb	w1, [x25], #1
+
+ascii_next:
+	add	x28, x28, #1
+	b	ascii_loop
+
+ascii_done:
+	// trailing '|' and newline
+	mov	w6, #'|'
+	strb	w6, [x25], #1
+	mov	w6, #'\n'
+	strb	w6, [x25], #1
+
+	// length = 63 + row_len
+	add	x0, x23, #63           // x0 = count
+	// write(fd=1, rowbuf, count)
+	mov	x1, x9
+	mov	x2, x0
+	mov	x0, #1
+	mov	x8, #SYS_WRITE
+	svc	#0
+
+	// advance offset
+	add	x21, x21, x23
+	b	row_loop
+
+rows_done:
+	// ---- final total length line: 8 hex digits + newline
+	// use rowbuf again
+	mov	x25, x11                // ptr
+	mov	x9,  x11                // start
+
+	mov	x26, x19                // total_len
+
+	mov	x28, #8                 // digit count
+offset2_loop:
+	subs	x28, x28, #1
+	lsl	x0, x28, #2
+	lsr	x1, x26, x0
+	and	x1, x1, #0xF
+	add	x2, x10, x1
+	ldrb	w3, [x2]
+	strb	w3, [x25], #1
+	cbnz	x28, offset2_loop
+
+	// newline
+	mov	w3, #'\n'
+	strb	w3, [x25], #1
+
+	// write total length line (9 bytes)
+	mov	x0, #9
+	mov	x1, x9
+	mov	x2, x0
+	mov	x0, #1
+	mov	x8, #SYS_WRITE
+	svc	#0
+
+	// exit(0)
+	mov	x0, #0
+	mov	x8, #SYS_EXIT
+	svc	#0
+</previous>
+It failed:
+<failure>
+Test `one_byte` failed (stdin delivered whole; test run 2 of 42; the runs before it passed).
+stdin (1 bytes): "A"
+exit status: expected 0, got 0
+stdout differs from byte 13 on (line 1, column 14 of the expected output); expected 73 bytes in total, got 88
+  expected from byte 13: "                                               |A|\n00000001\n"
+  actual from byte 13:   "00 00 00 00 00 00 00  00 00 00 00 00 00 00 00  |A...............|\n00000001\n"
+</failure>
+Write a corrected, complete version. Same output format; output only the code.

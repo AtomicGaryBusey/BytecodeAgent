@@ -1,0 +1,306 @@
+.globl _start
+
+.text
+_start:
+    lea     r12, [rip + inbuf]
+    lea     r13, [rip + inbuf]
+    add     r13, 65536
+
+read_loop:
+    mov     rdx, r13
+    sub     rdx, r12
+    test    rdx, rdx
+    jz      read_done
+    xor     eax, eax
+    xor     edi, edi
+    mov     rsi, r12
+    syscall
+    test    rax, rax
+    jle     read_done
+    add     r12, rax
+    jmp     read_loop
+
+read_done:
+    mov     r13, r12
+    lea     r12, [rip + inbuf]
+    xor     r14d, r14d
+
+line_loop:
+    cmp     r12, r13
+    jae     all_done
+
+    cmp     r14, 4000
+    jb      no_flush
+    call    flush
+no_flush:
+
+    mov     rbx, r12
+    mov     rax, r12
+find_nl:
+    cmp     rax, r13
+    jae     got_nl
+    cmp     byte ptr [rax], 10
+    je      got_nl
+    inc     rax
+    jmp     find_nl
+got_nl:
+    mov     rbp, rax
+    mov     r12, rax
+    cmp     r12, r13
+    jae     no_adv
+    inc     r12
+no_adv:
+
+    call    eval_line
+    test    rdx, rdx
+    jnz     print_error
+    call    print_num
+    jmp     line_loop
+
+print_error:
+    lea     rdi, [rip + outbuf]
+    add     rdi, r14
+    lea     rsi, [rip + errmsg]
+    mov     ecx, 6
+pe_loop:
+    mov     al, byte ptr [rsi]
+    mov     byte ptr [rdi], al
+    inc     rsi
+    inc     rdi
+    dec     ecx
+    jnz     pe_loop
+    add     r14, 6
+    jmp     line_loop
+
+all_done:
+    call    flush
+    mov     eax, 231
+    xor     edi, edi
+    syscall
+    mov     eax, 60
+    xor     edi, edi
+    syscall
+
+# ---------------------------------------------------------------
+# flush output buffer
+flush:
+    test    r14, r14
+    jz      fl_ret
+    mov     eax, 1
+    mov     edi, 1
+    lea     rsi, [rip + outbuf]
+    mov     rdx, r14
+    syscall
+    xor     r14d, r14d
+fl_ret:
+    ret
+
+# ---------------------------------------------------------------
+# print_num: rax = signed value, appends decimal + newline to outbuf
+print_num:
+    sub     rsp, 40
+    xor     r10d, r10d
+    mov     rsi, rax
+    test    rsi, rsi
+    jns     pn_pos
+    mov     r10d, 1
+    neg     rsi
+pn_pos:
+    xor     ecx, ecx
+    mov     rax, rsi
+    mov     r11, 10
+pn_loop:
+    xor     edx, edx
+    div     r11
+    add     dl, 48
+    mov     byte ptr [rsp + rcx], dl
+    inc     rcx
+    test    rax, rax
+    jnz     pn_loop
+
+    lea     rdi, [rip + outbuf]
+    add     rdi, r14
+    test    r10d, r10d
+    jz      pn_nosign
+    mov     byte ptr [rdi], 45
+    inc     rdi
+    inc     r14
+pn_nosign:
+pn_emit:
+    dec     rcx
+    mov     al, byte ptr [rsp + rcx]
+    mov     byte ptr [rdi], al
+    inc     rdi
+    inc     r14
+    test    rcx, rcx
+    jnz     pn_emit
+    mov     byte ptr [rdi], 10
+    inc     r14
+    add     rsp, 40
+    ret
+
+# ---------------------------------------------------------------
+# eval_line: rbx = line start, rbp = line end (exclusive)
+# returns rax = value, rdx = 0 ok / 1 error
+eval_line:
+    xor     r8d, r8d
+    lea     r9, [rip + vstack]
+
+tok_loop:
+el_skip:
+    cmp     rbx, rbp
+    jae     tok_end
+    movzx   eax, byte ptr [rbx]
+    cmp     al, 32
+    je      el_sep
+    cmp     al, 9
+    je      el_sep
+    jmp     el_tokstart
+el_sep:
+    inc     rbx
+    jmp     el_skip
+
+el_tokstart:
+    mov     rsi, rbx
+el_scan:
+    inc     rbx
+    cmp     rbx, rbp
+    jae     el_scandone
+    movzx   eax, byte ptr [rbx]
+    cmp     al, 32
+    je      el_scandone
+    cmp     al, 9
+    je      el_scandone
+    jmp     el_scan
+el_scandone:
+    mov     rcx, rbx
+    sub     rcx, rsi
+    cmp     rcx, 1
+    jne     el_notop
+    movzx   eax, byte ptr [rsi]
+    cmp     al, 43
+    je      el_doop
+    cmp     al, 45
+    je      el_doop
+    cmp     al, 42
+    je      el_doop
+    cmp     al, 47
+    je      el_doop
+    cmp     al, 37
+    je      el_doop
+
+el_notop:
+    mov     rdi, rsi
+    xor     r10d, r10d
+    movzx   eax, byte ptr [rdi]
+    cmp     al, 45
+    jne     el_nonneg
+    mov     r10d, 1
+    inc     rdi
+el_nonneg:
+    mov     rdx, rbx
+    sub     rdx, rdi
+    cmp     rdx, 1
+    jb      el_error
+    cmp     rdx, 18
+    ja      el_error
+    xor     eax, eax
+el_digloop:
+    movzx   ecx, byte ptr [rdi]
+    sub     ecx, 48
+    cmp     ecx, 9
+    ja      el_error
+    lea     rax, [rax + rax*4]
+    lea     rax, [rax + rax]
+    add     rax, rcx
+    inc     rdi
+    cmp     rdi, rbx
+    jb      el_digloop
+    test    r10d, r10d
+    jz      el_push
+    neg     rax
+el_push:
+    cmp     r8, 1024
+    jae     el_error
+    mov     qword ptr [r9 + r8*8], rax
+    inc     r8
+    jmp     tok_loop
+
+el_doop:
+    mov     r10d, eax
+    cmp     r8, 2
+    jb      el_error
+    mov     rdi, qword ptr [r9 + r8*8 - 8]
+    mov     rax, qword ptr [r9 + r8*8 - 16]
+    dec     r8
+    cmp     r10b, 43
+    je      el_add
+    cmp     r10b, 45
+    je      el_sub
+    cmp     r10b, 42
+    je      el_mul
+    cmp     r10b, 47
+    je      el_div
+    jmp     el_mod
+
+el_add:
+    add     rax, rdi
+    jmp     el_store
+el_sub:
+    sub     rax, rdi
+    jmp     el_store
+el_mul:
+    imul    rax, rdi
+    jmp     el_store
+el_div:
+    test    rdi, rdi
+    jz      el_error
+    cmp     rdi, -1
+    jne     el_divok
+    mov     rcx, 0x8000000000000000
+    cmp     rax, rcx
+    je      el_error
+el_divok:
+    cqo
+    idiv    rdi
+    jmp     el_store
+el_mod:
+    test    rdi, rdi
+    jz      el_error
+    cmp     rdi, -1
+    jne     el_modok
+    mov     rcx, 0x8000000000000000
+    cmp     rax, rcx
+    je      el_error
+el_modok:
+    cqo
+    idiv    rdi
+    mov     rax, rdx
+    jmp     el_store
+
+el_store:
+    mov     qword ptr [r9 + r8*8 - 8], rax
+    jmp     tok_loop
+
+tok_end:
+    cmp     r8, 1
+    jne     el_error
+    mov     rax, qword ptr [r9]
+    xor     edx, edx
+    ret
+el_error:
+    mov     edx, 1
+    ret
+
+.section .rodata
+errmsg:
+    .ascii "error\n"
+
+.bss
+.balign 16
+inbuf:
+    .zero 65536
+outbuf:
+    .zero 4096
+vstack:
+    .zero 8192

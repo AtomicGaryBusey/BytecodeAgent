@@ -1,0 +1,186 @@
+.text
+    .global _start
+_start:
+    // Load buffer addresses
+    adrp    x9, input_buf          // x9 = input buffer base
+    add     x9, x9, :lo12:input_buf
+    adrp    x11, out_buf          // x11 = output buffer base
+    add     x11, x11, :lo12:out_buf
+    adr     x15, b64_table        // x15 = base64 table address
+
+    // Initialize state
+    mov     w13, #0               // line_len = 0
+    mov     x14, x11              // out_ptr = out_buf
+    mov     x10, #0               // total_input_len = 0
+
+read_loop:
+    // remaining = INPUT_MAX - total_input_len
+    movz    x2, #0xC000           // 49152
+    sub     x2, x2, x10
+    cbz     x2, read_done         // no more space
+
+    // sys_read(fd=0, buf = x9 + total_input_len, count = remaining)
+    mov     x0, #0
+    add     x1, x9, x10
+    mov     x8, #63               // sys_read
+    svc     #0
+    cbz     x0, read_done         // EOF
+    add     x10, x10, x0
+    b       read_loop
+
+read_done:
+    // If no input, exit
+    cbz     x10, exit_program
+
+    // Set pointers
+    mov     x12, x9               // cur = input_buf
+    add     x5, x9, x10           // end = input_buf + total_input_len
+
+main_loop:
+    // Check for at least 3 bytes left
+    add     x6, x12, #3
+    cmp     x6, x5
+    bgt     leftover_bytes
+
+    // Load three bytes
+    ldrb    w6, [x12], #1         // byte0
+    ldrb    w7, [x12], #1         // byte1
+    ldrb    w8, [x12], #1         // byte2
+
+    // Compute indices
+    lsr     w9, w6, #2                         // idx0
+    and     w10, w6, #0x3
+    lsl     w10, w10, #4
+    lsr     w11, w7, #4
+    orr     w10, w10, w11                     // idx1
+    and     w11, w7, #0xf
+    lsl     w11, w11, #2
+    lsr     w12, w8, #6
+    orr     w11, w11, w12                     // idx2
+    and     w12, w8, #0x3f                     // idx3
+
+    // Output four chars
+    uxtw    x9, w9
+    ldrb    w0, [x15, x9]
+    bl      output_char
+    uxtw    x9, w10
+    ldrb    w0, [x15, x9]
+    bl      output_char
+    uxtw    x9, w11
+    ldrb    w0, [x15, x9]
+    bl      output_char
+    uxtw    x9, w12
+    ldrb    w0, [x15, x9]
+    bl      output_char
+    b       main_loop
+
+leftover_bytes:
+    sub     x6, x5, x12            // remaining bytes
+    cbz     x6, finish_output
+
+    cmp     x6, #1
+    beq     handle_one
+
+    // Two leftover bytes
+    ldrb    w6, [x12], #1          // byte0
+    ldrb    w7, [x12], #1          // byte1
+
+    // idx0
+    lsr     w9, w6, #2
+    // idx1
+    and     w10, w6, #0x3
+    lsl     w10, w10, #4
+    lsr     w11, w7, #4
+    orr     w10, w10, w11
+
+    // Output two chars + '=='
+    uxtw    x9, w9
+    ldrb    w0, [x15, x9]
+    bl      output_char
+    uxtw    x9, w10
+    ldrb    w0, [x15, x9]
+    bl      output_char
+    mov     w0, #'='
+    bl      output_char
+    mov     w0, #'='
+    bl      output_char
+    b       finish_output
+
+handle_one:
+    ldrb    w6, [x12], #1          // byte0
+
+    // idx0
+    lsr     w9, w6, #2
+    // idx1
+    and     w10, w6, #0x3
+    lsl     w10, w10, #4
+
+    // Output two chars + '=='
+    uxtw    x9, w9
+    ldrb    w0, [x15, x9]
+    bl      output_char
+    uxtw    x9, w10
+    ldrb    w0, [x15, x9]
+    bl      output_char
+    mov     w0, #'='
+    bl      output_char
+    mov     w0, #'='
+    bl      output_char
+    b       finish_output
+
+finish_output:
+    // If any characters were output, write final newline
+    cbz     w13, exit_program        // no pending data
+    // Store newline at current position
+    mov     w0, #0x0A
+    strb    w0, [x14], #1
+    add     w13, w13, #1          // include newline in count
+
+    // write(line_len) bytes from out_buf
+    mov     x0, #1                // stdout
+    mov     x1, x11               // out_buf
+    uxtw    x2, w13
+    mov     x8, #64               // sys_write
+    svc     #0
+    b       exit_program
+
+// ------------------------------------------------------------
+// output_char: w0 = character to output
+// Uses: x14 (out_ptr), w13 (line_len), x11 (out_buf)
+output_char:
+    strb    w0, [x14], #1
+    add     w13, w13, #1
+    cmp     w13, #76
+    bne     1f
+    // Line full: store newline and write
+    mov     w0, #0x0A
+    strb    w0, [x14]            // newline at position 76
+    // write 77 bytes
+    mov     x0, #1
+    mov     x1, x11
+    mov     x2, #77
+    mov     x8, #64
+    svc     #0
+    // Reset line_len and out_ptr
+    mov     w13, #0
+    mov     x14, x11
+1:
+    ret
+
+// ------------------------------------------------------------
+    .global exit_program
+exit_program:
+    mov     x0, #0
+    mov     x8, #93               // sys_exit
+    svc     #0
+
+.section .rodata
+b64_table:
+    .ascii  "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/"
+
+.bss
+    .align 8
+input_buf:
+    .space 49152
+out_buf:
+    .space 78

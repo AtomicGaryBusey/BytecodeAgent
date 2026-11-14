@@ -1,0 +1,392 @@
+	.global	_start
+	.text
+	.align	2
+
+	.equ	BUF_SIZE, 65536
+	.equ	STACK_CAP, 1024
+	.equ	CONV_BUF_SIZE, 32
+	.equ	ERROR_LEN, 6
+
+_start:
+	// ---------- read entire input ----------
+	mov	x5, #0				// total bytes read
+read_loop:
+	adr	x1, buffer
+	add	x1, x1, x5			// buf + offset
+	mov	x2, #BUF_SIZE
+	sub	x2, x2, x5			// remaining space
+	mov	x0, #0				// fd stdin
+	mov	x8, #63			// sys_read
+	svc	#0
+	cbnz	x0, read_continue
+	b	read_done
+read_continue:
+	add	x5, x5, x0
+	cmp	x5, #BUF_SIZE
+	blt	read_loop
+read_done:
+	// x5 = total input length
+	adr	x28, stack_vals		// stack base
+	mov	x19, #0				// cur offset in buffer
+
+line_loop:
+	cmp	x19, x5
+	bge	exit_program
+
+	// line_start = x19
+	mov	x20, x19
+
+	// find newline
+	mov	x21, x20
+find_nl:
+	cmp	x21, x5
+	bge	no_nl
+	adr	x22, buffer
+	add	x22, x22, x21
+	ldrb	w0, [x22]
+	cmp	w0, #0x0A
+	beq	nl_found
+	add	x21, x21, #1
+	b	find_nl
+nl_found:
+	// line_end = x21 (position of newline)
+	mov	x23, x21
+	mov	x24, #1			// have_newline = 1
+	b	line_process
+no_nl:
+	// line_end = total_len
+	mov	x23, x5
+	mov	x24, #0			// have_newline = 0
+line_process:
+	// token pointer = line_start
+	mov	x25, x20
+	// stack index = 0
+	mov	x26, #0
+	// error flag = 0
+	mov	x27, #0
+
+token_loop:
+	cmp	x25, x23
+	bge	tokens_done
+
+	// skip separators (space or tab)
+skip_sep:
+	cmp	x25, x23
+	bge	tokens_done
+	adr	x30, buffer
+	add	x30, x30, x25
+	ldrb	w0, [x30]
+	cmp	w0, #0x20
+	beq	inc_sep
+	cmp	w0, #0x09
+	beq	inc_sep
+	b	token_start
+inc_sep:
+	add	x25, x25, #1
+	b	skip_sep
+
+token_start:
+	// token_start = x25
+	mov	x31, x25
+	// find token end
+	mov	x0, x25
+token_scan:
+	cmp	x0, x23
+	bge	token_end
+	adr	x1, buffer
+	add	x1, x1, x0
+	ldrb	w2, [x1]
+	cmp	w2, #0x20
+	beq	token_end
+	cmp	w2, #0x09
+	beq	token_end
+	add	x0, x0, #1
+	b	token_scan
+token_end:
+	// token_len = x0 - x31
+	sub	x2, x0, x31
+	// if already error, skip to next token
+	cmp	x27, #0
+	bne	skip_token_rest
+
+	// check for operator (len==1)
+	cmp	x2, #1
+	bne	literal_path
+	adr	x3, buffer
+	add	x3, x3, x31
+	ldrb	w4, [x3]
+
+	cmp	w4, #'+'		// plus
+	beq	op_plus
+	cmp	w4, #'-'		// minus operator
+	beq	op_minus
+	cmp	w4, #'*'
+	beq	op_mul
+	cmp	w4, #'/'
+	beq	op_div
+	cmp	w4, #'%'
+	beq	op_mod
+	// not an operator -> treat as literal (single digit)
+	b	literal_path
+
+op_plus:
+	cmp	x26, #2
+	blt	set_error
+	sub	x5, x26, #2
+	lsl	x5, x5, #3
+	add	x6, x28, x5
+	ldr	x7, [x6]          // a
+	ldr	x8, [x6, #8]      // b
+	add	x9, x7, x8
+	str	x9, [x6]
+	sub	x26, x26, #1
+	b	token_continue
+
+op_minus:
+	cmp	x26, #2
+	blt	set_error
+	sub	x5, x26, #2
+	lsl	x5, x5, #3
+	add	x6, x28, x5
+	ldr	x7, [x6]          // a
+	ldr	x8, [x6, #8]      // b
+	sub	x9, x7, x8
+	str	x9, [x6]
+	sub	x26, x26, #1
+	b	token_continue
+
+op_mul:
+	cmp	x26, #2
+	blt	set_error
+	sub	x5, x26, #2
+	lsl	x5, x5, #3
+	add	x6, x28, x5
+	ldr	x7, [x6]
+	ldr	x8, [x6, #8]
+	mul	x9, x7, x8
+	str	x9, [x6]
+	sub	x26, x26, #1
+	b	token_continue
+
+op_div:
+	cmp	x26, #2
+	blt	set_error
+	sub	x5, x26, #2
+	lsl	x5, x5, #3
+	add	x6, x28, x5
+	ldr	x7, [x6]          // a
+	ldr	x8, [x6, #8]      // b
+	cbnz	x8, div_ok
+	b	set_error
+div_ok:
+	adr	x9, int_min_const
+	ldr	x9, [x9]
+	cmp	x7, x9
+	b.ne	div_compute
+	cmp	x8, #-1
+	b.ne	div_compute
+	b	set_error
+div_compute:
+	sdiv	x9, x7, x8
+	str	x9, [x6]
+	sub	x26, x26, #1
+	b	token_continue
+
+op_mod:
+	cmp	x26, #2
+	blt	set_error
+	sub	x5, x26, #2
+	lsl	x5, x5, #3
+	add	x6, x28, x5
+	ldr	x7, [x6]          // a
+	ldr	x8, [x6, #8]      // b
+	cbnz	x8, mod_ok
+	b	set_error
+mod_ok:
+	adr	x9, int_min_const
+	ldr	x9, [x9]
+	cmp	x7, x9
+	b.ne	mod_compute
+	cmp	x8, #-1
+	b.ne	mod_compute
+	b	set_error
+mod_compute:
+	sdiv	x9, x7, x8
+	mul	x10, x9, x8
+	sub	x9, x7, x10
+	str	x9, [x6]
+	sub	x26, x26, #1
+	b	token_continue
+
+literal_path:
+	// parse literal
+	adr	x3, buffer
+	add	x3, x3, x31
+	ldrb	w4, [x3]         // first char
+	mov	x5, #0            // sign flag
+	cmp	w4, #'-'
+	bne	lit_no_sign
+	// sign present, need at least one digit
+	cmp	x2, #1
+	beq	set_error
+	mov	x5, #1
+	add	x6, x31, #1       // digit start offset
+	sub	x7, x2, #1        // digit count
+	b	lit_digit_prep
+lit_no_sign:
+	add	x6, x31, #0
+	mov	x7, x2
+lit_digit_prep:
+	cmp	x7, #0
+	beq	set_error
+	cmp	x7, #19
+	bge	set_error
+	mov	x8, #0            // accumulator
+	mov	x9, #0            // index
+lit_digit_loop:
+	adr	x10, buffer
+	add	x10, x10, x6
+	add	x10, x10, x9
+	ldrb	w11, [x10]
+	cmp	w11, #'0'
+	blt	set_error
+	cmp	w11, #'9'
+	bgt	set_error
+	mov	x12, x8
+	mov	x13, #10
+	mul	x12, x12, x13
+	sub	w14, w11, #'0'
+	add	x12, x12, x14
+	mov	x8, x12
+	add	x9, x9, #1
+	cmp	x9, x7
+	blt	lit_digit_loop
+	cmp	x5, #0
+	beq	lit_push
+	neg	x8, x8
+lit_push:
+	lsl	x12, x26, #3
+	add	x13, x28, x12
+	str	x8, [x13]
+	add	x26, x26, #1
+	b	token_continue
+
+set_error:
+	mov	x27, #1
+	// skip rest of line
+	mov	x25, x23
+	b	token_continue
+
+skip_token_rest:
+	// move pointer past this token
+	mov	x25, x0
+	b	token_loop
+
+token_continue:
+	// advance to token end (x0)
+	mov	x25, x0
+	b	token_loop
+
+tokens_done:
+	// line finished, produce output
+	cmp	x27, #0
+	bne	output_error_line
+	cmp	x26, #1
+	bne	output_error_line
+	ldr	x0, [x28]          // result
+	adr	x1, int_min_const
+	ldr	x1, [x1]
+	cmp	x0, x1
+	beq	output_intmin_line
+
+	// normal conversion
+	adr	x2, conv_buf
+	add	x2, x2, #CONV_BUF_SIZE
+	mov	x3, #0            // sign flag
+	cmp	x0, #0
+	b.ge	conv_abs
+	neg	x0, x0
+	mov	x3, #1
+conv_abs:
+	cmp	x0, #0
+	bne	conv_loop
+	sub	x2, x2, #1
+	mov	w4, #'0'
+	strb	w4, [x2]
+	b	conv_done_digits
+conv_loop:
+	sub	x2, x2, #1
+	mov	x4, #10
+	udiv	x5, x0, x4
+	mul	x6, x5, x4
+	sub	x7, x0, x6
+	add	w8, w7, #'0'
+	strb	w8, [x2]
+	mov	x0, x5
+	cbnz	x0, conv_loop
+conv_done_digits:
+	cmp	x3, #0
+	beq	add_newline
+	sub	x2, x2, #1
+	mov	w9, #'-'
+	strb	w9, [x2]
+add_newline:
+	sub	x2, x2, #1
+	mov	w10, #'\n'
+	strb	w10, [x2]
+	adr	x11, conv_buf
+	add	x12, x11, #CONV_BUF_SIZE
+	sub	x13, x12, x2
+	mov	x0, #1
+	mov	x1, x2
+	mov	x2, x13
+	mov	x8, #64
+	svc	#0
+	b	line_continue
+
+output_intmin_line:
+	mov	x0, #1
+	adr	x1, int_min_str
+	mov	x2, #21
+	mov	x8, #64
+	svc	#0
+	b	line_continue
+
+output_error_line:
+	mov	x0, #1
+	adr	x1, error_msg
+	mov	x2, #ERROR_LEN
+	mov	x8, #64
+	svc	#0
+	b	line_continue
+
+line_continue:
+	cmp	x24, #1
+	bne	no_newline2
+	add	x19, x23, #1
+	b	line_loop
+no_newline2:
+	mov	x19, x23
+	b	line_loop
+
+exit_program:
+	mov	x0, #0
+	mov	x8, #93
+	svc	#0
+
+	.section	.rodata
+error_msg:
+	.asciz	"error\n"
+int_min_str:
+	.asciz	"-9223372036854775808\n"
+int_min_const:
+	.quad	0x8000000000000000
+
+	.bss
+	.align	3
+buffer:
+	.zero	BUF_SIZE
+stack_vals:
+	.zero	STACK_CAP*8
+conv_buf:
+	.zero	CONV_BUF_SIZE

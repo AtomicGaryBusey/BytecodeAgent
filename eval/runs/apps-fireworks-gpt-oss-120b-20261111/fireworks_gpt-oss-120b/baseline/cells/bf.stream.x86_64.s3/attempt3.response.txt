@@ -1,0 +1,205 @@
+.globl _start
+.text
+.equ   PROG_MAX,     65536
+.equ   TAPE_SIZE,   30000
+.equ   STACK_MAX,   1000
+.equ   SYSCALL_READ,    0
+.equ   SYSCALL_WRITE,   1
+.equ   SYSCALL_EXIT,    60
+.equ   FD_STDIN,        0
+.equ   FD_STDOUT,       1
+
+_start:
+    # -------------------------------------------------
+    # read all stdin into prog_buf, total length -> rbx
+    # -------------------------------------------------
+    xor     rbx, rbx                # total bytes read
+read_loop:
+    mov     rax, SYSCALL_READ
+    mov     rdi, FD_STDIN
+    lea     rsi, [rip + prog_buf]
+    mov     rdx, PROG_MAX
+    sub     rdx, rbx                # remaining space
+    syscall
+    test    rax, rax
+    jz      read_done
+    add     rbx, rax
+    cmp     rbx, PROG_MAX
+    jae     read_done
+    jmp     read_loop
+read_done:
+    mov     qword ptr [prog_len], rbx
+
+    # -------------------------------------------------
+    # locate first '!' (0x21)
+    # -------------------------------------------------
+    mov     rcx, rbx                # total length
+    xor     rdx, rdx                # index i
+    lea     rsi, [rip + prog_buf]
+find_excl:
+    cmp     rdx, rcx
+    jae     no_excl                 # not found
+    mov     al, [rsi + rdx]
+    cmp     al, 0x21
+    je      found_excl
+    inc     rdx
+    jmp     find_excl
+found_excl:
+    # program ends at rdx (index of '!'), input starts after it
+    mov     qword ptr [prog_end], rdx
+    mov     rax, rdx
+    inc     rax
+    mov     qword ptr [input_start], rax
+    mov     rax, rbx
+    sub     rax, rdx
+    dec     rax                     # input_len = total - excl_index - 1
+    mov     qword ptr [input_len], rax
+    jmp     after_split
+no_excl:
+    # whole input is program, no input data
+    mov     qword ptr [prog_end], rbx
+    xor     rax, rax
+    mov     qword ptr [input_start], rax
+    mov     qword ptr [input_len], rax
+after_split:
+
+    # -------------------------------------------------
+    # validate brackets and build jump table
+    # -------------------------------------------------
+    xor     r8, r8                  # stack pointer (count of pushed '[')
+    xor     r9, r9                  # index i (pc) over program
+    lea     r10, [rip + prog_buf]   # base of program buffer
+    lea     r11, [rip + bracket_map]# base of jump table
+    lea     r12, [rip + bracket_stack] # base of temp stack
+bracket_loop:
+    mov     rax, qword ptr [prog_end]
+    cmp     r9, rax
+    jae     bracket_done
+    mov     al, [r10 + r9]
+    cmp     al, '['
+    je      push_bracket
+    cmp     al, ']'
+    je      pop_bracket
+    inc     r9
+    jmp     bracket_loop
+push_bracket:
+    mov     [r12 + r8*8], r9        # push position
+    inc     r8
+    inc     r9
+    jmp     bracket_loop
+pop_bracket:
+    cmp     r8, 0
+    je      bracket_error           # unmatched ']'
+    dec     r8
+    mov     rax, [r12 + r8*8]       # matching '[' index
+    # forward jump for '[' -> after ']'
+    lea     rcx, [r9 + 1]           # j+1
+    mov     [r11 + rax*8], rcx
+    # backward jump for ']' -> after '['
+    lea     rcx, [rax + 1]          # i+1
+    mov     [r11 + r9*8], rcx
+    inc     r9
+    jmp     bracket_loop
+bracket_error:
+    mov     rdi, 1
+    mov     rax, SYSCALL_EXIT
+    syscall
+bracket_done:
+    cmp     r8, 0
+    jne     bracket_error           # leftover '['
+
+    # -------------------------------------------------
+    # execution
+    # -------------------------------------------------
+    xor     rdx, rdx                # pc = 0
+    xor     r8, r8                  # data pointer dp = 0
+    xor     rsi, rsi                # input pointer ip = 0
+    lea     r13, [rip + tape]       # tape base
+    lea     r10, [rip + prog_buf]   # prog base
+    lea     r11, [rip + bracket_map]# jump table base
+exec_loop:
+    mov     rax, qword ptr [prog_end]
+    cmp     rdx, rax
+    jae     exec_done               # finished program
+    mov     al, [r10 + rdx]         # fetch command
+    inc     rdx                     # pc++
+    cmp     al, '>'
+    je      cmd_inc_ptr
+    cmp     al, '<'
+    je      cmd_dec_ptr
+    cmp     al, '+'
+    je      cmd_inc_cell
+    cmp     al, '-'
+    je      cmd_dec_cell
+    cmp     al, '.'
+    je      cmd_output
+    cmp     al, ','
+    je      cmd_input
+    cmp     al, '['
+    je      cmd_jump_fwd
+    cmp     al, ']'
+    je      cmd_jump_back
+    jmp     exec_loop               # ignore any other character
+
+cmd_inc_ptr:
+    inc     r8
+    jmp     exec_loop
+cmd_dec_ptr:
+    dec     r8
+    jmp     exec_loop
+cmd_inc_cell:
+    inc     byte ptr [r13 + r8]
+    jmp     exec_loop
+cmd_dec_cell:
+    dec     byte ptr [r13 + r8]
+    jmp     exec_loop
+cmd_output:
+    mov     al, [r13 + r8]
+    mov     byte ptr [rip + out_buf], al
+    mov     rdi, FD_STDOUT
+    lea     rsi, [rip + out_buf]
+    mov     rdx, 1
+    mov     rax, SYSCALL_WRITE
+    syscall
+    jmp     exec_loop
+cmd_input:
+    mov     rax, qword ptr [input_len]
+    cmp     rsi, rax
+    jae     input_eof
+    lea     rbx, [rip + prog_buf]
+    mov     rcx, qword ptr [input_start]
+    add     rbx, rcx
+    add     rbx, rsi
+    mov     al, byte ptr [rbx]
+    jmp     store_input
+input_eof:
+    xor     al, al
+store_input:
+    mov     byte ptr [r13 + r8], al
+    inc     rsi
+    jmp     exec_loop
+cmd_jump_fwd:
+    cmp     byte ptr [r13 + r8], 0
+    jne     exec_loop
+    # cell is zero, jump forward
+    lea     rcx, [rdx - 1]          # current pc is after '['; need original '[' index = pc-1
+    mov     rax, [r11 + rcx*8]
+    mov     rdx, rax
+    jmp     exec_loop
+cmd_jump_back:
+    cmp     byte ptr [r13 + r8], 0
+    je      exec_loop
+    # cell non-zero, jump back
+    lea     rcx, [rdx - 1]          # current pc is after ']'; original ']' index = pc-1
+    mov     rax, [r11 + rcx*8]
+    mov     rdx, rax
+    jmp     exec_loop
+
+exec_done:
+    xor     rdi, rdi                # status 0
+    mov     rax, SYSCALL_EXIT
+    syscall
+
+.section .bss
+    .align 8
+prog_len:          .quad 0

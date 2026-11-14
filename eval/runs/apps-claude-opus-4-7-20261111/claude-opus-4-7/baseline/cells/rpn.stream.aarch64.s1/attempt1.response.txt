@@ -1,0 +1,283 @@
+```
+    .section .bss
+    .p2align 3
+input_buf:  .zero 65536
+    .p2align 3
+out_buf:    .zero 524288
+    .p2align 3
+rpn_stack:  .zero 8192
+
+    .section .rodata
+error_msg:  .ascii "error\n"
+
+    .text
+    .globl _start
+
+_start:
+    adrp    x19, input_buf
+    add     x19, x19, :lo12:input_buf
+    mov     x20, #0
+
+read_loop:
+    mov     x2, #0x10000
+    sub     x2, x2, x20
+    cbz     x2, read_done
+    mov     x0, #0
+    add     x1, x19, x20
+    mov     x8, #63
+    svc     #0
+    cmp     x0, #0
+    b.le    read_done
+    add     x20, x20, x0
+    b       read_loop
+
+read_done:
+    adrp    x21, out_buf
+    add     x21, x21, :lo12:out_buf
+    mov     x22, #0
+    adrp    x24, rpn_stack
+    add     x24, x24, :lo12:rpn_stack
+    mov     x27, #0
+
+main_loop:
+    cmp     x27, x20
+    b.ge    write_output
+    mov     x25, #0
+    mov     w26, #0
+
+next_token:
+    cmp     x27, x20
+    b.ge    end_of_line
+    ldrb    w0, [x19, x27]
+    cmp     w0, #0x0A
+    b.eq    end_of_line_nl
+    cmp     w0, #0x20
+    b.eq    skip_ws
+    cmp     w0, #0x09
+    b.eq    skip_ws
+    b       found_token
+
+skip_ws:
+    add     x27, x27, #1
+    b       next_token
+
+found_token:
+    mov     x28, x27
+scan_tok:
+    add     x27, x27, #1
+    cmp     x27, x20
+    b.ge    parse_the_token
+    ldrb    w0, [x19, x27]
+    cmp     w0, #0x0A
+    b.eq    parse_the_token
+    cmp     w0, #0x20
+    b.eq    parse_the_token
+    cmp     w0, #0x09
+    b.eq    parse_the_token
+    b       scan_tok
+
+parse_the_token:
+    cbnz    w26, next_token
+    sub     x9, x27, x28
+    cmp     x9, #1
+    b.ne    not_single
+    ldrb    w10, [x19, x28]
+    cmp     w10, #'+'
+    b.eq    do_op_add
+    cmp     w10, #'-'
+    b.eq    do_op_sub
+    cmp     w10, #'*'
+    b.eq    do_op_mul
+    cmp     w10, #'/'
+    b.eq    do_op_div
+    cmp     w10, #'%'
+    b.eq    do_op_mod
+
+not_single:
+    mov     x10, #0
+    mov     w11, #0
+    ldrb    w12, [x19, x28]
+    cmp     w12, #'-'
+    b.ne    not_negative
+    mov     w11, #1
+    mov     x10, #1
+not_negative:
+    sub     x13, x9, x10
+    cmp     x13, #0
+    b.le    set_err
+    cmp     x13, #18
+    b.gt    set_err
+    mov     x14, #0
+    add     x15, x28, x10
+parse_digits:
+    cmp     x15, x27
+    b.ge    parse_done
+    ldrb    w16, [x19, x15]
+    sub     w16, w16, #'0'
+    cmp     w16, #9
+    b.hi    set_err
+    lsl     x17, x14, #3
+    add     x17, x17, x14, lsl #1
+    add     x14, x17, x16, uxtw
+    add     x15, x15, #1
+    b       parse_digits
+parse_done:
+    cbz     w11, push_val
+    neg     x14, x14
+push_val:
+    str     x14, [x24, x25, lsl #3]
+    add     x25, x25, #1
+    b       next_token
+
+set_err:
+    mov     w26, #1
+    b       next_token
+
+do_op_add:
+    cmp     x25, #2
+    b.lt    set_err
+    sub     x25, x25, #2
+    add     x5, x24, x25, lsl #3
+    ldr     x3, [x5]
+    ldr     x4, [x5, #8]
+    add     x3, x3, x4
+    str     x3, [x5]
+    add     x25, x25, #1
+    b       next_token
+
+do_op_sub:
+    cmp     x25, #2
+    b.lt    set_err
+    sub     x25, x25, #2
+    add     x5, x24, x25, lsl #3
+    ldr     x3, [x5]
+    ldr     x4, [x5, #8]
+    sub     x3, x3, x4
+    str     x3, [x5]
+    add     x25, x25, #1
+    b       next_token
+
+do_op_mul:
+    cmp     x25, #2
+    b.lt    set_err
+    sub     x25, x25, #2
+    add     x5, x24, x25, lsl #3
+    ldr     x3, [x5]
+    ldr     x4, [x5, #8]
+    mul     x3, x3, x4
+    str     x3, [x5]
+    add     x25, x25, #1
+    b       next_token
+
+do_op_div:
+    cmp     x25, #2
+    b.lt    set_err
+    sub     x25, x25, #2
+    add     x5, x24, x25, lsl #3
+    ldr     x3, [x5]
+    ldr     x4, [x5, #8]
+    cbz     x4, set_err
+    movz    x6, #0x8000, lsl #48
+    cmp     x3, x6
+    b.ne    div_safe
+    cmn     x4, #1
+    b.eq    set_err
+div_safe:
+    sdiv    x3, x3, x4
+    str     x3, [x5]
+    add     x25, x25, #1
+    b       next_token
+
+do_op_mod:
+    cmp     x25, #2
+    b.lt    set_err
+    sub     x25, x25, #2
+    add     x5, x24, x25, lsl #3
+    ldr     x3, [x5]
+    ldr     x4, [x5, #8]
+    cbz     x4, set_err
+    movz    x6, #0x8000, lsl #48
+    cmp     x3, x6
+    b.ne    mod_safe
+    cmn     x4, #1
+    b.eq    set_err
+mod_safe:
+    sdiv    x6, x3, x4
+    msub    x3, x6, x4, x3
+    str     x3, [x5]
+    add     x25, x25, #1
+    b       next_token
+
+end_of_line_nl:
+    add     x27, x27, #1
+end_of_line:
+    cbnz    w26, emit_error
+    cmp     x25, #1
+    b.ne    emit_error
+    ldr     x0, [x24]
+    bl      print_num
+    b       main_loop
+
+emit_error:
+    adrp    x0, error_msg
+    add     x0, x0, :lo12:error_msg
+    mov     x1, #0
+emit_err_loop:
+    ldrb    w2, [x0, x1]
+    strb    w2, [x21, x22]
+    add     x22, x22, #1
+    add     x1, x1, #1
+    cmp     x1, #6
+    b.lt    emit_err_loop
+    b       main_loop
+
+write_output:
+wo_loop:
+    cbz     x22, exit_prog
+    mov     x8, #64
+    mov     x0, #1
+    mov     x1, x21
+    mov     x2, x22
+    svc     #0
+    cmp     x0, #0
+    b.le    exit_prog
+    sub     x22, x22, x0
+    add     x21, x21, x0
+    b       wo_loop
+
+exit_prog:
+    mov     x8, #93
+    mov     x0, #0
+    svc     #0
+
+print_num:
+    cmp     x0, #0
+    b.ge    pn_pos
+    mov     w9, #'-'
+    strb    w9, [x21, x22]
+    add     x22, x22, #1
+    neg     x0, x0
+pn_pos:
+    sub     sp, sp, #32
+    mov     x3, #0
+    mov     x4, #10
+pn_digit:
+    udiv    x5, x0, x4
+    msub    x6, x5, x4, x0
+    add     w6, w6, #'0'
+    strb    w6, [sp, x3]
+    add     x3, x3, #1
+    mov     x0, x5
+    cbnz    x0, pn_digit
+pn_copy:
+    sub     x3, x3, #1
+    ldrb    w6, [sp, x3]
+    strb    w6, [x21, x22]
+    add     x22, x22, #1
+    cbnz    x3, pn_copy
+    add     sp, sp, #32
+    mov     w9, #0x0A
+    strb    w9, [x21, x22]
+    add     x22, x22, #1
+    ret
+```

@@ -1,0 +1,715 @@
+.global _start
+.section .rodata
+ok_msg:
+    .ascii "ok\n"
+ok_len = . - ok_msg
+
+err_prefix:
+    .ascii "error at "
+err_prefix_len = . - err_prefix
+
+nl_msg:
+    .ascii "\n"
+nl_len = . - nl_msg
+
+true_str:
+    .ascii "true"
+false_str:
+    .ascii "false"
+null_str:
+    .ascii "null"
+
+.text
+
+// ---------- read input ----------
+_start:
+    // set up frame
+    stp     x29, x30, [sp, #-16]!
+    mov     x29, sp
+
+    // buffer address
+    adrp    x21, buf
+    add     x21, x21, :lo12:buf
+    mov     x22, #0                // length = 0
+
+read_loop:
+    mov     x0, #0                 // fd = stdin
+    add     x1, x21, x22           // buf + len
+    mov     x2, #65536
+    sub     x2, x2, x22            // remaining space
+    mov     x8, #63                // sys_read
+    svc     #0
+    cbz     x0, read_done
+    add     x22, x22, x0           // len += ret
+    cmp     x22, #65536
+    bge     read_done
+    b       read_loop
+
+read_done:
+    // end pointer
+    add     x20, x21, x22          // x20 = buf_end
+    // cursor
+    mov     x19, x21               // cur_ptr = start
+
+    // parse document
+    bl      parse_document
+    cbnz    x0, parse_failed
+
+    // success: write "ok\n"
+    adrp    x1, ok_msg
+    add     x1, x1, :lo12:ok_msg
+    mov     x2, #ok_len
+    mov     x0, #1                 // stdout
+    mov     x8, #64                // sys_write
+    svc     #0
+    mov     w0, #0                 // exit status 0
+    b       exit_program
+
+parse_failed:
+    // error offset = cur_ptr - start
+    sub     x23, x19, x21          // x23 = error offset
+
+    // write "error at "
+    adrp    x1, err_prefix
+    add     x1, x1, :lo12:err_prefix
+    mov     x2, #err_prefix_len
+    mov     x0, #1
+    mov     x8, #64
+    svc     #0
+
+    // convert offset to decimal
+    mov     x0, x23
+    bl      itoa
+
+    // write number (buffer from itoa_buf to x5)
+    adrp    x1, itoa_buf
+    add     x1, x1, :lo12:itoa_buf
+    sub     x2, x5, x1            // length = end_ptr - start_ptr
+    mov     x0, #1
+    mov     x8, #64
+    svc     #0
+
+    // write newline
+    adrp    x1, nl_msg
+    add     x1, x1, :lo12:nl_msg
+    mov     x2, #nl_len
+    mov     x0, #1
+    mov     x8, #64
+    svc     #0
+
+    mov     w0, #1                 // exit status 1
+
+exit_program:
+    mov     x8, #93                // sys_exit
+    svc     #0
+
+// ---------- parse_document ----------
+.type   parse_document,%function
+parse_document:
+    stp     x29, x30, [sp, #-16]!
+    mov     x29, sp
+
+    bl      parse_ws
+    cbnz    x0, pd_err
+
+    bl      parse_value
+    cbnz    x0, pd_err
+
+    bl      parse_ws
+    cbnz    x0, pd_err
+
+    // must be at end
+    cmp     x19, x20
+    bne     pd_err
+
+    mov     w0, #0
+    b       pd_ret
+
+pd_err:
+    mov     w0, #1
+
+pd_ret:
+    ldp     x29, x30, [sp], #16
+    ret
+
+// ---------- parse_ws ----------
+.type   parse_ws,%function
+parse_ws:
+    stp     x29, x30, [sp, #-16]!
+    mov     x29, sp
+
+ws_loop:
+    cmp     x19, x20
+    bge     ws_done
+    ldrb    w1, [x19]
+    cmp     w1, #0x20
+    beq     ws_inc
+    cmp     w1, #0x09
+    beq     ws_inc
+    cmp     w1, #0x0A
+    beq     ws_inc
+    cmp     w1, #0x0D
+    beq     ws_inc
+    b       ws_done
+ws_inc:
+    add     x19, x19, #1
+    b       ws_loop
+ws_done:
+    mov     w0, #0
+    ldp     x29, x30, [sp], #16
+    ret
+
+// ---------- parse_value ----------
+.type   parse_value,%function
+parse_value:
+    stp     x29, x30, [sp, #-16]!
+    mov     x29, sp
+
+    cmp     x19, x20
+    bge     val_err
+
+    ldrb    w1, [x19]
+
+    cmp     w1, #'{'        // object
+    beq     val_object
+    cmp     w1, #'['        // array
+    beq     val_array
+    cmp     w1, #'"'        // string
+    beq     val_string
+    cmp     w1, #'-'        // number
+    beq     val_number
+    cmp     w1, #'t'        // true
+    beq     val_true
+    cmp     w1, #'f'        // false
+    beq     val_false
+    cmp     w1, #'n'        // null
+    beq     val_null
+    // digit?
+    cmp     w1, #'0'
+    blt     val_err
+    cmp     w1, #'9'
+    bgt     val_err
+    b       val_number
+
+val_err:
+    mov     w0, #1
+    b       val_ret
+
+val_object:
+    bl      parse_object
+    b       val_ret
+val_array:
+    bl      parse_array
+    b       val_ret
+val_string:
+    bl      parse_string
+    b       val_ret
+val_number:
+    bl      parse_number
+    b       val_ret
+val_true:
+    bl      parse_true
+    b       val_ret
+val_false:
+    bl      parse_false
+    b       val_ret
+val_null:
+    bl      parse_null
+    b       val_ret
+
+val_ret:
+    ldp     x29, x30, [sp], #16
+    ret
+
+// ---------- parse_object ----------
+.type   parse_object,%function
+parse_object:
+    stp     x29, x30, [sp, #-16]!
+    mov     x29, sp
+
+    // consume '{'
+    add     x19, x19, #1
+
+    bl      parse_ws
+    cbnz    x0, obj_err
+
+    // empty object?
+    cmp     x19, x20
+    bge     obj_err
+    ldrb    w1, [x19]
+    cmp     w1, #'}'
+    beq     obj_empty
+
+    // first member
+    bl      parse_member
+    cbnz    x0, obj_err
+
+obj_loop:
+    bl      parse_ws
+    cbnz    x0, obj_err
+    cmp     x19, x20
+    bge     obj_err
+    ldrb    w1, [x19]
+    cmp     w1, #','
+    bne     obj_done
+    add     x19, x19, #1
+    bl      parse_member
+    cbnz    x0, obj_err
+    b       obj_loop
+
+obj_done:
+    bl      parse_ws
+    cbnz    x0, obj_err
+    cmp     x19, x20
+    bge     obj_err
+    ldrb    w1, [x19]
+    cmp     w1, #'}'
+    bne     obj_err
+    add     x19, x19, #1
+    mov     w0, #0
+    b       obj_ret
+
+obj_empty:
+    add     x19, x19, #1
+    mov     w0, #0
+    b       obj_ret
+
+obj_err:
+    mov     w0, #1
+obj_ret:
+    ldp     x29, x30, [sp], #16
+    ret
+
+// ---------- parse_member ----------
+.type   parse_member,%function
+parse_member:
+    stp     x29, x30, [sp, #-16]!
+    mov     x29, sp
+
+    bl      parse_string
+    cbnz    x0, mem_err
+
+    bl      parse_ws
+    cbnz    x0, mem_err
+
+    cmp     x19, x20
+    bge     mem_err
+    ldrb    w1, [x19]
+    cmp     w1, #':'
+    bne     mem_err
+    add     x19, x19, #1
+
+    bl      parse_ws
+    cbnz    x0, mem_err
+
+    bl      parse_value
+    cbnz    x0, mem_err
+
+    mov     w0, #0
+    b       mem_ret
+
+mem_err:
+    mov     w0, #1
+mem_ret:
+    ldp     x29, x30, [sp], #16
+    ret
+
+// ---------- parse_array ----------
+.type   parse_array,%function
+parse_array:
+    stp     x29, x30, [sp, #-16]!
+    mov     x29, sp
+
+    // consume '['
+    add     x19, x19, #1
+
+    bl      parse_ws
+    cbnz    x0, arr_err
+
+    // empty array?
+    cmp     x19, x20
+    bge     arr_err
+    ldrb    w1, [x19]
+    cmp     w1, #']'
+    beq     arr_empty
+
+    // first element
+    bl      parse_value
+    cbnz    x0, arr_err
+
+arr_loop:
+    bl      parse_ws
+    cbnz    x0, arr_err
+    cmp     x19, x20
+    bge     arr_err
+    ldrb    w1, [x19]
+    cmp     w1, #','
+    bne     arr_done
+    add     x19, x19, #1
+    bl      parse_value
+    cbnz    x0, arr_err
+    b       arr_loop
+
+arr_done:
+    bl      parse_ws
+    cbnz    x0, arr_err
+    cmp     x19, x20
+    bge     arr_err
+    ldrb    w1, [x19]
+    cmp     w1, #']'
+    bne     arr_err
+    add     x19, x19, #1
+    mov     w0, #0
+    b       arr_ret
+
+arr_empty:
+    add     x19, x19, #1
+    mov     w0, #0
+    b       arr_ret
+
+arr_err:
+    mov     w0, #1
+arr_ret:
+    ldp     x29, x30, [sp], #16
+    ret
+
+// ---------- parse_string ----------
+.type   parse_string,%function
+parse_string:
+    stp     x29, x30, [sp, #-16]!
+    mov     x29, sp
+
+    // opening quote
+    cmp     x19, x20
+    bge     str_err
+    ldrb    w1, [x19]
+    cmp     w1, #'"'
+    bne     str_err
+    add     x19, x19, #1
+
+str_loop:
+    cmp     x19, x20
+    bge     str_err
+    ldrb    w1, [x19]
+    cmp     w1, #'"'
+    beq     str_end
+    cmp     w1, #'\\'
+    beq     str_escape
+    cmp     w1, #0x20
+    bhs     str_continue
+    b       str_err
+
+str_continue:
+    add     x19, x19, #1
+    b       str_loop
+
+str_escape:
+    add     x19, x19, #1
+    cmp     x19, x20
+    bge     str_err
+    ldrb    w1, [x19]
+
+    // simple escapes
+    cmp     w1, #'"'
+    beq     esc_ok
+    cmp     w1, #'\\'
+    beq     esc_ok
+    cmp     w1, #'/'
+    beq     esc_ok
+    cmp     w1, #'b'
+    beq     esc_ok
+    cmp     w1, #'f'
+    beq     esc_ok
+    cmp     w1, #'n'
+    beq     esc_ok
+    cmp     w1, #'r'
+    beq     esc_ok
+    cmp     w1, #'t'
+    beq     esc_ok
+    cmp     w1, #'u'
+    beq     esc_unicode
+    b       str_err
+
+esc_ok:
+    add     x19, x19, #1
+    b       str_loop
+
+esc_unicode:
+    // consume 'u'
+    // already at 'u' after previous increment, so just continue
+    mov     w2, #4
+unicode_digit_loop:
+    cmp     w2, #0
+    beq     unicode_done
+    cmp     x19, x20
+    bge     str_err
+    ldrb    w1, [x19]
+    // hex digit?
+    cmp     w1, #'0'
+    blt     not_hex
+    cmp     w1, #'9'
+    ble     hex_ok
+    cmp     w1, #'a'
+    blt     not_hex
+    cmp     w1, #'f'
+    ble     hex_ok
+    cmp     w1, #'A'
+    blt     not_hex
+    cmp     w1, #'F'
+    ble     hex_ok
+    b       not_hex
+hex_ok:
+    add     x19, x19, #1
+    sub     w2, w2, #1
+    b       unicode_digit_loop
+not_hex:
+    b       str_err
+
+unicode_done:
+    b       str_loop
+
+str_end:
+    add     x19, x19, #1
+    mov     w0, #0
+    b       str_ret
+
+str_err:
+    mov     w0, #1
+str_ret:
+    ldp     x29, x30, [sp], #16
+    ret
+
+// ---------- parse_number ----------
+.type   parse_number,%function
+parse_number:
+    stp     x29, x30, [sp, #-16]!
+    mov     x29, sp
+
+    // optional '-'
+    cmp     x19, x20
+    bge     num_err
+    ldrb    w1, [x19]
+    cmp     w1, #'-'
+    bne     num_int
+    add     x19, x19, #1
+
+num_int:
+    // need at least one digit
+    cmp     x19, x20
+    bge     num_err
+    ldrb    w1, [x19]
+    cmp     w1, #'0'
+    beq     num_zero
+    cmp     w1, #'1'
+    blt     num_err
+    cmp     w1, #'9'
+    bgt     num_err
+    // non-zero digit, consume all digits
+    add     x19, x19, #1
+num_digits_loop:
+    cmp     x19, x20
+    bge     num_frac_check
+    ldrb    w1, [x19]
+    cmp     w1, #'0'
+    blt     num_frac_check
+    cmp     w1, #'9'
+    bgt     num_frac_check
+    add     x19, x19, #1
+    b       num_digits_loop
+
+num_zero:
+    // single zero
+    add     x19, x19, #1
+
+num_frac_check:
+    // optional fraction
+    cmp     x19, x20
+    bge     num_exp_check
+    ldrb    w1, [x19]
+    cmp     w1, #'.'
+    bne     num_exp_check
+    add     x19, x19, #1
+    // need digit after '.'
+    cmp     x19, x20
+    bge     num_err
+    ldrb    w1, [x19]
+    cmp     w1, #'0'
+    blt     num_err
+    cmp     w1, #'9'
+    bgt     num_err
+    // consume fraction digits
+num_frac_digits:
+    add     x19, x19, #1
+    cmp     x19, x20
+    bge     num_exp_check
+    ldrb    w1, [x19]
+    cmp     w1, #'0'
+    blt     num_exp_check
+    cmp     w1, #'9'
+    bgt     num_exp_check
+    b       num_frac_digits
+
+num_exp_check:
+    // optional exponent
+    cmp     x19, x20
+    bge     num_done
+    ldrb    w1, [x19]
+    cmp     w1, #'e'
+    beq     num_exp_start
+    cmp     w1, #'E'
+    bne     num_done
+
+num_exp_start:
+    add     x19, x19, #1
+    // optional sign
+    cmp     x19, x20
+    bge     num_err
+    ldrb    w1, [x19]
+    cmp     w1, #'+'
+    beq     num_exp_sign
+    cmp     w1, #'-'
+    beq     num_exp_sign
+    b       num_exp_digits
+
+num_exp_sign:
+    add     x19, x19, #1
+
+num_exp_digits:
+    // need at least one digit
+    cmp     x19, x20
+    bge     num_err
+    ldrb    w1, [x19]
+    cmp     w1, #'0'
+    blt     num_err
+    cmp     w1, #'9'
+    bgt     num_err
+exp_digit_loop:
+    add     x19, x19, #1
+    cmp     x19, x20
+    bge     num_done
+    ldrb    w1, [x19]
+    cmp     w1, #'0'
+    blt     num_done
+    cmp     w1, #'9'
+    bgt     num_done
+    b       exp_digit_loop
+
+num_done:
+    mov     w0, #0
+    b       num_ret
+num_err:
+    mov     w0, #1
+num_ret:
+    ldp     x29, x30, [sp], #16
+    ret
+
+// ---------- parse_true ----------
+.type   parse_true,%function
+parse_true:
+    stp     x29, x30, [sp, #-16]!
+    mov     x29, sp
+
+    mov     x2, #4                // length
+    adrp    x3, true_str
+    add     x3, x3, :lo12:true_str
+    bl      match_literal
+    b       lit_ret
+
+// ---------- parse_false ----------
+.type   parse_false,%function
+parse_false:
+    stp     x29, x30, [sp, #-16]!
+    mov     x29, sp
+
+    mov     x2, #5
+    adrp    x3, false_str
+    add     x3, x3, :lo12:false_str
+    bl      match_literal
+    b       lit_ret
+
+// ---------- parse_null ----------
+.type   parse_null,%function
+parse_null:
+    stp     x29, x30, [sp, #-16]!
+    mov     x29, sp
+
+    mov     x2, #4
+    adrp    x3, null_str
+    add     x3, x3, :lo12:null_str
+    bl      match_literal
+    b       lit_ret
+
+// ---------- match_literal ----------
+.type   match_literal,%function
+match_literal:
+    stp     x29, x30, [sp, #-16]!
+    mov     x29, sp
+
+    // ensure enough bytes
+    add     x5, x19, x2
+    cmp     x5, x20
+    bgt     lit_err
+
+    mov     w4, #0
+lit_cmp_loop:
+    cmp     w4, w2
+    bge     lit_ok
+    ldrb    w5, [x19, w4]
+    ldrb    w6, [x3, w4]
+    cmp     w5, w6
+    bne     lit_err
+    add     w4, w4, #1
+    b       lit_cmp_loop
+
+lit_ok:
+    add     x19, x19, x2
+    mov     w0, #0
+    b       lit_ret
+
+lit_err:
+    mov     w0, #1
+lit_ret:
+    ldp     x29, x30, [sp], #16
+    ret
+
+// ---------- itoa ----------
+.type   itoa,%function
+itoa:
+    stp     x29, x30, [sp, #-16]!
+    mov     x29, sp
+
+    adrp    x1, itoa_buf
+    add     x1, x1, :lo12:itoa_buf
+    add     x2, x1, #32
+    mov     x5, x2                // end pointer
+
+    cmp     x0, #0
+    bne     itoa_loop
+    // zero
+    sub     x5, x5, #1
+    mov     w3, #48               // '0'
+    strb    w3, [x5]
+    b       itoa_done
+
+itoa_loop:
+    mov     x4, #10
+    udiv    x6, x0, x4            // quotient
+    mul     x7, x6, x4
+    sub     x3, x0, x7            // remainder
+    sub     x5, x5, #1
+    add     w3, w3, #48           // digit char
+    strb    w3, [x5]
+    mov     x0, x6
+    cbnz    x0, itoa_loop
+
+itoa_done:
+    mov     w0, #0
+    ldp     x29, x30, [sp], #16
+    ret
+
+.bss
+    .align 8
+buf:
+    .space 65536
+itoa_buf:
+    .space 32

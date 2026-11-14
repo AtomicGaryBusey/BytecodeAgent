@@ -1,0 +1,492 @@
+.equ SYS_READ, 0
+.equ SYS_WRITE, 1
+.equ SYS_EXIT, 60
+.equ MAX_INPUT, 65536
+
+.section .rodata
+ok_msg:
+    .ascii "ok\n"
+ok_len = . - ok_msg
+err_msg:
+    .ascii "error at "
+err_len = . - err_msg
+nl:
+    .ascii "\n"
+true_word:
+    .ascii "true"
+false_word:
+    .ascii "false"
+null_word:
+    .ascii "null"
+
+.bss
+.align 8
+buffer:
+    .zero MAX_INPUT
+input_len:
+    .zero 8
+input_pos:
+    .zero 8
+error_pos:
+    .zero 8
+outbuf:
+    .zero 128
+
+.text
+.globl _start
+_start:
+    mov qword ptr [rip + input_len], 0
+read_loop:
+    mov rax, MAX_INPUT
+    sub rax, qword ptr [rip + input_len]
+    jz read_done
+    mov rdx, rax
+    mov rax, qword ptr [rip + input_len]
+    lea rsi, [rip + buffer]
+    add rsi, rax
+    xor edi, edi
+    mov eax, SYS_READ
+    syscall
+    test rax, rax
+    jz read_done
+    add qword ptr [rip + input_len], rax
+    jmp read_loop
+
+read_done:
+    mov qword ptr [rip + input_pos], 0
+    call parse_document
+    test eax, eax
+    jnz report_error
+    lea rsi, [rip + ok_msg]
+    mov edx, ok_len
+    call write_all
+    xor edi, edi
+    mov eax, SYS_EXIT
+    syscall
+
+report_error:
+    lea rsi, [rip + err_msg]
+    mov edx, err_len
+    call write_all
+    mov rax, qword ptr [rip + error_pos]
+    lea rbx, [rip + outbuf + 127]
+    mov rcx, rbx
+    test rax, rax
+    jnz convert_number
+    dec rcx
+    mov byte ptr [rcx], '0'
+    jmp number_ready
+convert_number:
+    mov r8, 10
+convert_loop:
+    xor edx, edx
+    div r8
+    add dl, '0'
+    dec rcx
+    mov byte ptr [rcx], dl
+    test rax, rax
+    jnz convert_loop
+number_ready:
+    mov rsi, rcx
+    mov rdx, rbx
+    sub rdx, rcx
+    call write_all
+    lea rsi, [rip + nl]
+    mov edx, 1
+    call write_all
+    mov edi, 1
+    mov eax, SYS_EXIT
+    syscall
+
+write_all:
+    mov r9, rsi
+    mov r8, rdx
+write_more:
+    test r8, r8
+    jz write_done
+    mov edi, 1
+    mov rsi, r9
+    mov rdx, r8
+    mov eax, SYS_WRITE
+    syscall
+    add r9, rax
+    sub r8, rax
+    jmp write_more
+write_done:
+    ret
+
+parse_document:
+    call skip_ws
+    call parse_value
+    test eax, eax
+    jnz document_error
+    call skip_ws
+    mov rax, qword ptr [rip + input_pos]
+    cmp rax, qword ptr [rip + input_len]
+    jne document_error
+    xor eax, eax
+    ret
+document_error:
+    mov rax, qword ptr [rip + input_pos]
+    mov qword ptr [rip + error_pos], rax
+    mov eax, 1
+    ret
+
+skip_ws:
+    mov rax, qword ptr [rip + input_pos]
+skip_loop:
+    cmp rax, qword ptr [rip + input_len]
+    jae skip_done
+    movzx ecx, byte ptr [rip + buffer + rax]
+    cmp ecx, 32
+    je skip_one
+    cmp ecx, 9
+    je skip_one
+    cmp ecx, 10
+    je skip_one
+    cmp ecx, 13
+    jne skip_done
+skip_one:
+    inc rax
+    mov qword ptr [rip + input_pos], rax
+    jmp skip_loop
+skip_done:
+    ret
+
+parse_value:
+    mov rax, qword ptr [rip + input_pos]
+    cmp rax, qword ptr [rip + input_len]
+    jae value_fail
+    movzx ecx, byte ptr [rip + buffer + rax]
+    cmp ecx, '{'
+    je parse_object
+    cmp ecx, '['
+    je parse_array
+    cmp ecx, '"'
+    je parse_string
+    cmp ecx, '-'
+    je parse_number
+    cmp ecx, '0'
+    jb value_word
+    cmp ecx, '9'
+    jbe parse_number
+value_word:
+    cmp ecx, 't'
+    je value_true
+    cmp ecx, 'f'
+    je value_false
+    cmp ecx, 'n'
+    je value_null
+value_fail:
+    mov eax, 1
+    ret
+value_true:
+    lea rdi, [rip + true_word]
+    mov edx, 4
+    jmp parse_keyword
+value_false:
+    lea rdi, [rip + false_word]
+    mov edx, 5
+    jmp parse_keyword
+value_null:
+    lea rdi, [rip + null_word]
+    mov edx, 4
+parse_keyword:
+    xor ecx, ecx
+keyword_loop:
+    cmp ecx, edx
+    jae keyword_ok
+    mov rax, qword ptr [rip + input_pos]
+    cmp rax, qword ptr [rip + input_len]
+    jae keyword_fail
+    movzx eax, byte ptr [rip + buffer + rax]
+    cmp al, byte ptr [rdi + rcx]
+    jne keyword_fail
+    inc qword ptr [rip + input_pos]
+    inc ecx
+    jmp keyword_loop
+keyword_ok:
+    xor eax, eax
+    ret
+keyword_fail:
+    mov eax, 1
+    ret
+
+parse_string:
+    mov rax, qword ptr [rip + input_pos]
+    cmp rax, qword ptr [rip + input_len]
+    jae string_fail
+    cmp byte ptr [rip + buffer + rax], '"'
+    jne string_fail
+    inc rax
+    mov qword ptr [rip + input_pos], rax
+string_loop:
+    mov rax, qword ptr [rip + input_pos]
+    cmp rax, qword ptr [rip + input_len]
+    jae string_fail
+    movzx ecx, byte ptr [rip + buffer + rax]
+    cmp ecx, '"'
+    je string_done
+    cmp ecx, 92
+    je string_escape
+    cmp ecx, 32
+    jb string_fail
+    inc rax
+    mov qword ptr [rip + input_pos], rax
+    jmp string_loop
+string_escape:
+    inc rax
+    mov qword ptr [rip + input_pos], rax
+    cmp rax, qword ptr [rip + input_len]
+    jae string_fail
+    movzx ecx, byte ptr [rip + buffer + rax]
+    cmp ecx, '"'
+    je simple_escape
+    cmp ecx, 92
+    je simple_escape
+    cmp ecx, '/'
+    je simple_escape
+    cmp ecx, 'b'
+    je simple_escape
+    cmp ecx, 'f'
+    je simple_escape
+    cmp ecx, 'n'
+    je simple_escape
+    cmp ecx, 'r'
+    je simple_escape
+    cmp ecx, 't'
+    je simple_escape
+    cmp ecx, 'u'
+    jne string_fail
+    inc rax
+    mov qword ptr [rip + input_pos], rax
+    xor edx, edx
+unicode_loop:
+    cmp edx, 4
+    je string_loop
+    mov rax, qword ptr [rip + input_pos]
+    cmp rax, qword ptr [rip + input_len]
+    jae string_fail
+    movzx ecx, byte ptr [rip + buffer + rax]
+    cmp ecx, '0'
+    jb unicode_alpha
+    cmp ecx, '9'
+    jbe unicode_digit
+unicode_alpha:
+    cmp ecx, 'a'
+    jb unicode_upper
+    cmp ecx, 'f'
+    jbe unicode_digit
+unicode_upper:
+    cmp ecx, 'A'
+    jb string_fail
+    cmp ecx, 'F'
+    ja string_fail
+unicode_digit:
+    inc rax
+    mov qword ptr [rip + input_pos], rax
+    inc edx
+    jmp unicode_loop
+simple_escape:
+    inc rax
+    mov qword ptr [rip + input_pos], rax
+    jmp string_loop
+string_done:
+    inc rax
+    mov qword ptr [rip + input_pos], rax
+    xor eax, eax
+    ret
+string_fail:
+    mov eax, 1
+    ret
+
+parse_number:
+    mov rax, qword ptr [rip + input_pos]
+    movzx ecx, byte ptr [rip + buffer + rax]
+    cmp ecx, '-'
+    jne number_integer
+    inc rax
+    mov qword ptr [rip + input_pos], rax
+    cmp rax, qword ptr [rip + input_len]
+    jae number_fail
+    movzx ecx, byte ptr [rip + buffer + rax]
+    cmp ecx, '0'
+    jb number_fail
+    cmp ecx, '9'
+    ja number_fail
+number_integer:
+    mov rax, qword ptr [rip + input_pos]
+    movzx ecx, byte ptr [rip + buffer + rax]
+    cmp ecx, '0'
+    je number_zero
+number_digits:
+    mov rax, qword ptr [rip + input_pos]
+    cmp rax, qword ptr [rip + input_len]
+    jae number_fraction
+    movzx ecx, byte ptr [rip + buffer + rax]
+    cmp ecx, '0'
+    jb number_fraction
+    cmp ecx, '9'
+    ja number_fraction
+    inc rax
+    mov qword ptr [rip + input_pos], rax
+    jmp number_digits
+number_zero:
+    inc rax
+    mov qword ptr [rip + input_pos], rax
+number_fraction:
+    mov rax, qword ptr [rip + input_pos]
+    cmp rax, qword ptr [rip + input_len]
+    jae number_done
+    movzx ecx, byte ptr [rip + buffer + rax]
+    cmp ecx, '.'
+    jne number_exponent
+    inc rax
+    mov qword ptr [rip + input_pos], rax
+    cmp rax, qword ptr [rip + input_len]
+    jae number_fail
+    movzx ecx, byte ptr [rip + buffer + rax]
+    cmp ecx, '0'
+    jb number_fail
+    cmp ecx, '9'
+    ja number_fail
+fraction_digits:
+    inc rax
+    mov qword ptr [rip + input_pos], rax
+    cmp rax, qword ptr [rip + input_len]
+    jae number_done
+    movzx ecx, byte ptr [rip + buffer + rax]
+    cmp ecx, '0'
+    jb number_exponent
+    cmp ecx, '9'
+    ja number_exponent
+    jmp fraction_digits
+number_exponent:
+    mov rax, qword ptr [rip + input_pos]
+    cmp rax, qword ptr [rip + input_len]
+    jae number_done
+    movzx ecx, byte ptr [rip + buffer + rax]
+    cmp ecx, 'e'
+    je exponent_start
+    cmp ecx, 'E'
+    jne number_done
+exponent_start:
+    inc rax
+    mov qword ptr [rip + input_pos], rax
+    cmp rax, qword ptr [rip + input_len]
+    jae number_fail
+    movzx ecx, byte ptr [rip + buffer + rax]
+    cmp ecx, '+'
+    je exponent_sign
+    cmp ecx, '-'
+    jne exponent_digit
+exponent_sign:
+    inc rax
+    mov qword ptr [rip + input_pos], rax
+    cmp rax, qword ptr [rip + input_len]
+    jae number_fail
+exponent_digit:
+    movzx ecx, byte ptr [rip + buffer + rax]
+    cmp ecx, '0'
+    jb number_fail
+    cmp ecx, '9'
+    ja number_fail
+exponent_digits:
+    inc rax
+    mov qword ptr [rip + input_pos], rax
+    cmp rax, qword ptr [rip + input_len]
+    jae number_done
+    movzx ecx, byte ptr [rip + buffer + rax]
+    cmp ecx, '0'
+    jb number_done
+    cmp ecx, '9'
+    ja number_done
+    jmp exponent_digits
+number_done:
+    xor eax, eax
+    ret
+number_fail:
+    mov eax, 1
+    ret
+
+parse_array:
+    inc qword ptr [rip + input_pos]
+    call skip_ws
+    mov rax, qword ptr [rip + input_pos]
+    cmp rax, qword ptr [rip + input_len]
+    jae array_fail
+    cmp byte ptr [rip + buffer + rax], ']'
+    je array_close
+    call parse_value
+    test eax, eax
+    jnz array_fail
+array_next:
+    call skip_ws
+    mov rax, qword ptr [rip + input_pos]
+    cmp rax, qword ptr [rip + input_len]
+    jae array_fail
+    movzx ecx, byte ptr [rip + buffer + rax]
+    cmp ecx, ']'
+    je array_close
+    cmp ecx, ','
+    jne array_fail
+    inc rax
+    mov qword ptr [rip + input_pos], rax
+    call skip_ws
+    call parse_value
+    test eax, eax
+    jnz array_fail
+    jmp array_next
+array_close:
+    inc qword ptr [rip + input_pos]
+    xor eax, eax
+    ret
+array_fail:
+    mov eax, 1
+    ret
+
+parse_object:
+    inc qword ptr [rip + input_pos]
+    call skip_ws
+    mov rax, qword ptr [rip + input_pos]
+    cmp rax, qword ptr [rip + input_len]
+    jae object_fail
+    cmp byte ptr [rip + buffer + rax], '}'
+    je object_close
+object_member:
+    call parse_string
+    test eax, eax
+    jnz object_fail
+    call skip_ws
+    mov rax, qword ptr [rip + input_pos]
+    cmp rax, qword ptr [rip + input_len]
+    jae object_fail
+    cmp byte ptr [rip + buffer + rax], ':'
+    jne object_fail
+    inc rax
+    mov qword ptr [rip + input_pos], rax
+    call skip_ws
+    call parse_value
+    test eax, eax
+    jnz object_fail
+object_next:
+    call skip_ws
+    mov rax, qword ptr [rip + input_pos]
+    cmp rax, qword ptr [rip + input_len]
+    jae object_fail
+    movzx ecx, byte ptr [rip + buffer + rax]
+    cmp ecx, '}'
+    je object_close
+    cmp ecx, ','
+    jne object_fail
+    inc rax
+    mov qword ptr [rip + input_pos], rax
+    call skip_ws
+    jmp object_member
+object_close:
+    inc qword ptr [rip + input_pos]
+    xor eax, eax
+    ret
+object_fail:
+    mov eax, 1
+    ret

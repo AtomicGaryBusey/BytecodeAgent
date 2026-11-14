@@ -1,0 +1,400 @@
+.section .rodata
+ok_msg:
+.ascii "ok\n"
+err_msg:
+.ascii "error at "
+
+.bss
+input:
+.zero 65537
+contexts:
+.zero 1008
+outbuf:
+.zero 40
+
+.text
+.globl _start
+_start:
+    lea r12, [rip + input]
+    xor r13d, r13d
+read_loop:
+    xor eax, eax
+    xor edi, edi
+    lea rsi, [r12 + r13]
+    mov edx, 65537
+    sub rdx, r13
+    syscall
+    test rax, rax
+    jz read_done
+    add r13, rax
+    jmp read_loop
+
+read_done:
+    lea r14, [r12 + r13]
+    mov rbx, r12
+    lea r15, [rip + contexts]
+    xor ebp, ebp
+    mov byte ptr [r15], 0
+
+# Context states: 0 document value, 1 document end,
+# 2 array first value or end, 3 array value, 4 array separator,
+# 5 object first key or end, 6 object key, 7 colon,
+# 8 object value, 9 object separator.
+dispatch:
+    cmp rbx, r14
+    jae eof_check
+    movzx eax, byte ptr [rbx]
+    cmp al, 0x20
+    je skip_ws
+    cmp al, 9
+    je skip_ws
+    cmp al, 10
+    je skip_ws
+    cmp al, 13
+    je skip_ws
+
+    movzx edx, byte ptr [r15 + rbp]
+    cmp edx, 0
+    je value
+    cmp edx, 1
+    je error
+    cmp edx, 2
+    je array_first
+    cmp edx, 3
+    je value
+    cmp edx, 4
+    je array_sep
+    cmp edx, 5
+    je object_first
+    cmp edx, 6
+    je object_key
+    cmp edx, 7
+    je object_colon
+    cmp edx, 8
+    je value
+    jmp object_sep
+
+skip_ws:
+    inc rbx
+    jmp dispatch
+
+array_first:
+    cmp al, ']'
+    je close_container
+    jmp value
+array_sep:
+    cmp al, ']'
+    je close_container
+    cmp al, ','
+    jne error
+    inc rbx
+    mov byte ptr [r15 + rbp], 3
+    jmp dispatch
+
+object_first:
+    cmp al, '}'
+    je close_container
+object_key:
+    cmp al, '"'
+    jne error
+    mov byte ptr [r15 + rbp], 7
+    jmp parse_string
+object_colon:
+    cmp al, ':'
+    jne error
+    inc rbx
+    mov byte ptr [r15 + rbp], 8
+    jmp dispatch
+object_sep:
+    cmp al, '}'
+    je close_container
+    cmp al, ','
+    jne error
+    inc rbx
+    mov byte ptr [r15 + rbp], 6
+    jmp dispatch
+
+close_container:
+    inc rbx
+    dec rbp
+    jmp dispatch
+
+value:
+    cmp edx, 0
+    jne value_not_doc
+    mov byte ptr [r15 + rbp], 1
+    jmp value_start
+value_not_doc:
+    cmp edx, 8
+    jne value_array
+    mov byte ptr [r15 + rbp], 9
+    jmp value_start
+value_array:
+    mov byte ptr [r15 + rbp], 4
+
+value_start:
+    cmp al, '{'
+    je open_object
+    cmp al, '['
+    je open_array
+    cmp al, '"'
+    je parse_string
+    cmp al, 't'
+    je literal_true
+    cmp al, 'f'
+    je literal_false
+    cmp al, 'n'
+    je literal_null
+    cmp al, '-'
+    je number_minus
+    cmp al, '0'
+    jb error
+    cmp al, '9'
+    ja error
+    jmp number_int
+
+open_object:
+    inc rbx
+    inc rbp
+    mov byte ptr [r15 + rbp], 5
+    jmp dispatch
+open_array:
+    inc rbx
+    inc rbp
+    mov byte ptr [r15 + rbp], 2
+    jmp dispatch
+
+parse_string:
+    inc rbx
+string_loop:
+    cmp rbx, r14
+    jae error
+    movzx eax, byte ptr [rbx]
+    cmp al, '"'
+    je string_done
+    cmp al, 0x20
+    jb error
+    cmp al, 0x5c
+    je string_escape
+    inc rbx
+    jmp string_loop
+string_done:
+    inc rbx
+    jmp dispatch
+string_escape:
+    inc rbx
+    cmp rbx, r14
+    jae error
+    movzx eax, byte ptr [rbx]
+    cmp al, 'u'
+    je string_unicode
+    cmp al, '"'
+    je escape_done
+    cmp al, 0x5c
+    je escape_done
+    cmp al, '/'
+    je escape_done
+    cmp al, 'b'
+    je escape_done
+    cmp al, 'f'
+    je escape_done
+    cmp al, 'n'
+    je escape_done
+    cmp al, 'r'
+    je escape_done
+    cmp al, 't'
+    jne error
+escape_done:
+    inc rbx
+    jmp string_loop
+string_unicode:
+    inc rbx
+    mov ecx, 4
+unicode_loop:
+    cmp rbx, r14
+    jae error
+    movzx eax, byte ptr [rbx]
+    cmp al, '0'
+    jb error
+    cmp al, '9'
+    jbe unicode_digit
+    or al, 0x20
+    cmp al, 'a'
+    jb error
+    cmp al, 'f'
+    ja error
+unicode_digit:
+    inc rbx
+    dec ecx
+    jnz unicode_loop
+    jmp string_loop
+
+literal_true:
+    lea rsi, [rip + true_text]
+    mov ecx, 4
+    jmp literal_loop
+literal_false:
+    lea rsi, [rip + false_text]
+    mov ecx, 5
+    jmp literal_loop
+literal_null:
+    lea rsi, [rip + null_text]
+    mov ecx, 4
+literal_loop:
+    cmp rbx, r14
+    jae error
+    mov al, byte ptr [rsi]
+    cmp byte ptr [rbx], al
+    jne error
+    inc rbx
+    inc rsi
+    dec ecx
+    jnz literal_loop
+    jmp dispatch
+
+number_minus:
+    inc rbx
+    cmp rbx, r14
+    jae error
+    movzx eax, byte ptr [rbx]
+    cmp al, '0'
+    jb error
+    cmp al, '9'
+    ja error
+number_int:
+    cmp al, '0'
+    je number_zero
+number_digits:
+    inc rbx
+    cmp rbx, r14
+    jae dispatch
+    movzx eax, byte ptr [rbx]
+    cmp al, '0'
+    jb number_after_int
+    cmp al, '9'
+    jbe number_digits
+    jmp number_after_int
+number_zero:
+    inc rbx
+    cmp rbx, r14
+    jae dispatch
+    movzx eax, byte ptr [rbx]
+number_after_int:
+    cmp al, '.'
+    je number_fraction
+    cmp al, 'e'
+    je number_exponent
+    cmp al, 'E'
+    je number_exponent
+    jmp dispatch
+number_fraction:
+    inc rbx
+    cmp rbx, r14
+    jae error
+    movzx eax, byte ptr [rbx]
+    cmp al, '0'
+    jb error
+    cmp al, '9'
+    ja error
+fraction_digits:
+    inc rbx
+    cmp rbx, r14
+    jae dispatch
+    movzx eax, byte ptr [rbx]
+    cmp al, '0'
+    jb fraction_end
+    cmp al, '9'
+    jbe fraction_digits
+fraction_end:
+    cmp al, 'e'
+    je number_exponent
+    cmp al, 'E'
+    je number_exponent
+    jmp dispatch
+number_exponent:
+    inc rbx
+    cmp rbx, r14
+    jae error
+    movzx eax, byte ptr [rbx]
+    cmp al, '+'
+    je exponent_sign
+    cmp al, '-'
+    jne exponent_first
+exponent_sign:
+    inc rbx
+    cmp rbx, r14
+    jae error
+    movzx eax, byte ptr [rbx]
+exponent_first:
+    cmp al, '0'
+    jb error
+    cmp al, '9'
+    ja error
+exponent_digits:
+    inc rbx
+    cmp rbx, r14
+    jae dispatch
+    movzx eax, byte ptr [rbx]
+    cmp al, '0'
+    jb dispatch
+    cmp al, '9'
+    jbe exponent_digits
+    jmp dispatch
+
+eof_check:
+    test rbp, rbp
+    jne error
+    cmp byte ptr [r15], 1
+    jne error
+    mov eax, 1
+    mov edi, 1
+    lea rsi, [rip + ok_msg]
+    mov edx, 3
+    syscall
+    xor edi, edi
+    mov eax, 60
+    syscall
+
+error:
+    mov rax, rbx
+    sub rax, r12
+    lea rdi, [rip + outbuf + 39]
+    mov byte ptr [rdi], 10
+    mov r8, rdi
+    mov ecx, 10
+decimal_loop:
+    xor edx, edx
+    div rcx
+    add dl, '0'
+    dec rdi
+    mov byte ptr [rdi], dl
+    test rax, rax
+    jnz decimal_loop
+    mov r9, rdi
+    lea rsi, [rip + err_msg]
+    lea rdi, [rip + outbuf]
+    mov ecx, 9
+    rep movsb
+    mov rsi, r9
+    mov rdx, r8
+    sub rdx, r9
+    inc rdx
+    mov rcx, rdx
+    rep movsb
+    mov rdx, rdi
+    lea rsi, [rip + outbuf]
+    sub rdx, rsi
+    mov eax, 1
+    mov edi, 1
+    syscall
+    mov edi, 1
+    mov eax, 60
+    syscall
+
+.section .rodata
+true_text:
+.ascii "true"
+false_text:
+.ascii "false"
+null_text:
+.ascii "null"

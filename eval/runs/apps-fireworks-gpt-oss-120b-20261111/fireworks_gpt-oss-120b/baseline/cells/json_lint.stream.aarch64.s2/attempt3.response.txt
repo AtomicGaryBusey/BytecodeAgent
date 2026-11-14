@@ -1,0 +1,149 @@
+	.equ	STDIN, 0
+	.equ	STDOUT, 1
+	.equ	SYS_READ, 63
+	.equ	SYS_WRITE, 64
+	.equ	SYS_EXIT, 93
+
+	.text
+	.globl	_start
+_start:
+	// x19 = base address of input buffer
+	adrp	x19, input_buf
+	add	x19, x19, :lo12:input_buf
+
+	// x20 = total bytes read so far
+	mov	x20, #0
+
+read_loop:
+	// remaining = 65536 - total
+	mov	x2, #65536
+	subs	x2, x2, x20
+	cbz	x2, read_done
+
+	// buf = input_buf + total
+	add	x1, x19, x20
+
+	// syscall read(fd=0, buf, count)
+	mov	x0, #STDIN
+	mov	x8, #SYS_READ
+	svc	#0
+	cbnz	x0, read_continue
+	// EOF (read returned 0)
+	b	read_done
+read_continue:
+	add	x20, x20, x0
+	b	read_loop
+
+read_done:
+	// store total length
+	adrp	x0, input_len
+	add	x0, x0, :lo12:input_len
+	str	x20, [x0]
+
+	// cur_offset = 0
+	adrp	x0, cur_offset
+	add	x0, x0, :lo12:cur_offset
+	mov	x1, #0
+	str	x1, [x0]
+
+	// error_set = 0
+	adrp	x0, error_set
+	add	x0, x0, :lo12:error_set
+	mov	w1, #0
+	strb	w1, [x0]
+
+	// start parsing the document
+	bl	parse_document
+	// x0 = 0 success, non‑zero failure
+
+	// prepare output
+	cbnz	x0, output_error
+
+	// success -> write "ok\n"
+	adrp	x0, ok_msg
+	add	x0, x0, :lo12:ok_msg
+	adrp	x1, ok_len
+	add	x1, x1, :lo12:ok_len
+	ldr	x1, [x1]
+	mov	x2, #STDOUT
+	bl	write_all
+	// exit status 0
+	mov	x0, #0
+	mov	x8, #SYS_EXIT
+	svc	#0
+
+output_error:
+	// write "error at "
+	adrp	x0, err_prefix
+	add	x0, x0, :lo12:err_prefix
+	adrp	x1, err_prefix_len
+	add	x1, x1, :lo12:err_prefix_len
+	ldr	x1, [x1]
+	mov	x2, #STDOUT
+	bl	write_all
+
+	// convert error_offset to ASCII
+	adrp	x0, error_offset
+	add	x0, x0, :lo12:error_offset
+	ldr	x0, [x0]			// x0 = offset
+	adrp	x1, num_buf
+	add	x1, x1, :lo12:num_buf
+	bl	uint_to_ascii			// x0 = length of number string
+
+	// write number string
+	adrp	x2, num_buf
+	add	x2, x2, :lo12:num_buf
+	mov	x3, x0				// length
+	mov	x0, #STDOUT
+	bl	write_all
+
+	// write newline
+	adrp	x0, newline
+	add	x0, x0, :lo12:newline
+	adrp	x1, newline_len
+	add	x1, x1, :lo12:newline_len
+	ldr	x1, [x1]
+	mov	x2, #STDOUT
+	bl	write_all
+
+	// exit status 1
+	mov	x0, #1
+	mov	x8, #SYS_EXIT
+	svc	#0
+
+// ------------------------------------------------------------
+// write_all(fd, buf, len) – x0=fd, x1=buf, x2=len
+write_all:
+	stp	x29, x30, [sp, #-16]!
+	mov	x29, sp
+1:
+	cmp	x2, #0
+	beq	2f
+	mov	x0, x0			// fd (already)
+	mov	x1, x1
+	mov	x2, x2
+	mov	x8, #SYS_WRITE
+	svc	#0
+	cbnz	x0, 1b		// assume all bytes written
+2:
+	ldp	x29, x30, [sp], #16
+	ret
+
+// ------------------------------------------------------------
+// uint_to_ascii(value in x0, dest in x1) -> length in x0
+uint_to_ascii:
+	stp	x29, x30, [sp, #-16]!
+	mov	x29, sp
+	// conv_tmp buffer in .bss
+	adrp	x2, conv_tmp
+	add	x2, x2, :lo12:conv_tmp
+	mov	x3, #0			// digit count
+	cbnz	x0, .Lut_nonzero
+	// value == 0
+	mov	w4, #'0'
+	strb	w4, [x1]
+	mov	x0, #1
+	b	.Lut_done
+.Lut_nonzero:
+.Lut_loop:
+	udiv	x5, x0, #10

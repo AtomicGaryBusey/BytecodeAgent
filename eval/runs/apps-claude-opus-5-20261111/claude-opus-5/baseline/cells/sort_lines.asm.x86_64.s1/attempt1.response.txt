@@ -1,0 +1,248 @@
+.globl _start
+
+.text
+_start:
+    # read all input
+    lea rsi, [rip + inbuf]
+    xor r12d, r12d          # total bytes
+1:
+    xor eax, eax
+    xor edi, edi
+    lea rsi, [rip + inbuf]
+    add rsi, r12
+    mov rdx, 32768
+    sub rdx, r12
+    test rdx, rdx
+    jz 2f
+    syscall
+    test rax, rax
+    jle 2f
+    add r12, rax
+    jmp 1b
+2:
+    test r12, r12
+    jz exit_ok
+
+    # split into lines: ptr table and len table
+    xor r13d, r13d          # line count
+    xor rbx, rbx            # current index
+    lea r14, [rip + inbuf]
+    lea r8, [rip + ptrs]
+    lea r9, [rip + lens]
+3:
+    cmp rbx, r12
+    jae 5f
+    mov rcx, rbx            # start
+    # find newline
+4:
+    cmp rbx, r12
+    jae 4f
+    cmp byte ptr [r14 + rbx], 10
+    je 4f
+    inc rbx
+    jmp 4b
+4:
+    mov rax, r14
+    add rax, rcx
+    mov qword ptr [r8 + r13*8], rax
+    mov rax, rbx
+    sub rax, rcx
+    mov qword ptr [r9 + r13*8], rax
+    inc r13
+    inc rbx                 # skip newline (or go past end)
+    jmp 3b
+5:
+    test r13, r13
+    jz exit_ok
+
+    # insertion-ish: use merge sort via simple approach - do binary insertion sort
+    # Simpler: selection sort would be 10^6 comparisons of memcmp -> fine? 1000^2/2 = 500k memcmp calls, each up to 32 bytes avg. OK.
+    # Use merge sort for safety.
+    xor edi, edi            # lo = 0
+    mov rsi, r13            # hi = n
+    call msort
+
+    # output
+    lea r8, [rip + ptrs]
+    lea r9, [rip + lens]
+    xor rbx, rbx
+    lea r15, [rip + outbuf]
+    xor r12d, r12d          # out len
+6:
+    cmp rbx, r13
+    jae 8f
+    mov rsi, qword ptr [r8 + rbx*8]
+    mov rcx, qword ptr [r9 + rbx*8]
+    # copy rcx bytes
+    test rcx, rcx
+    jz 7f
+    mov rdi, r15
+    add rdi, r12
+    add r12, rcx
+    rep movsb
+7:
+    mov byte ptr [r15 + r12], 10
+    inc r12
+    inc rbx
+    jmp 6b
+8:
+    mov eax, 1
+    mov edi, 1
+    lea rsi, [rip + outbuf]
+    mov rdx, r12
+    syscall
+
+exit_ok:
+    mov eax, 231
+    xor edi, edi
+    syscall
+    hlt
+
+# msort(rdi = lo, rsi = hi) sorts ptrs/lens[lo, hi)
+msort:
+    push rbp
+    mov rbp, rsp
+    push rbx
+    push r12
+    push r13
+    push r14
+    push r15
+    mov rbx, rdi
+    mov r12, rsi
+    mov rax, r12
+    sub rax, rbx
+    cmp rax, 1
+    jbe ms_done
+    mov r13, rbx
+    add r13, r12
+    shr r13, 1              # mid
+    mov rdi, rbx
+    mov rsi, r13
+    call msort
+    mov rdi, r13
+    mov rsi, r12
+    call msort
+    # merge into tmp
+    mov r14, rbx            # i
+    mov r15, r13            # j
+    xor rcx, rcx            # k index into tmp
+    lea r8, [rip + ptrs]
+    lea r9, [rip + lens]
+    lea r10, [rip + tptrs]
+    lea r11, [rip + tlens]
+ms_loop:
+    cmp r14, r13
+    jae ms_take_j
+    cmp r15, r12
+    jae ms_take_i
+    # compare lines r14 and r15
+    push rcx
+    push r8
+    push r9
+    push r10
+    push r11
+    mov rdi, qword ptr [r8 + r14*8]
+    mov rdx, qword ptr [r9 + r14*8]
+    mov rsi, qword ptr [r8 + r15*8]
+    mov r8, qword ptr [r9 + r15*8]
+    call cmpline
+    pop r11
+    pop r10
+    pop r9
+    pop r8
+    pop rcx
+    test eax, eax
+    jle ms_take_i
+    jmp ms_take_j
+ms_take_i:
+    mov rax, qword ptr [r8 + r14*8]
+    mov qword ptr [r10 + rcx*8], rax
+    mov rax, qword ptr [r9 + r14*8]
+    mov qword ptr [r11 + rcx*8], rax
+    inc r14
+    inc rcx
+    jmp ms_cont
+ms_take_j:
+    mov rax, qword ptr [r8 + r15*8]
+    mov qword ptr [r10 + rcx*8], rax
+    mov rax, qword ptr [r9 + r15*8]
+    mov qword ptr [r11 + rcx*8], rax
+    inc r15
+    inc rcx
+ms_cont:
+    mov rax, r14
+    cmp rax, r13
+    jb ms_loop
+    cmp r15, r12
+    jb ms_loop
+    # copy back
+    xor rdx, rdx
+ms_copy:
+    cmp rdx, rcx
+    jae ms_done
+    mov rax, qword ptr [r10 + rdx*8]
+    mov rsi, rbx
+    add rsi, rdx
+    mov qword ptr [r8 + rsi*8], rax
+    mov rax, qword ptr [r11 + rdx*8]
+    mov qword ptr [r9 + rsi*8], rax
+    inc rdx
+    jmp ms_copy
+ms_done:
+    pop r15
+    pop r14
+    pop r13
+    pop r12
+    pop rbx
+    pop rbp
+    ret
+
+# cmpline(rdi = p1, rdx = len1, rsi = p2, r8 = len2) -> eax < 0, 0, > 0
+cmpline:
+    mov rcx, rdx
+    cmp rcx, r8
+    jbe 1f
+    mov rcx, r8
+1:
+    test rcx, rcx
+    jz 3f
+2:
+    movzx eax, byte ptr [rdi]
+    movzx r9d, byte ptr [rsi]
+    cmp eax, r9d
+    jne 4f
+    inc rdi
+    inc rsi
+    dec rcx
+    jnz 2b
+3:
+    # common prefix equal: shorter first
+    xor eax, eax
+    cmp rdx, r8
+    jb 5f
+    ja 6f
+    ret
+5:
+    mov eax, -1
+    ret
+6:
+    mov eax, 1
+    ret
+4:
+    sub eax, r9d
+    ret
+
+.bss
+.align 16
+inbuf:
+    .zero 32768
+outbuf:
+    .zero 33792
+ptrs:
+    .zero 8008
+lens:
+    .zero 8008
+tptrs:
+    .zero 8008
+tlens:
+    .zero 8008

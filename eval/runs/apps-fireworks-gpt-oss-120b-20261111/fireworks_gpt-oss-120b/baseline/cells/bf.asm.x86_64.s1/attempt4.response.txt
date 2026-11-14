@@ -1,0 +1,212 @@
+.equ BUF_SIZE, 65536
+.equ TAPE_SIZE, 30000
+.equ MAX_STACK, 1000
+.equ MATCH_SIZE, BUF_SIZE*4
+.equ STACK_SIZE, MAX_STACK*4
+
+.globl _start
+.text
+_start:
+    # pointers
+    lea r12, [rip + buf]          # buffer
+    lea r13, [rip + match]        # match table
+    lea r14, [rip + tape]         # tape
+    lea r15, [rip + stack]        # bracket stack
+
+    # read all stdin into buf
+    xor r8, r8                    # total_len = 0
+read_loop:
+    mov rax, 0                    # sys_read
+    mov rdi, 0                    # fd 0
+    lea rsi, [r12 + r8]           # buf + total_len
+    mov rdx, BUF_SIZE
+    sub rdx, r8                   # remaining space
+    test rdx, rdx
+    jz read_done
+    syscall
+    test rax, rax
+    jz read_done
+    add r8, rax
+    cmp r8, BUF_SIZE
+    jae read_done
+    jmp read_loop
+read_done:
+    mov qword [rip + total_len], r8
+
+    # split at first '!'
+    xor rcx, rcx                  # i = 0
+find_excl:
+    cmp rcx, r8
+    jae no_excl
+    mov al, byte [r12 + rcx]
+    cmp al, 0x21                  # '!'
+    je found_excl
+    inc rcx
+    jmp find_excl
+found_excl:
+    mov qword [rip + prog_len], rcx
+    mov rax, r8
+    sub rax, rcx
+    dec rax                       # bytes after '!'
+    mov qword [rip + input_len], rax
+    lea rax, [rcx + 1]
+    mov qword [rip + input_offset], rax
+    jmp split_done
+no_excl:
+    mov qword [rip + prog_len], r8
+    xor rax, rax
+    mov qword [rip + input_len], rax
+    mov qword [rip + input_offset], r8
+split_done:
+    xor rax, rax
+    mov qword [rip + input_pos], rax
+
+    # bracket matching
+    xor r10, r10                  # stack_ptr = 0
+    xor rcx, rcx                  # i = 0
+    mov rdx, qword [rip + prog_len]
+match_loop:
+    cmp rcx, rdx
+    jae match_done
+    mov al, byte [r12 + rcx]
+    cmp al, '['
+    je push_bracket
+    cmp al, ']'
+    je pop_bracket
+    jmp inc_i
+push_bracket:
+    mov eax, ecx                  # store i
+    mov [r15 + r10*4], eax        # stack[stack_ptr] = i
+    inc r10
+    jmp inc_i
+pop_bracket:
+    dec r10
+    jl unbalanced
+    mov eax, [r15 + r10*4]        # j = matching '['
+    ; store match[i] = j
+    mov rax, rcx
+    shl rax, 2
+    mov dword [r13 + rax], eax
+    ; store match[j] = i
+    mov ebx, eax                  # ebx = j
+    mov rax, rbx
+    shl rax, 2
+    mov dword [r13 + rax], ecx
+    jmp inc_i
+inc_i:
+    inc rcx
+    jmp match_loop
+unbalanced:
+    mov rax, 60
+    mov rdi, 1
+    syscall
+match_done:
+    cmp r10, 0
+    jne unbalanced
+
+    # execution
+    xor rsi, rsi                  # pc = 0
+    xor rbx, rbx                  # data_ptr = 0
+    xor rdx, rdx                  # input_pos = 0
+    mov r8, qword [rip + prog_len]      # prog_len
+    mov r9, qword [rip + input_len]      # input_len
+    mov r10, qword [rip + input_offset]  # input_offset
+
+exec_loop:
+    cmp rsi, r8
+    jae exec_done
+    mov al, byte [r12 + rsi]
+    inc rsi
+    cmp al, '>'
+    je inc_ptr
+    cmp al, '<'
+    je dec_ptr
+    cmp al, '+'
+    je inc_cell
+    cmp al, '-'
+    je dec_cell
+    cmp al, '.'
+    je output_cell
+    cmp al, ','
+    je input_cell
+    cmp al, '['
+    je bracket_open
+    cmp al, ']'
+    je bracket_close
+    jmp exec_loop
+
+inc_ptr:
+    inc rbx
+    jmp exec_loop
+dec_ptr:
+    dec rbx
+    jmp exec_loop
+inc_cell:
+    inc byte [r14 + rbx]
+    jmp exec_loop
+dec_cell:
+    dec byte [r14 + rbx]
+    jmp exec_loop
+output_cell:
+    mov rax, 1
+    mov rdi, 1
+    lea rsi, [r14 + rbx]
+    mov rdx, 1
+    syscall
+    jmp exec_loop
+input_cell:
+    cmp rdx, r9
+    jae input_eof
+    mov rax, r10
+    add rax, rdx
+    movzx eax, byte [r12 + rax]
+    mov byte [r14 + rbx], al
+    inc rdx
+    jmp exec_loop
+input_eof:
+    mov byte [r14 + rbx], 0
+    jmp exec_loop
+bracket_open:
+    mov al, byte [r14 + rbx]
+    test al, al
+    jne exec_continue
+    mov rcx, rsi
+    dec rcx
+    mov eax, dword [r13 + rcx*4]
+    inc eax
+    mov rsi, rax
+exec_continue:
+    jmp exec_loop
+bracket_close:
+    mov al, byte [r14 + rbx]
+    test al, al
+    je exec_continue2
+    mov rcx, rsi
+    dec rcx
+    mov eax, dword [r13 + rcx*4]
+    inc eax
+    mov rsi, rax
+exec_continue2:
+    jmp exec_loop
+
+exec_done:
+    mov rax, 60
+    xor rdi, rdi
+    syscall
+
+.bss
+.align 8
+total_len:      .zero 8
+prog_len:       .zero 8
+input_len:      .zero 8
+input_offset:   .zero 8
+input_pos:      .zero 8
+
+.align 16
+buf:            .space BUF_SIZE
+.align 4
+match:          .space MATCH_SIZE
+.align 4
+stack:          .space STACK_SIZE
+.align 1
+tape:           .space TAPE_SIZE

@@ -1,0 +1,288 @@
+.globl _start
+
+.section .rodata
+error_msg:
+	.ascii "error\n"
+int64_min_str:
+	.ascii "-9223372036854775808\n"
+
+.bss
+.align 8
+input_buf:
+	.space 65536
+rpn_stack:
+	.space 8192
+num_buf:
+	.space 32
+
+.text
+_start:
+	lea r12, [rip + input_buf]
+	xor r13d, r13d
+read_loop:
+	mov eax, 0
+	xor edi, edi
+	lea rsi, [r12 + r13]
+	mov edx, 65536
+	sub edx, r13d
+	jle read_done
+	syscall
+	test rax, rax
+	jle read_done
+	add r13, rax
+	jmp read_loop
+read_done:
+	add r13, r12
+line_loop:
+	cmp r12, r13
+	jae finished
+	mov r14, r12
+find_nl:
+	cmp r12, r13
+	jae final_line
+	cmp byte ptr [r12], 0x0A
+	je got_nl
+	inc r12
+	jmp find_nl
+got_nl:
+	mov rdi, r14
+	mov rsi, r12
+	call eval_line
+	inc r12
+	jmp line_loop
+final_line:
+	cmp r14, r13
+	je finished
+	mov rdi, r14
+	mov rsi, r13
+	call eval_line
+finished:
+	mov eax, 60
+	xor edi, edi
+	syscall
+
+eval_line:
+	push r12
+	push r13
+	push r14
+	push rbx
+	push rbp
+	mov r12, rdi
+	mov r13, rsi
+	lea rbx, [rip + rpn_stack]
+	xor ebp, ebp
+tok_loop:
+skip_sep:
+	cmp r12, r13
+	jae toks_done
+	movzx eax, byte ptr [r12]
+	cmp al, 0x20
+	je is_sep
+	cmp al, 0x09
+	je is_sep
+	jmp got_tok
+is_sep:
+	inc r12
+	jmp skip_sep
+got_tok:
+	mov r14, r12
+scan_tok:
+	inc r12
+	cmp r12, r13
+	jae tok_ended
+	movzx eax, byte ptr [r12]
+	cmp al, 0x20
+	je tok_ended
+	cmp al, 0x09
+	je tok_ended
+	jmp scan_tok
+tok_ended:
+	mov rdx, r12
+	sub rdx, r14
+	cmp rdx, 1
+	jne try_num
+	movzx eax, byte ptr [r14]
+	cmp al, '+'
+	je do_add
+	cmp al, '-'
+	je do_sub
+	cmp al, '*'
+	je do_mul
+	cmp al, '/'
+	je do_div
+	cmp al, '%'
+	je do_mod
+try_num:
+	xor r8d, r8d
+	mov rsi, r14
+	cmp byte ptr [rsi], '-'
+	jne no_sign
+	mov r8d, 1
+	inc rsi
+	dec rdx
+no_sign:
+	test rdx, rdx
+	jz line_err
+	cmp rdx, 18
+	ja line_err
+	xor eax, eax
+dig_loop:
+	movzx ecx, byte ptr [rsi]
+	sub ecx, '0'
+	cmp ecx, 9
+	ja line_err
+	imul rax, rax, 10
+	add rax, rcx
+	inc rsi
+	dec rdx
+	jnz dig_loop
+	test r8d, r8d
+	jz push_val
+	neg rax
+push_val:
+	mov qword ptr [rbx + rbp*8], rax
+	inc ebp
+	jmp tok_loop
+do_add:
+	cmp ebp, 2
+	jb line_err
+	dec ebp
+	mov rcx, qword ptr [rbx + rbp*8]
+	dec ebp
+	mov rax, qword ptr [rbx + rbp*8]
+	add rax, rcx
+	mov qword ptr [rbx + rbp*8], rax
+	inc ebp
+	jmp tok_loop
+do_sub:
+	cmp ebp, 2
+	jb line_err
+	dec ebp
+	mov rcx, qword ptr [rbx + rbp*8]
+	dec ebp
+	mov rax, qword ptr [rbx + rbp*8]
+	sub rax, rcx
+	mov qword ptr [rbx + rbp*8], rax
+	inc ebp
+	jmp tok_loop
+do_mul:
+	cmp ebp, 2
+	jb line_err
+	dec ebp
+	mov rcx, qword ptr [rbx + rbp*8]
+	dec ebp
+	mov rax, qword ptr [rbx + rbp*8]
+	imul rax, rcx
+	mov qword ptr [rbx + rbp*8], rax
+	inc ebp
+	jmp tok_loop
+do_div:
+	cmp ebp, 2
+	jb line_err
+	dec ebp
+	mov rcx, qword ptr [rbx + rbp*8]
+	dec ebp
+	mov rax, qword ptr [rbx + rbp*8]
+	test rcx, rcx
+	jz line_err
+	mov rdx, 1
+	shl rdx, 63
+	cmp rax, rdx
+	jne div_ok
+	cmp rcx, -1
+	je line_err
+div_ok:
+	cqo
+	idiv rcx
+	mov qword ptr [rbx + rbp*8], rax
+	inc ebp
+	jmp tok_loop
+do_mod:
+	cmp ebp, 2
+	jb line_err
+	dec ebp
+	mov rcx, qword ptr [rbx + rbp*8]
+	dec ebp
+	mov rax, qword ptr [rbx + rbp*8]
+	test rcx, rcx
+	jz line_err
+	mov rdx, 1
+	shl rdx, 63
+	cmp rax, rdx
+	jne mod_ok
+	cmp rcx, -1
+	je line_err
+mod_ok:
+	cqo
+	idiv rcx
+	mov qword ptr [rbx + rbp*8], rdx
+	inc ebp
+	jmp tok_loop
+toks_done:
+	cmp ebp, 1
+	jne line_err
+	mov rax, qword ptr [rbx]
+	call print_int
+	jmp eval_ret
+line_err:
+	mov eax, 1
+	mov edi, 1
+	lea rsi, [rip + error_msg]
+	mov edx, 6
+	syscall
+eval_ret:
+	pop rbp
+	pop rbx
+	pop r14
+	pop r13
+	pop r12
+	ret
+
+print_int:
+	push rbx
+	push r15
+	lea r15, [rip + num_buf + 30]
+	mov byte ptr [r15], 0x0A
+	mov rbx, rax
+	test rax, rax
+	jns conv_pos
+	mov rcx, 1
+	shl rcx, 63
+	cmp rax, rcx
+	je print_min
+	neg rax
+conv_pos:
+	mov rcx, 10
+	mov rdi, r15
+conv_loop:
+	xor rdx, rdx
+	div rcx
+	add dl, '0'
+	dec rdi
+	mov byte ptr [rdi], dl
+	test rax, rax
+	jnz conv_loop
+	test rbx, rbx
+	jns do_write
+	dec rdi
+	mov byte ptr [rdi], '-'
+do_write:
+	mov rsi, rdi
+	mov rdx, r15
+	sub rdx, rdi
+	inc rdx
+	mov eax, 1
+	mov edi, 1
+	syscall
+	pop r15
+	pop rbx
+	ret
+print_min:
+	mov eax, 1
+	mov edi, 1
+	lea rsi, [rip + int64_min_str]
+	mov edx, 21
+	syscall
+	pop r15
+	pop rbx
+	ret

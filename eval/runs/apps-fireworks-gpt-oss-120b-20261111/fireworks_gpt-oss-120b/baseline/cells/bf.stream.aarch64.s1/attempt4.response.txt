@@ -1,0 +1,291 @@
+.equ    SYS_READ,      63
+.equ    SYS_WRITE,     64
+.equ    SYS_EXIT,      93
+
+.equ    BUF_SIZE,      65536
+.equ    MAX_PROG,      65536
+.equ    TAPE_SIZE,     30000
+.equ    MAX_NEST,      1000
+
+.equ    CMD_GT,        0x3e    // '>'
+.equ    CMD_LT,        0x3c    // '<'
+.equ    CMD_PLUS,      0x2b    // '+'
+.equ    CMD_MINUS,     0x2d    // '-'
+.equ    CMD_DOT,       0x2e    // '.'
+.equ    CMD_COMMA,     0x2c    // ','
+.equ    CMD_LB,        0x5b    // '['
+.equ    CMD_RB,        0x5d    // ']'
+.equ    CMD_EXCL,      0x21    // '!'
+
+.global _start
+.text
+_start:
+    // load addresses of static data
+    adrp    x19, tape
+    add     x19, x19, :lo12:tape               // x19 = tape base
+    adrp    x20, loop_stack
+    add     x20, x20, :lo12:loop_stack         // x20 = loop stack base
+    adrp    x21, jump_table
+    add     x21, x21, :lo12:jump_table         // x21 = jump table base
+    adrp    x22, input_buf
+    add     x22, x22, :lo12:input_buf          // x22 = input buffer base
+    adrp    x23, out_byte
+    add     x23, x23, :lo12:out_byte           // x23 = output byte buffer
+
+    // -----------------------------------------------------------------
+    // read entire stdin into input_buf
+    mov     x24, #0            // total_len = 0
+    mov     x25, x22           // cur_ptr = input_buf
+    mov     x26, #BUF_SIZE     // remaining = BUF_SIZE
+
+read_loop:
+    mov     x0, #0             // fd = stdin
+    mov     x1, x25            // buf = cur_ptr
+    mov     x2, x26            // count = remaining
+    mov     x8, #SYS_READ
+    svc     #0
+    cbz     x0, read_done      // EOF
+    add     x24, x24, x0       // total_len += ret
+    add     x25, x25, x0       // cur_ptr += ret
+    sub     x26, x26, x0       // remaining -= ret
+    cbnz    x26, read_loop
+
+read_done:
+    // -----------------------------------------------------------------
+    // split at first '!' (separator)
+    mov     x27, x22           // ptr = input_buf
+    mov     x28, #0            // idx = 0
+    mov     x29, #0            // prog_len = 0
+    mov     x30, #0            // prog_input_len = 0
+    mov     x9, #0             // prog_input_ptr (will be set)
+
+find_sep:
+    cmp     x28, x24
+    b.ge    no_excl_found
+    ldrb    w0, [x27]
+    cmp     w0, #CMD_EXCL
+    b.eq    excl_found
+    add     x27, x27, #1
+    add     x28, x28, #1
+    b       find_sep
+
+excl_found:
+    mov     x29, x28                // prog_len = idx before '!'
+    add     x9, x27, #1             // prog_input_ptr = ptr+1
+    sub     x30, x24, x28           // total_len - prog_len
+    sub     x30, x30, #1            // minus separator
+    b       after_split
+
+no_excl_found:
+    mov     x29, x24                // whole buffer is program
+    mov     x30, #0                 // no input
+    add     x9, x27, #0             // prog_input_ptr = end (unused)
+
+after_split:
+    // -----------------------------------------------------------------
+    // bracket validation and jump table construction
+    mov     x10, #0                 // i = 0
+    mov     x11, #0                 // depth = 0
+
+val_loop:
+    cmp     x10, x29
+    b.ge    val_done
+    // load program byte at i
+    add     x12, x22, x10
+    ldrb    w0, [x12]
+
+    cmp     w0, #CMD_LB
+    b.eq    val_push
+    cmp     w0, #CMD_RB
+    b.eq    val_pop
+    // other chars
+    b       val_next
+
+val_push:
+    // store i on loop stack at depth
+    lsl     x13, x11, #3           // offset = depth*8
+    add     x14, x20, x13
+    str     x10, [x14]             // loop_stack[depth] = i
+    add     x11, x11, #1           // depth++
+    b       val_next
+
+val_pop:
+    cmp     x11, #0
+    b.eq    brackets_error
+    sub     x11, x11, #1           // depth--
+    lsl     x13, x11, #3
+    add     x14, x20, x13
+    ldr     x15, [x14]             // matching '[' index
+
+    // store jump for both brackets
+    // jump_table[i] = matching ']'
+    lsl     x13, x10, #3
+    add     x16, x21, x13
+    str     x15, [x16]
+
+    // jump_table[matching] = i
+    lsl     x13, x15, #3
+    add     x16, x21, x13
+    str     x10, [x16]
+
+    b       val_next
+
+val_next:
+    add     x10, x10, #1
+    b       val_loop
+
+val_done:
+    cmp     x11, #0
+    b.eq    brackets_ok
+brackets_error:
+    // unbalanced brackets -> exit 1 (no output)
+    mov     x0, #1
+    mov     x8, #SYS_EXIT
+    svc     #0
+
+brackets_ok:
+    // -----------------------------------------------------------------
+    // execution
+    mov     x17, #0                 // prog_ip = 0
+    mov     x18, x19                // data_ptr = tape base
+    mov     x19, x9                 // input_ptr = prog_input_ptr
+    mov     x20, x30                // input_rem = prog_input_len
+
+exec_loop:
+    cmp     x17, x29
+    b.ge    exec_done
+
+    // load current command
+    add     x21, x22, x17
+    ldrb    w0, [x21]
+
+    // compare against commands
+    cmp     w0, #CMD_GT
+    b.eq    cmd_gt
+    cmp     w0, #CMD_LT
+    b.eq    cmd_lt
+    cmp     w0, #CMD_PLUS
+    b.eq    cmd_plus
+    cmp     w0, #CMD_MINUS
+    b.eq    cmd_minus
+    cmp     w0, #CMD_DOT
+    b.eq    cmd_dot
+    cmp     w0, #CMD_COMMA
+    b.eq    cmd_comma
+    cmp     w0, #CMD_LB
+    b.eq    cmd_lb
+    cmp     w0, #CMD_RB
+    b.eq    cmd_rb
+    // default: ignore
+    b       cmd_next
+
+cmd_gt:
+    add     x18, x18, #1
+    b       cmd_next
+
+cmd_lt:
+    sub     x18, x18, #1
+    b       cmd_next
+
+cmd_plus:
+    ldrb    w1, [x18]
+    add     w1, w1, #1
+    strb    w1, [x18]
+    b       cmd_next
+
+cmd_minus:
+    ldrb    w1, [x18]
+    sub     w1, w1, #1
+    strb    w1, [x18]
+    b       cmd_next
+
+cmd_dot:
+    ldrb    w1, [x18]
+    strb    w1, [x23]               // store to out_byte
+    mov     x0, #1                  // fd = stdout
+    mov     x1, x23                 // buf
+    mov     x2, #1                  // count
+    mov     x8, #SYS_WRITE
+    svc     #0
+    b       cmd_next
+
+cmd_comma:
+    cmp     x20, #0
+    b.eq    cmd_comma_eof
+    ldrb    w1, [x19]
+    strb    w1, [x18]
+    add     x19, x19, #1
+    sub     x20, x20, #1
+    b       cmd_next
+cmd_comma_eof:
+    mov     w1, #0
+    strb    w1, [x18]
+    b       cmd_next
+
+cmd_lb:
+    ldrb    w1, [x18]
+    cbz     w1, lb_jump_forward
+    // cell != 0, continue
+    b       cmd_next
+lb_jump_forward:
+    // load matching index from jump table
+    lsl     x22, x17, #3
+    add     x22, x21, x22           // x21 still holds jump_table base? no, x21 = program byte addr. Need base address: use x21 already overwritten. Recompute:
+    add     x22, x21, #0            // placeholder fix below
+    // compute address: jump_table_base (still in x21? actually x21 was program addr). Use x24 as temp for base
+    // We'll reuse x24 which currently holds total_len, not needed now.
+    // Load base address of jump_table into x24
+    adrp    x24, jump_table
+    add     x24, x24, :lo12:jump_table
+    lsl     x25, x17, #3
+    add     x25, x24, x25
+    ldr     x26, [x25]              // matching ']'
+    add     x17, x26, #1
+    b       exec_continue
+
+cmd_rb:
+    ldrb    w1, [x18]
+    cbnz    w1, rb_jump_back
+    // cell == 0, continue
+    b       cmd_next
+rb_jump_back:
+    // load matching '[' from jump table
+    adrp    x24, jump_table
+    add     x24, x24, :lo12:jump_table
+    lsl     x25, x17, #3
+    add     x25, x24, x25
+    ldr     x26, [x25]              // matching '['
+    add     x17, x26, #1
+    b       exec_continue
+
+cmd_next:
+    add     x17, x17, #1
+exec_continue:
+    b       exec_loop
+
+exec_done:
+    // exit 0
+    mov     x0, #0
+    mov     x8, #SYS_EXIT
+    svc     #0
+
+// -----------------------------------------------------------------
+// Data sections
+.section .bss
+.align 4
+tape:
+    .zero   TAPE_SIZE
+
+loop_stack:
+    .zero   MAX_NEST*8
+
+jump_table:
+    .zero   MAX_PROG*8
+
+input_buf:
+    .zero   BUF_SIZE
+
+.section .data
+.align 1
+out_byte:
+    .byte   0
