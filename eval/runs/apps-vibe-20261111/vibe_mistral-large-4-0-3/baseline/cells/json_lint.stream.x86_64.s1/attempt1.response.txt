@@ -1,0 +1,440 @@
+.equ ST_OK, 0
+.equ ST_ERR, 1
+.equ ST_INC, 2
+.equ INPUT_CAP, 65536
+.equ ERR_PREFIX_LEN, 9
+.equ OK_MSG_LEN, 3
+
+.text
+.globl _start
+_start:
+    xor r15, r15
+read_loop:
+    xor eax, eax
+    xor edi, edi
+    lea rsi, [rip + input]
+    add rsi, r15
+    mov edx, INPUT_CAP
+    sub rdx, r15
+    syscall
+    test rax, rax
+    jz read_done
+    js read_done
+    add r15, rax
+    jmp read_loop
+read_done:
+    xor rbx, rbx
+    mov r12, r15
+    lea r13, [rip + input]
+    call skip_ws
+    call parse_value
+    test eax, eax
+    jnz top_status
+    call skip_ws
+    cmp rbx, r12
+    jae print_ok
+    jmp report_error
+top_status:
+    cmp eax, ST_ERR
+    je report_error
+    mov rbx, r12
+    jmp report_error
+print_ok:
+    mov eax, 1
+    mov edi, 1
+    lea rsi, [rip + ok_msg]
+    mov edx, OK_MSG_LEN
+    syscall
+    mov eax, 60
+    xor edi, edi
+    syscall
+report_error:
+    lea rsi, [rip + outbuf + 32]
+    mov rax, rbx
+    mov ecx, 10
+dec_loop:
+    xor edx, edx
+    div rcx
+    add dl, 48
+    dec rsi
+    mov byte ptr [rsi], dl
+    test rax, rax
+    jnz dec_loop
+    lea rdx, [rip + outbuf + 32]
+    sub rdx, rsi
+    mov r8, rsi
+    mov r9, rdx
+    mov eax, 1
+    mov edi, 1
+    lea rsi, [rip + err_prefix]
+    mov edx, ERR_PREFIX_LEN
+    syscall
+    mov eax, 1
+    mov edi, 1
+    mov rsi, r8
+    mov rdx, r9
+    syscall
+    mov eax, 1
+    mov edi, 1
+    lea rsi, [rip + newline]
+    mov edx, 1
+    syscall
+    mov eax, 60
+    mov edi, 1
+    syscall
+
+skip_ws:
+    cmp rbx, r12
+    jae skip_ws_done
+    movzx eax, byte ptr [r13 + rbx]
+    cmp al, 0x20
+    je skip_ws_adv
+    cmp al, 0x09
+    je skip_ws_adv
+    cmp al, 0x0A
+    je skip_ws_adv
+    cmp al, 0x0D
+    je skip_ws_adv
+    jmp skip_ws_done
+skip_ws_adv:
+    inc rbx
+    jmp skip_ws
+skip_ws_done:
+    ret
+
+set_incomplete:
+    mov eax, ST_INC
+    ret
+set_error:
+    mov eax, ST_ERR
+    ret
+
+parse_value:
+    cmp rbx, r12
+    jae set_incomplete
+    movzx eax, byte ptr [r13 + rbx]
+    cmp al, 0x7B
+    je parse_object
+    cmp al, 0x5B
+    je parse_array
+    cmp al, 0x22
+    je parse_string
+    cmp al, 0x74
+    je pv_true
+    cmp al, 0x66
+    je pv_false
+    cmp al, 0x6E
+    je pv_null
+    cmp al, 0x2D
+    je parse_number
+    cmp al, 0x30
+    jb set_error
+    cmp al, 0x39
+    jbe parse_number
+    jmp set_error
+pv_true:
+    lea rsi, [rip + lit_true]
+    mov edx, 4
+    jmp parse_literal
+pv_false:
+    lea rsi, [rip + lit_false]
+    mov edx, 5
+    jmp parse_literal
+pv_null:
+    lea rsi, [rip + lit_null]
+    mov edx, 4
+    jmp parse_literal
+
+parse_literal:
+    xor ecx, ecx
+lit_loop:
+    cmp rcx, rdx
+    jae lit_ok
+    cmp rbx, r12
+    jae set_incomplete
+    movzx eax, byte ptr [r13 + rbx]
+    movzx r8d, byte ptr [rsi + rcx]
+    cmp al, r8b
+    jne set_error
+    inc rbx
+    inc rcx
+    jmp lit_loop
+lit_ok:
+    mov eax, ST_OK
+    ret
+
+parse_string:
+    inc rbx
+str_loop:
+    cmp rbx, r12
+    jae set_incomplete
+    movzx eax, byte ptr [r13 + rbx]
+    cmp al, 0x22
+    je str_end
+    cmp al, 0x5C
+    je str_escape
+    cmp eax, 0x20
+    jb set_error
+    inc rbx
+    jmp str_loop
+str_end:
+    inc rbx
+    mov eax, ST_OK
+    ret
+str_escape:
+    inc rbx
+    cmp rbx, r12
+    jae set_incomplete
+    movzx eax, byte ptr [r13 + rbx]
+    cmp al, 0x22
+    je esc_simple
+    cmp al, 0x5C
+    je esc_simple
+    cmp al, 0x2F
+    je esc_simple
+    cmp al, 0x62
+    je esc_simple
+    cmp al, 0x66
+    je esc_simple
+    cmp al, 0x6E
+    je esc_simple
+    cmp al, 0x72
+    je esc_simple
+    cmp al, 0x74
+    je esc_simple
+    cmp al, 0x75
+    je esc_u
+    jmp set_error
+esc_simple:
+    inc rbx
+    jmp str_loop
+esc_u:
+    inc rbx
+    mov ecx, 4
+u_loop:
+    cmp rbx, r12
+    jae set_incomplete
+    movzx eax, byte ptr [r13 + rbx]
+    cmp al, 0x30
+    jb set_error
+    cmp al, 0x39
+    jbe u_next
+    cmp al, 0x61
+    jb u_upper
+    cmp al, 0x66
+    jbe u_next
+    jmp set_error
+u_upper:
+    cmp al, 0x41
+    jb set_error
+    cmp al, 0x46
+    jbe u_next
+    jmp set_error
+u_next:
+    inc rbx
+    dec ecx
+    jnz u_loop
+    jmp str_loop
+
+parse_number:
+    cmp rbx, r12
+    jae set_incomplete
+    movzx eax, byte ptr [r13 + rbx]
+    cmp al, 0x2D
+    jne num_no_minus
+    inc rbx
+    cmp rbx, r12
+    jae set_incomplete
+num_no_minus:
+    movzx eax, byte ptr [r13 + rbx]
+    cmp al, 0x30
+    je num_zero
+    cmp al, 0x31
+    jb num_error
+    cmp al, 0x39
+    ja num_error
+    inc rbx
+num_digits:
+    cmp rbx, r12
+    jae num_tail
+    movzx eax, byte ptr [r13 + rbx]
+    cmp al, 0x30
+    jb num_tail
+    cmp al, 0x39
+    ja num_tail
+    inc rbx
+    jmp num_digits
+num_zero:
+    inc rbx
+    jmp num_tail
+num_tail:
+    cmp rbx, r12
+    jae num_ok
+    movzx eax, byte ptr [r13 + rbx]
+    cmp al, 0x2E
+    jne num_exp
+    inc rbx
+    cmp rbx, r12
+    jae set_incomplete
+    movzx eax, byte ptr [r13 + rbx]
+    cmp al, 0x30
+    jb num_error
+    cmp al, 0x39
+    ja num_error
+    inc rbx
+num_frac_loop:
+    cmp rbx, r12
+    jae num_ok
+    movzx eax, byte ptr [r13 + rbx]
+    cmp al, 0x30
+    jb num_exp
+    cmp al, 0x39
+    ja num_exp
+    inc rbx
+    jmp num_frac_loop
+num_exp:
+    cmp rbx, r12
+    jae num_ok
+    movzx eax, byte ptr [r13 + rbx]
+    cmp al, 0x65
+    je num_exp_start
+    cmp al, 0x45
+    je num_exp_start
+    jmp num_ok
+num_exp_start:
+    inc rbx
+    cmp rbx, r12
+    jae set_incomplete
+    movzx eax, byte ptr [r13 + rbx]
+    cmp al, 0x2B
+    je num_exp_sign
+    cmp al, 0x2D
+    je num_exp_sign
+    jmp num_exp_digits
+num_exp_sign:
+    inc rbx
+    cmp rbx, r12
+    jae set_incomplete
+num_exp_digits:
+    movzx eax, byte ptr [r13 + rbx]
+    cmp al, 0x30
+    jb num_error
+    cmp al, 0x39
+    ja num_error
+    inc rbx
+num_exp_loop:
+    cmp rbx, r12
+    jae num_ok
+    movzx eax, byte ptr [r13 + rbx]
+    cmp al, 0x30
+    jb num_ok
+    cmp al, 0x39
+    ja num_ok
+    inc rbx
+    jmp num_exp_loop
+num_error:
+    jmp set_error
+num_ok:
+    mov eax, ST_OK
+    ret
+
+parse_array:
+    inc rbx
+    call skip_ws
+    cmp rbx, r12
+    jae set_incomplete
+    movzx eax, byte ptr [r13 + rbx]
+    cmp al, 0x5D
+    je arr_close_empty
+arr_loop:
+    call parse_value
+    test eax, eax
+    jnz arr_ret
+    call skip_ws
+    cmp rbx, r12
+    jae set_incomplete
+    movzx eax, byte ptr [r13 + rbx]
+    cmp al, 0x2C
+    je arr_comma
+    cmp al, 0x5D
+    je arr_close
+    jmp set_error
+arr_comma:
+    inc rbx
+    call skip_ws
+    jmp arr_loop
+arr_close:
+    inc rbx
+    mov eax, ST_OK
+    ret
+arr_close_empty:
+    inc rbx
+    mov eax, ST_OK
+    ret
+arr_ret:
+    ret
+
+parse_object:
+    inc rbx
+    call skip_ws
+    cmp rbx, r12
+    jae set_incomplete
+    movzx eax, byte ptr [r13 + rbx]
+    cmp al, 0x7D
+    je obj_close_empty
+obj_loop:
+    cmp rbx, r12
+    jae set_incomplete
+    movzx eax, byte ptr [r13 + rbx]
+    cmp al, 0x22
+    jne set_error
+    call parse_string
+    test eax, eax
+    jnz obj_ret
+    call skip_ws
+    cmp rbx, r12
+    jae set_incomplete
+    movzx eax, byte ptr [r13 + rbx]
+    cmp al, 0x3A
+    jne set_error
+    inc rbx
+    call skip_ws
+    call parse_value
+    test eax, eax
+    jnz obj_ret
+    call skip_ws
+    cmp rbx, r12
+    jae set_incomplete
+    movzx eax, byte ptr [r13 + rbx]
+    cmp al, 0x2C
+    je obj_comma
+    cmp al, 0x7D
+    je obj_close
+    jmp set_error
+obj_comma:
+    inc rbx
+    call skip_ws
+    jmp obj_loop
+obj_close:
+    inc rbx
+    mov eax, ST_OK
+    ret
+obj_close_empty:
+    inc rbx
+    mov eax, ST_OK
+    ret
+obj_ret:
+    ret
+
+.section .rodata
+lit_true: .ascii "true"
+lit_false: .ascii "false"
+lit_null: .ascii "null"
+ok_msg: .ascii "ok\n"
+err_prefix: .ascii "error at "
+newline: .ascii "\n"
+
+.bss
+.align 16
+input: .zero 65537
+outbuf: .zero 64

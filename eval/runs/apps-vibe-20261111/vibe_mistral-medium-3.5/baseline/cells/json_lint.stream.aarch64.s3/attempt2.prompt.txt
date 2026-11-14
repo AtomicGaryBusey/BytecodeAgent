@@ -1,0 +1,680 @@
+Write the complete program `json_lint`: a static Linux executable for AArch64 (ARMv8-A, little-endian), written in assembly. There is no C library, no C runtime and no helper code: you write the entry point `_start`, every function, every table and string, and make the system calls yourself.
+
+Entry state (as the Linux kernel sets it up): execution starts at the label `_start`. sp is 16-byte aligned and points at argc = 0, followed by the NULL terminators of an empty argv, an empty envp and an empty auxiliary vector: the program gets no arguments. Every other general-purpose register (x0-x30) is zero; x30 is not a return address, so `_start` must never return with `ret`; the program ends only through the exit system call.
+
+System calls: the `svc #0` instruction, with the system call number in x8 and the arguments in x0, x1, x2; the result comes back in x0. Every other register is preserved. Exactly these four are available:
+- read = 63: read(fd = 0, buf, count) reads up to count bytes of standard input into buf; returns the number of bytes read, 0 at end of input.
+- write = 64: write(fd, buf, count) with fd 1 (standard output) or 2 (standard error); returns count.
+- exit = 93: exit(status) ends the program; the exit status is the low 8 bits of status.
+- exit_group = 94: the same as exit.
+Any other system call number or file descriptor stops the program with an error, and so does a buffer that is not entirely inside the program's memory.
+
+Memory: the program's own sections plus a stack of 1 MiB below the entry sp. There is no heap (no brk, no mmap, no malloc): put working storage in `.bss` (zero-initialised), at most 1 MiB in total, or on the stack. Code is not writable. Any access outside these areas stops the program. Each test run may execute at most 50,000,000 instructions.
+
+Output format: one complete assembly source file in GNU assembler (GNU as) syntax for AArch64. Examples: `ldr x2, [x0, x1, lsl #3]`, `ldrb w3, [x1], #1`, `stp x29, x30, [sp, #-16]!`. Comments start with `//`; do not use `;`.
+Allowed in the file:
+- Sections: `.text` (code), `.section .rodata` (read-only data), `.data` (initialised writable data), `.bss` (zero-initialised space: only `.zero`/`.space` and alignment). Instructions go in `.text` only.
+- Data directives: `.byte`, `.short`/`.2byte`, `.word` (4 bytes on this target), `.long`/`.int`/`.4byte`, `.quad`/`.8byte`, `.ascii`, `.asciz`/`.string`, `.zero`/`.space`, alignment with `.align`/`.balign`/`.p2align`, and `.globl`/`.global` (write `.globl _start`).
+- Labels `name:` in any section, and GNU local labels `1:` referenced as `1f` (next) / `1b` (previous).
+- Constants: `.equ name, value` (or `.set name, value`, or `name = value`), where value is a number or a difference of labels defined earlier in the same section (e.g. `msg_len = . - msg`). Define every constant before its first use.
+- Addressing data: `adrp x0, label` followed by `add x0, x0, :lo12:label` (or a load/store `ldr x1, [x0, :lo12:label]`); `adr x0, label` also works within +-1 MiB. Literal pools are NOT allowed: no `ldr x0, =label` and no `ldr x0, =constant` (build constants with mov/movz/movk).
+Not allowed: macros (`.macro`, `.rept`, `.irp`), conditional assembly (`.if`), `.include`, `.incbin`, `.fill`, `.org`, `.comm`/`.lcomm`, `.inst`, `.cfi_*` directives, section stacks (`.pushsection`) and any other section. No libc and no other library: there is nothing to link against, so every symbol you use must be defined in your file.
+Instruction set: ARMv8.0-A with floating point and Advanced SIMD (NEON). Not supported (rejected): CRC32, LSE atomics, dot product, half-precision, crypto (AES/SHA/PMULL) and SVE.
+Output ONLY the assembly source: no Markdown fences, no prose before or after it.
+
+Specification: Task `json_lint`: check that standard input is exactly one valid JSON document (RFC 8259 grammar) and report
+the byte offset of the first error.
+
+Grammar (byte-level):
+- document = ws value ws, and nothing else. ws = any number of the bytes space 0x20, tab 0x09, newline 0x0A,
+  carriage return 0x0D (only these four).
+- value = object | array | string | number | `true` | `false` | `null` (lowercase only).
+- object = `{` ws `}`, or `{` ws member (ws `,` ws member)* ws `}`, where member = string ws `:` ws value.
+  array = `[` ws `]`, or `[` ws value (ws `,` ws value)* ws `]`. No trailing commas.
+- string = `"` chars `"`. A char is any byte 0x20-0xFF except `"` (0x22) and `\` (0x5C) (bytes >= 0x80 are
+  accepted as they are; no UTF-8 validation), or an escape: `\` followed by one of `"` `\` `/` `b` `f` `n` `r`
+  `t`, or `\u` followed by exactly 4 hex digits (`0-9a-fA-F`; any code unit, surrogates are not checked).
+  Bytes 0x00-0x1F inside a string are errors.
+- number = `-`? int frac? exp?, where int = `0` | a digit `1`-`9` followed by any digits; frac = `.` and one or
+  more digits; exp = `e` or `E`, an optional `+` or `-`, and one or more digits. (So `01`, `+1`, `.5`, `1.`,
+  `1e`, `-` are not valid numbers.)
+
+Output: if the input is valid, print `ok\n` and exit with status 0. Otherwise print `error at N\n` (N in
+decimal, no padding) and exit with status 1, where N is the 0-based offset of the first byte at which the input
+stops being the beginning of some valid document: the first byte that no valid document could have at that
+position given all the bytes before it. If every byte of the input is such a valid beginning but the document is
+incomplete (this includes empty and whitespace-only input), N is the length of the input.
+
+Examples: `[1, 2]` ok; empty input `error at 0`; `[1,]` `error at 3`; `{"a" 1}` `error at 5`; `01` `error at 1`;
+`tru` `error at 3`; `trux` `error at 3`; `[1] x` `error at 4`; `"a<TAB>b"` (a raw tab byte) `error at 2`;
+`-` `error at 1`; `1.e5` `error at 2`.
+
+Limits: the input is at most 65536 bytes; arrays and objects are nested at most 1000 deep. These limits
+describe the inputs you will be given; you do not need to detect or report inputs that exceed them.
+
+Input and output (applies to this whole task):
+- The input is the complete contents of standard input (file descriptor 0). Read it with `read` until `read`
+  returns 0 (end of input). A `read` may return FEWER bytes than requested, at any position (in the middle of a
+  line, a token or a group of bytes), so keep calling it; only a return value of 0 means end of input.
+- Write the output to standard output (file descriptor 1). Only the bytes this task describes may appear on
+  standard output (standard error is ignored). Every output byte must be written before the program exits.
+- Finish with `exit` (or `exit_group`) and the exit status this task gives. The program must not run off the end
+  of its code or crash.
+
+Your previous attempt was:
+<previous>
+```assembly
+.globl _start
+
+.text
+
+_start:
+  adr x19, input_buf
+  adr x20, input_len
+  mov x23, #0
+read_loop:
+  mov x0, #0
+  add x1, x19, x23
+  mov x2, #65536
+  sub x2, x2, x23
+  cmp x2, #0
+  ble read_done
+  mov x8, #63
+  svc #0
+  cmp x0, #0
+  ble read_done
+  add x23, x23, x0
+  cmp x23, #65536
+  b.lt read_loop
+read_done:
+  str x23, [x20]
+  ldr x20, [x20]
+  mov x21, #0
+  mov x22, #0
+
+  bl ws
+  cmp x21, x20
+  b.ge error_at_end
+  bl value
+  cmp x22, #0
+  b.ne output_error
+  bl ws
+  cmp x21, x20
+  b.ne extra_bytes
+  b output_ok
+
+error_at_end:
+  mov x22, x21
+extra_bytes:
+  b output_error
+
+ws:
+ws_loop:
+  cmp x21, x20
+  b.ge ws_done
+  ldrb w5, [x19, x21]
+  cmp w5, #0x20
+  beq ws_skip
+  cmp w5, #0x09
+  beq ws_skip
+  cmp w5, #0x0A
+  beq ws_skip
+  cmp w5, #0x0D
+  beq ws_skip
+  b ws_done
+ws_skip:
+  add x21, x21, #1
+  b ws_loop
+ws_done:
+  ret
+
+value:
+  cmp x21, x20
+  b.ge value_error
+  ldrb w5, [x19, x21]
+  cmp w5, #'{'
+  beq do_object
+  cmp w5, #'['
+  beq do_array
+  cmp w5, #'"'
+  beq do_string
+  cmp w5, #'-'
+  beq do_number
+  cmp w5, #'0'
+  beq do_number
+  cmp w5, #'1'
+  blo value_literals
+  cmp w5, #'9'
+  ble do_number
+value_literals:
+  cmp w5, #'t'
+  beq do_true
+  cmp w5, #'f'
+  beq do_false
+  cmp w5, #'n'
+  beq do_null
+value_error:
+  mov x22, x21
+  ret
+do_object:
+  b object
+do_array:
+  b array
+do_string:
+  b string
+do_number:
+  b number
+do_true:
+  b true_literal
+do_false:
+  b false_literal
+do_null:
+  b null_literal
+
+object:
+  cmp x21, x20
+  b.ge object_error
+  ldrb w5, [x19, x21]
+  cmp w5, #'{'
+  bne object_error
+  add x21, x21, #1
+  bl ws
+  cmp x22, #0
+  b.ne object_done
+  cmp x21, x20
+  b.ge object_error
+  ldrb w5, [x19, x21]
+  cmp w5, #'}'
+  beq object_empty
+object_loop:
+  bl member
+  cmp x22, #0
+  b.ne object_done
+  bl ws
+  cmp x22, #0
+  b.ne object_done
+  cmp x21, x20
+  b.ge object_error
+  ldrb w5, [x19, x21]
+  cmp w5, #','
+  bne object_check_end
+  add x21, x21, #1
+  bl ws
+  cmp x22, #0
+  b.ne object_done
+  cmp x21, x20
+  b.ge object_error
+  b object_loop
+object_check_end:
+  cmp w5, #'}'
+  bne object_error
+object_empty:
+  add x21, x21, #1
+object_done:
+  ret
+object_error:
+  mov x22, x21
+  ret
+
+member:
+  bl string
+  cmp x22, #0
+  b.ne member_done
+  bl ws
+  cmp x22, #0
+  b.ne member_done
+  cmp x21, x20
+  b.ge member_error
+  ldrb w5, [x19, x21]
+  cmp w5, #':'
+  bne member_error
+  add x21, x21, #1
+  bl ws
+  cmp x22, #0
+  b.ne member_done
+  bl value
+member_done:
+  ret
+member_error:
+  mov x22, x21
+  ret
+
+array:
+  cmp x21, x20
+  b.ge array_error
+  ldrb w5, [x19, x21]
+  cmp w5, #'['
+  bne array_error
+  add x21, x21, #1
+  bl ws
+  cmp x22, #0
+  b.ne array_done
+  cmp x21, x20
+  b.ge array_error
+  ldrb w5, [x19, x21]
+  cmp w5, #']'
+  beq array_empty
+array_loop:
+  bl value
+  cmp x22, #0
+  b.ne array_done
+  bl ws
+  cmp x22, #0
+  b.ne array_done
+  cmp x21, x20
+  b.ge array_error
+  ldrb w5, [x19, x21]
+  cmp w5, #','
+  bne array_check_end
+  add x21, x21, #1
+  bl ws
+  cmp x22, #0
+  b.ne array_done
+  cmp x21, x20
+  b.ge array_error
+  b array_loop
+array_check_end:
+  cmp w5, #']'
+  bne array_error
+array_empty:
+  add x21, x21, #1
+array_done:
+  ret
+array_error:
+  mov x22, x21
+  ret
+
+string:
+  cmp x21, x20
+  b.ge string_error
+  ldrb w5, [x19, x21]
+  cmp w5, #'"'
+  bne string_error
+  add x21, x21, #1
+string_loop:
+  cmp x21, x20
+  b.ge string_error
+  ldrb w5, [x19, x21]
+  cmp w5, #'"'
+  beq string_done
+  cmp w5, #'\\'
+  beq string_escape
+  cmp w5, #0x20
+  blo string_error
+  add x21, x21, #1
+  b string_loop
+string_escape:
+  add x21, x21, #1
+  cmp x21, x20
+  b.ge string_error
+  ldrb w5, [x19, x21]
+  cmp w5, #'"'
+  beq string_escaped
+  cmp w5, #'\\'
+  beq string_escaped
+  cmp w5, #'/'
+  beq string_escaped
+  cmp w5, #'b'
+  beq string_escaped
+  cmp w5, #'f'
+  beq string_escaped
+  cmp w5, #'n'
+  beq string_escaped
+  cmp w5, #'r'
+  beq string_escaped
+  cmp w5, #'t'
+  beq string_escaped
+  cmp w5, #'u'
+  beq string_unicode
+  b string_error
+string_escaped:
+  add x21, x21, #1
+  b string_loop
+string_unicode:
+  add x21, x21, #1
+  mov x6, #4
+unicode_loop:
+  cmp x21, x20
+  b.ge string_error
+  ldrb w5, [x19, x21]
+  cmp w5, #'0'
+  blo string_error
+  cmp w5, #'9'
+  ble unicode_ok
+  cmp w5, #'a'
+  blo check_A
+  cmp w5, #'f'
+  ble unicode_ok
+check_A:
+  cmp w5, #'A'
+  blo string_error
+  cmp w5, #'F'
+  bhi string_error
+unicode_ok:
+  add x21, x21, #1
+  subs x6, x6, #1
+  bne unicode_loop
+  b string_loop
+string_done:
+  add x21, x21, #1
+  ret
+string_error:
+  mov x22, x21
+  ret
+
+number:
+  cmp x21, x20
+  b.ge number_error
+  ldrb w5, [x19, x21]
+  cmp w5, #'-'
+  bne number_not_neg
+  add x21, x21, #1
+  cmp x21, x20
+  b.ge number_error
+  ldrb w5, [x19, x21]
+  cmp w5, #'0'
+  beq number_zero_after_neg
+  cmp w5, #'1'
+  blo number_error
+  cmp w5, #'9'
+  bhi number_error
+  b number_int_nonzero
+number_not_neg:
+  cmp w5, #'0'
+  beq number_zero
+  cmp w5, #'1'
+  blo number_error
+  cmp w5, #'9'
+  bhi number_error
+  b number_int_nonzero
+number_zero:
+  add x21, x21, #1
+  cmp x21, x20
+  b.ge number_done
+  ldrb w5, [x19, x21]
+  cmp w5, #'.'
+  beq number_frac
+  cmp w5, #'e'
+  beq number_exp
+  cmp w5, #'E'
+  beq number_exp
+  cmp w5, #'0'
+  blo number_done
+  cmp w5, #'9'
+  bhi number_done
+  b number_error
+number_zero_after_neg:
+  b number_error
+number_int_nonzero:
+  add x21, x21, #1
+number_int_loop:
+  cmp x21, x20
+  b.ge number_after_int
+  ldrb w5, [x19, x21]
+  cmp w5, #'0'
+  blo number_after_int
+  cmp w5, #'9'
+  bhi number_after_int
+  add x21, x21, #1
+  b number_int_loop
+number_after_int:
+  cmp x21, x20
+  b.ge number_done
+  ldrb w5, [x19, x21]
+  cmp w5, #'.'
+  beq number_frac
+  cmp w5, #'e'
+  beq number_exp
+  cmp w5, #'E'
+  beq number_exp
+  b number_done
+number_frac:
+  add x21, x21, #1
+  cmp x21, x20
+  b.ge number_error
+  ldrb w5, [x19, x21]
+  cmp w5, #'0'
+  blo number_error
+  cmp w5, #'9'
+  bhi number_error
+  add x21, x21, #1
+number_frac_loop:
+  cmp x21, x20
+  b.ge number_check_exp
+  ldrb w5, [x19, x21]
+  cmp w5, #'0'
+  blo number_check_exp
+  cmp w5, #'9'
+  bhi number_check_exp
+  add x21, x21, #1
+  b number_frac_loop
+number_check_exp:
+  cmp x21, x20
+  b.ge number_done
+  ldrb w5, [x19, x21]
+  cmp w5, #'e'
+  beq number_exp
+  cmp w5, #'E'
+  beq number_exp
+  b number_done
+number_exp:
+  add x21, x21, #1
+  cmp x21, x20
+  b.ge number_error
+  ldrb w5, [x19, x21]
+  cmp w5, #'+'
+  beq number_exp_sign
+  cmp w5, #'-'
+  beq number_exp_sign
+  cmp w5, #'0'
+  blo number_error
+  cmp w5, #'9'
+  bhi number_error
+  b number_exp_digits
+number_exp_sign:
+  add x21, x21, #1
+  cmp x21, x20
+  b.ge number_error
+  ldrb w5, [x19, x21]
+  cmp w5, #'0'
+  blo number_error
+  cmp w5, #'9'
+  bhi number_error
+number_exp_digits:
+  add x21, x21, #1
+number_exp_loop:
+  cmp x21, x20
+  b.ge number_done
+  ldrb w5, [x19, x21]
+  cmp w5, #'0'
+  blo number_done
+  cmp w5, #'9'
+  bhi number_done
+  add x21, x21, #1
+  b number_exp_loop
+number_done:
+  ret
+number_error:
+  mov x22, x21
+  ret
+
+true_literal:
+  cmp x21, x20
+  b.ge true_error
+  ldrb w5, [x19, x21]
+  cmp w5, #'t'
+  bne true_error
+  add x21, x21, #1
+  cmp x21, x20
+  b.ge true_error
+  ldrb w5, [x19, x21]
+  cmp w5, #'r'
+  bne true_error
+  add x21, x21, #1
+  cmp x21, x20
+  b.ge true_error
+  ldrb w5, [x19, x21]
+  cmp w5, #'u'
+  bne true_error
+  add x21, x21, #1
+  cmp x21, x20
+  b.ge true_error
+  ldrb w5, [x19, x21]
+  cmp w5, #'e'
+  bne true_error
+  add x21, x21, #1
+  ret
+true_error:
+  mov x22, x21
+  ret
+
+false_literal:
+  cmp x21, x20
+  b.ge false_error
+  ldrb w5, [x19, x21]
+  cmp w5, #'f'
+  bne false_error
+  add x21, x21, #1
+  cmp x21, x20
+  b.ge false_error
+  ldrb w5, [x19, x21]
+  cmp w5, #'a'
+  bne false_error
+  add x21, x21, #1
+  cmp x21, x20
+  b.ge false_error
+  ldrb w5, [x19, x21]
+  cmp w5, #'l'
+  bne false_error
+  add x21, x21, #1
+  cmp x21, x20
+  b.ge false_error
+  ldrb w5, [x19, x21]
+  cmp w5, #'s'
+  bne false_error
+  add x21, x21, #1
+  cmp x21, x20
+  b.ge false_error
+  ldrb w5, [x19, x21]
+  cmp w5, #'e'
+  bne false_error
+  add x21, x21, #1
+  ret
+false_error:
+  mov x22, x21
+  ret
+
+null_literal:
+  cmp x21, x20
+  b.ge null_error
+  ldrb w5, [x19, x21]
+  cmp w5, #'n'
+  bne null_error
+  add x21, x21, #1
+  cmp x21, x20
+  b.ge null_error
+  ldrb w5, [x19, x21]
+  cmp w5, #'u'
+  bne null_error
+  add x21, x21, #1
+  cmp x21, x20
+  b.ge null_error
+  ldrb w5, [x19, x21]
+  cmp w5, #'l'
+  bne null_error
+  add x21, x21, #1
+  cmp x21, x20
+  b.ge null_error
+  ldrb w5, [x19, x21]
+  cmp w5, #'l'
+  bne null_error
+  add x21, x21, #1
+  ret
+null_error:
+  mov x22, x21
+  ret
+
+output_error:
+  adr x1, error_msg
+  mov x2, #9
+  mov x0, #1
+  mov x8, #64
+  svc #0
+  mov x5, x22
+  adr x6, num_buf
+  add x6, x6, #15
+  mov x7, #0
+  cmp x5, #0
+  beq zero_case
+convert_loop:
+  mov x8, #10
+  udiv x9, x5, x8
+  mul x10, x9, x8
+  sub x10, x5, x10
+  add x10, x10, #'0'
+  strb w10, [x6], #-1
+  add x7, x7, #1
+  mov x5, x9
+  cmp x5, #0
+  bne convert_loop
+  b print_num
+zero_case:
+  mov w10, #'0'
+  strb w10, [x6], #-1
+  mov x7, #1
+print_num:
+  add x6, x6, #1
+  mov x0, #1
+  mov x1, x6
+  mov x2, x7
+  mov x8, #64
+  svc #0
+  adr x1, newline
+  mov x2, #1
+  mov x0, #1
+  mov x8, #64
+  svc #0
+  mov x0, #1
+  mov x8, #93
+  svc #0
+
+output_ok:
+  adr x1, ok_msg
+  mov x2, #3
+  mov x0, #1
+  mov x8, #64
+  svc #0
+  mov x0, #0
+  mov x8, #93
+  svc #0
+
+.section .rodata
+ok_msg:
+  .asciz "ok\n"
+error_msg:
+  .asciz "error at "
+newline:
+  .asciz "\n"
+
+.data
+input_len:
+  .quad 0
+
+.bss
+input_buf:
+  .space 65536
+num_buf:
+  .space 16
+```
+</previous>
+It failed:
+<failure>
+Test `literals` failed (stdin delivered whole; test run 4 of 80; the runs before it passed).
+stdin (19 bytes): " [true,false,null] "
+The program stopped with a fault (no_exit): did not exit within 50000000 instructions (stopped at pc=0x4002ac) at pc 0x4002ac [the faulting instruction is line 217: `ret`]
+exit status: expected 0, got none (the program did not exit)
+stdout differs from byte 0 on (line 1, column 1 of the expected output); expected 3 bytes in total, got 0
+  expected from byte 0: "ok\n"
+  actual from byte 0:   (end of output)
+</failure>
+Write a corrected, complete version. Same output format; output only the code.

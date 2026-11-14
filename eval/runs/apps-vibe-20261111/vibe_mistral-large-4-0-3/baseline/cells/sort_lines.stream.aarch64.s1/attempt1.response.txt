@@ -1,0 +1,216 @@
+.text
+.globl _start
+
+_start:
+  // read all of stdin into buf
+  mov x19, #0                       // total bytes read
+read_loop:
+  mov x2, #65536
+  sub x2, x2, x19                   // remaining capacity
+  cmp x2, #0
+  b.eq read_done
+  adrp x1, buf
+  add x1, x1, :lo12:buf
+  add x1, x1, x19
+  mov x0, #0                        // fd 0
+  mov x8, #63                       // read
+  svc #0
+  cmp x0, #0
+  b.le read_done                    // 0 = EOF, negative = error
+  add x19, x19, x0
+  b read_loop
+read_done:
+  // split buf into lines: descriptor = u32 offset, u32 length
+  adrp x20, buf
+  add x20, x20, :lo12:buf
+  adrp x21, lines
+  add x21, x21, :lo12:lines
+  mov x24, #0                       // line start
+  mov x25, #0                       // line count
+  mov x26, #0                       // scan position
+parse_loop:
+  cmp x26, x19
+  b.hs done_parse
+scan:
+  cmp x26, x19
+  b.hs tail_line
+  ldrb w27, [x20, x26]
+  cmp w27, #10
+  b.eq found_nl
+  add x26, x26, #1
+  b scan
+found_nl:
+  add x28, x21, x25, lsl #3
+  str w24, [x28]
+  sub w27, w26, w24
+  str w27, [x28, #4]
+  add x25, x25, #1
+  add x26, x26, #1
+  mov x24, x26
+  b parse_loop
+tail_line:
+  cmp x24, x19
+  b.hs done_parse
+  add x28, x21, x25, lsl #3
+  str w24, [x28]
+  sub w27, w19, w24
+  str w27, [x28, #4]
+  add x25, x25, #1
+done_parse:
+  mov x19, x25                      // n = line count
+  adrp x20, lines
+  add x20, x20, :lo12:lines
+  cmp x19, #2
+  b.lt output
+  // bottom-up merge sort of the descriptor array
+  adrp x21, tmp
+  add x21, x21, :lo12:tmp
+  mov x22, #1                       // width
+outer:
+  cmp x22, x19
+  b.ge sort_done
+  mov x23, #0                       // i
+inner:
+  cmp x23, x19
+  b.hs pass_done
+  add x24, x23, x22                 // mid = i + width
+  cmp x24, x19
+  csel x24, x24, x19, lo
+  add x25, x23, x22, lsl #1         // end = i + 2*width
+  cmp x25, x19
+  csel x25, x25, x19, lo
+  add x26, x20, x23, lsl #3         // left cursor
+  add x27, x20, x24, lsl #3         // right cursor
+  add x28, x21, x23, lsl #3         // output cursor in tmp
+  add x13, x20, x24, lsl #3         // left end
+  add x14, x20, x25, lsl #3         // right end
+mloop:
+  cmp x26, x13
+  b.hs left_done
+  cmp x27, x14
+  b.hs right_done
+  mov x0, x26
+  mov x1, x27
+  bl compare
+  cmp w0, #0
+  b.le take_left
+  b take_right
+take_left:
+  ldr x15, [x26], #8
+  str x15, [x28], #8
+  b mloop
+take_right:
+  ldr x15, [x27], #8
+  str x15, [x28], #8
+  b mloop
+left_done:
+  cmp x27, x14
+  b.hs mloop_done
+  ldr x15, [x27], #8
+  str x15, [x28], #8
+  b left_done
+right_done:
+  cmp x26, x13
+  b.hs mloop_done
+  ldr x15, [x26], #8
+  str x15, [x28], #8
+  b right_done
+mloop_done:
+  add x13, x21, x23, lsl #3         // copy tmp[i..end) back to lines
+  add x14, x20, x23, lsl #3
+  sub x15, x25, x23
+copy_back:
+  cmp x15, #0
+  b.le copy_done
+  ldr x16, [x13], #8
+  str x16, [x14], #8
+  sub x15, x15, #1
+  b copy_back
+copy_done:
+  add x23, x23, x22, lsl #1
+  b inner
+pass_done:
+  mov x22, x22, lsl #1
+  b outer
+sort_done:
+  // print each line followed by a newline
+output:
+  mov x23, #0
+out_loop:
+  cmp x23, x19
+  b.hs exit_prog
+  add x28, x20, x23, lsl #3
+  ldr w24, [x28]                    // offset
+  ldr w25, [x28, #4]                // length
+  adrp x1, buf
+  add x1, x1, :lo12:buf
+  add x1, x1, x24, uxtw
+  mov x0, #1
+  mov x2, x25
+  mov x8, #64                       // write
+  svc #0
+  adrp x1, nl
+  add x1, x1, :lo12:nl
+  mov x0, #1
+  mov x2, #1
+  mov x8, #64
+  svc #0
+  add x23, x23, #1
+  b out_loop
+exit_prog:
+  mov x0, #0
+  mov x8, #93                       // exit
+  svc #0
+
+// compare two line descriptors: x0, x1 -> w0 = -1, 0, 1
+compare:
+  ldr w2, [x0]                      // off A
+  ldr w3, [x0, #4]                  // len A
+  ldr w4, [x1]                      // off B
+  ldr w5, [x1, #4]                  // len B
+  cmp w3, w5
+  csel w6, w3, w5, le               // min length
+  adrp x7, buf
+  add x7, x7, :lo12:buf
+  add x2, x7, x2, uxtw              // ptr A
+  add x3, x7, x4, uxtw              // ptr B
+  mov w8, #0                        // index
+1:
+  cmp w8, w6
+  b.hs 2f
+  ldrb w9, [x2], #1
+  ldrb w10, [x3], #1
+  cmp w9, w10
+  b.ne 3f
+  add w8, w8, #1
+  b 1b
+2:
+  cmp w3, w5
+  b.lt 4f
+  b.gt 5f
+  mov w0, #0
+  ret
+3:
+  cmp w9, w10
+  b.lo 4f
+  mov w0, #1
+  ret
+4:
+  movn w0, #0                       // -1
+  ret
+5:
+  mov w0, #1
+  ret
+
+.section .rodata
+nl:
+  .byte 10
+
+.bss
+.balign 8
+buf:
+  .space 65536
+lines:
+  .space 8192
+tmp:
+  .space 8192

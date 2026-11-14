@@ -1,0 +1,252 @@
+// rpn: evaluate one Reverse Polish Notation expression per input line.
+// Freestanding static AArch64 Linux executable, GNU as syntax, no libc.
+
+.section .rodata
+err_str:
+    .ascii "error\n"
+
+.section .bss
+.balign 8
+inbuf:
+    .zero 65536
+.balign 8
+stk:
+    .zero 262160
+.balign 8
+outbuf:
+    .zero 32
+
+.text
+.globl _start
+_start:
+    adrp x9, inbuf
+    add x9, x9, :lo12:inbuf
+    adrp x26, stk
+    add x26, x26, :lo12:stk
+    mov x19, #0                    // total bytes read
+read_loop:
+    mov x27, #65536
+    cmp x19, x27
+    b.hs read_done
+    mov x0, #0                     // fd 0
+    mov x1, x9
+    add x1, x1, x19                // buf + have
+    mov x2, #65536
+    sub x2, x2, x19                // count
+    mov x8, #63                    // read
+    svc #0
+    cmp x0, #0
+    b.le read_done                 // 0 = EOF
+    add x19, x19, x0
+    b read_loop
+read_done:
+    mov x20, #0                    // line start cursor
+line_loop:
+    cmp x20, x19
+    b.hs all_done
+    mov x22, x20
+scan_nl:
+    cmp x22, x19
+    b.hs no_nl
+    ldrb w23, [x9, x22]
+    cmp w23, #10
+    b.eq found_nl
+    add x22, x22, #1
+    b scan_nl
+found_nl:
+    mov x28, x22
+    add x28, x28, #1               // next line start
+    b have_line
+no_nl:
+    mov x22, x19
+    mov x28, x19
+have_line:
+    mov x21, x22                   // line end (exclusive)
+    mov x24, #0                    // stack depth
+tok_loop:
+    cmp x20, x21
+    b.hs tok_done
+    ldrb w23, [x9, x20]
+    cmp w23, #32                   // space
+    b.eq tok_skip
+    cmp w23, #9                    // tab
+    b.eq tok_skip
+    b tok_have
+tok_skip:
+    add x20, x20, #1
+    b tok_loop
+tok_have:
+    mov x22, x20
+tok_scan:
+    cmp x22, x21
+    b.hs tok_end
+    ldrb w23, [x9, x22]
+    cmp w23, #32
+    b.eq tok_end
+    cmp w23, #9
+    b.eq tok_end
+    add x22, x22, #1
+    b tok_scan
+tok_end:
+    sub x27, x22, x20              // token length
+    cmp x27, #1
+    b.ne lit
+    ldrb w23, [x9, x20]
+    cmp w23, #43                   // '+'
+    b.eq do_op
+    cmp w23, #45                   // '-'
+    b.eq do_op
+    cmp w23, #42                   // '*'
+    b.eq do_op
+    cmp w23, #47                   // '/'
+    b.eq do_op
+    cmp w23, #37                   // '%'
+    b.eq do_op
+    b lit
+do_op:
+    cmp x24, #2
+    b.lo line_error
+    sub x24, x24, #1
+    ldr x1, [x26, x24, lsl #3]     // b
+    sub x24, x24, #1
+    ldr x0, [x26, x24, lsl #3]     // a
+    cmp w23, #43
+    b.eq op_add
+    cmp w23, #45
+    b.eq op_sub
+    cmp w23, #42
+    b.eq op_mul
+    cmp w23, #47
+    b.eq op_div
+    b op_mod
+op_add:
+    add x0, x0, x1
+    b do_push
+op_sub:
+    sub x0, x0, x1
+    b do_push
+op_mul:
+    mul x0, x0, x1
+    b do_push
+op_div:
+    cmp x1, #0
+    b.eq line_error
+    movz x27, #0x8000, lsl #48     // INT64_MIN
+    cmp x0, x27
+    b.ne div_ok
+    cmn x1, #1
+    b.eq line_error
+div_ok:
+    sdiv x0, x0, x1
+    b do_push
+op_mod:
+    cmp x1, #0
+    b.eq line_error
+    movz x27, #0x8000, lsl #48
+    cmp x0, x27
+    b.ne mod_ok
+    cmn x1, #1
+    b.eq line_error
+mod_ok:
+    sdiv x27, x0, x1
+    msub x0, x27, x1, x0           // a - (a/b)*b
+    b do_push
+do_push:
+    str x0, [x26, x24, lsl #3]
+    add x24, x24, #1
+    mov x20, x22
+    b tok_loop
+lit:
+    ldrb w23, [x9, x20]
+    mov x25, #0                    // negative flag
+    cmp w23, #45
+    b.ne lit_digits
+    mov x25, #1
+    add x20, x20, #1
+lit_digits:
+    cmp x20, x22
+    b.hs line_error                // no digits
+    sub x27, x22, x20
+    cmp x27, #18
+    b.hi line_error                // 19+ digits
+    mov x0, #0
+    mov x27, #10
+lit_loop:
+    cmp x20, x22
+    b.hs lit_done
+    ldrb w23, [x9, x20]
+    sub w23, w23, #48
+    cmp w23, #9
+    b.hi line_error
+    madd x0, x0, x27, x23
+    add x20, x20, #1
+    b lit_loop
+lit_done:
+    cmp x25, #0
+    b.eq lit_push
+    neg x0, x0
+lit_push:
+    str x0, [x26, x24, lsl #3]
+    add x24, x24, #1
+    mov x20, x22
+    b tok_loop
+tok_done:
+    cmp x24, #1
+    b.ne line_error
+    ldr x0, [x26]
+    bl print_num
+    b line_next
+line_error:
+    mov x0, #1
+    adrp x1, err_str
+    add x1, x1, :lo12:err_str
+    mov x2, #6
+    mov x8, #64                    // write
+    svc #0
+line_next:
+    mov x20, x28
+    b line_loop
+all_done:
+    mov x0, #0
+    mov x8, #93                    // exit
+    svc #0
+
+// print_num: print the signed 64-bit value in x0 in decimal, then newline, to fd 1.
+print_num:
+    adrp x1, outbuf
+    add x1, x1, :lo12:outbuf
+    add x1, x1, #32                // one past end of outbuf
+    mov x2, #10
+    mov x3, x0
+    mov x4, #0
+    cmp x0, #0
+    b.ge pn_nonneg
+    mov x4, #1
+    neg x3, x0                     // unsigned magnitude (wraps for INT64_MIN)
+pn_nonneg:
+pn_loop:
+    udiv x5, x3, x2
+    msub x6, x5, x2, x3
+    add x6, x6, #48
+    sub x1, x1, #1
+    strb w6, [x1]
+    mov x3, x5
+    cmp x3, #0
+    b.ne pn_loop
+    cmp x4, #0
+    b.eq pn_nosign
+    sub x1, x1, #1
+    mov w6, #45
+    strb w6, [x1]
+pn_nosign:
+    sub x1, x1, #1
+    mov w6, #10
+    strb w6, [x1]
+    adrp x2, outbuf
+    add x2, x2, :lo12:outbuf
+    add x2, x2, #32
+    sub x2, x2, x1                 // length
+    mov x0, #1
+    mov x8, #64                    // write
+    svc #0
+    ret

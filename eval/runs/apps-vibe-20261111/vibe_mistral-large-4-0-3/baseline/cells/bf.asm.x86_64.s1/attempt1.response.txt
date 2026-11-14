@@ -1,0 +1,164 @@
+.globl _start
+
+.text
+_start:
+    # ---- read all of standard input into buf ----
+    xor r12, r12                    # r12 = total bytes read so far
+    lea r13, [rip + buf]            # r13 = buf base = program base
+read_loop:
+    mov rdi, 0                      # fd 0
+    lea rsi, [r13 + r12]            # buf + total
+    mov rdx, 65536
+    sub rdx, r12                    # remaining space in buf
+    xor eax, eax                    # syscall 0 = read
+    syscall
+    test rax, rax
+    jz read_done                    # 0 = end of input
+    js read_done                    # error: stop reading
+    add r12, rax
+    cmp r12, 65536
+    jb read_loop
+read_done:
+    # ---- locate the first '!' (0x21) ----
+    xor rcx, rcx                    # rcx = i
+scan_loop:
+    cmp rcx, r12
+    jae no_bang
+    cmp byte ptr [r13 + rcx], 0x21
+    je found_bang
+    inc rcx
+    jmp scan_loop
+found_bang:
+    mov rbp, rcx                    # rbp = program length
+    lea r14, [r13 + rcx + 1]        # r14 = program-input cursor
+    jmp have_split
+no_bang:
+    mov rbp, r12                    # whole input is the program
+    lea r14, [r13 + r12]            # program input is empty
+have_split:
+    lea r15, [r13 + r12]            # r15 = program-input end
+
+    # ---- check bracket balance and build the match table ----
+    lea r9, [rip + match]           # r9 = match table base
+    lea r8, [rip + bstack]          # r8 = bracket stack base
+    xor rcx, rcx                    # i = 0
+    xor rdx, rdx                    # sp = 0
+bal_loop:
+    cmp rcx, rbp
+    jae bal_done
+    movzx eax, byte ptr [r13 + rcx]
+    cmp al, 0x5B                    # '['
+    je bal_open
+    cmp al, 0x5D                    # ']'
+    je bal_close
+    inc rcx
+    jmp bal_loop
+bal_open:
+    mov dword ptr [r8 + rdx*4], ecx # push i
+    inc rdx
+    inc rcx
+    jmp bal_loop
+bal_close:
+    test rdx, rdx
+    jz unbalanced                   # ']' with no open '['
+    dec rdx
+    mov eax, dword ptr [r8 + rdx*4] # eax = matching '[' index
+    mov dword ptr [r9 + rcx*4], eax # match[']'] = '['
+    mov dword ptr [r9 + rax*4], ecx # match['['] = ']'
+    inc rcx
+    jmp bal_loop
+bal_done:
+    test rdx, rdx
+    jnz unbalanced                  # '[' left open
+
+    # ---- run the interpreter ----
+    lea rbx, [rip + tape]           # rbx = data pointer
+    xor r8, r8                      # r8 = current program index
+run_loop:
+    cmp r8, rbp
+    jae exit_ok                     # program finished
+    movzx eax, byte ptr [r13 + r8]
+    inc r8
+    cmp al, 0x5D
+    ja c_ignore                     # bytes above ']' are comments
+    cmp al, 0x2B                    # '+'
+    je c_add
+    cmp al, 0x2D                    # '-'
+    je c_sub
+    cmp al, 0x3E                    # '>'
+    je c_right
+    cmp al, 0x3C                    # '<'
+    je c_left
+    cmp al, 0x2E                    # '.'
+    je c_write
+    cmp al, 0x2C                    # ','
+    je c_read
+    cmp al, 0x5B                    # '['
+    je c_open
+    cmp al, 0x5D                    # ']'
+    je c_close
+    jmp c_ignore                    # any other byte is a comment
+c_add:
+    inc byte ptr [rbx]
+    jmp run_loop
+c_sub:
+    dec byte ptr [rbx]
+    jmp run_loop
+c_right:
+    inc rbx
+    jmp run_loop
+c_left:
+    dec rbx
+    jmp run_loop
+c_write:
+    mov edi, 1                      # fd 1
+    mov rsi, rbx                    # the cell itself
+    mov edx, 1
+    mov eax, 1                      # syscall 1 = write
+    syscall
+    jmp run_loop
+c_read:
+    cmp r14, r15
+    jae c_read_eof
+    movzx eax, byte ptr [r14]
+    inc r14
+    mov byte ptr [rbx], al
+    jmp run_loop
+c_read_eof:
+    mov byte ptr [rbx], 0
+    jmp run_loop
+c_open:
+    cmp byte ptr [rbx], 0
+    jne run_loop                    # cell != 0: enter the loop
+    lea r10, [r8 - 1]               # index of this '['
+    mov r8d, dword ptr [r9 + r10*4] # matching ']' index
+    inc r8                          # land just after it
+    jmp run_loop
+c_close:
+    cmp byte ptr [rbx], 0
+    je run_loop                     # cell == 0: loop is done
+    lea r10, [r8 - 1]               # index of this ']'
+    mov r8d, dword ptr [r9 + r10*4] # matching '[' index
+    inc r8                          # land just after it
+    jmp run_loop
+c_ignore:
+    jmp run_loop
+exit_ok:
+    mov edi, 0                      # status 0
+    mov eax, 60                     # syscall 60 = exit
+    syscall
+unbalanced:
+    mov edi, 1                      # status 1, no output
+    mov eax, 60
+    syscall
+
+.bss
+.align 8
+buf:
+    .zero 65536                     # whole of stdin; the program starts here
+match:
+    .zero 262144                    # 65536 dword entries: match table
+bstack:
+    .zero 262144                    # 65536 dword entries: bracket stack
+tape:
+    .zero 30000                     # 30000 byte cells

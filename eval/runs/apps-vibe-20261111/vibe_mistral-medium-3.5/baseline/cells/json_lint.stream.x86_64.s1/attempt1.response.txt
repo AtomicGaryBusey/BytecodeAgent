@@ -1,0 +1,612 @@
+```asm
+.globl _start
+
+.section .rodata
+ok_msg: .ascii "ok\n"
+ok_len = . - ok_msg
+error_msg: .ascii "error at "
+error_msg_len = . - error_msg
+newline: .ascii "\n"
+
+.text
+_start:
+    mov rdi, 0
+    lea rsi, [rip + buffer]
+    mov rdx, 65536
+    mov rax, 0
+    syscall
+    mov [rip + input_len], rax
+
+    lea rbx, [rip + buffer]
+    mov rcx, rax
+    add rcx, rbx
+
+    mov qword ptr [rip + stack_ptr], 0
+    call parse_document
+
+    test rax, rax
+    jz .report_error
+    cmp rbx, rcx
+    jne .report_error_at_end
+
+    mov rdi, 1
+    lea rsi, [rip + ok_msg]
+    mov rdx, ok_len
+    mov rax, 1
+    syscall
+    mov rdi, 0
+    mov rax, 60
+    syscall
+
+.report_error:
+    lea rax, [rip + buffer]
+    sub rbx, rax
+.report_error_at:
+    mov rdi, 1
+    lea rsi, [rip + error_msg]
+    mov rdx, error_msg_len
+    mov rax, 1
+    syscall
+
+    mov rdi, rbx
+    lea rsi, [rip + num_buf + 19]
+    mov byte ptr [rsi], 0
+    dec rsi
+    mov rax, rdi
+    mov r8, 10
+.convert_loop:
+    test rax, rax
+    jz .convert_done
+    xor rdx, rdx
+    div r8
+    add dl, '0'
+    mov [rsi], dl
+    dec rsi
+    jmp .convert_loop
+.convert_done:
+    inc rsi
+    lea rdx, [rip + num_buf + 20]
+    sub rdx, rsi
+    mov rdi, 1
+    mov rax, 1
+    syscall
+
+    mov rdi, 1
+    lea rsi, [rip + newline]
+    mov rdx, 1
+    mov rax, 1
+    syscall
+    mov rdi, 1
+    mov rax, 60
+    syscall
+
+.report_error_at_end:
+    mov rbx, rcx
+    sub rbx, [rip + buffer]
+    jmp .report_error_at
+
+parse_document:
+    call skip_ws
+    test rax, rax
+    jz .error
+    call parse_value
+    test rax, rax
+    jz .error
+    call skip_ws
+    test rax, rax
+    jz .error
+    ret
+.error:
+    xor rax, rax
+    ret
+
+skip_ws:
+    mov rax, rbx
+.skip_loop:
+    cmp rbx, rcx
+    jge .done
+    mov al, byte ptr [rbx]
+    cmp al, 0x20
+    je .skip
+    cmp al, 0x09
+    je .skip
+    cmp al, 0x0A
+    je .skip
+    cmp al, 0x0D
+    je .skip
+    jmp .done
+.skip:
+    inc rbx
+    jmp .skip_loop
+.done:
+    mov rax, 1
+    ret
+
+parse_value:
+    cmp rbx, rcx
+    jge .error
+    mov al, byte ptr [rbx]
+    cmp al, '{'
+    je parse_object
+    cmp al, '['
+    je parse_array
+    cmp al, '"'
+    je parse_string
+    cmp al, 't'
+    je parse_true
+    cmp al, 'f'
+    je parse_false
+    cmp al, 'n'
+    je parse_null
+    cmp al, '-'
+    je parse_number
+    cmp al, '0'
+    je parse_number
+    cmp al, '1'
+    jl .check_dot
+    cmp al, '9'
+    jle parse_number
+.check_dot:
+    cmp al, '.'
+    je parse_number
+.error:
+    xor rax, rax
+    ret
+
+parse_object:
+    mov al, byte ptr [rbx]
+    cmp al, '{'
+    jne .error
+    inc rbx
+
+    mov rax, [rip + stack_ptr]
+    cmp rax, 1000
+    jge .error
+    lea r8, [rip + stack]
+    mov byte ptr [r8 + rax], 0
+    inc rax
+    mov [rip + stack_ptr], rax
+
+    call skip_ws
+    test rax, rax
+    jz .error_pop
+
+    mov al, byte ptr [rbx]
+    cmp al, '}'
+    je .empty
+
+    call parse_string
+    test rax, rax
+    jz .error_pop
+
+    call skip_ws
+    test rax, rax
+    jz .error_pop
+
+    mov al, byte ptr [rbx]
+    cmp al, ':'
+    jne .error_pop
+    inc rbx
+
+    call skip_ws
+    test rax, rax
+    jz .error_pop
+
+    call parse_value
+    test rax, rax
+    jz .error_pop
+
+    call skip_ws
+    test rax, rax
+    jz .error_pop
+
+.member_loop:
+    mov al, byte ptr [rbx]
+    cmp al, ','
+    jne .check_end
+    inc rbx
+    call skip_ws
+    test rax, rax
+    jz .error_pop
+    call parse_string
+    test rax, rax
+    jz .error_pop
+    call skip_ws
+    test rax, rax
+    jz .error_pop
+    mov al, byte ptr [rbx]
+    cmp al, ':'
+    jne .error_pop
+    inc rbx
+    call skip_ws
+    test rax, rax
+    jz .error_pop
+    call parse_value
+    test rax, rax
+    jz .error_pop
+    call skip_ws
+    test rax, rax
+    jz .error_pop
+    jmp .member_loop
+
+.check_end:
+    cmp al, '}'
+    jne .error_pop
+    inc rbx
+    jmp .pop_done
+
+.empty:
+    mov al, byte ptr [rbx]
+    cmp al, '}'
+    jne .error_pop
+    inc rbx
+
+.pop_done:
+    mov rax, [rip + stack_ptr]
+    dec rax
+    mov [rip + stack_ptr], rax
+    mov rax, 1
+    ret
+
+.error_pop:
+    mov rax, [rip + stack_ptr]
+    dec rax
+    mov [rip + stack_ptr], rax
+.error:
+    xor rax, rax
+    ret
+
+parse_array:
+    mov al, byte ptr [rbx]
+    cmp al, '['
+    jne .error
+    inc rbx
+
+    mov rax, [rip + stack_ptr]
+    cmp rax, 1000
+    jge .error
+    lea r8, [rip + stack]
+    mov byte ptr [r8 + rax], 1
+    inc rax
+    mov [rip + stack_ptr], rax
+
+    call skip_ws
+    test rax, rax
+    jz .error_pop
+
+    mov al, byte ptr [rbx]
+    cmp al, ']'
+    je .empty
+
+    call parse_value
+    test rax, rax
+    jz .error_pop
+
+    call skip_ws
+    test rax, rax
+    jz .error_pop
+
+.element_loop:
+    mov al, byte ptr [rbx]
+    cmp al, ','
+    jne .check_end
+    inc rbx
+    call skip_ws
+    test rax, rax
+    jz .error_pop
+    call parse_value
+    test rax, rax
+    jz .error_pop
+    call skip_ws
+    test rax, rax
+    jz .error_pop
+    jmp .element_loop
+
+.check_end:
+    cmp al, ']'
+    jne .error_pop
+    inc rbx
+    jmp .pop_done
+
+.empty:
+    mov al, byte ptr [rbx]
+    cmp al, ']'
+    jne .error_pop
+    inc rbx
+
+.pop_done:
+    mov rax, [rip + stack_ptr]
+    dec rax
+    mov [rip + stack_ptr], rax
+    mov rax, 1
+    ret
+
+.error_pop:
+    mov rax, [rip + stack_ptr]
+    dec rax
+    mov [rip + stack_ptr], rax
+.error:
+    xor rax, rax
+    ret
+
+parse_string:
+    mov al, byte ptr [rbx]
+    cmp al, '"'
+    jne .error
+    inc rbx
+
+.string_loop:
+    cmp rbx, rcx
+    jge .error
+    mov al, byte ptr [rbx]
+    cmp al, '"'
+    je .done
+    cmp al, '\'
+    je .escape
+    cmp al, 0x20
+    jb .error
+    inc rbx
+    jmp .string_loop
+
+.escape:
+    inc rbx
+    cmp rbx, rcx
+    jge .error
+    mov al, byte ptr [rbx]
+    cmp al, '"'
+    je .escaped
+    cmp al, '\'
+    je .escaped
+    cmp al, '/'
+    je .escaped
+    cmp al, 'b'
+    je .escaped
+    cmp al, 'f'
+    je .escaped
+    cmp al, 'n'
+    je .escaped
+    cmp al, 'r'
+    je .escaped
+    cmp al, 't'
+    je .escaped
+    cmp al, 'u'
+    jne .error
+    inc rbx
+    mov r8, 4
+.hex_loop:
+    cmp rbx, rcx
+    jge .error
+    mov al, byte ptr [rbx]
+    cmp al, '0'
+    jb .error
+    cmp al, '9'
+    jbe .hex_ok
+    cmp al, 'a'
+    jb .error
+    cmp al, 'f'
+    jbe .hex_ok
+    cmp al, 'A'
+    jb .error
+    cmp al, 'F'
+    jbe .hex_ok
+    jmp .error
+.hex_ok:
+    inc rbx
+    dec r8
+    jnz .hex_loop
+    jmp .string_loop
+.escaped:
+    inc rbx
+    jmp .string_loop
+
+.done:
+    inc rbx
+    mov rax, 1
+    ret
+.error:
+    xor rax, rax
+    ret
+
+parse_true:
+    cmp rcx, rbx
+    jle .error
+    mov al, byte ptr [rbx]
+    cmp al, 't'
+    jne .error
+    mov al, byte ptr [rbx + 1]
+    cmp al, 'r'
+    jne .error
+    mov al, byte ptr [rbx + 2]
+    cmp al, 'u'
+    jne .error
+    mov al, byte ptr [rbx + 3]
+    cmp al, 'e'
+    jne .error
+    add rbx, 4
+    mov rax, 1
+    ret
+.error:
+    xor rax, rax
+    ret
+
+parse_false:
+    cmp rcx, rbx
+    jle .error
+    mov al, byte ptr [rbx]
+    cmp al, 'f'
+    jne .error
+    mov al, byte ptr [rbx + 1]
+    cmp al, 'a'
+    jne .error
+    mov al, byte ptr [rbx + 2]
+    cmp al, 'l'
+    jne .error
+    mov al, byte ptr [rbx + 3]
+    cmp al, 's'
+    jne .error
+    mov al, byte ptr [rbx + 4]
+    cmp al, 'e'
+    jne .error
+    add rbx, 5
+    mov rax, 1
+    ret
+.error:
+    xor rax, rax
+    ret
+
+parse_null:
+    cmp rcx, rbx
+    jle .error
+    mov al, byte ptr [rbx]
+    cmp al, 'n'
+    jne .error
+    mov al, byte ptr [rbx + 1]
+    cmp al, 'u'
+    jne .error
+    mov al, byte ptr [rbx + 2]
+    cmp al, 'l'
+    jne .error
+    mov al, byte ptr [rbx + 3]
+    cmp al, 'l'
+    jne .error
+    add rbx, 4
+    mov rax, 1
+    ret
+.error:
+    xor rax, rax
+    ret
+
+parse_number:
+    mov al, byte ptr [rbx]
+    cmp al, '-'
+    jne .no_neg
+    inc rbx
+    cmp rbx, rcx
+    jge .error
+.no_neg:
+    mov al, byte ptr [rbx]
+    cmp al, '0'
+    jne .not_zero
+    inc rbx
+    cmp rbx, rcx
+    jge .done
+    mov al, byte ptr [rbx]
+    cmp al, '0'
+    jb .check_frac_exp
+    cmp al, '9'
+    jbe .error
+.check_frac_exp:
+    cmp al, '.'
+    je .frac
+    cmp al, 'e'
+    je .exp
+    cmp al, 'E'
+    je .exp
+    jmp .done
+
+.not_zero:
+    cmp al, '1'
+    jb .check_dot
+    cmp al, '9'
+    jbe .digits
+.check_dot:
+    cmp al, '.'
+    jne .error
+.digits:
+    inc rbx
+.digits_loop:
+    cmp rbx, rcx
+    jge .check_frac_exp2
+    mov al, byte ptr [rbx]
+    cmp al, '0'
+    jb .check_frac_exp2
+    cmp al, '9'
+    jbe .digits_loop
+.check_frac_exp2:
+    cmp rbx, rcx
+    jge .done
+    mov al, byte ptr [rbx]
+    cmp al, '.'
+    je .frac
+    cmp al, 'e'
+    je .exp
+    cmp al, 'E'
+    je .exp
+    jmp .done
+
+.frac:
+    inc rbx
+    cmp rbx, rcx
+    jge .error
+.frac_digits:
+    mov al, byte ptr [rbx]
+    cmp al, '0'
+    jb .check_exp
+    cmp al, '9'
+    jbe .frac_digits_loop
+    jmp .error
+.frac_digits_loop:
+    inc rbx
+    cmp rbx, rcx
+    jge .check_exp
+    mov al, byte ptr [rbx]
+    cmp al, '0'
+    jb .check_exp
+    cmp al, '9'
+    jbe .frac_digits_loop
+.check_exp:
+    cmp rbx, rcx
+    jge .done
+    mov al, byte ptr [rbx]
+    cmp al, 'e'
+    je .exp
+    cmp al, 'E'
+    je .exp
+    jmp .done
+
+.exp:
+    inc rbx
+    cmp rbx, rcx
+    jge .error
+    mov al, byte ptr [rbx]
+    cmp al, '+'
+    je .exp_sign
+    cmp al, '-'
+    je .exp_sign
+    jmp .exp_no_sign
+.exp_sign:
+    inc rbx
+    cmp rbx, rcx
+    jge .error
+    mov al, byte ptr [rbx]
+.exp_no_sign:
+    cmp al, '0'
+    jb .error
+    cmp al, '9'
+    jbe .exp_digits
+    jmp .error
+.exp_digits:
+    inc rbx
+    cmp rbx, rcx
+    jge .done
+    mov al, byte ptr [rbx]
+    cmp al, '0'
+    jb .done
+    cmp al, '9'
+    jbe .exp_digits
+    jmp .done
+
+.error:
+    xor rax, rax
+    ret
+.done:
+    mov rax, 1
+    ret
+
+.bss
+buffer: .space 65536
+input_len: .quad 0
+stack: .space 1000
+stack_ptr: .quad 0
+num_buf: .space 20
+```

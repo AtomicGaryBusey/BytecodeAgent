@@ -1,0 +1,238 @@
+Implement the function `int64_t mat_pow(const int64_t *a, int64_t n, int64_t k, int64_t *out, int64_t *tmp)`.
+
+Target: AArch64 (ARMv8-A), Linux AAPCS64. Integer/pointer arguments in x0-x7; 64-bit result in x0. Callee-saved: x19-x28, x29 (frame pointer) and d8-d15 (restore them if you use them); x9-x15 are free scratch registers. sp must stay 16-byte aligned and be back to its entry value when you return with ret (return address in x30). More ABI facts: arguments beyond the eighth are passed on the stack (the 9th at [sp] at entry). A call (bl/blr) overwrites x30, so save x30 (e.g. stp x29, x30, [sp, #-16]!) before calling and restore it before ret. A call clobbers the caller-saved registers x0-x18, x30, v0-v7 and v16-v31 (and the upper halves of v8-v15) and the flags, so keep values that must survive a call in callee-saved registers x19-x28 (saved/restored by you) or in your own stack frame. sp must be 16-byte aligned at every call (and whenever it is used as a base register). Anything below sp may be overwritten by a callee.
+
+Output format: GNU assembler syntax for AArch64, e.g. `ldr x2, [x0, x1, lsl #3]`. Output ONLY the function's instructions and labels, one per line, starting with the label `mat_pow:` (the entry point). Labels are `name:` (letters, digits, _ and ., e.g. `.Lloop:`); every branch target (b, b.cond, cbz, cbnz, tbz, tbnz, bl, adr) must be a label, never a number. Comments start with `//`; do not use `;`. No directives of any kind (no .section/.align/.word/.quad), no literal pools (`ldr x0, =...`), no data, no calls to other functions. Each line under 120 characters. No Markdown fences, no prose before or after the code. Instruction set: ARMv8.0-A with floating point and Advanced SIMD (NEON). Not supported (rejected): CRC32, LSE atomics, dot product, half-precision, crypto (AES/SHA/PMULL) and SVE.
+
+Specification: a points to an n x n matrix of signed 64-bit integers in row-major order (element (i, j) at a[i*n + j]), 1 <= n <= 6. Compute the matrix power a^k (0 <= k <= 64; a^0 is the identity matrix) into out (n*n elements, row-major) and return 0. Matrix products use wrapping 64-bit arithmetic: (x*y)(i, j) = sum over t of x(i, t) * y(t, j), modulo 2^64. tmp points to 2*n*n elements of scratch space that you may use freely (e.g. for a copy of the base and a product), but on return every one of those 2*n*n elements must be 0 (the whole of out and tmp is checked; both start out as garbage). Any correct method is fine (k repeated multiplications, or square-and-multiply). a, out and tmp do not overlap. Do not write to a; read only a, out and tmp; write only out and tmp.
+
+Your previous attempt was:
+<previous>
+mat_pow:
+    // x0=a, x1=n, x2=k, x3=out, x4=tmp
+    mov x5, x1                // x5 = n
+    mul x5, x5, x1            // x5 = n_sq
+    lsl x6, x5, #3            // x6 = n_sq * 8 (size_bytes)
+    add x7, x4, x6            // x7 = buf1 = tmp + size_bytes
+
+    cbz x2, .Lk_zero
+
+    // copy a -> base (buf0 = x4)
+    mov x8, x5                // count = n_sq
+    mov x9, x0                // src = a
+    mov x10, x4               // dst = base
+.Lcopy_a:
+    cbz x8, .Lcopy_a_done
+    ldr x11, [x9], #8
+    str x11, [x10], #8
+    sub x8, x8, #1
+    b .Lcopy_a
+.Lcopy_a_done:
+
+    // init out = identity
+    mov x9, #0                // i = 0
+.Lid_i:
+    cmp x9, x1
+    bge .Lid_done
+    mov x10, #0               // j = 0
+.Lid_j:
+    cmp x10, x1
+    bge .Lid_j_next
+    mul x11, x9, x1
+    add x11, x11, x10
+    lsl x11, x11, #3
+    add x11, x3, x11
+    mov x12, #0
+    cmp x9, x10
+    cset x12, eq
+    str x12, [x11]
+    add x10, x10, #1
+    b .Lid_j
+.Lid_j_next:
+    add x9, x9, #1
+    b .Lid_i
+.Lid_done:
+
+    // base ptr in x14, alt buf ptr in x15
+    mov x14, x4                // base = buf0
+    mov x15, x7                // alt = buf1
+
+.Lexp_loop:
+    cbz x2, .Lexp_done
+    and x18, x2, #1
+    cbz x18, .Lskip_mul_out
+
+    // out = out * base -> result in buf1 (x15)
+    // multiply A=out (x3), B=base (x14), C=buf1 (x15)
+    // i loop
+    mov x9, #0
+.Lmul_i1:
+    cmp x9, x1
+    bge .Lmul_i1_done
+    mov x10, #0
+.Lmul_j1:
+    cmp x10, x1
+    bge .Lmul_j1_done
+    mov x12, #0                 // sum = 0
+    mov x11, #0                 // t = 0
+.Lmul_t1:
+    cmp x11, x1
+    bge .Lmul_t1_done
+    // load A[i][t]
+    mul x13, x9, x1
+    add x13, x13, x11
+    lsl x13, x13, #3
+    add x13, x3, x13
+    ldr x13, [x13]
+    // load B[t][j]
+    mul x14, x11, x1
+    add x14, x14, x10
+    lsl x14, x14, #3
+    add x14, x14, x14          // x14 currently base pointer, add offset
+    ldr x14, [x14]
+    // multiply and add
+    mul x16, x13, x14
+    add x12, x12, x16
+    add x11, x11, #1
+    b .Lmul_t1
+.Lmul_t1_done:
+    // store sum to C[i][j] (buf1)
+    mul x13, x9, x1
+    add x13, x13, x10
+    lsl x13, x13, #3
+    add x13, x15, x13
+    str x12, [x13]
+    add x10, x10, #1
+    b .Lmul_j1
+.Lmul_j1_done:
+    add x9, x9, #1
+    b .Lmul_i1
+.Lmul_i1_done:
+
+    // copy buf1 -> out
+    mov x8, x5
+    mov x9, x15
+    mov x10, x3
+.Lcopy_buf1_out:
+    cbz x8, .Lcopy_buf1_out_done
+    ldr x11, [x9], #8
+    str x11, [x10], #8
+    sub x8, x8, #1
+    b .Lcopy_buf1_out
+.Lcopy_buf1_out_done:
+
+.Lskip_mul_out:
+    // base = base * base -> result in buf0 (x14) using buf1 (x15) as dest, then swap
+    // multiply A=base (x14), B=base (x14), C=buf1 (x15)
+    mov x9, #0
+.Lmul_i2:
+    cmp x9, x1
+    bge .Lmul_i2_done
+    mov x10, #0
+.Lmul_j2:
+    cmp x10, x1
+    bge .Lmul_j2_done
+    mov x12, #0
+    mov x11, #0
+.Lmul_t2:
+    cmp x11, x1
+    bge .Lmul_t2_done
+    // load A[i][t]
+    mul x13, x9, x1
+    add x13, x13, x11
+    lsl x13, x13, #3
+    add x13, x14, x13
+    ldr x13, [x13]
+    // load B[t][j]
+    mul x14, x11, x1
+    add x14, x14, x10
+    lsl x14, x14, #3
+    add x14, x14, x14          // base pointer again
+    ldr x14, [x14]
+    // multiply and add
+    mul x16, x13, x14
+    add x12, x12, x16
+    add x11, x11, #1
+    b .Lmul_t2
+.Lmul_t2_done:
+    // store sum to C[i][j] (buf1)
+    mul x13, x9, x1
+    add x13, x13, x10
+    lsl x13, x13, #3
+    add x13, x15, x13
+    str x12, [x13]
+    add x10, x10, #1
+    b .Lmul_j2
+.Lmul_j2_done:
+    add x9, x9, #1
+    b .Lmul_i2
+.Lmul_i2_done:
+
+    // swap base and alt buffers
+    mov x16, x14
+    mov x14, x15
+    mov x15, x16
+
+    // shift exponent
+    lsr x2, x2, #1
+    b .Lexp_loop
+
+.Lexp_done:
+    // zero tmp (2 * n_sq elements)
+    add x13, x5, x5            // x13 = 2*n_sq
+    mov x9, x13
+    mov x10, x4
+.Lzero_tmp:
+    cbz x9, .Lzero_done
+    str xzr, [x10], #8
+    sub x9, x9, #1
+    b .Lzero_tmp
+.Lzero_done:
+    mov x0, #0
+    ret
+
+.Lk_zero:
+    // out = identity
+    mov x9, #0
+.Lk_id_i:
+    cmp x9, x1
+    bge .Lk_id_done
+    mov x10, #0
+.Lk_id_j:
+    cmp x10, x1
+    bge .Lk_id_next
+    mul x11, x9, x1
+    add x11, x11, x10
+    lsl x11, x11, #3
+    add x11, x3, x11
+    mov x12, #0
+    cmp x9, x10
+    cset x12, eq
+    str x12, [x11]
+    add x10, x10, #1
+    b .Lk_id_j
+.Lk_id_next:
+    add x9, x9, #1
+    b .Lk_id_i
+.Lk_id_done:
+    // zero tmp
+    add x13, x5, x5
+    mov x9, x13
+    mov x10, x4
+.Lk_zero_tmp:
+    cbz x9, .Lk_zero_done
+    str xzr, [x10], #8
+    sub x9, x9, #1
+    b .Lk_zero_tmp
+.Lk_zero_done:
+    mov x0, #0
+    ret
+</previous>
+It failed:
+<failure>
+32 of 35 test cases failed. First failures:
+  mat_pow(a=[-2], n=1, k=1, out, tmp): expected 0, but the run failed: aarch64: Invalid memory read (UC_ERR_READ_UNMAPPED) at pc=0x1000dc [the faulting instruction is line 82: `ldr x14, [x14]`]
+  mat_pow(a=[2], n=1, k=5, out, tmp): expected 0, but the run failed: aarch64: Invalid memory read (UC_ERR_READ_UNMAPPED) at pc=0x1000dc [the faulting instruction is line 82: `ldr x14, [x14]`]
+  mat_pow(a=[6], n=1, k=64, out, tmp): expected 0, but the run failed: aarch64: Invalid memory read (UC_ERR_READ_UNMAPPED) at pc=0x100180 [the faulting instruction is line 141: `ldr x14, [x14]`]
+</failure>
+Write a corrected, complete version. Same output format; output only the code.

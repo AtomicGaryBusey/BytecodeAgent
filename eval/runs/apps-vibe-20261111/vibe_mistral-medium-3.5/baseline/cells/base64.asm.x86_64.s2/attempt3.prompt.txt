@@ -1,0 +1,280 @@
+Write the complete program `base64`: a static Linux executable for x86-64 (AMD64), written in assembly. There is no C library, no C runtime and no helper code: you write the entry point `_start`, every function, every table and string, and make the system calls yourself.
+
+Entry state (as the Linux kernel sets it up): execution starts at the label `_start`. rsp is 16-byte aligned and points at argc = 0, followed by the NULL terminators of an empty argv, an empty envp and an empty auxiliary vector: the program gets no arguments. Every other general-purpose register is zero, and the direction flag is clear. There is no return address: `_start` must never return with `ret`; the program ends only through the exit system call.
+
+System calls: the `syscall` instruction, with the system call number in rax and the arguments in rdi, rsi, rdx; the result comes back in rax. The kernel overwrites rcx and r11; every other register is preserved. Exactly these four are available:
+- read = 0: read(fd = 0, buf, count) reads up to count bytes of standard input into buf; returns the number of bytes read, 0 at end of input.
+- write = 1: write(fd, buf, count) with fd 1 (standard output) or 2 (standard error); returns count.
+- exit = 60: exit(status) ends the program; the exit status is the low 8 bits of status.
+- exit_group = 231: the same as exit.
+Any other system call number, another file descriptor, `int 0x80` or `sysenter` stops the program with an error, and so does a buffer that is not entirely inside the program's memory.
+
+Memory: the program's own sections plus a stack of 1 MiB below the entry sp. There is no heap (no brk, no mmap, no malloc): put working storage in `.bss` (zero-initialised), at most 1 MiB in total, or on the stack. Code is not writable. Any access outside these areas stops the program. Each test run may execute at most 50,000,000 instructions.
+
+Output format: one complete assembly source file in GNU assembler (GNU as) syntax, Intel flavour without register prefixes: the harness puts `.intel_syntax noprefix` in front of your text, so do not write it yourself. Examples: `mov rax, qword ptr [rbx + rcx*8]`, `movzx eax, byte ptr [rsi]`, `lea rsi, [rip + buffer]`. Comments start with `#`; do not use `;`.
+Allowed in the file:
+- Sections: `.text` (code), `.section .rodata` (read-only data), `.data` (initialised writable data), `.bss` (zero-initialised space: only `.zero`/`.space` and alignment). Instructions go in `.text` only.
+- Data directives: `.byte`, `.short`/`.2byte`, `.word` (2 bytes on this target), `.long`/`.int`/`.4byte`, `.quad`/`.8byte`, `.ascii`, `.asciz`/`.string`, `.zero`/`.space`, alignment with `.align`/`.balign`/`.p2align`, and `.globl`/`.global` (write `.globl _start`).
+- Labels `name:` in any section, and GNU local labels `1:` referenced as `1f` (next) / `1b` (previous).
+- Constants: `.equ name, value` (or `.set name, value`, or `name = value`), where value is a number or a difference of labels defined earlier in the same section (e.g. `msg_len = . - msg`). Define every constant before its first use.
+- Addressing data: rip-relative, `lea rdi, [rip + table]` or `mov al, byte ptr [rip + table + 3]`. The program is linked at fixed low addresses, so absolute forms (`mov esi, offset buffer`, `movzx eax, byte ptr [table + rcx]`) work as well.
+Not allowed: macros (`.macro`, `.rept`, `.irp`), conditional assembly (`.if`), `.include`, `.incbin`, `.fill`, `.org`, `.comm`/`.lcomm`, `.inst`, `.cfi_*` directives, section stacks (`.pushsection`) and any other section. No libc and no other library: there is nothing to link against, so every symbol you use must be defined in your file.
+Instruction set: x86-64 with SSE up to SSE4.2 (including SSSE3, SSE4.1 and crc32), POPCNT, LZCNT, BMI1/BMI2 (andn, bextr, blsi, blsr, tzcnt, bzhi, mulx, pdep, pext, rorx, sarx, shlx, shrx), MOVBE, AES-NI and PCLMULQDQ. Not supported (rejected): AVX, AVX2, AVX-512, FMA, F16C and every other VEX/EVEX vector instruction, ADX (adcx/adox; use adc) and SHA.
+Output ONLY the assembly source: no Markdown fences, no prose before or after it.
+
+Specification: Task `base64`: Base64-encode standard input (RFC 4648 standard alphabet, like `base64` with no options).
+
+- Alphabet: `A`-`Z` (0-25), `a`-`z` (26-51), `0`-`9` (52-61), `+` (62), `/` (63). Each group of 3 input bytes
+  becomes 4 characters (most significant bits first). A final group of 1 byte becomes 2 characters plus `==`;
+  a final group of 2 bytes becomes 3 characters plus `=`.
+- The encoded text is split into lines of exactly 76 characters; the last line may be shorter. Every line,
+  including the last, ends with one newline 0x0A. Never print an empty line: if the encoded text length is a
+  multiple of 76, the output ends right after that line's newline.
+- Empty input prints nothing (not even a newline). Input bytes are arbitrary (0x00-0xFF).
+
+Examples: `Man` prints `TWFu\n`; `Ma` prints `TWE=\n`; `M` prints `TQ==\n`; 57 input bytes print exactly one
+76-character line and a newline; 58 input bytes print that line plus a second line of 4 characters.
+
+Limits: the input is at most 49152 bytes. Exit status 0.
+
+Input and output (applies to this whole task):
+- The input is the complete contents of standard input (file descriptor 0). Read it with `read` until `read`
+  returns 0 (end of input). A `read` may return FEWER bytes than requested, at any position (in the middle of a
+  line, a token or a group of bytes), so keep calling it; only a return value of 0 means end of input.
+- Write the output to standard output (file descriptor 1). Only the bytes this task describes may appear on
+  standard output (standard error is ignored). Every output byte must be written before the program exits.
+- Finish with `exit` (or `exit_group`) and the exit status this task gives. The program must not run off the end
+  of its code or crash.
+
+Your previous attempt was:
+<previous>
+.globl _start
+
+.section .rodata
+base64_table:
+    .ascii "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/"
+
+.text
+_start:
+    sub rsp, 128
+    lea r14, [rsp]
+    lea r13, [rsp + 77]
+    lea r12, [rsp + 125]
+    xor rbx, rbx
+    xor r15, r15
+
+read_loop:
+    mov rdi, 0
+    mov rsi, r13
+    mov rdx, 48
+    mov rax, 0
+    syscall
+    test rax, rax
+    jz end_of_input
+    mov rbp, rax
+
+    test rbx, rbx
+    jz no_leftovers
+    mov rcx, rbx
+    mov rsi, r12
+    mov rdi, r13
+    rep movsb
+    add rbp, rbx
+    xor rbx, rbx
+no_leftovers:
+    xor r8, r8
+process_loop:
+    mov rcx, rbp
+    sub rcx, r8
+    jle read_loop
+    cmp rcx, 3
+    jl handle_remainder
+
+    movzx r9d, byte ptr [r13 + r8]
+    movzx r10d, byte ptr [r13 + r8 + 1]
+    movzx r11d, byte ptr [r13 + r8 + 2]
+
+    mov eax, r9d
+    shr eax, 2
+    mov al, byte ptr [base64_table + rax]
+    mov byte ptr [r14 + r15], al
+    inc r15
+    cmp r15, 76
+    jne skip1
+    call write_line
+skip1:
+
+    and r9d, 3
+    shl r9d, 4
+    mov eax, r10d
+    shr eax, 4
+    or r9d, eax
+    mov al, byte ptr [base64_table + r9]
+    mov byte ptr [r14 + r15], al
+    inc r15
+    cmp r15, 76
+    jne skip2
+    call write_line
+skip2:
+
+    and r10d, 15
+    shl r10d, 2
+    mov eax, r11d
+    shr eax, 6
+    or r10d, eax
+    mov al, byte ptr [base64_table + r10]
+    mov byte ptr [r14 + r15], al
+    inc r15
+    cmp r15, 76
+    jne skip3
+    call write_line
+skip3:
+
+    and r11d, 63
+    mov al, byte ptr [base64_table + r11]
+    mov byte ptr [r14 + r15], al
+    inc r15
+    cmp r15, 76
+    jne skip4
+    call write_line
+skip4:
+
+    add r8, 3
+    jmp process_loop
+
+handle_remainder:
+    mov rbx, rcx
+    mov rsi, r13
+    add rsi, r8
+    mov rdi, r12
+    cmp rcx, 1
+    je copy_one
+    mov al, byte ptr [rsi]
+    mov byte ptr [rdi], al
+    mov al, byte ptr [rsi + 1]
+    mov byte ptr [rdi + 1], al
+    jmp read_loop
+copy_one:
+    mov al, byte ptr [rsi]
+    mov byte ptr [rdi], al
+    jmp read_loop
+
+end_of_input:
+    test rbx, rbx
+    jz check_output
+    cmp rbx, 1
+    je one_byte
+    cmp rbx, 2
+    je two_bytes
+    jmp check_output
+
+one_byte:
+    movzx r9d, byte ptr [r12]
+    mov eax, r9d
+    shr eax, 2
+    mov al, byte ptr [base64_table + rax]
+    mov byte ptr [r14 + r15], al
+    inc r15
+    cmp r15, 76
+    jne o1
+    call write_line
+o1:
+    and r9d, 3
+    shl r9d, 4
+    mov al, byte ptr [base64_table + r9]
+    mov byte ptr [r14 + r15], al
+    inc r15
+    cmp r15, 76
+    jne o2
+    call write_line
+o2:
+    mov byte ptr [r14 + r15], '='
+    inc r15
+    cmp r15, 76
+    jne o3
+    call write_line
+o3:
+    mov byte ptr [r14 + r15], '='
+    inc r15
+    cmp r15, 76
+    jne o_done
+    call write_line
+o_done:
+    jmp check_output
+
+two_bytes:
+    movzx r9d, byte ptr [r12]
+    movzx r10d, byte ptr [r12 + 1]
+    mov eax, r9d
+    shr eax, 2
+    mov al, byte ptr [base64_table + rax]
+    mov byte ptr [r14 + r15], al
+    inc r15
+    cmp r15, 76
+    jne t1
+    call write_line
+t1:
+    and r9d, 3
+    shl r9d, 4
+    mov eax, r10d
+    shr eax, 4
+    or r9d, eax
+    mov al, byte ptr [base64_table + r9]
+    mov byte ptr [r14 + r15], al
+    inc r15
+    cmp r15, 76
+    jne t2
+    call write_line
+t2:
+    and r10d, 15
+    shl r10d, 2
+    mov al, byte ptr [base64_table + r10]
+    mov byte ptr [r14 + r15], al
+    inc r15
+    cmp r15, 76
+    jne t3
+    call write_line
+t3:
+    mov byte ptr [r14 + r15], '='
+    inc r15
+    cmp r15, 76
+    jne t_done
+    call write_line
+t_done:
+    jmp check_output
+
+check_output:
+    test r15, r15
+    jz exit
+    mov byte ptr [r14 + r15], 0x0A
+    mov rdi, 1
+    mov rsi, r14
+    lea rdx, [r15 + 1]
+    mov rax, 1
+    syscall
+
+exit:
+    xor rdi, rdi
+    mov rax, 60
+    syscall
+
+write_line:
+    mov byte ptr [r14 + 76], 0x0A
+    mov rdi, 1
+    mov rsi, r14
+    mov rdx, 77
+    mov rax, 1
+    syscall
+    xor r15, r15
+    ret
+</previous>
+It failed:
+<failure>
+Test `all_byte_values` failed (stdin delivered in reads of at most 7 bytes each; test run 31 of 46; the runs before it passed).
+stdin (256 bytes): "\x00\x01\x02\x03\x04\x05\x06\x07\x08\t\n\x0b\x0c\r\x0e\x0f\x10\x11\x12\x13\x14\x15\x16\x17\x18\x19\x1a\x1b\x1c\x1d\x1e\x1f !\"#$%&'()*+,-./0123456789:;<=>?@ABCDEFGHIJKLMNOPQRSTUVWXYZ[\\]^_`abcdefghijklmnopqrstuvwxyz{|}~\x7f\x80\x81\x82\x83\x84\x85\x86\x87\x88\x89\x8a\x8b\x8c\x8d\x8e\x8f\x90\x91\x92\x93\x94\x95\x96\x97\x98\x99\x9a\x9b\x9c\x9d\x9e\x9f\xa0\xa1\xa2\xa3\xa4\xa5\xa6\xa7\xa8\xa9\xaa\xab\xac\xad\xae\xaf\xb0\xb1\xb2\xb3\xb4\xb5\xb6\xb7\xb8\xb9\xba\xbb\xbc\xbd\xbe\xbf\xc0\xc1\xc2\xc3\xc4\xc5\xc6\xc7" ... (56 more bytes)
+exit status: expected 0, got 0
+stdout differs from byte 10 on (line 1, column 11 of the expected output); expected 349 bytes in total, got 349
+  expected from byte 10: "cICQoLDA0ODxAREhMUFRYXGBkaGxwdHh8gISIjJCUmJygpKissLS4vMDEyMzQ1Njc4\nOTo7PD0+P0BBQkNERUZHSElKS0xNTk9QUVJTVFVWV1hZWltcXV5fYGFiY2RlZmdoaWprbG1ub3Bx\ncnN0dXZ3eHl6e3x9" ... (179 more bytes)
+  actual from byte 10:   "gJCgsMDQAQERITFAAAFRYXGBkaGx0eHyAhIgAlJicoKQAAKissLS4vMDIzNDU2NwA6\nOzw9PgAAP0BBQkNERUdISUpLTABPUFFSUwAAVFVWV1hZWlxdXl9gYQBkZWZnaAAAaWprbG1ub3Fy\nc3R1dgB5ent8fQAA" ... (179 more bytes)
+</failure>
+Write a corrected, complete version. Same output format; output only the code.

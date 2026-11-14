@@ -1,0 +1,143 @@
+Implement the function `int64_t mp_mul(const uint64_t *a, int64_t na, const uint64_t *b, int64_t nb, uint64_t *r)`.
+
+Target: AArch64 (ARMv8-A), Linux AAPCS64. Integer/pointer arguments in x0-x7; 64-bit result in x0. Callee-saved: x19-x28, x29 (frame pointer) and d8-d15 (restore them if you use them); x9-x15 are free scratch registers. sp must stay 16-byte aligned and be back to its entry value when you return with ret (return address in x30). More ABI facts: arguments beyond the eighth are passed on the stack (the 9th at [sp] at entry). A call (bl/blr) overwrites x30, so save x30 (e.g. stp x29, x30, [sp, #-16]!) before calling and restore it before ret. A call clobbers the caller-saved registers x0-x18, x30, v0-v7 and v16-v31 (and the upper halves of v8-v15) and the flags, so keep values that must survive a call in callee-saved registers x19-x28 (saved/restored by you) or in your own stack frame. sp must be 16-byte aligned at every call (and whenever it is used as a base register). Anything below sp may be overwritten by a callee.
+
+Output format: QBE intermediate language (the IL of the QBE compiler backend, c9x.me/compile). Write exactly one function, `export function l $mp_mul(...)`, taking every argument as `l` (64-bit; pointers are `l` too) and returning `l`. QBE will compile it for the target above, so you do not handle registers or the ABI yourself. Remember: every block starts with an `@label`; temporaries are `%name`; comparisons such as `csltl`/`ceql` produce a `w` value; `jnz` tests a `w`; loads/stores are `loadl`/`storel`. No data definitions, no calls, no other functions. Output only the QBE code: no Markdown fences, no prose. QBE has no high-multiply instruction: build the 128-bit product of two limbs from 32-bit halves (`and`, `shr` (logical), `mul`, `add`) with explicit carries; an unsigned carry out of `%s =l add %x, %y` is `%c =w cultl %s, %x`.
+
+Specification: Multi-precision multiplication. a holds na and b holds nb 64-bit limbs (0 <= na, nb <= 8), each an unsigned number in little-endian limb order: A = a[0] + a[1]*2^64 + ... . Write the full product A*B to r[0..na+nb-1] (little-endian limbs, every one of the na+nb limbs written, including high zero limbs; r starts out as garbage and does not overlap a or b) and return the number of significant limbs: the smallest k such that r[k..na+nb-1] are all 0 (so 0 when the product is 0, e.g. when na or nb is 0). Limbs are full unsigned 64-bit values (up to 2^64 - 1): the schoolbook method needs the full 128-bit product of two limbs and carries that propagate. Example: a = {2^64-1}, b = {2^64-1} gives r = {1, 2^64-2} and returns 2. Read only a[0..na-1], b[0..nb-1] and r[0..na+nb-1]; write only r[0..na+nb-1] (all checked).
+
+Your previous attempt was:
+<previous>
+export function l mp_mul(l %a_ptr, l %na, l %b_ptr, l %nb, l %r_ptr) {
+	%c0 =l const 0
+	%c1 =l const 1
+	%c32 =l const 32
+	%mask32 =l const 0xffffffff
+
+	%na_eq0 =w ceql %na %c0
+	%nb_eq0 =w ceql %nb %c0
+	%any_zero =w or %na_eq0 %nb_eq0
+	jnz %any_zero, @ret0
+
+	%total =l add %na %nb
+
+	// zero r[0..total-1]
+	%z_i0 =l const 0
+	jmp @zero_cond %z_i0
+
+@zero_cond %z_i
+	%z_cond =w csltl %z_i %total
+	jnz %z_cond, @zero_body
+	jmp @zero_done
+
+@zero_body %z_i
+	%z_addr =l add %r_ptr %z_i
+	storel %c0, %z_addr
+	%z_i1 =l add %z_i %c1
+	jmp @zero_cond %z_i1
+
+@zero_done
+
+	// outer loop i = 0 .. na-1
+	%i0 =l const 0
+	jmp @outer_cond %i0
+
+@outer_cond %i
+	%cond_i =w csltl %i %na
+	jnz %cond_i, @outer_body
+	jmp @outer_done
+
+@outer_body %i
+	%ai_addr =l add %a_ptr %i
+	%ai =loadl %ai_addr
+	%j0 =l const 0
+	%carry0 =l const 0
+	jmp @inner_cond %i %ai %j0 %carry0
+
+@inner_cond %i %ai %j %carry
+	%cond_j =w csltl %j %nb
+	jnz %cond_j, @inner_body
+	jmp @inner_done %i %carry
+
+@inner_body %i %ai %j %carry
+	%bj_addr =l add %b_ptr %j
+	%bj =loadl %bj_addr
+
+	%ai_lo =l and %ai %mask32
+	%ai_hi =l shr %ai %c32
+	%bj_lo =l and %bj %mask32
+	%bj_hi =l shr %bj %c32
+
+	%p0 =l mul %ai_lo %bj_lo
+	%p1 =l mul %ai_lo %bj_hi
+	%p2 =l mul %ai_hi %bj_lo
+	%p3 =l mul %ai_hi %bj_hi
+
+	%p1p2 =l add %p1 %p2
+	%c_p1p2 =w cultl %p1p2 %p1
+
+	%p1p2_lo =l shl %p1p2 %c32
+	%low_tmp =l add %p0 %p1p2_lo
+	%c_low_tmp =w cultl %low_tmp %p0
+
+	%p1p2_hi =l shr %p1p2 %c32
+	%high_tmp =l add %p3 %p1p2_hi
+	%c_high_tmp =w cultl %high_tmp %p3
+
+	%low =l add %low_tmp %c0       // low already modulo 2^64
+	%high =l add %high_tmp %c_low_tmp
+	%high =l add %high %c_p1p2    // add overflow from p1+p2
+
+	%r_idx =l add %i %j
+	%r_addr =l add %r_ptr %r_idx
+	%r_val =loadl %r_addr
+
+	%sum1 =l add %r_val %low
+	%c_sum1 =w cultl %sum1 %r_val
+	%sum2 =l add %sum1 %carry
+	%c_sum2 =w cultl %sum2 %sum1
+	storel %sum2, %r_addr
+
+	%new_carry1 =l add %high %c_sum1
+	%new_carry2 =l add %new_carry1 %c_sum2
+	%new_carry =l add %new_carry2 %c_high_tmp
+
+	%j1 =l add %j %c1
+	jmp @inner_cond %i %ai %j1 %new_carry
+
+@inner_done %i %carry
+	%dest_idx =l add %i %nb
+	%dest_addr =l add %r_ptr %dest_idx
+	storel %carry, %dest_addr
+	%i1 =l add %i %c1
+	jmp @outer_cond %i1
+
+@outer_done
+	%k0 =l sub %total %c1
+	jmp @find_cond %k0
+
+@find_cond %k
+	%addrk =l add %r_ptr %k
+	%valk =loadl %addrk
+	%iszero =w ceql %valk %c0
+	%k_eq0 =w ceql %k %c0
+	%both =w and %iszero %k_eq0
+	jnz %both, @ret0
+	jnz %iszero, @dec_k %k
+	%ret =l add %k %c1
+	ret %ret
+
+@dec_k %k
+	%k1 =l sub %k %c1
+	jmp @find_cond %k1
+
+@ret0
+	ret %c0
+}
+</previous>
+It failed:
+<failure>
+Compilation failed at stage qbe:
+qbe:-:1: unknown keyword mp_mul
+</failure>
+Write a corrected, complete version. Same output format; output only the code.

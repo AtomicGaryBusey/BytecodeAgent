@@ -1,0 +1,136 @@
+Bash execution is denied in this environment, so I'll write the assembly carefully by hand (no local assembler available to test against). Here is the complete program:
+
+```asm
+// base64 - RFC 4648 base64 encoder for AArch64 Linux, freestanding (no libc)
+// Reads all of stdin, writes base64 (76-char lines) to stdout, exit(0).
+    .equ BUFSIZE, 49152      // maximum input size in bytes
+    .equ OUTSIZE, 66400      // maximum output size: 65536 chars + 863 newlines + slack
+    .equ LINELEN, 76         // output line length in characters
+
+    .section .rodata
+    .balign 8
+b64tab:
+    .ascii "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/"
+    .byte 61                 // '=' padding character, table index 64
+
+    .bss
+    .balign 16
+inbuf:
+    .zero BUFSIZE
+outbuf:
+    .zero OUTSIZE
+
+    .text
+    .balign 16
+    .globl _start
+_start:
+    // ---- read all of standard input into inbuf ----
+    mov x19, #0                    // x19 = total bytes read so far
+read_loop:
+    mov x8, #63                    // syscall read
+    mov x0, #0                     // fd = 0 (stdin)
+    adrp x1, inbuf
+    add x1, x1, :lo12:inbuf
+    add x1, x1, x19                // buf = inbuf + n
+    mov x2, #BUFSIZE
+    sub x2, x2, x19                // count = BUFSIZE - n
+    svc #0
+    cmp x0, #0
+    b.le read_done                 // 0 = end of input
+    add x19, x19, x0
+    cmp x19, #BUFSIZE
+    b.hs read_done                 // buffer full
+    b read_loop
+read_done:
+    // ---- base64-encode inbuf[0..x19) into outbuf ----
+    adrp x23, inbuf
+    add x23, x23, :lo12:inbuf      // x23 = input base
+    adrp x24, b64tab
+    add x24, x24, :lo12:b64tab     // x24 = alphabet table
+    adrp x21, outbuf
+    add x21, x21, :lo12:outbuf     // x21 = output cursor
+    mov x20, #0                    // x20 = input index
+    mov x22, #0                    // x22 = chars written on current line
+enc_loop:
+    cmp x20, x19
+    b.hs enc_done                  // no more input bytes
+    ldrb w9, [x23, x20]            // b0
+    add x20, x20, #1
+    lsr w10, w9, #2                // c0 = b0 >> 2
+    and w11, w9, #3
+    lsl w11, w11, #4               // c1 = (b0 & 3) << 4
+    cmp x20, x19
+    b.hs enc_one                   // final group has only 1 byte
+    ldrb w9, [x23, x20]            // b1
+    add x20, x20, #1
+    orr w11, w11, w9, lsr #4       // c1 |= b1 >> 4
+    and w12, w9, #0xF
+    lsl w12, w12, #2               // c2 = (b1 & 15) << 2
+    cmp x20, x19
+    b.hs enc_two                   // final group has only 2 bytes
+    ldrb w9, [x23, x20]            // b2
+    add x20, x20, #1
+    orr w12, w12, w9, lsr #6       // c2 |= b2 >> 6
+    and w13, w9, #0x3F             // c3 = b2 & 63
+    b enc_emit
+enc_one:
+    mov w12, #64                   // '='
+    mov w13, #64                   // '='
+    b enc_emit
+enc_two:
+    mov w13, #64                   // '='
+enc_emit:
+    mov w14, w10
+    bl emit
+    mov w14, w11
+    bl emit
+    mov w14, w12
+    bl emit
+    mov w14, w13
+    bl emit
+    b enc_loop
+enc_done:
+    cmp x22, #0                    // terminate the last line if non-empty
+    b.eq enc_flush
+    mov w15, #0x0A
+    strb w15, [x21], #1
+enc_flush:
+    // ---- write outbuf[0..len) to stdout ----
+    adrp x1, outbuf
+    add x1, x1, :lo12:outbuf
+    sub x2, x21, x1                // x2 = total output length
+    mov x19, x1                    // x19 = write cursor
+    mov x20, x2                    // x20 = bytes remaining
+write_loop:
+    cmp x20, #0
+    b.eq write_done
+    mov x8, #64                    // syscall write
+    mov x0, #1                     // fd = 1 (stdout)
+    mov x1, x19
+    mov x2, x20
+    svc #0
+    cmp x0, #0
+    b.le write_done
+    add x19, x19, x0
+    sub x20, x20, x0
+    b write_loop
+write_done:
+    mov x8, #93                    // syscall exit
+    mov x0, #0                     // status = 0
+    svc #0
+
+// emit: append b64tab[w14] to the output, inserting a newline after every
+// LINELEN characters. Clobbers w14 (value-preserving), w15.
+emit:
+    uxtw x14, w14
+    ldrb w15, [x24, x14]
+    strb w15, [x21], #1
+    add x22, x22, #1
+    cmp x22, #LINELEN
+    b.ne 1f
+    mov w15, #0x0A
+    strb w15, [x21], #1
+    mov x22, #0
+1:
+    ret
+```

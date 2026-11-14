@@ -1,0 +1,507 @@
+.equ BUFSZ, 65536
+.equ STATUS_OK, 0
+.equ STATUS_ERR, 1
+.equ STATUS_INCOMPLETE, 2
+.equ OK_LEN, 3
+.equ ERR_PREFIX_LEN, 9
+
+.text
+.balign 4
+.globl _start
+_start:
+    adrp x21, buf
+    add x21, x21, :lo12:buf
+    mov x23, #BUFSZ
+    mov x19, #0
+read_loop:
+    cmp x19, x23
+    b.hs read_done
+    mov x0, #0
+    mov x1, x21
+    add x1, x1, x19
+    mov x2, x23
+    sub x2, x2, x19
+    mov x8, #63
+    svc #0
+    cmp x0, #0
+    b.eq read_done
+    add x19, x19, x0
+    b read_loop
+read_done:
+    mov x20, x19
+    mov x19, #0
+    mov x22, #0
+    bl parse_document
+    cmp w0, #STATUS_OK
+    b.eq print_ok
+    mov x0, #1
+    adrp x1, err_prefix
+    add x1, x1, :lo12:err_prefix
+    mov x2, #ERR_PREFIX_LEN
+    mov x8, #64
+    svc #0
+    sub sp, sp, #16
+    add x5, sp, #16
+    mov x1, x5
+    mov x0, x22
+    mov x2, #10
+conv_loop:
+    udiv x3, x0, x2
+    msub x4, x3, x2, x0
+    add w4, w4, #0x30
+    sub x1, x1, #1
+    strb w4, [x1]
+    mov x0, x3
+    cmp x0, #0
+    b.ne conv_loop
+    sub x2, x5, x1
+    mov x0, #1
+    mov x8, #64
+    svc #0
+    mov x0, #1
+    adrp x1, nl
+    add x1, x1, :lo12:nl
+    mov x2, #1
+    mov x8, #64
+    svc #0
+    add sp, sp, #16
+    mov x0, #1
+    mov x8, #93
+    svc #0
+print_ok:
+    mov x0, #1
+    adrp x1, ok_msg
+    add x1, x1, :lo12:ok_msg
+    mov x2, #OK_LEN
+    mov x8, #64
+    svc #0
+    mov x0, #0
+    mov x8, #93
+    svc #0
+
+parse_document:
+    str x30, [sp, #-16]!
+    bl skip_ws
+    bl parse_value
+    cmp w0, #STATUS_OK
+    b.ne pd_status
+    bl skip_ws
+    cmp x19, x20
+    b.eq pd_ok
+    mov x22, x19
+    mov w0, #STATUS_ERR
+    b pd_done
+pd_ok:
+    mov w0, #STATUS_OK
+    b pd_done
+pd_status:
+    cmp w0, #STATUS_INCOMPLETE
+    b.ne pd_done
+    mov x22, x20
+pd_done:
+    ldr x30, [sp], #16
+    ret
+
+skip_ws:
+sw_loop:
+    cmp x19, x20
+    b.hs sw_done
+    ldrb w0, [x21, x19]
+    cmp w0, #0x20
+    b.eq sw_next
+    cmp w0, #0x09
+    b.eq sw_next
+    cmp w0, #0x0A
+    b.eq sw_next
+    cmp w0, #0x0D
+    b.ne sw_done
+sw_next:
+    add x19, x19, #1
+    b sw_loop
+sw_done:
+    ret
+
+parse_value:
+    str x30, [sp, #-16]!
+    cmp x19, x20
+    b.hs pv_incomplete
+    ldrb w0, [x21, x19]
+    cmp w0, #0x7B
+    b.eq pv_object
+    cmp w0, #0x5B
+    b.eq pv_array
+    cmp w0, #0x22
+    b.eq pv_string
+    cmp w0, #0x74
+    b.eq pv_true
+    cmp w0, #0x66
+    b.eq pv_false
+    cmp w0, #0x6E
+    b.eq pv_null
+    cmp w0, #0x2D
+    b.eq pv_number
+    sub w1, w0, #0x30
+    cmp w1, #9
+    b.hi pv_invalid
+    b pv_number
+pv_object:
+    bl parse_object
+    b pv_done
+pv_array:
+    bl parse_array
+    b pv_done
+pv_string:
+    bl parse_string
+    b pv_done
+pv_true:
+    adrp x0, true_str
+    add x0, x0, :lo12:true_str
+    mov x1, #4
+    bl parse_literal
+    b pv_done
+pv_false:
+    adrp x0, false_str
+    add x0, x0, :lo12:false_str
+    mov x1, #5
+    bl parse_literal
+    b pv_done
+pv_null:
+    adrp x0, null_str
+    add x0, x0, :lo12:null_str
+    mov x1, #4
+    bl parse_literal
+    b pv_done
+pv_number:
+    bl parse_number
+    b pv_done
+pv_invalid:
+    mov x22, x19
+    mov w0, #STATUS_ERR
+    b pv_done
+pv_incomplete:
+    mov w0, #STATUS_INCOMPLETE
+pv_done:
+    ldr x30, [sp], #16
+    ret
+
+parse_literal:
+    str x30, [sp, #-16]!
+    mov x2, #0
+lit_loop:
+    cmp x2, x1
+    b.hs lit_ok
+    cmp x19, x20
+    b.hs lit_incomplete
+    ldrb w3, [x21, x19]
+    ldrb w4, [x0, x2]
+    cmp w3, w4
+    b.ne lit_invalid
+    add x19, x19, #1
+    add x2, x2, #1
+    b lit_loop
+lit_ok:
+    mov w0, #STATUS_OK
+    b lit_done
+lit_incomplete:
+    mov w0, #STATUS_INCOMPLETE
+    b lit_done
+lit_invalid:
+    mov x22, x19
+    mov w0, #STATUS_ERR
+lit_done:
+    ldr x30, [sp], #16
+    ret
+
+parse_string:
+    str x30, [sp, #-16]!
+    add x19, x19, #1
+ps_loop:
+    cmp x19, x20
+    b.hs ps_incomplete
+    ldrb w0, [x21, x19]
+    cmp w0, #0x22
+    b.eq ps_end
+    cmp w0, #0x5C
+    b.eq ps_esc
+    cmp w0, #0x20
+    b.lo ps_invalid
+    add x19, x19, #1
+    b ps_loop
+ps_end:
+    add x19, x19, #1
+    mov w0, #STATUS_OK
+    b ps_done
+ps_esc:
+    add x19, x19, #1
+    cmp x19, x20
+    b.hs ps_incomplete
+    ldrb w0, [x21, x19]
+    cmp w0, #0x22
+    b.eq ps_esc_ok
+    cmp w0, #0x5C
+    b.eq ps_esc_ok
+    cmp w0, #0x2F
+    b.eq ps_esc_ok
+    cmp w0, #0x62
+    b.eq ps_esc_ok
+    cmp w0, #0x66
+    b.eq ps_esc_ok
+    cmp w0, #0x6E
+    b.eq ps_esc_ok
+    cmp w0, #0x72
+    b.eq ps_esc_ok
+    cmp w0, #0x74
+    b.eq ps_esc_ok
+    cmp w0, #0x75
+    b.ne ps_invalid
+    add x19, x19, #1
+    mov x2, #4
+ps_hex:
+    cmp x19, x20
+    b.hs ps_incomplete
+    ldrb w0, [x21, x19]
+    sub w1, w0, #0x30
+    cmp w1, #9
+    b.ls ps_hex_next
+    sub w1, w0, #0x61
+    cmp w1, #5
+    b.ls ps_hex_next
+    sub w1, w0, #0x41
+    cmp w1, #5
+    b.ls ps_hex_next
+    b ps_invalid
+ps_hex_next:
+    add x19, x19, #1
+    sub x2, x2, #1
+    cmp x2, #0
+    b.ne ps_hex
+    b ps_loop
+ps_esc_ok:
+    add x19, x19, #1
+    b ps_loop
+ps_incomplete:
+    mov w0, #STATUS_INCOMPLETE
+    b ps_done
+ps_invalid:
+    mov x22, x19
+    mov w0, #STATUS_ERR
+ps_done:
+    ldr x30, [sp], #16
+    ret
+
+parse_number:
+    str x30, [sp, #-16]!
+    cmp x19, x20
+    b.hs pn_incomplete
+    ldrb w0, [x21, x19]
+    cmp w0, #0x2D
+    b.ne pn_int
+    add x19, x19, #1
+    cmp x19, x20
+    b.hs pn_incomplete
+pn_int:
+    ldrb w0, [x21, x19]
+    cmp w0, #0x30
+    b.eq pn_zero
+    sub w1, w0, #0x30
+    cmp w1, #9
+    b.hi pn_invalid
+    add x19, x19, #1
+pn_digits:
+    cmp x19, x20
+    b.hs pn_frac
+    ldrb w0, [x21, x19]
+    sub w1, w0, #0x30
+    cmp w1, #9
+    b.hi pn_frac
+    add x19, x19, #1
+    b pn_digits
+pn_zero:
+    add x19, x19, #1
+    b pn_frac
+pn_frac:
+    cmp x19, x20
+    b.hs pn_ok
+    ldrb w0, [x21, x19]
+    cmp w0, #0x2E
+    b.ne pn_exp
+    add x19, x19, #1
+    cmp x19, x20
+    b.hs pn_incomplete
+    ldrb w0, [x21, x19]
+    sub w1, w0, #0x30
+    cmp w1, #9
+    b.hi pn_invalid
+    add x19, x19, #1
+pn_frac_digits:
+    cmp x19, x20
+    b.hs pn_exp
+    ldrb w0, [x21, x19]
+    sub w1, w0, #0x30
+    cmp w1, #9
+    b.hi pn_exp
+    add x19, x19, #1
+    b pn_frac_digits
+pn_exp:
+    cmp x19, x20
+    b.hs pn_ok
+    ldrb w0, [x21, x19]
+    cmp w0, #0x65
+    b.eq pn_exp_start
+    cmp w0, #0x45
+    b.ne pn_ok
+pn_exp_start:
+    add x19, x19, #1
+    cmp x19, x20
+    b.hs pn_incomplete
+    ldrb w0, [x21, x19]
+    cmp w0, #0x2B
+    b.eq pn_exp_sign
+    cmp w0, #0x2D
+    b.eq pn_exp_sign
+    b pn_exp_digit
+pn_exp_sign:
+    add x19, x19, #1
+    cmp x19, x20
+    b.hs pn_incomplete
+pn_exp_digit:
+    ldrb w0, [x21, x19]
+    sub w1, w0, #0x30
+    cmp w1, #9
+    b.hi pn_invalid
+    add x19, x19, #1
+pn_exp_digits:
+    cmp x19, x20
+    b.hs pn_ok
+    ldrb w0, [x21, x19]
+    sub w1, w0, #0x30
+    cmp w1, #9
+    b.hi pn_ok
+    add x19, x19, #1
+    b pn_exp_digits
+pn_ok:
+    mov w0, #STATUS_OK
+    b pn_done
+pn_incomplete:
+    mov w0, #STATUS_INCOMPLETE
+    b pn_done
+pn_invalid:
+    mov x22, x19
+    mov w0, #STATUS_ERR
+pn_done:
+    ldr x30, [sp], #16
+    ret
+
+parse_object:
+    str x30, [sp, #-16]!
+    add x19, x19, #1
+    bl skip_ws
+    cmp x19, x20
+    b.hs po_incomplete
+    ldrb w0, [x21, x19]
+    cmp w0, #0x7D
+    b.eq po_end
+po_loop:
+    cmp x19, x20
+    b.hs po_incomplete
+    ldrb w0, [x21, x19]
+    cmp w0, #0x22
+    b.ne po_invalid
+    bl parse_string
+    cmp w0, #STATUS_OK
+    b.ne po_propagate
+    bl skip_ws
+    cmp x19, x20
+    b.hs po_incomplete
+    ldrb w0, [x21, x19]
+    cmp w0, #0x3A
+    b.ne po_invalid
+    add x19, x19, #1
+    bl skip_ws
+    bl parse_value
+    cmp w0, #STATUS_OK
+    b.ne po_propagate
+    bl skip_ws
+    cmp x19, x20
+    b.hs po_incomplete
+    ldrb w0, [x21, x19]
+    cmp w0, #0x2C
+    b.eq po_comma
+    cmp w0, #0x7D
+    b.eq po_end
+    b po_invalid
+po_comma:
+    add x19, x19, #1
+    bl skip_ws
+    b po_loop
+po_end:
+    add x19, x19, #1
+    mov w0, #STATUS_OK
+    b po_done
+po_propagate:
+    b po_done
+po_incomplete:
+    mov w0, #STATUS_INCOMPLETE
+    b po_done
+po_invalid:
+    mov x22, x19
+    mov w0, #STATUS_ERR
+po_done:
+    ldr x30, [sp], #16
+    ret
+
+parse_array:
+    str x30, [sp, #-16]!
+    add x19, x19, #1
+    bl skip_ws
+    cmp x19, x20
+    b.hs pa_incomplete
+    ldrb w0, [x21, x19]
+    cmp w0, #0x5D
+    b.eq pa_end
+pa_loop:
+    bl parse_value
+    cmp w0, #STATUS_OK
+    b.ne pa_propagate
+    bl skip_ws
+    cmp x19, x20
+    b.hs pa_incomplete
+    ldrb w0, [x21, x19]
+    cmp w0, #0x2C
+    b.eq pa_comma
+    cmp w0, #0x5D
+    b.eq pa_end
+    b pa_invalid
+pa_comma:
+    add x19, x19, #1
+    bl skip_ws
+    b pa_loop
+pa_end:
+    add x19, x19, #1
+    mov w0, #STATUS_OK
+    b pa_done
+pa_propagate:
+    b pa_done
+pa_incomplete:
+    mov w0, #STATUS_INCOMPLETE
+    b pa_done
+pa_invalid:
+    mov x22, x19
+    mov w0, #STATUS_ERR
+pa_done:
+    ldr x30, [sp], #16
+    ret
+
+.section .rodata
+ok_msg: .ascii "ok"
+        .byte 0x0A
+err_prefix: .ascii "error at"
+            .byte 0x20
+nl: .byte 0x0A
+true_str: .ascii "true"
+false_str: .ascii "false"
+null_str: .ascii "null"
+
+.bss
+.balign 8
+buf: .zero BUFSZ

@@ -1,0 +1,453 @@
+.equ BUF_SIZE, 65536
+
+    .globl _start
+
+    .text
+_start:
+    adrp x21, buf
+    add  x21, x21, :lo12:buf
+    mov  x19, #0
+read_loop:
+    mov  x20, #BUF_SIZE
+    sub  x2, x20, x19
+    cbz  x2, read_done
+    mov  x0, #0
+    add  x1, x21, x19
+    mov  x8, #63
+    svc  #0
+    cmp  x0, #0
+    b.le read_done
+    add  x19, x19, x0
+    b    read_loop
+read_done:
+    mov  x20, x19
+    mov  x19, #0
+    bl   parse_document
+    cbz  x0, ok_case
+    sub  x19, x0, #1
+    adrp x1, err_prefix
+    add  x1, x1, :lo12:err_prefix
+    mov  x0, #1
+    mov  x2, #9
+    mov  x8, #64
+    svc  #0
+    adrp x21, numbuf
+    add  x21, x21, :lo12:numbuf
+    add  x26, x21, #5
+    mov  x27, x19
+digit_loop:
+    mov  x29, #10
+    udiv x28, x27, x29
+    msub x24, x28, x29, x27
+    sub  x26, x26, #1
+    add  w24, w24, #0x30
+    strb w24, [x26]
+    mov  x27, x28
+    cbnz x27, digit_loop
+    mov  x1, x26
+    add  x2, x21, #5
+    sub  x2, x2, x26
+    mov  x0, #1
+    mov  x8, #64
+    svc  #0
+    adrp x1, nl_str
+    add  x1, x1, :lo12:nl_str
+    mov  x0, #1
+    mov  x2, #1
+    mov  x8, #64
+    svc  #0
+    mov  x0, #1
+    mov  x8, #93
+    svc  #0
+ok_case:
+    adrp x1, ok_msg
+    add  x1, x1, :lo12:ok_msg
+    mov  x0, #1
+    mov  x2, #3
+    mov  x8, #64
+    svc  #0
+    mov  x0, #0
+    mov  x8, #93
+    svc  #0
+
+// parse_document: x19 = pos, x20 = len, x21 = buf
+// returns x0 = 0 ok, else error offset + 1
+parse_document:
+    str x30, [sp, #-16]!
+    bl   skip_ws
+    bl   parse_value
+    cbnz x0, pd_ret
+    bl   skip_ws
+    cmp  x19, x20
+    b.eq pd_ok
+    add  x0, x19, #1
+    b    pd_ret
+pd_ok:
+    mov  x0, #0
+pd_ret:
+    ldr  x30, [sp], #16
+    ret
+
+// skip_ws: advance x19 over ws bytes
+skip_ws:
+sw_loop:
+    cmp  x19, x20
+    b.hs sw_done
+    ldrb w22, [x21, x19]
+    cmp  w22, #0x20
+    b.eq sw_adv
+    cmp  w22, #0x09
+    b.eq sw_adv
+    cmp  w22, #0x0A
+    b.eq sw_adv
+    cmp  w22, #0x0D
+    b.eq sw_adv
+    b    sw_done
+sw_adv:
+    add  x19, x19, #1
+    b    sw_loop
+sw_done:
+    ret
+
+// parse_value: dispatch on byte at x19
+parse_value:
+    str x30, [sp, #-16]!
+    cmp  x19, x20
+    b.hs pv_err
+    ldrb w22, [x21, x19]
+    cmp  w22, #0x7B
+    b.eq pv_obj
+    cmp  w22, #0x5B
+    b.eq pv_arr
+    cmp  w22, #0x22
+    b.eq pv_str
+    cmp  w22, #0x74
+    b.eq pv_true
+    cmp  w22, #0x66
+    b.eq pv_false
+    cmp  w22, #0x6E
+    b.eq pv_null
+    cmp  w22, #0x2D
+    b.eq pv_num
+    sub  w23, w22, #0x30
+    cmp  w23, #9
+    b.ls pv_num
+pv_err:
+    add  x0, x19, #1
+    b    pv_ret
+pv_obj:
+    add  x19, x19, #1
+    bl   parse_object
+    b    pv_ret
+pv_arr:
+    add  x19, x19, #1
+    bl   parse_array
+    b    pv_ret
+pv_str:
+    add  x19, x19, #1
+    bl   parse_string
+    b    pv_ret
+pv_true:
+    adrp x9, lit_true
+    add  x9, x9, :lo12:lit_true
+    mov  x10, #4
+    bl   match_chars
+    b    pv_ret
+pv_false:
+    adrp x9, lit_false
+    add  x9, x9, :lo12:lit_false
+    mov  x10, #5
+    bl   match_chars
+    b    pv_ret
+pv_null:
+    adrp x9, lit_null
+    add  x9, x9, :lo12:lit_null
+    mov  x10, #4
+    bl   match_chars
+    b    pv_ret
+pv_num:
+    bl   parse_number
+    b    pv_ret
+pv_ret:
+    ldr  x30, [sp], #16
+    ret
+
+// match_chars: x9 = expected bytes, x10 = count, x19 = pos
+match_chars:
+mc_loop:
+    subs x10, x10, #1
+    b.mi mc_ok
+    cmp  x19, x20
+    b.hs mc_err
+    ldrb w11, [x21, x19]
+    ldrb w12, [x9], #1
+    cmp  w11, w12
+    b.ne mc_err
+    add  x19, x19, #1
+    b    mc_loop
+mc_ok:
+    mov  x0, #0
+    ret
+mc_err:
+    add  x0, x19, #1
+    ret
+
+// parse_string: x19 = pos just after opening quote
+parse_string:
+ps_loop:
+    cmp  x19, x20
+    b.hs ps_err
+    ldrb w22, [x21, x19]
+    cmp  w22, #0x22
+    b.eq ps_end
+    cmp  w22, #0x5C
+    b.eq ps_esc
+    cmp  w22, #0x20
+    b.lo ps_err
+    add  x19, x19, #1
+    b    ps_loop
+ps_esc:
+    add  x19, x19, #1
+    cmp  x19, x20
+    b.hs ps_err
+    ldrb w22, [x21, x19]
+    cmp  w22, #0x22
+    b.eq ps_esc_ok
+    cmp  w22, #0x5C
+    b.eq ps_esc_ok
+    cmp  w22, #0x2F
+    b.eq ps_esc_ok
+    cmp  w22, #0x62
+    b.eq ps_esc_ok
+    cmp  w22, #0x66
+    b.eq ps_esc_ok
+    cmp  w22, #0x6E
+    b.eq ps_esc_ok
+    cmp  w22, #0x72
+    b.eq ps_esc_ok
+    cmp  w22, #0x74
+    b.eq ps_esc_ok
+    cmp  w22, #0x75
+    b.eq ps_u
+    b    ps_err
+ps_esc_ok:
+    add  x19, x19, #1
+    b    ps_loop
+ps_u:
+    add  x19, x19, #1
+    mov  x23, #4
+ps_hex:
+    cmp  x19, x20
+    b.hs ps_err
+    ldrb w22, [x21, x19]
+    sub  w24, w22, #0x30
+    cmp  w24, #9
+    b.ls ps_hex_ok
+    sub  w24, w22, #0x61
+    cmp  w24, #5
+    b.ls ps_hex_ok
+    sub  w24, w22, #0x41
+    cmp  w24, #5
+    b.ls ps_hex_ok
+    b    ps_err
+ps_hex_ok:
+    add  x19, x19, #1
+    subs x23, x23, #1
+    b.ne ps_hex
+    b    ps_loop
+ps_end:
+    add  x19, x19, #1
+    mov  x0, #0
+    ret
+ps_err:
+    add  x0, x19, #1
+    ret
+
+// parse_number: x19 = pos at '-' or digit
+parse_number:
+    ldrb w22, [x21, x19]
+    cmp  w22, #0x2D
+    b.ne pn_int
+    add  x19, x19, #1
+pn_int:
+    cmp  x19, x20
+    b.hs pn_err
+    ldrb w22, [x21, x19]
+    cmp  w22, #0x30
+    b.eq pn_zero
+    sub  w23, w22, #0x31
+    cmp  w23, #8
+    b.hi pn_err
+    add  x19, x19, #1
+pn_digits:
+    cmp  x19, x20
+    b.hs pn_frac
+    ldrb w22, [x21, x19]
+    sub  w23, w22, #0x30
+    cmp  w23, #9
+    b.hi pn_frac
+    add  x19, x19, #1
+    b    pn_digits
+pn_zero:
+    add  x19, x19, #1
+pn_frac:
+    cmp  x19, x20
+    b.hs pn_exp
+    ldrb w22, [x21, x19]
+    cmp  w22, #0x2E
+    b.ne pn_exp
+    add  x19, x19, #1
+    cmp  x19, x20
+    b.hs pn_err
+    ldrb w22, [x21, x19]
+    sub  w23, w22, #0x30
+    cmp  w23, #9
+    b.hi pn_err
+pn_frac_digits:
+    add  x19, x19, #1
+    cmp  x19, x20
+    b.hs pn_exp
+    ldrb w22, [x21, x19]
+    sub  w23, w22, #0x30
+    cmp  w23, #9
+    b.ls pn_frac_digits
+pn_exp:
+    cmp  x19, x20
+    b.hs pn_ok
+    ldrb w22, [x21, x19]
+    cmp  w22, #0x65
+    b.eq pn_exp_go
+    cmp  w22, #0x45
+    b.ne pn_ok
+pn_exp_go:
+    add  x19, x19, #1
+    cmp  x19, x20
+    b.hs pn_err
+    ldrb w22, [x21, x19]
+    cmp  w22, #0x2B
+    b.eq pn_sign
+    cmp  w22, #0x2D
+    b.eq pn_sign
+    b    pn_exp_digit
+pn_sign:
+    add  x19, x19, #1
+pn_exp_digit:
+    cmp  x19, x20
+    b.hs pn_err
+    ldrb w22, [x21, x19]
+    sub  w23, w22, #0x30
+    cmp  w23, #9
+    b.hi pn_err
+pn_exp_digits:
+    add  x19, x19, #1
+    cmp  x19, x20
+    b.hs pn_ok
+    ldrb w22, [x21, x19]
+    sub  w23, w22, #0x30
+    cmp  w23, #9
+    b.ls pn_exp_digits
+pn_ok:
+    mov  x0, #0
+    ret
+pn_err:
+    add  x0, x19, #1
+    ret
+
+// parse_object: x19 = pos just after '{'
+parse_object:
+    str x30, [sp, #-16]!
+    bl   skip_ws
+    cmp  x19, x20
+    b.hs po_err
+    ldrb w22, [x21, x19]
+    cmp  w22, #0x7D
+    b.eq po_close
+po_member:
+    cmp  x19, x20
+    b.hs po_err
+    ldrb w22, [x21, x19]
+    cmp  w22, #0x22
+    b.ne po_err
+    add  x19, x19, #1
+    bl   parse_string
+    cbnz x0, po_ret
+    bl   skip_ws
+    cmp  x19, x20
+    b.hs po_err
+    ldrb w22, [x21, x19]
+    cmp  w22, #0x3A
+    b.ne po_err
+    add  x19, x19, #1
+    bl   skip_ws
+    bl   parse_value
+    cbnz x0, po_ret
+    bl   skip_ws
+    cmp  x19, x20
+    b.hs po_err
+    ldrb w22, [x21, x19]
+    cmp  w22, #0x2C
+    b.eq po_comma
+    cmp  w22, #0x7D
+    b.eq po_close
+    b    po_err
+po_comma:
+    add  x19, x19, #1
+    bl   skip_ws
+    b    po_member
+po_close:
+    add  x19, x19, #1
+    mov  x0, #0
+    b    po_ret
+po_err:
+    add  x0, x19, #1
+po_ret:
+    ldr  x30, [sp], #16
+    ret
+
+// parse_array: x19 = pos just after '['
+parse_array:
+    str x30, [sp, #-16]!
+    bl   skip_ws
+    cmp  x19, x20
+    b.hs pa_err
+    ldrb w22, [x21, x19]
+    cmp  w22, #0x5D
+    b.eq pa_close
+pa_value:
+    bl   parse_value
+    cbnz x0, pa_ret
+    bl   skip_ws
+    cmp  x19, x20
+    b.hs pa_err
+    ldrb w22, [x21, x19]
+    cmp  w22, #0x2C
+    b.eq pa_comma
+    cmp  w22, #0x5D
+    b.eq pa_close
+    b    pa_err
+pa_comma:
+    add  x19, x19, #1
+    bl   skip_ws
+    b    pa_value
+pa_close:
+    add  x19, x19, #1
+    mov  x0, #0
+    b    pa_ret
+pa_err:
+    add  x0, x19, #1
+pa_ret:
+    ldr  x30, [sp], #16
+    ret
+
+    .section .rodata
+ok_msg:     .ascii "ok\n"
+err_prefix: .ascii "error at "
+nl_str:     .ascii "\n"
+lit_true:   .ascii "true"
+lit_false:  .ascii "false"
+lit_null:   .ascii "null"
+
+    .bss
+    .balign 8
+buf:    .zero BUF_SIZE
+numbuf: .zero 8

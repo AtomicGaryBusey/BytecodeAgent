@@ -1,0 +1,295 @@
+Write the complete program `hexdump`: a static Linux executable for AArch64 (ARMv8-A, little-endian), written in assembly. There is no C library, no C runtime and no helper code: you write the entry point `_start`, every function, every table and string, and make the system calls yourself.
+
+Entry state (as the Linux kernel sets it up): execution starts at the label `_start`. sp is 16-byte aligned and points at argc = 0, followed by the NULL terminators of an empty argv, an empty envp and an empty auxiliary vector: the program gets no arguments. Every other general-purpose register (x0-x30) is zero; x30 is not a return address, so `_start` must never return with `ret`; the program ends only through the exit system call.
+
+System calls: the `svc #0` instruction, with the system call number in x8 and the arguments in x0, x1, x2; the result comes back in x0. Every other register is preserved. Exactly these four are available:
+- read = 63: read(fd = 0, buf, count) reads up to count bytes of standard input into buf; returns the number of bytes read, 0 at end of input.
+- write = 64: write(fd, buf, count) with fd 1 (standard output) or 2 (standard error); returns count.
+- exit = 93: exit(status) ends the program; the exit status is the low 8 bits of status.
+- exit_group = 94: the same as exit.
+Any other system call number or file descriptor stops the program with an error, and so does a buffer that is not entirely inside the program's memory.
+
+Memory: the program's own sections plus a stack of 1 MiB below the entry sp. There is no heap (no brk, no mmap, no malloc): put working storage in `.bss` (zero-initialised), at most 1 MiB in total, or on the stack. Code is not writable. Any access outside these areas stops the program. Each test run may execute at most 50,000,000 instructions.
+
+Output format: one complete assembly source file in GNU assembler (GNU as) syntax for AArch64. Examples: `ldr x2, [x0, x1, lsl #3]`, `ldrb w3, [x1], #1`, `stp x29, x30, [sp, #-16]!`. Comments start with `//`; do not use `;`.
+Allowed in the file:
+- Sections: `.text` (code), `.section .rodata` (read-only data), `.data` (initialised writable data), `.bss` (zero-initialised space: only `.zero`/`.space` and alignment). Instructions go in `.text` only.
+- Data directives: `.byte`, `.short`/`.2byte`, `.word` (4 bytes on this target), `.long`/`.int`/`.4byte`, `.quad`/`.8byte`, `.ascii`, `.asciz`/`.string`, `.zero`/`.space`, alignment with `.align`/`.balign`/`.p2align`, and `.globl`/`.global` (write `.globl _start`).
+- Labels `name:` in any section, and GNU local labels `1:` referenced as `1f` (next) / `1b` (previous).
+- Constants: `.equ name, value` (or `.set name, value`, or `name = value`), where value is a number or a difference of labels defined earlier in the same section (e.g. `msg_len = . - msg`). Define every constant before its first use.
+- Addressing data: `adrp x0, label` followed by `add x0, x0, :lo12:label` (or a load/store `ldr x1, [x0, :lo12:label]`); `adr x0, label` also works within +-1 MiB. Literal pools are NOT allowed: no `ldr x0, =label` and no `ldr x0, =constant` (build constants with mov/movz/movk).
+Not allowed: macros (`.macro`, `.rept`, `.irp`), conditional assembly (`.if`), `.include`, `.incbin`, `.fill`, `.org`, `.comm`/`.lcomm`, `.inst`, `.cfi_*` directives, section stacks (`.pushsection`) and any other section. No libc and no other library: there is nothing to link against, so every symbol you use must be defined in your file.
+Instruction set: ARMv8.0-A with floating point and Advanced SIMD (NEON). Not supported (rejected): CRC32, LSE atomics, dot product, half-precision, crypto (AES/SHA/PMULL) and SVE.
+Output ONLY the assembly source: no Markdown fences, no prose before or after it.
+
+Specification: Task `hexdump`: print a canonical hex+ASCII dump of standard input (like `hexdump -C`, but with NO squeezing of
+repeated lines and with the final offset line always printed).
+
+The input is shown in rows of 16 bytes; the last row may be shorter (1 to 15 bytes). For a row of n bytes that
+starts at byte offset `off`, print exactly:
+1. `off` as 8 lowercase hexadecimal digits (zero-padded), then two spaces;
+2. for each position i = 0..15: if i < n, the byte as 2 lowercase hex digits followed by one space; otherwise
+   three spaces. After position 7 (the eighth byte slot) print one extra space;
+3. one space, `|`, then the n bytes as characters: a byte 0x20-0x7E is printed as itself, every other byte
+   (0x00-0x1F and 0x7F-0xFF) is printed as `.`; then `|` and a newline. The character column is NOT padded for
+   a short row.
+
+After all rows, print the total input length as 8 lowercase hex digits and a newline. Empty input therefore
+prints only `00000000\n`. Identical rows are printed in full (never replaced by `*`).
+
+Example: input `0123456789abcdefXYZ\n` (20 bytes) prints
+`00000000  30 31 32 33 34 35 36 37  38 39 61 62 63 64 65 66  |0123456789abcdef|\n`
+`00000010  58 59 5a 0a                                       |XYZ.|\n`
+`00000014\n`
+(each full row is exactly 78 characters plus the newline).
+
+Limits: the input is at most 65536 bytes. Exit status 0.
+
+Input and output (applies to this whole task):
+- The input is the complete contents of standard input (file descriptor 0). Read it with `read` until `read`
+  returns 0 (end of input). A `read` may return FEWER bytes than requested, at any position (in the middle of a
+  line, a token or a group of bytes), so keep calling it; only a return value of 0 means end of input.
+- Write the output to standard output (file descriptor 1). Only the bytes this task describes may appear on
+  standard output (standard error is ignored). Every output byte must be written before the program exits.
+- Finish with `exit` (or `exit_group`) and the exit status this task gives. The program must not run off the end
+  of its code or crash.
+
+Your previous attempt was:
+<previous>
+.text
+.global _start
+_start:
+  adrp x0, input_buf
+  add x0, x0, :lo12:input_buf
+  mov x2, x0
+  mov x1, #0
+read_loop:
+  mov x0, #0
+  mov x3, x2
+  movz x4, #1, lsl #16
+  sub x4, x4, x1
+  mov x8, #63
+  svc #0
+  cmp x0, #0
+  b.le read_done
+  add x1, x1, x0
+  add x2, x2, x0
+  cmp x1, #65536
+  b.lt read_loop
+read_done:
+  mov x3, #0
+  adrp x4, input_buf
+  add x4, x4, :lo12:input_buf
+line_loop:
+  cmp x3, x1
+  b.ge lines_done
+  mov x5, x1
+  sub x5, x5, x3
+  cmp x5, #16
+  b.lt n_less
+  mov x5, #16
+n_less:
+  adrp x10, line_buf
+  add x10, x10, :lo12:line_buf
+  mov x6, x10
+  adrp x8, hex_digits
+  add x8, x8, :lo12:hex_digits
+  lsr w7, w3, #28
+  and w7, w7, #0xf
+  ldrb w7, [x8, x7]
+  strb w7, [x6], #1
+  lsr w7, w3, #24
+  and w7, w7, #0xf
+  ldrb w7, [x8, x7]
+  strb w7, [x6], #1
+  lsr w7, w3, #20
+  and w7, w7, #0xf
+  ldrb w7, [x8, x7]
+  strb w7, [x6], #1
+  lsr w7, w3, #16
+  and w7, w7, #0xf
+  ldrb w7, [x8, x7]
+  strb w7, [x6], #1
+  lsr w7, w3, #12
+  and w7, w7, #0xf
+  ldrb w7, [x8, x7]
+  strb w7, [x6], #1
+  lsr w7, w3, #8
+  and w7, w7, #0xf
+  ldrb w7, [x8, x7]
+  strb w7, [x6], #1
+  lsr w7, w3, #4
+  and w7, w7, #0xf
+  ldrb w7, [x8, x7]
+  strb w7, [x6], #1
+  and w7, w3, #0xf
+  ldrb w7, [x8, x7]
+  strb w7, [x6], #1
+  mov w7, #0x20
+  strb w7, [x6], #1
+  strb w7, [x6], #1
+  mov x7, #0
+hex_loop1:
+  cmp x7, x5
+  b.ge hex_skip1
+  add x9, x4, x3
+  ldrb w10, [x9, x7]
+  lsr w11, w10, #4
+  and w11, w11, #0xf
+  ldrb w11, [x8, x11]
+  strb w11, [x6], #1
+  and w11, w10, #0xf
+  ldrb w11, [x8, x11]
+  strb w11, [x6], #1
+  mov w11, #0x20
+  strb w11, [x6], #1
+  b hex_next1
+hex_skip1:
+  mov w11, #0x20
+  strb w11, [x6], #1
+  strb w11, [x6], #1
+  strb w11, [x6], #1
+hex_next1:
+  add x7, x7, #1
+  cmp x7, #8
+  b.lt hex_loop1
+  mov w11, #0x20
+  strb w11, [x6], #1
+  mov x7, #8
+hex_loop2:
+  cmp x7, x5
+  b.ge hex_skip2
+  add x9, x4, x3
+  ldrb w10, [x9, x7]
+  lsr w11, w10, #4
+  and w11, w11, #0xf
+  ldrb w11, [x8, x11]
+  strb w11, [x6], #1
+  and w11, w10, #0xf
+  ldrb w11, [x8, x11]
+  strb w11, [x6], #1
+  mov w11, #0x20
+  strb w11, [x6], #1
+  b hex_next2
+hex_skip2:
+  mov w11, #0x20
+  strb w11, [x6], #1
+  strb w11, [x6], #1
+  strb w11, [x6], #1
+hex_next2:
+  add x7, x7, #1
+  cmp x7, #16
+  b.lt hex_loop2
+  mov w11, #0x20
+  strb w11, [x6], #1
+  mov w11, #0x7c
+  strb w11, [x6], #1
+  adrp x8, ascii_map
+  add x8, x8, :lo12:ascii_map
+  mov x7, #0
+ascii_loop:
+  cmp x7, x5
+  b.ge ascii_done
+  add x9, x4, x3
+  ldrb w10, [x9, x7]
+  ldrb w10, [x8, x10]
+  strb w10, [x6], #1
+  add x7, x7, #1
+  b ascii_loop
+ascii_done:
+  mov w11, #0x7c
+  strb w11, [x6], #1
+  mov w11, #0x0a
+  strb w11, [x6], #1
+  sub x11, x6, x10
+  mov x0, #1
+  mov x1, x10
+  mov x2, x11
+  mov x8, #64
+  svc #0
+  add x3, x3, #16
+  b line_loop
+lines_done:
+  adrp x10, line_buf
+  add x10, x10, :lo12:line_buf
+  mov x6, x10
+  adrp x8, hex_digits
+  add x8, x8, :lo12:hex_digits
+  lsr w7, w1, #28
+  and w7, w7, #0xf
+  ldrb w7, [x8, x7]
+  strb w7, [x6], #1
+  lsr w7, w1, #24
+  and w7, w7, #0xf
+  ldrb w7, [x8, x7]
+  strb w7, [x6], #1
+  lsr w7, w1, #20
+  and w7, w7, #0xf
+  ldrb w7, [x8, x7]
+  strb w7, [x6], #1
+  lsr w7, w1, #16
+  and w7, w7, #0xf
+  ldrb w7, [x8, x7]
+  strb w7, [x6], #1
+  lsr w7, w1, #12
+  and w7, w7, #0xf
+  ldrb w7, [x8, x7]
+  strb w7, [x6], #1
+  lsr w7, w1, #8
+  and w7, w7, #0xf
+  ldrb w7, [x8, x7]
+  strb w7, [x6], #1
+  lsr w7, w1, #4
+  and w7, w7, #0xf
+  ldrb w7, [x8, x7]
+  strb w7, [x6], #1
+  and w7, w1, #0xf
+  ldrb w7, [x8, x7]
+  strb w7, [x6], #1
+  mov w7, #0x0a
+  strb w7, [x6], #1
+  sub x11, x6, x10
+  mov x0, #1
+  mov x1, x10
+  mov x2, x11
+  mov x8, #64
+  svc #0
+  mov x0, #0
+  mov x8, #93
+  svc #0
+
+.section .rodata
+hex_digits: .ascii "0123456789abcdef"
+ascii_map:
+  .byte 46,46,46,46,46,46,46,46,46,46,46,46,46,46,46,46
+  .byte 46,46,46,46,46,46,46,46,46,46,46,46,46,46,46,46
+  .byte 32,33,34,35,36,37,38,39,40,41,42,43,44,45,46,47
+  .byte 48,49,50,51,52,53,54,55,56,57,58,59,60,61,62,63
+  .byte 64,65,66,67,68,69,70,71,72,73,74,75,76,77,78,79
+  .byte 80,81,82,83,84,85,86,87,88,89,90,91,92,93,94,95
+  .byte 96,97,98,99,100,101,102,103,104,105,106,107,108,109,110,111
+  .byte 112,113,114,115,116,117,118,119,120,121,122,123,124,125,126,46
+  .byte 46,46,46,46,46,46,46,46,46,46,46,46,46,46,46,46
+  .byte 46,46,46,46,46,46,46,46,46,46,46,46,46,46,46,46
+  .byte 46,46,46,46,46,46,46,46,46,46,46,46,46,46,46,46
+  .byte 46,46,46,46,46,46,46,46,46,46,46,46,46,46,46,46
+  .byte 46,46,46,46,46,46,46,46,46,46,46,46,46,46,46,46
+  .byte 46,46,46,46,46,46,46,46,46,46,46,46,46,46,46,46
+  .byte 46,46,46,46,46,46,46,46,46,46,46,46,46,46,46,46
+  .byte 46,46,46,46,46,46,46,46,46,46,46,46,46,46,46,46
+
+.bss
+input_buf: .space 65536
+line_buf: .space 80
+</previous>
+It failed:
+<failure>
+Test `one_byte` failed (stdin delivered whole; test run 2 of 42; the runs before it passed).
+stdin (1 bytes): "A"
+The program stopped with a fault (oob): read(0, 0x0, 4202496): address 0x0 is not mapped at pc 0x400024 [the faulting instruction is `svc #0` at 0x400024 (read_loop+0x14) (disassembly of the assembled program)]
+exit status: expected 0, got none (the program did not exit)
+stdout differs from byte 0 on (line 1, column 1 of the expected output); expected 73 bytes in total, got 0
+  expected from byte 0: "00000000  41                                                |A|\n00000001\n"
+  actual from byte 0:   (end of output)
+</failure>
+Write a corrected, complete version. Same output format; output only the code.

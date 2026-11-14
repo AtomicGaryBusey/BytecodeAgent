@@ -1,0 +1,225 @@
+```assembly
+.section .rodata
+alphabet:
+	.ascii "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/"
+
+.bss
+.p2align 2
+input_buf:	.space 4096
+partial_bytes:	.space 4
+partial_buf:	.space 4
+line_pos:	.space 4
+output_buf:	.space 4096
+output_pos:	.space 4
+
+.text
+.globl _start
+
+.equ SYS_READ, 63
+.equ SYS_WRITE, 64
+.equ SYS_EXIT, 93
+.equ STDIN, 0
+.equ STDOUT, 1
+.equ BUF_SIZE, 4096
+
+_start:
+	adrp x0, partial_bytes
+	add x0, x0, :lo12:partial_bytes
+	str wzr, [x0]
+
+	adrp x0, line_pos
+	add x0, x0, :lo12:line_pos
+	str wzr, [x0]
+
+	adrp x0, output_pos
+	add x0, x0, :lo12:output_pos
+	str wzr, [x0]
+
+	b read_loop
+
+output_char:
+	stp x29, x30, [sp, #-16]!
+	mov x29, sp
+
+	adrp x1, output_buf
+	add x1, x1, :lo12:output_buf
+	adrp x2, output_pos
+	add x2, x2, :lo12:output_pos
+	ldr w3, [x2]
+	strb w0, [x1, w3, uxtw]
+	add w3, w3, #1
+	str w3, [x2]
+	cmp w3, #BUF_SIZE
+	b.ne 1f
+	mov x0, #STDOUT
+	adrp x1, output_buf
+	add x1, x1, :lo12:output_buf
+	mov x2, #BUF_SIZE
+	mov x8, #SYS_WRITE
+	svc #0
+	str wzr, [x2]
+1:
+	ldp x29, x30, [sp], #16
+	ret
+
+output_encoded_char:
+	stp x29, x30, [sp, #-16]!
+	mov x29, sp
+
+	bl output_char
+
+	adrp x1, line_pos
+	add x1, x1, :lo12:line_pos
+	ldr w2, [x1]
+	add w2, w2, #1
+	str w2, [x1]
+
+	cmp w2, #76
+	b.ne 1f
+	mov w0, #0x0A
+	bl output_char
+	str wzr, [x1]
+1:
+	ldp x29, x30, [sp], #16
+	ret
+
+output_base64_char:
+	adrp x1, alphabet
+	add x1, x1, :lo12:alphabet
+	ldrb w0, [x1, w0, uxtw]
+	b output_encoded_char
+
+read_loop:
+	mov x0, #STDIN
+	adrp x1, input_buf
+	add x1, x1, :lo12:input_buf
+	mov x2, #BUF_SIZE
+	mov x8, #SYS_READ
+	svc #0
+	cbz x0, end_of_input
+
+	mov x3, x0
+	mov x4, #0
+
+process_byte:
+	cmp x4, x3
+	b.ge read_loop
+
+	adrp x5, input_buf
+	add x5, x5, :lo12:input_buf
+	ldrb w6, [x5, x4]
+
+	adrp x7, partial_bytes
+	add x7, x7, :lo12:partial_bytes
+	ldr w8, [x7]
+	adrp x9, partial_buf
+	add x9, x9, :lo12:partial_buf
+	strb w6, [x9, w8]
+	add w8, w8, #1
+	str w8, [x7]
+
+	cmp w8, #3
+	b.ne next_byte
+
+	ldrb w10, [x9]
+	ldrb w11, [x9, #1]
+	ldrb w12, [x9, #2]
+	str wzr, [x7]
+
+	lsr w0, w10, #2
+	bl output_base64_char
+
+	and w0, w10, #0x3
+	lsl w0, w0, #4
+	lsr w1, w11, #4
+	orr w0, w0, w1
+	bl output_base64_char
+
+	and w0, w11, #0xF
+	lsl w0, w0, #2
+	lsr w1, w12, #6
+	orr w0, w0, w1
+	bl output_base64_char
+
+	and w0, w12, #0x3F
+	bl output_base64_char
+
+next_byte:
+	add x4, x4, #1
+	b process_byte
+
+end_of_input:
+	adrp x7, partial_bytes
+	add x7, x7, :lo12:partial_bytes
+	ldr w8, [x7]
+	cmp w8, #0
+	b.eq check_final_newline
+
+	adrp x9, partial_buf
+	add x9, x9, :lo12:partial_buf
+	cmp w8, #1
+	b.eq encode_one
+
+	ldrb w10, [x9]
+	ldrb w11, [x9, #1]
+
+	lsr w0, w10, #2
+	bl output_base64_char
+
+	and w0, w10, #0x3
+	lsl w0, w0, #4
+	lsr w1, w11, #4
+	orr w0, w0, w1
+	bl output_base64_char
+
+	and w0, w11, #0xF
+	lsl w0, w0, #2
+	bl output_base64_char
+
+	mov w0, #0x3D
+	bl output_encoded_char
+
+	b check_final_newline
+
+encode_one:
+	ldrb w10, [x9]
+
+	lsr w0, w10, #2
+	bl output_base64_char
+
+	and w0, w10, #0x3
+	lsl w0, w0, #4
+	bl output_base64_char
+
+	mov w0, #0x3D
+	bl output_encoded_char
+	mov w0, #0x3D
+	bl output_encoded_char
+
+check_final_newline:
+	adrp x0, line_pos
+	add x0, x0, :lo12:line_pos
+	ldr w1, [x0]
+	cbz w1, flush_and_exit
+
+	mov w0, #0x0A
+	bl output_char
+
+flush_and_exit:
+	adrp x0, output_pos
+	add x0, x0, :lo12:output_pos
+	ldr w1, [x0]
+	cbz w1, exit
+
+	mov x0, #STDOUT
+	adrp x1, output_buf
+	add x1, x1, :lo12:output_buf
+	mov x2, w1
+	mov x8, #SYS_WRITE
+	svc #0
+
+exit:
+	mov x0, #0
+	mov x8, #SYS_EXIT
+	svc #0
+```

@@ -1,0 +1,352 @@
+```
+.bss
+.align 8
+input_buffer: .zero 65536
+.align 8
+stack_buffer: .zero 8 * 512
+.align 8
+output_buf: .zero 21
+error_flag: .byte 0
+
+.section .rodata
+error_msg: .ascii "error\n"
+.set error_len, . - error_msg
+min_int64_str: .ascii "-9223372036854775808"
+.set min_int64_len, . - min_int64_str
+
+.text
+.globl _start
+_start:
+ lea r8, [rip + input_buffer]
+ xor r9, r9
+read_loop:
+ mov rax, 0
+ mov rdi, 0
+ lea rsi, [r8 + r9]
+ mov rdx, 65536
+ sub rdx, r9
+ syscall
+ test rax, rax
+ jz read_done
+ add r9, rax
+ jmp read_loop
+read_done:
+ lea r9, [r8 + r9]
+
+ lea r12, [rip + stack_buffer]
+ mov r10, r8
+
+line_loop:
+ cmp r10, r9
+ jae input_done
+ mov r13, r10
+ mov r11, r10
+find_newline:
+ cmp r11, r9
+ jae no_newline
+ cmp byte ptr [r11], 0x0A
+ je newline_found
+ inc r11
+ jmp find_newline
+newline_found:
+ lea r10, [r11 + 1]
+ jmp process_line
+no_newline:
+ mov r11, r9
+ mov r10, r9
+process_line:
+ mov r14, r12
+ mov byte ptr [rip + error_flag], 0
+ mov r15, r13
+
+token_loop:
+ skip_sep:
+  cmp r15, r11
+  jae token_done
+  movzx rax, byte ptr [r15]
+  cmp al, ' '
+  je sep_found
+  cmp al, 0x09
+  je sep_found
+  jmp token_start_found
+ sep_found:
+  inc r15
+  jmp skip_sep
+ token_start_found:
+  mov r8, r15
+  token_end_loop:
+   cmp r15, r11
+   jae token_done
+   movzx rax, byte ptr [r15]
+   cmp al, ' '
+   je token_end_found
+   cmp al, 0x09
+   je token_end_found
+   inc r15
+   jmp token_end_loop
+  token_end_found:
+   mov r9, r15
+   mov rax, r9
+   sub rax, r8
+   cmp rax, 1
+   jg long_token
+   movzx rax, byte ptr [r8]
+   cmp al, '+'
+   je op_add
+   cmp al, '-'
+   je op_sub
+   cmp al, '*'
+   je op_mul
+   cmp al, '/'
+   je op_div
+   cmp al, '%'
+   je op_mod
+   cmp al, '0'
+   jb invalid_token
+   cmp al, '9'
+   ja invalid_token
+   jmp parse_literal
+ long_token:
+   cmp rax, 19
+   jg invalid_token
+   movzx rax, byte ptr [r8]
+   cmp al, '-'
+   jne not_neg_token
+   cmp rax, 19
+   jne check_digits
+   jmp check_digits
+ not_neg_token:
+   cmp rax, 18
+   jg invalid_token
+ check_digits:
+   movzx rax, byte ptr [r8]
+   cmp al, '-'
+   jne start_at_r8
+   mov r10, r8
+   inc r10
+   jmp check_digits_loop
+ start_at_r8:
+   mov r10, r8
+ check_digits_loop:
+   cmp r10, r9
+   jae valid_literal
+   movzx rax, byte ptr [r10]
+   cmp al, '0'
+   jb invalid_token
+   cmp al, '9'
+   ja invalid_token
+   inc r10
+   jmp check_digits_loop
+ valid_literal:
+   jmp parse_literal
+ invalid_token:
+   mov byte ptr [rip + error_flag], 1
+   jmp next_token
+
+ parse_literal:
+  mov rax, 0
+  mov r10, r8
+  cmp byte ptr [r10], '-'
+  jne positive_literal
+  inc r10
+  mov rbx, 1
+  jmp parse_digits
+ positive_literal:
+  mov rbx, 0
+ parse_digits:
+  cmp r10, r9
+  jae done_parse
+  movzx rcx, byte ptr [r10]
+  sub rcx, '0'
+  imul rax, 10
+  add rax, rcx
+  inc r10
+  jmp parse_digits
+ done_parse:
+  test rbx, rbx
+  jz push_value
+  neg rax
+ push_value:
+  mov [r14], rax
+  add r14, 8
+  jmp next_token
+
+ op_add:
+  lea rax, [r12 + 16]
+  cmp r14, rax
+  jb error_stack_underflow
+  sub r14, 8
+  mov rbx, [r14]
+  sub r14, 8
+  mov rax, [r14]
+  add rax, rbx
+  jmp push_result
+ op_sub:
+  lea rax, [r12 + 16]
+  cmp r14, rax
+  jb error_stack_underflow
+  sub r14, 8
+  mov rbx, [r14]
+  sub r14, 8
+  mov rax, [r14]
+  sub rax, rbx
+  jmp push_result
+ op_mul:
+  lea rax, [r12 + 16]
+  cmp r14, rax
+  jb error_stack_underflow
+  sub r14, 8
+  mov rbx, [r14]
+  sub r14, 8
+  mov rax, [r14]
+  imul rax, rbx
+  jmp push_result
+ op_div:
+  lea rax, [r12 + 16]
+  cmp r14, rax
+  jb error_stack_underflow
+  sub r14, 8
+  mov rbx, [r14]
+  sub r14, 8
+  mov rax, [r14]
+  cmp rbx, 0
+  je error_div_zero
+  mov rcx, 9223372036854775808
+  neg rcx
+  cmp rax, rcx
+  jne not_min_div
+  cmp rbx, -1
+  je error_div_overflow
+ not_min_div:
+  mov rcx, rbx
+  cqo
+  idiv rcx
+  jmp push_result
+ op_mod:
+  lea rax, [r12 + 16]
+  cmp r14, rax
+  jb error_stack_underflow
+  sub r14, 8
+  mov rbx, [r14]
+  sub r14, 8
+  mov rax, [r14]
+  cmp rbx, 0
+  je error_div_zero
+  mov rcx, 9223372036854775808
+  neg rcx
+  cmp rax, rcx
+  jne not_min_mod
+  cmp rbx, -1
+  je error_div_overflow
+ not_min_mod:
+  mov rcx, rbx
+  cqo
+  idiv rcx
+  mov rax, rdx
+  jmp push_result
+
+ push_result:
+  mov [r14], rax
+  add r14, 8
+ error_stack_underflow:
+ error_div_zero:
+ error_div_overflow:
+  mov byte ptr [rip + error_flag], 1
+
+ next_token:
+  cmp byte ptr [rip + error_flag], 0
+  jne token_done
+  jmp token_loop
+
+ token_done:
+  cmp byte ptr [rip + error_flag], 0
+  jne output_error
+  lea rax, [r12 + 8]
+  cmp r14, rax
+  jne output_error
+  sub r14, 8
+  mov rax, [r14]
+  jmp convert_and_output
+
+ output_error:
+  mov rax, 1
+  mov rdi, 1
+  lea rsi, [rip + error_msg]
+  mov rdx, error_len
+  syscall
+  jmp line_done
+
+ convert_and_output:
+  mov rcx, 9223372036854775808
+  neg rcx
+  cmp rax, rcx
+  jne not_min_output
+  lea rdi, [rip + output_buf]
+  lea rsi, [rip + min_int64_str]
+  mov rcx, min_int64_len
+  rep movsb
+  mov rsi, output_buf
+  mov rdx, min_int64_len
+  jmp write_number_str
+ not_min_output:
+  test rax, rax
+  js negative_output
+  jz zero_output
+  lea rdi, [rip + output_buf + 20]
+  mov byte ptr [rdi], 0
+  dec rdi
+  mov rbx, 10
+  xor r10, r10
+  jmp convert_loop_output
+ negative_output:
+  neg rax
+  mov r10, 1
+  lea rdi, [rip + output_buf + 20]
+  mov byte ptr [rdi], 0
+  dec rdi
+  jmp convert_loop_output
+ zero_output:
+  lea rdi, [rip + output_buf + 20]
+  mov byte ptr [rdi], 0
+  dec rdi
+  xor r10, r10
+  test rax, rax
+  jz write_zero
+  jmp convert_loop_output
+ write_zero:
+  mov byte ptr [rdi], '0'
+  dec rdi
+  jmp done_convert_output
+ convert_loop_output:
+  xor rdx, rdx
+  div rbx
+  add dl, '0'
+  mov [rdi], dl
+  dec rdi
+  test rax, rax
+  jnz convert_loop_output
+ done_convert_output:
+  test r10, r10
+  jz no_sign_output
+  mov byte ptr [rdi], '-'
+  dec rdi
+ no_sign_output:
+  lea rsi, [rdi + 1]
+  lea rdx, [rip + output_buf + 20]
+  sub rdx, rsi
+ write_number_str:
+  mov byte ptr [rsi + rdx], 0x0A
+  inc rdx
+  mov rax, 1
+  mov rdi, 1
+  syscall
+  jmp line_done
+
+ line_done:
+  jmp line_loop
+
+input_done:
+ mov rax, 60
+ xor rdi, rdi
+ syscall
+```

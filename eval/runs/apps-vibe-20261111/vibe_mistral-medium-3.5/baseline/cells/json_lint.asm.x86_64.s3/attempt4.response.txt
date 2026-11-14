@@ -1,0 +1,535 @@
+```asm
+.globl _start
+
+.section .rodata
+msg_ok: .ascii "ok\n"
+msg_ok_len = . - msg_ok
+msg_error_prefix: .ascii "error at "
+msg_error_prefix_len = . - msg_error_prefix
+msg_newline: .ascii "\n"
+
+.section .bss
+input_buffer: .space 65536
+
+.section .text
+
+is_ws:
+    cmp al, 32
+    je is_ws_yes
+    cmp al, 9
+    je is_ws_yes
+    cmp al, 10
+    je is_ws_yes
+    cmp al, 13
+    je is_ws_yes
+    xor rax, rax
+    ret
+is_ws_yes:
+    mov rax, 1
+    ret
+
+is_digit:
+    cmp al, '0'
+    jb is_digit_no
+    cmp al, '9'
+    ja is_digit_no
+    mov rax, 1
+    ret
+is_digit_no:
+    xor rax, rax
+    ret
+
+is_hex_digit:
+    call is_digit
+    test rax, rax
+    jnz is_hex_digit_yes
+    or al, 0x20
+    cmp al, 'a'
+    jb is_hex_digit_no
+    cmp al, 'f'
+    ja is_hex_digit_no
+is_hex_digit_yes:
+    mov rax, 1
+    ret
+is_hex_digit_no:
+    xor rax, rax
+    ret
+
+skip_ws:
+skip_ws_loop:
+    cmp r13, r14
+    je skip_ws_end
+    mov al, byte ptr [r13]
+    call is_ws
+    test rax, rax
+    jz skip_ws_end
+    inc r13
+    jmp skip_ws_loop
+skip_ws_end:
+    xor rax, rax
+    ret
+
+read_all:
+    xor r10, r10
+    mov r8, rsi
+    mov r9, rdx
+read_all_loop:
+    test r9, r9
+    jz read_all_done
+    mov rsi, r8
+    mov rdx, r9
+    mov rax, 0
+    syscall
+    test rax, rax
+    jz read_all_done
+    js read_all_done
+    add r8, rax
+    add r10, rax
+    sub r9, rax
+    jmp read_all_loop
+read_all_done:
+    mov rax, r10
+    ret
+
+parse_string:
+    cmp r13, r14
+    jle parse_string_fail
+    cmp byte ptr [r13], '"'
+    jne parse_string_fail
+    inc r13
+    cmp r13, r14
+    je parse_string_fail
+    cmp byte ptr [r13], '"'
+    je parse_string_end
+parse_string_loop:
+    cmp r13, r14
+    je parse_string_fail
+    mov al, byte ptr [r13]
+    cmp al, '"'
+    je parse_string_end
+    cmp al, '\'
+    jne parse_string_check_normal
+    inc r13
+    cmp r13, r14
+    je parse_string_fail
+    mov al, byte ptr [r13]
+    cmp al, '"'
+    je parse_string_consume_escape
+    cmp al, '\'
+    je parse_string_consume_escape
+    cmp al, '/'
+    je parse_string_consume_escape
+    cmp al, 'b'
+    je parse_string_consume_escape
+    cmp al, 'f'
+    je parse_string_consume_escape
+    cmp al, 'n'
+    je parse_string_consume_escape
+    cmp al, 'r'
+    je parse_string_consume_escape
+    cmp al, 't'
+    je parse_string_consume_escape
+    cmp al, 'u'
+    jne parse_string_fail
+    inc r13
+    mov rcx, 4
+    jmp parse_string_hex_loop
+parse_string_consume_escape:
+    inc r13
+    jmp parse_string_loop
+parse_string_hex_loop:
+    cmp r13, r14
+    je parse_string_fail
+    mov al, byte ptr [r13]
+    inc r13
+    call is_hex_digit
+    test rax, rax
+    jz parse_string_fail
+    loop parse_string_hex_loop
+    jmp parse_string_loop
+parse_string_check_normal:
+    cmp al, 0x20
+    jb parse_string_fail
+    inc r13
+    jmp parse_string_loop
+parse_string_end:
+    inc r13
+    xor rax, rax
+    ret
+parse_string_fail:
+    mov rax, 1
+    ret
+
+parse_number:
+    cmp r13, r14
+    je parse_number_fail
+    mov al, byte ptr [r13]
+    cmp al, '-'
+    jne parse_number_no_minus
+    inc r13
+    cmp r13, r14
+    je parse_number_fail
+parse_number_no_minus:
+    cmp r13, r14
+    je parse_number_fail
+    mov al, byte ptr [r13]
+    cmp al, '0'
+    jne parse_number_non_zero
+    inc r13
+    cmp r13, r14
+    je parse_number_after_int
+    mov al, byte ptr [r13]
+    call is_digit
+    test rax, rax
+    jnz parse_number_fail
+    jmp parse_number_after_int
+parse_number_non_zero:
+    call is_digit
+    test rax, rax
+    jz parse_number_fail
+    inc r13
+parse_number_non_zero_loop:
+    cmp r13, r14
+    je parse_number_after_int
+    mov al, byte ptr [r13]
+    call is_digit
+    test rax, rax
+    jz parse_number_after_int
+    inc r13
+    jmp parse_number_non_zero_loop
+parse_number_after_int:
+    cmp r13, r14
+    je parse_number_no_frac
+    cmp byte ptr [r13], '.'
+    jne parse_number_no_frac
+    inc r13
+    cmp r13, r14
+    je parse_number_fail
+    mov al, byte ptr [r13]
+    call is_digit
+    test rax, rax
+    jz parse_number_fail
+    inc r13
+parse_number_digit_loop:
+    cmp r13, r14
+    je parse_number_after_frac
+    mov al, byte ptr [r13]
+    call is_digit
+    test rax, rax
+    jz parse_number_after_frac
+    inc r13
+    jmp parse_number_digit_loop
+parse_number_after_frac:
+parse_number_no_frac:
+    cmp r13, r14
+    je parse_number_done
+    mov al, byte ptr [r13]
+    cmp al, 'e'
+    je parse_number_exp
+    cmp al, 'E'
+    jne parse_number_done
+parse_number_exp:
+    inc r13
+    cmp r13, r14
+    je parse_number_fail
+    mov al, byte ptr [r13]
+    cmp al, '+'
+    je parse_number_exp_sign
+    cmp al, '-'
+    jne parse_number_exp_digits
+parse_number_exp_sign:
+    inc r13
+    cmp r13, r14
+    je parse_number_fail
+parse_number_exp_digits:
+    mov al, byte ptr [r13]
+    call is_digit
+    test rax, rax
+    jz parse_number_fail
+    inc r13
+parse_number_exp_digit_loop:
+    cmp r13, r14
+    je parse_number_done
+    mov al, byte ptr [r13]
+    call is_digit
+    test rax, rax
+    jz parse_number_done
+    inc r13
+    jmp parse_number_exp_digit_loop
+parse_number_done:
+    xor rax, rax
+    ret
+parse_number_fail:
+    mov rax, 1
+    ret
+
+parse_true:
+    cmp r13, r14
+    jle parse_true_fail
+    cmp byte ptr [r13], 't'
+    jne parse_true_fail
+    inc r13
+    cmp byte ptr [r13], 'r'
+    jne parse_true_fail
+    inc r13
+    cmp byte ptr [r13], 'u'
+    jne parse_true_fail
+    inc r13
+    cmp byte ptr [r13], 'e'
+    jne parse_true_fail
+    inc r13
+    xor rax, rax
+    ret
+parse_true_fail:
+    mov rax, 1
+    ret
+
+parse_false:
+    cmp r13, r14
+    jle parse_false_fail
+    cmp byte ptr [r13], 'f'
+    jne parse_false_fail
+    inc r13
+    cmp byte ptr [r13], 'a'
+    jne parse_false_fail
+    inc r13
+    cmp byte ptr [r13], 'l'
+    jne parse_false_fail
+    inc r13
+    cmp byte ptr [r13], 's'
+    jne parse_false_fail
+    inc r13
+    cmp byte ptr [r13], 'e'
+    jne parse_false_fail
+    inc r13
+    xor rax, rax
+    ret
+parse_false_fail:
+    mov rax, 1
+    ret
+
+parse_null:
+    cmp r13, r14
+    jle parse_null_fail
+    cmp byte ptr [r13], 'n'
+    jne parse_null_fail
+    inc r13
+    cmp byte ptr [r13], 'u'
+    jne parse_null_fail
+    inc r13
+    cmp byte ptr [r13], 'l'
+    jne parse_null_fail
+    inc r13
+    cmp byte ptr [r13], 'l'
+    jne parse_null_fail
+    inc r13
+    xor rax, rax
+    ret
+parse_null_fail:
+    mov rax, 1
+    ret
+
+parse_object:
+    cmp r13, r14
+    je parse_object_fail
+    cmp byte ptr [r13], '{'
+    jne parse_object_fail
+    inc r13
+    call skip_ws
+    test rax, rax
+    jnz parse_object_fail
+    cmp r13, r14
+    je parse_object_fail
+    cmp byte ptr [r13], '}'
+    je parse_object_end
+parse_object_loop:
+    call parse_string
+    test rax, rax
+    jnz parse_object_fail
+    call skip_ws
+    test rax, rax
+    jnz parse_object_fail
+    cmp r13, r14
+    je parse_object_fail
+    cmp byte ptr [r13], ':'
+    jne parse_object_fail
+    inc r13
+    call skip_ws
+    test rax, rax
+    jnz parse_object_fail
+    call parse_value
+    test rax, rax
+    jnz parse_object_fail
+    call skip_ws
+    test rax, rax
+    jnz parse_object_fail
+    cmp r13, r14
+    je parse_object_fail
+    cmp byte ptr [r13], ','
+    jne parse_object_check_end
+    inc r13
+    call skip_ws
+    test rax, rax
+    jnz parse_object_fail
+    jmp parse_object_loop
+parse_object_check_end:
+    cmp byte ptr [r13], '}'
+    jne parse_object_fail
+parse_object_end:
+    inc r13
+    xor rax, rax
+    ret
+parse_object_fail:
+    mov rax, 1
+    ret
+
+parse_array:
+    cmp r13, r14
+    je parse_array_fail
+    cmp byte ptr [r13], '['
+    jne parse_array_fail
+    inc r13
+    call skip_ws
+    test rax, rax
+    jnz parse_array_fail
+    cmp r13, r14
+    je parse_array_fail
+    cmp byte ptr [r13], ']'
+    je parse_array_end
+parse_array_loop:
+    call parse_value
+    test rax, rax
+    jnz parse_array_fail
+    call skip_ws
+    test rax, rax
+    jnz parse_array_fail
+    cmp r13, r14
+    je parse_array_fail
+    cmp byte ptr [r13], ','
+    jne parse_array_check_end
+    inc r13
+    call skip_ws
+    test rax, rax
+    jnz parse_array_fail
+    jmp parse_array_loop
+parse_array_check_end:
+    cmp byte ptr [r13], ']'
+    jne parse_array_fail
+parse_array_end:
+    inc r13
+    xor rax, rax
+    ret
+parse_array_fail:
+    mov rax, 1
+    ret
+
+parse_value:
+    cmp r13, r14
+    je parse_value_fail
+    mov al, byte ptr [r13]
+    cmp al, '{'
+    je parse_object
+    cmp al, '['
+    je parse_array
+    cmp al, '"'
+    je parse_string
+    cmp al, 't'
+    je parse_true
+    cmp al, 'f'
+    je parse_false
+    cmp al, 'n'
+    je parse_null
+    cmp al, '-'
+    je parse_number
+    call is_digit
+    test rax, rax
+    jnz parse_number
+parse_value_fail:
+    mov rax, 1
+    ret
+
+itoa:
+    mov rsi, rdi
+    xor r8, r8
+    test rax, rax
+    jz itoa_zero
+itoa_extract_loop:
+    xor rdx, rdx
+    mov rcx, 10
+    div rcx
+    add dl, '0'
+    push rdx
+    inc r8
+    test rax, rax
+    jnz itoa_extract_loop
+itoa_pop_loop:
+    pop rax
+    mov [rsi], al
+    inc rsi
+    dec r8
+    jnz itoa_pop_loop
+    mov byte ptr [rsi], 0
+    mov rax, rsi
+    sub rax, rdi
+    ret
+itoa_zero:
+    mov byte ptr [rdi], '0'
+    mov byte ptr [rdi+1], 0
+    mov rax, 1
+    ret
+
+error:
+    sub rsp, 20
+    mov rax, r13
+    sub rax, r12
+    lea rdi, [rsp]
+    call itoa
+    mov r8, rax
+    mov rdi, 1
+    lea rsi, [rip + msg_error_prefix]
+    mov rdx, msg_error_prefix_len
+    mov rax, 1
+    syscall
+    mov rdi, 1
+    lea rsi, [rsp]
+    mov rdx, r8
+    mov rax, 1
+    syscall
+    mov rdi, 1
+    lea rsi, [rip + msg_newline]
+    mov rdx, 1
+    mov rax, 1
+    syscall
+    add rsp, 20
+    mov rdi, 1
+    mov rax, 60
+    syscall
+
+_start:
+    mov rdi, 0
+    lea rsi, [rip + input_buffer]
+    mov rdx, 65536
+    call read_all
+    lea r12, [rip + input_buffer]
+    lea r13, [rip + input_buffer]
+    lea r14, [r12 + rax]
+    call skip_ws
+    test rax, rax
+    jnz error
+    call parse_value
+    test rax, rax
+    jnz error
+    call skip_ws
+    test rax, rax
+    jnz error
+    cmp r13, r14
+    jne error
+    mov rdi, 1
+    lea rsi, [rip + msg_ok]
+    mov rdx, msg_ok_len
+    mov rax, 1
+    syscall
+    mov rdi, 0
+    mov rax, 60
+    syscall
+```

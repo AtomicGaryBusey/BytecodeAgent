@@ -1,0 +1,490 @@
+# json_lint - check that stdin is exactly one valid JSON document (RFC 8259,
+# byte-level grammar) and report the byte offset of the first error.
+# Output: "ok\n" (exit 0) or "error at N\n" (exit 1).
+.globl _start
+
+.equ BUFSIZE, 65536
+
+# whitespace bytes
+.equ WS_SPACE, 0x20
+.equ WS_TAB,   0x09
+.equ WS_LF,    0x0A
+.equ WS_CR,    0x0D
+
+# punctuation and character classes
+.equ CH_QUOTE,      0x22
+.equ CH_BACKSLASH,  0x5C
+.equ CH_SLASH,      0x2F
+.equ CH_LBRACE,     0x7B
+.equ CH_RBRACE,     0x7D
+.equ CH_LBRACKET,   0x5B
+.equ CH_RBRACKET,   0x5D
+.equ CH_COLON,      0x3A
+.equ CH_COMMA,      0x2C
+.equ CH_MINUS,      0x2D
+.equ CH_PLUS,       0x2B
+.equ CH_DOT,        0x2E
+.equ CH_ZERO,       0x30
+.equ CH_ONE,        0x31
+.equ CH_NINE,       0x39
+.equ CH_UPPER_E,    0x45
+.equ CH_LOWER_E,    0x65
+.equ CH_UPPER_A,    0x41
+.equ CH_UPPER_F,    0x46
+.equ CH_LOWER_A,    0x61
+.equ CH_LOWER_B,    0x62
+.equ CH_LOWER_F,    0x66
+.equ CH_LOWER_N,    0x6E
+.equ CH_LOWER_R,    0x72
+.equ CH_LOWER_T,    0x74
+.equ CH_LOWER_U,    0x75
+
+# system calls
+.equ SYS_READ,  0
+.equ SYS_WRITE, 1
+.equ SYS_EXIT,  60
+
+.section .rodata
+lit_true:  .ascii "true"
+lit_false: .ascii "false"
+lit_null:  .ascii "null"
+msg_ok:    .ascii "ok\n"
+msg_err:   .ascii "error at "
+msg_nl:    .ascii "\n"
+
+.text
+_start:
+    # ---- read all of standard input into buf ----
+read_loop:
+    mov r8, qword ptr [rip + inlen]
+    cmp r8, BUFSIZE
+    jae read_done
+    mov rdx, BUFSIZE
+    sub rdx, r8
+    mov rax, SYS_READ
+    xor edi, edi
+    lea rsi, [rip + buf]
+    add rsi, r8
+    syscall
+    test rax, rax
+    jz read_done
+    js read_done
+    add qword ptr [rip + inlen], rax
+    jmp read_loop
+read_done:
+    # rsi = cursor, r12 = end of input
+    lea rsi, [rip + buf]
+    mov r12, rsi
+    add r12, qword ptr [rip + inlen]
+    call skip_ws
+    cmp rsi, r12
+    jae top_eof_err
+    call parse_value
+    test al, al
+    jnz do_error
+    call skip_ws
+    cmp rsi, r12
+    jae do_ok
+    # trailing garbage after the document
+    lea rax, [rip + buf]
+    sub rsi, rax
+    mov qword ptr [rip + err_off], rsi
+    jmp do_error
+top_eof_err:
+    mov rax, qword ptr [rip + inlen]
+    mov qword ptr [rip + err_off], rax
+    jmp do_error
+
+do_ok:
+    mov rax, SYS_WRITE
+    mov rdi, 1
+    lea rsi, [rip + msg_ok]
+    mov rdx, 3
+    syscall
+    mov rax, SYS_EXIT
+    xor edi, edi
+    syscall
+
+do_error:
+    # convert err_off to decimal digits, written backwards at numbuf_end
+    mov rax, qword ptr [rip + err_off]
+    lea rdi, [rip + numbuf_end]
+conv_loop:
+    xor edx, edx
+    mov rcx, 10
+    div rcx
+    add dl, 0x30
+    dec rdi
+    mov byte ptr [rdi], dl
+    test rax, rax
+    jnz conv_loop
+    mov rbx, rdi
+    lea rax, [rip + numbuf_end]
+    sub rax, rbx
+    mov r13, rax
+    mov rax, SYS_WRITE
+    mov rdi, 1
+    lea rsi, [rip + msg_err]
+    mov rdx, 9
+    syscall
+    mov rax, SYS_WRITE
+    mov rdi, 1
+    mov rsi, rbx
+    mov rdx, r13
+    syscall
+    mov rax, SYS_WRITE
+    mov rdi, 1
+    lea rsi, [rip + msg_nl]
+    mov rdx, 1
+    syscall
+    mov rax, SYS_EXIT
+    mov rdi, 1
+    syscall
+
+# ---- error helpers: tail-jumped to; they return al = 1 to the original caller ----
+# error offset = current cursor position
+set_err_here:
+    lea rax, [rip + buf]
+    sub rsi, rax
+    mov qword ptr [rip + err_off], rsi
+    mov al, 1
+    ret
+# error offset = input length (valid prefix, but input ended too early)
+set_err_eof:
+    mov rax, qword ptr [rip + inlen]
+    mov qword ptr [rip + err_off], rax
+    mov al, 1
+    ret
+
+# ---- skip_ws: advance rsi over ws bytes (rsi <= r12 on return) ----
+skip_ws:
+skip_ws_loop:
+    cmp rsi, r12
+    jae skip_ws_done
+    movzx eax, byte ptr [rsi]
+    cmp al, WS_SPACE
+    je skip_ws_adv
+    cmp al, WS_TAB
+    je skip_ws_adv
+    cmp al, WS_LF
+    je skip_ws_adv
+    cmp al, WS_CR
+    je skip_ws_adv
+    jmp skip_ws_done
+skip_ws_adv:
+    inc rsi
+    jmp skip_ws_loop
+skip_ws_done:
+    ret
+
+# ---- parse_value: rsi = cursor, r12 = end; returns al = 0 ok, 1 error ----
+parse_value:
+    cmp rsi, r12
+    jae set_err_eof
+    movzx eax, byte ptr [rsi]
+    cmp al, CH_LBRACE
+    je parse_object
+    cmp al, CH_LBRACKET
+    je parse_array
+    cmp al, CH_QUOTE
+    je parse_string
+    cmp al, CH_MINUS
+    je parse_number
+    cmp al, CH_ZERO
+    jb pv_literals
+    cmp al, CH_NINE
+    ja pv_literals
+    jmp parse_number
+pv_literals:
+    cmp al, CH_LOWER_T
+    je pv_true
+    cmp al, CH_LOWER_F
+    je pv_false
+    cmp al, CH_LOWER_N
+    je pv_null
+    jmp set_err_here
+pv_true:
+    lea rdi, [rip + lit_true]
+    mov rcx, 4
+    jmp match_lit
+pv_false:
+    lea rdi, [rip + lit_false]
+    mov rcx, 5
+    jmp match_lit
+pv_null:
+    lea rdi, [rip + lit_null]
+    mov rcx, 4
+    jmp match_lit
+
+# ---- match_lit: rdi = literal bytes, rcx = number of bytes left ----
+match_lit:
+match_lit_loop:
+    test rcx, rcx
+    jz match_lit_ok
+    cmp rsi, r12
+    jae set_err_eof
+    movzx eax, byte ptr [rsi]
+    movzx edx, byte ptr [rdi]
+    cmp al, dl
+    jne set_err_here
+    inc rsi
+    inc rdi
+    dec rcx
+    jmp match_lit_loop
+match_lit_ok:
+    xor eax, eax
+    ret
+
+# ---- parse_string: [rsi] == '"' ----
+parse_string:
+    inc rsi
+ps_loop:
+    cmp rsi, r12
+    jae set_err_eof
+    movzx eax, byte ptr [rsi]
+    cmp al, CH_QUOTE
+    je ps_end
+    cmp al, CH_BACKSLASH
+    je ps_esc
+    cmp al, WS_SPACE
+    jb set_err_here
+    inc rsi
+    jmp ps_loop
+ps_esc:
+    inc rsi
+    cmp rsi, r12
+    jae set_err_eof
+    movzx eax, byte ptr [rsi]
+    cmp al, CH_QUOTE
+    je ps_esc_ok
+    cmp al, CH_BACKSLASH
+    je ps_esc_ok
+    cmp al, CH_SLASH
+    je ps_esc_ok
+    cmp al, CH_LOWER_B
+    je ps_esc_ok
+    cmp al, CH_LOWER_F
+    je ps_esc_ok
+    cmp al, CH_LOWER_N
+    je ps_esc_ok
+    cmp al, CH_LOWER_R
+    je ps_esc_ok
+    cmp al, CH_LOWER_T
+    je ps_esc_ok
+    cmp al, CH_LOWER_U
+    je ps_uesc
+    jmp set_err_here
+ps_esc_ok:
+    inc rsi
+    jmp ps_loop
+ps_uesc:
+    inc rsi
+    mov rcx, 4
+ps_hex_loop:
+    cmp rsi, r12
+    jae set_err_eof
+    movzx eax, byte ptr [rsi]
+    cmp al, CH_ZERO
+    jb ps_hex_alpha
+    cmp al, CH_NINE
+    jbe ps_hex_ok
+ps_hex_alpha:
+    cmp al, CH_UPPER_A
+    jb ps_hex_lower
+    cmp al, CH_UPPER_F
+    jbe ps_hex_ok
+    jmp ps_hex_lower
+ps_hex_lower:
+    cmp al, CH_LOWER_A
+    jb set_err_here
+    cmp al, CH_LOWER_F
+    jbe ps_hex_ok
+    jmp set_err_here
+ps_hex_ok:
+    inc rsi
+    dec rcx
+    jnz ps_hex_loop
+    jmp ps_loop
+ps_end:
+    inc rsi
+    xor eax, eax
+    ret
+
+# ---- parse_number: [rsi] == '-' or a digit ----
+parse_number:
+    cmp byte ptr [rsi], CH_MINUS
+    jne pn_int
+    inc rsi
+    cmp rsi, r12
+    jae set_err_eof
+pn_int:
+    movzx eax, byte ptr [rsi]
+    cmp al, CH_ZERO
+    je pn_zero
+    cmp al, CH_ONE
+    jb set_err_here
+    cmp al, CH_NINE
+    ja set_err_here
+pn_digits:
+    inc rsi
+    cmp rsi, r12
+    jae pn_done
+    movzx eax, byte ptr [rsi]
+    cmp al, CH_ZERO
+    jb pn_done
+    cmp al, CH_NINE
+    ja pn_done
+    jmp pn_digits
+pn_zero:
+    inc rsi
+pn_done:
+    # optional fraction
+    cmp rsi, r12
+    jae pn_ret
+    cmp byte ptr [rsi], CH_DOT
+    jne pn_exp
+    inc rsi
+    cmp rsi, r12
+    jae set_err_eof
+    movzx eax, byte ptr [rsi]
+    cmp al, CH_ZERO
+    jb set_err_here
+    cmp al, CH_NINE
+    ja set_err_here
+pn_frac_loop:
+    inc rsi
+    cmp rsi, r12
+    jae pn_ret
+    movzx eax, byte ptr [rsi]
+    cmp al, CH_ZERO
+    jb pn_exp
+    cmp al, CH_NINE
+    ja pn_exp
+    jmp pn_frac_loop
+pn_exp:
+    cmp rsi, r12
+    jae pn_ret
+    movzx eax, byte ptr [rsi]
+    cmp al, CH_LOWER_E
+    je pn_exp_go
+    cmp al, CH_UPPER_E
+    jne pn_ret
+pn_exp_go:
+    inc rsi
+    cmp rsi, r12
+    jae set_err_eof
+    movzx eax, byte ptr [rsi]
+    cmp al, CH_PLUS
+    je pn_exp_sign
+    cmp al, CH_MINUS
+    je pn_exp_sign
+    jmp pn_exp_digit
+pn_exp_sign:
+    inc rsi
+    cmp rsi, r12
+    jae set_err_eof
+pn_exp_digit:
+    movzx eax, byte ptr [rsi]
+    cmp al, CH_ZERO
+    jb set_err_here
+    cmp al, CH_NINE
+    ja set_err_here
+pn_exp_loop:
+    inc rsi
+    cmp rsi, r12
+    jae pn_ret
+    movzx eax, byte ptr [rsi]
+    cmp al, CH_ZERO
+    jb pn_ret
+    cmp al, CH_NINE
+    ja pn_ret
+    jmp pn_exp_loop
+pn_ret:
+    xor eax, eax
+    ret
+
+# ---- parse_array: [rsi] == '[' ----
+parse_array:
+    inc rsi
+    call skip_ws
+    cmp rsi, r12
+    jae set_err_eof
+    cmp byte ptr [rsi], CH_RBRACKET
+    je pa_close
+pa_loop:
+    call parse_value
+    test al, al
+    jnz pa_ret
+    call skip_ws
+    cmp rsi, r12
+    jae set_err_eof
+    movzx eax, byte ptr [rsi]
+    cmp al, CH_COMMA
+    je pa_comma
+    cmp al, CH_RBRACKET
+    je pa_close
+    jmp set_err_here
+pa_comma:
+    inc rsi
+    call skip_ws
+    jmp pa_loop
+pa_close:
+    inc rsi
+    xor eax, eax
+    ret
+pa_ret:
+    ret
+
+# ---- parse_object: [rsi] == '{' ----
+parse_object:
+    inc rsi
+    call skip_ws
+    cmp rsi, r12
+    jae set_err_eof
+    cmp byte ptr [rsi], CH_RBRACE
+    je po_close
+po_loop:
+    cmp rsi, r12
+    jae set_err_eof
+    cmp byte ptr [rsi], CH_QUOTE
+    jne set_err_here
+    call parse_string
+    test al, al
+    jnz po_ret
+    call skip_ws
+    cmp rsi, r12
+    jae set_err_eof
+    cmp byte ptr [rsi], CH_COLON
+    jne set_err_here
+    inc rsi
+    call skip_ws
+    call parse_value
+    test al, al
+    jnz po_ret
+    call skip_ws
+    cmp rsi, r12
+    jae set_err_eof
+    movzx eax, byte ptr [rsi]
+    cmp al, CH_COMMA
+    je po_comma
+    cmp al, CH_RBRACE
+    je po_close
+    jmp set_err_here
+po_comma:
+    inc rsi
+    call skip_ws
+    jmp po_loop
+po_close:
+    inc rsi
+    xor eax, eax
+    ret
+po_ret:
+    ret
+
+.bss
+.align 16
+buf:     .zero BUFSIZE
+inlen:   .zero 8
+err_off: .zero 8
+numbuf:  .zero 16
+numbuf_end:

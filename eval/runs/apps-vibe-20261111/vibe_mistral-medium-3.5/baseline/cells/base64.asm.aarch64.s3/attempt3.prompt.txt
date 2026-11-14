@@ -1,0 +1,347 @@
+Write the complete program `base64`: a static Linux executable for AArch64 (ARMv8-A, little-endian), written in assembly. There is no C library, no C runtime and no helper code: you write the entry point `_start`, every function, every table and string, and make the system calls yourself.
+
+Entry state (as the Linux kernel sets it up): execution starts at the label `_start`. sp is 16-byte aligned and points at argc = 0, followed by the NULL terminators of an empty argv, an empty envp and an empty auxiliary vector: the program gets no arguments. Every other general-purpose register (x0-x30) is zero; x30 is not a return address, so `_start` must never return with `ret`; the program ends only through the exit system call.
+
+System calls: the `svc #0` instruction, with the system call number in x8 and the arguments in x0, x1, x2; the result comes back in x0. Every other register is preserved. Exactly these four are available:
+- read = 63: read(fd = 0, buf, count) reads up to count bytes of standard input into buf; returns the number of bytes read, 0 at end of input.
+- write = 64: write(fd, buf, count) with fd 1 (standard output) or 2 (standard error); returns count.
+- exit = 93: exit(status) ends the program; the exit status is the low 8 bits of status.
+- exit_group = 94: the same as exit.
+Any other system call number or file descriptor stops the program with an error, and so does a buffer that is not entirely inside the program's memory.
+
+Memory: the program's own sections plus a stack of 1 MiB below the entry sp. There is no heap (no brk, no mmap, no malloc): put working storage in `.bss` (zero-initialised), at most 1 MiB in total, or on the stack. Code is not writable. Any access outside these areas stops the program. Each test run may execute at most 50,000,000 instructions.
+
+Output format: one complete assembly source file in GNU assembler (GNU as) syntax for AArch64. Examples: `ldr x2, [x0, x1, lsl #3]`, `ldrb w3, [x1], #1`, `stp x29, x30, [sp, #-16]!`. Comments start with `//`; do not use `;`.
+Allowed in the file:
+- Sections: `.text` (code), `.section .rodata` (read-only data), `.data` (initialised writable data), `.bss` (zero-initialised space: only `.zero`/`.space` and alignment). Instructions go in `.text` only.
+- Data directives: `.byte`, `.short`/`.2byte`, `.word` (4 bytes on this target), `.long`/`.int`/`.4byte`, `.quad`/`.8byte`, `.ascii`, `.asciz`/`.string`, `.zero`/`.space`, alignment with `.align`/`.balign`/`.p2align`, and `.globl`/`.global` (write `.globl _start`).
+- Labels `name:` in any section, and GNU local labels `1:` referenced as `1f` (next) / `1b` (previous).
+- Constants: `.equ name, value` (or `.set name, value`, or `name = value`), where value is a number or a difference of labels defined earlier in the same section (e.g. `msg_len = . - msg`). Define every constant before its first use.
+- Addressing data: `adrp x0, label` followed by `add x0, x0, :lo12:label` (or a load/store `ldr x1, [x0, :lo12:label]`); `adr x0, label` also works within +-1 MiB. Literal pools are NOT allowed: no `ldr x0, =label` and no `ldr x0, =constant` (build constants with mov/movz/movk).
+Not allowed: macros (`.macro`, `.rept`, `.irp`), conditional assembly (`.if`), `.include`, `.incbin`, `.fill`, `.org`, `.comm`/`.lcomm`, `.inst`, `.cfi_*` directives, section stacks (`.pushsection`) and any other section. No libc and no other library: there is nothing to link against, so every symbol you use must be defined in your file.
+Instruction set: ARMv8.0-A with floating point and Advanced SIMD (NEON). Not supported (rejected): CRC32, LSE atomics, dot product, half-precision, crypto (AES/SHA/PMULL) and SVE.
+Output ONLY the assembly source: no Markdown fences, no prose before or after it.
+
+Specification: Task `base64`: Base64-encode standard input (RFC 4648 standard alphabet, like `base64` with no options).
+
+- Alphabet: `A`-`Z` (0-25), `a`-`z` (26-51), `0`-`9` (52-61), `+` (62), `/` (63). Each group of 3 input bytes
+  becomes 4 characters (most significant bits first). A final group of 1 byte becomes 2 characters plus `==`;
+  a final group of 2 bytes becomes 3 characters plus `=`.
+- The encoded text is split into lines of exactly 76 characters; the last line may be shorter. Every line,
+  including the last, ends with one newline 0x0A. Never print an empty line: if the encoded text length is a
+  multiple of 76, the output ends right after that line's newline.
+- Empty input prints nothing (not even a newline). Input bytes are arbitrary (0x00-0xFF).
+
+Examples: `Man` prints `TWFu\n`; `Ma` prints `TWE=\n`; `M` prints `TQ==\n`; 57 input bytes print exactly one
+76-character line and a newline; 58 input bytes print that line plus a second line of 4 characters.
+
+Limits: the input is at most 49152 bytes. Exit status 0.
+
+Input and output (applies to this whole task):
+- The input is the complete contents of standard input (file descriptor 0). Read it with `read` until `read`
+  returns 0 (end of input). A `read` may return FEWER bytes than requested, at any position (in the middle of a
+  line, a token or a group of bytes), so keep calling it; only a return value of 0 means end of input.
+- Write the output to standard output (file descriptor 1). Only the bytes this task describes may appear on
+  standard output (standard error is ignored). Every output byte must be written before the program exits.
+- Finish with `exit` (or `exit_group`) and the exit status this task gives. The program must not run off the end
+  of its code or crash.
+
+Your previous attempt was:
+<previous>
+.globl _start
+
+SYS_read = 63
+SYS_write = 64
+SYS_exit = 93
+STDIN = 0
+STDOUT = 1
+LINE_LEN = 76
+BUF_SIZE = 49152
+
+.section .rodata
+b64_alphabet:
+    .ascii "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/"
+
+.bss
+.align 8
+in_buf: .space BUF_SIZE
+out_buf: .space 80
+
+.text
+_start:
+    adrp x19, in_buf
+    add x19, x19, :lo12:in_buf
+    adrp x20, out_buf
+    add x20, x20, :lo12:out_buf
+    mov x21, #0
+    mov x22, #0
+    mov x23, #0
+    mov x24, #0
+
+read_more:
+    sub x0, x22, x21
+    cmp x0, #3
+    bge 1f
+    cmp x22, #BUF_SIZE
+    bge 1f
+    mov x0, #STDIN
+    add x1, x19, x22
+    sub x2, #BUF_SIZE, x22
+    mov x8, #SYS_read
+    svc #0
+    cmp x0, #0
+    ble end_input
+    add x22, x22, x0
+    b read_more
+1:
+
+process_group:
+    sub x0, x22, x21
+    cmp x0, #3
+    blt handle_remainder
+    ldrb w0, [x19, x21]
+    ldrb w1, [x19, x21, #1]
+    ldrb w2, [x19, x21, #2]
+    lsr w3, w0, #2
+    and w4, w0, #3
+    lsl w4, w4, #4
+    lsr w5, w1, #4
+    orr w4, w4, w5
+    and w5, w1, #0xF
+    lsl w5, w5, #2
+    lsr w6, w2, #6
+    orr w5, w5, w6
+    and w6, w2, #0x3F
+    adrp x7, b64_alphabet
+    add x7, x7, :lo12:b64_alphabet
+    ldrb w3, [x7, w3, uxtw]
+    ldrb w4, [x7, w4, uxtw]
+    ldrb w5, [x7, w5, uxtw]
+    ldrb w6, [x7, w6, uxtw]
+
+out_char:
+    cmp x24, #LINE_LEN
+    bne 1f
+    mov w8, #'\n'
+    strb w8, [x20, x23]
+    add x23, x23, #1
+    cmp x23, #80
+    bge flush_out
+    mov x24, #0
+1:
+    strb w3, [x20, x23]
+    add x23, x23, #1
+    add x24, x24, #1
+    cmp x23, #80
+    bge flush_out
+    mov w3, w4
+out_char2:
+    cmp x24, #LINE_LEN
+    bne 1f
+    mov w8, #'\n'
+    strb w8, [x20, x23]
+    add x23, x23, #1
+    cmp x23, #80
+    bge flush_out
+    mov x24, #0
+1:
+    strb w3, [x20, x23]
+    add x23, x23, #1
+    add x24, x24, #1
+    cmp x23, #80
+    bge flush_out
+    mov w3, w5
+    b out_char2
+
+out_char3:
+    mov w3, w6
+    b out_char
+
+after_group:
+    add x21, x21, #3
+    b read_more
+
+flush_out:
+    stp x29, x30, [sp, #-16]!
+    stp x20, x23, [sp, #-16]!
+    mov x0, #STDOUT
+    adrp x1, out_buf
+    add x1, x1, :lo12:out_buf
+    mov x2, x23
+    mov x8, #SYS_write
+    svc #0
+    ldp x20, x23, [sp], #16
+    mov x23, #0
+    adrp x20, out_buf
+    add x20, x20, :lo12:out_buf
+    ldp x29, x30, [sp], #16
+    ret
+
+handle_remainder:
+    sub x0, x22, x21
+    cmp x0, #0
+    beq end_process
+    cmp x0, #1
+    beq one_byte
+    cmp x0, #2
+    bne end_process
+
+two_bytes:
+    ldrb w0, [x19, x21]
+    ldrb w1, [x19, x21, #1]
+    lsr w3, w0, #2
+    and w4, w0, #3
+    lsl w4, w4, #4
+    lsr w5, w1, #4
+    orr w4, w4, w5
+    and w5, w1, #0xF
+    lsl w5, w5, #2
+    adrp x7, b64_alphabet
+    add x7, x7, :lo12:b64_alphabet
+    ldrb w3, [x7, w3, uxtw]
+    ldrb w4, [x7, w4, uxtw]
+    ldrb w5, [x7, w5, uxtw]
+    b out_3_chars_plus_pad
+
+one_byte:
+    ldrb w0, [x19, x21]
+    lsr w3, w0, #2
+    and w4, w0, #3
+    lsl w4, w4, #4
+    adrp x7, b64_alphabet
+    add x7, x7, :lo12:b64_alphabet
+    ldrb w3, [x7, w3, uxtw]
+    ldrb w4, [x7, w4, uxtw]
+    mov w5, w4
+    mov w4, w3
+    mov w3, #'='
+    strb w3, [x20, x23]
+    add x23, x23, #1
+    add x24, x24, #1
+    cmp x24, #LINE_LEN
+    bne 1f
+    mov w8, #'\n'
+    strb w8, [x20, x23]
+    add x23, x23, #1
+    cmp x23, #80
+    bge flush_out
+    mov x24, #0
+1:
+    cmp x23, #80
+    bge flush_out
+    mov w3, w4
+    strb w3, [x20, x23]
+    add x23, x23, #1
+    add x24, x24, #1
+    cmp x24, #LINE_LEN
+    bne 1f
+    mov w8, #'\n'
+    strb w8, [x20, x23]
+    add x23, x23, #1
+    cmp x23, #80
+    bge flush_out
+    mov x24, #0
+1:
+    cmp x23, #80
+    bge flush_out
+    mov w3, #'='
+    strb w3, [x20, x23]
+    add x23, x23, #1
+    add x24, x24, #1
+    cmp x23, #80
+    bge flush_out
+    b end_process
+
+out_3_chars_plus_pad:
+    mov w6, w5
+    mov w5, w4
+    mov w4, w3
+    mov w3, w4
+    strb w3, [x20, x23]
+    add x23, x23, #1
+    add x24, x24, #1
+    cmp x24, #LINE_LEN
+    bne 1f
+    mov w8, #'\n'
+    strb w8, [x20, x23]
+    add x23, x23, #1
+    cmp x23, #80
+    bge flush_out
+    mov x24, #0
+1:
+    cmp x23, #80
+    bge flush_out
+    mov w3, w5
+    strb w3, [x20, x23]
+    add x23, x23, #1
+    add x24, x24, #1
+    cmp x24, #LINE_LEN
+    bne 1f
+    mov w8, #'\n'
+    strb w8, [x20, x23]
+    add x23, x23, #1
+    cmp x23, #80
+    bge flush_out
+    mov x24, #0
+1:
+    cmp x23, #80
+    bge flush_out
+    mov w3, w6
+    strb w3, [x20, x23]
+    add x23, x23, #1
+    add x24, x24, #1
+    cmp x24, #LINE_LEN
+    bne 1f
+    mov w8, #'\n'
+    strb w8, [x20, x23]
+    add x23, x23, #1
+    cmp x23, #80
+    bge flush_out
+    mov x24, #0
+1:
+    cmp x23, #80
+    bge flush_out
+    mov w3, #'='
+    strb w3, [x20, x23]
+    add x23, x23, #1
+    add x24, x24, #1
+    cmp x23, #80
+    bge flush_out
+    b end_process
+
+end_input:
+    b handle_remainder
+
+end_process:
+    cmp x24, #0
+    beq flush_final
+    mov w0, #'\n'
+    strb w0, [x20, x23]
+    add x23, x23, #1
+    cmp x23, #80
+    bge flush_out
+flush_final:
+    cmp x23, #0
+    beq exit
+    stp x29, x30, [sp, #-16]!
+    mov x0, #STDOUT
+    mov x1, x20
+    mov x2, x23
+    mov x8, #SYS_write
+    svc #0
+    ldp x29, x30, [sp], #16
+
+exit:
+    mov x0, #0
+    mov x8, #SYS_exit
+    svc #0
+</previous>
+It failed:
+<failure>
+GNU as rejected the program:
+line 39: expected a register at operand 2 -- `sub x2,#BUF_SIZE,x22'
+line 53: shift expression expected at operand 2 -- `ldrb w1,[x19,x21,#1]'
+line 54: shift expression expected at operand 2 -- `ldrb w2,[x19,x21,#2]'
+line 141: shift expression expected at operand 2 -- `ldrb w1,[x19,x21,#1]'
+</failure>
+Write a corrected, complete version. Same output format; output only the code.

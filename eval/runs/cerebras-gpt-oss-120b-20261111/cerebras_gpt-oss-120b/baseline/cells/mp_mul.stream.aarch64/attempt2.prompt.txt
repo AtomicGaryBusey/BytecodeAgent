@@ -1,0 +1,122 @@
+Implement the function `int64_t mp_mul(const uint64_t *a, int64_t na, const uint64_t *b, int64_t nb, uint64_t *r)`.
+
+Target: AArch64 (ARMv8-A), Linux AAPCS64. Integer/pointer arguments in x0-x7; 64-bit result in x0. Callee-saved: x19-x28, x29 (frame pointer) and d8-d15 (restore them if you use them); x9-x15 are free scratch registers. sp must stay 16-byte aligned and be back to its entry value when you return with ret (return address in x30). More ABI facts: arguments beyond the eighth are passed on the stack (the 9th at [sp] at entry). A call (bl/blr) overwrites x30, so save x30 (e.g. stp x29, x30, [sp, #-16]!) before calling and restore it before ret. A call clobbers the caller-saved registers x0-x18, x30, v0-v7 and v16-v31 (and the upper halves of v8-v15) and the flags, so keep values that must survive a call in callee-saved registers x19-x28 (saved/restored by you) or in your own stack frame. sp must be 16-byte aligned at every call (and whenever it is used as a base register). Anything below sp may be overwritten by a callee.
+
+Output format: GNU assembler syntax for AArch64, e.g. `ldr x2, [x0, x1, lsl #3]`. Output ONLY the function's instructions and labels, one per line, starting with the label `mp_mul:` (the entry point). Labels are `name:` (letters, digits, _ and ., e.g. `.Lloop:`); every branch target (b, b.cond, cbz, cbnz, tbz, tbnz, bl, adr) must be a label, never a number. Comments start with `//`; do not use `;`. No directives of any kind (no .section/.align/.word/.quad), no literal pools (`ldr x0, =...`), no data, no calls to other functions. Each line under 120 characters. No Markdown fences, no prose before or after the code. Instruction set: ARMv8.0-A with floating point and Advanced SIMD (NEON). Not supported (rejected): CRC32, LSE atomics, dot product, half-precision, crypto (AES/SHA/PMULL) and SVE.
+
+Specification: Multi-precision multiplication. a holds na and b holds nb 64-bit limbs (0 <= na, nb <= 8), each an unsigned number in little-endian limb order: A = a[0] + a[1]*2^64 + ... . Write the full product A*B to r[0..na+nb-1] (little-endian limbs, every one of the na+nb limbs written, including high zero limbs; r starts out as garbage and does not overlap a or b) and return the number of significant limbs: the smallest k such that r[k..na+nb-1] are all 0 (so 0 when the product is 0, e.g. when na or nb is 0). Limbs are full unsigned 64-bit values (up to 2^64 - 1): the schoolbook method needs the full 128-bit product of two limbs and carries that propagate. Example: a = {2^64-1}, b = {2^64-1} gives r = {1, 2^64-2} and returns 2. Read only a[0..na-1], b[0..nb-1] and r[0..na+nb-1]; write only r[0..na+nb-1] (all checked).
+
+Your previous attempt was:
+<previous>
+mp_mul:
+    // Prologue: save fp, lr and callee‑saved registers
+    stp x29, x30, [sp, #-16]!
+    mov x29, sp
+    stp x19, x20, [sp, #-16]!
+    stp x21, x22, [sp, #-16]!
+    stp x23, x24, [sp, #-16]!
+
+    // Move arguments to callee‑saved registers
+    mov x19, x0          // a
+    mov x20, x1          // na
+    mov x21, x2          // b
+    mov x22, x3          // nb
+    mov x23, x4          // r
+
+    // total = na + nb
+    add x9,  x20, x22    // x9 = total limbs (na+nb)
+
+    // Zero r[0..total-1]
+    mov x25, #0
+.Lzero_loop:
+    cmp x25, x9
+    b.ge .Lzero_done
+    str xzr, [x23, x25, lsl #3]
+    add x25, x25, #1
+    b .Lzero_loop
+.Lzero_done:
+
+    // If na==0 or nb==0, result is zero
+    cbz x20, .Lreturn
+    cbz x22, .Lreturn
+
+    // Outer loop over i = 0 .. na-1
+    mov x26, #0                 // i
+.Louter:
+    cmp x26, x20
+    b.ge .Louter_done
+
+    ldr x9, [x19, x26, lsl #3] // x9 = a[i]
+
+    mov x27, #0                // carry = 0
+    mov x28, #0                // j
+
+    // Inner loop over j = 0 .. nb-1
+.Linner:
+    cmp x28, x22
+    b.ge .Linner_done
+
+    ldr x10, [x21, x28, lsl #3]   // x10 = b[j]
+
+    mul  x11, x9, x10            // low 64 bits
+    umulh x12, x9, x10           // high 64 bits
+
+    add  x13, x26, x28
+    lsl  x13, x13, #3
+    ldr  x14, [x23, x13]         // r[i+j]
+
+    adds x15, x14, x11           // sum = r + low
+    cset x16, cs                 // carry1 = overflow?
+    adds x15, x15, x27           // sum += carry
+    cset x17, cs                 // carry2 = overflow?
+
+    adds x18, x12, x16           // newcarry = high + carry1
+    adc  x18, x18, x17           // + carry2 (and possible overflow)
+
+    str  x15, [x23, x13]         // store result limb
+    mov  x27, x18                // carry = newcarry
+
+    add  x28, x28, #1
+    b .Linner
+.Linner_done:
+    // Store final carry to r[i+nb]
+    add  x13, x26, x22
+    lsl  x13, x13, #3
+    str  x27, [x23, x13]
+
+    add  x26, x26, #1
+    b .Louter
+.Louter_done:
+
+    // Find most significant non‑zero limb
+    mov x25, x9
+    subs x25, x25, #1            // start at total-1
+    b.lt .Lall_zero              // total == 0
+
+.Ltrim:
+    ldr x0, [x23, x25, lsl #3]
+    cbz x0, .Lnext
+    add x0, x25, #1              // return index+1
+    b .Lreturn
+.Lnext:
+    sub x25, x25, #1
+    bge .Ltrim
+.Lall_zero:
+    mov x0, #0
+
+.Lreturn:
+    // Epilogue: restore callee‑saved registers and return
+    ldp x23, x24, [sp], #16
+    ldp x21, x22, [sp], #16
+    ldp x19, x20, [sp], #16
+    ldp x29, x30, [sp], #16
+    ret
+</previous>
+It failed:
+<failure>
+45 of 45 test cases failed. First failures:
+  mp_mul(a=[], na=0, b=[], nb=0, r): expected 0, but the run failed: aarch64: callee-saved register x25 clobbered: 0xb9d179e06c0fd4f5 -> 0x0
+  mp_mul(a=[], na=0, b=[0x5], nb=1, r): expected 0, but the run failed: aarch64: callee-saved register x25 clobbered: 0xe2520e33e44c5055 -> 0x1
+  mp_mul(a=[0x5], na=1, b=[], nb=0, r): expected 0, but the run failed: aarch64: callee-saved register x25 clobbered: 0xd2d5844307f062ce -> 0x1
+</failure>
+Write a corrected, complete version. Same output format; output only the code.

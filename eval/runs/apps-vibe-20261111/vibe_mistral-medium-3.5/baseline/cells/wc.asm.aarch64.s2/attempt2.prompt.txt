@@ -1,0 +1,267 @@
+Write the complete program `wc`: a static Linux executable for AArch64 (ARMv8-A, little-endian), written in assembly. There is no C library, no C runtime and no helper code: you write the entry point `_start`, every function, every table and string, and make the system calls yourself.
+
+Entry state (as the Linux kernel sets it up): execution starts at the label `_start`. sp is 16-byte aligned and points at argc = 0, followed by the NULL terminators of an empty argv, an empty envp and an empty auxiliary vector: the program gets no arguments. Every other general-purpose register (x0-x30) is zero; x30 is not a return address, so `_start` must never return with `ret`; the program ends only through the exit system call.
+
+System calls: the `svc #0` instruction, with the system call number in x8 and the arguments in x0, x1, x2; the result comes back in x0. Every other register is preserved. Exactly these four are available:
+- read = 63: read(fd = 0, buf, count) reads up to count bytes of standard input into buf; returns the number of bytes read, 0 at end of input.
+- write = 64: write(fd, buf, count) with fd 1 (standard output) or 2 (standard error); returns count.
+- exit = 93: exit(status) ends the program; the exit status is the low 8 bits of status.
+- exit_group = 94: the same as exit.
+Any other system call number or file descriptor stops the program with an error, and so does a buffer that is not entirely inside the program's memory.
+
+Memory: the program's own sections plus a stack of 1 MiB below the entry sp. There is no heap (no brk, no mmap, no malloc): put working storage in `.bss` (zero-initialised), at most 1 MiB in total, or on the stack. Code is not writable. Any access outside these areas stops the program. Each test run may execute at most 50,000,000 instructions.
+
+Output format: one complete assembly source file in GNU assembler (GNU as) syntax for AArch64. Examples: `ldr x2, [x0, x1, lsl #3]`, `ldrb w3, [x1], #1`, `stp x29, x30, [sp, #-16]!`. Comments start with `//`; do not use `;`.
+Allowed in the file:
+- Sections: `.text` (code), `.section .rodata` (read-only data), `.data` (initialised writable data), `.bss` (zero-initialised space: only `.zero`/`.space` and alignment). Instructions go in `.text` only.
+- Data directives: `.byte`, `.short`/`.2byte`, `.word` (4 bytes on this target), `.long`/`.int`/`.4byte`, `.quad`/`.8byte`, `.ascii`, `.asciz`/`.string`, `.zero`/`.space`, alignment with `.align`/`.balign`/`.p2align`, and `.globl`/`.global` (write `.globl _start`).
+- Labels `name:` in any section, and GNU local labels `1:` referenced as `1f` (next) / `1b` (previous).
+- Constants: `.equ name, value` (or `.set name, value`, or `name = value`), where value is a number or a difference of labels defined earlier in the same section (e.g. `msg_len = . - msg`). Define every constant before its first use.
+- Addressing data: `adrp x0, label` followed by `add x0, x0, :lo12:label` (or a load/store `ldr x1, [x0, :lo12:label]`); `adr x0, label` also works within +-1 MiB. Literal pools are NOT allowed: no `ldr x0, =label` and no `ldr x0, =constant` (build constants with mov/movz/movk).
+Not allowed: macros (`.macro`, `.rept`, `.irp`), conditional assembly (`.if`), `.include`, `.incbin`, `.fill`, `.org`, `.comm`/`.lcomm`, `.inst`, `.cfi_*` directives, section stacks (`.pushsection`) and any other section. No libc and no other library: there is nothing to link against, so every symbol you use must be defined in your file.
+Instruction set: ARMv8.0-A with floating point and Advanced SIMD (NEON). Not supported (rejected): CRC32, LSE atomics, dot product, half-precision, crypto (AES/SHA/PMULL) and SVE.
+Output ONLY the assembly source: no Markdown fences, no prose before or after it.
+
+Specification: Task `wc`: count the lines, words and bytes of standard input and print them.
+
+- lines = the number of newline bytes (0x0A) in the input. A final line without a newline is NOT counted.
+- words = the number of maximal non-empty runs of non-whitespace bytes. Whitespace is exactly these six bytes:
+  space 0x20, tab 0x09, newline 0x0A, vertical tab 0x0B, form feed 0x0C, carriage return 0x0D. Every other byte
+  value (including 0x00, other control bytes and bytes >= 0x80) is a word byte.
+- bytes = the total number of input bytes.
+
+Output exactly one line: the three counts in decimal, separated by single spaces, followed by a newline:
+`<lines> <words> <bytes>\n` (no padding, no leading zeros; zero is printed as `0`). Example: input
+`hello world\nbye` prints `1 3 15\n`; empty input prints `0 0 0\n`.
+
+Limits: the input is at most 65536 bytes. Exit status 0.
+
+Input and output (applies to this whole task):
+- The input is the complete contents of standard input (file descriptor 0). Read it with `read` until `read`
+  returns 0 (end of input). A `read` may return FEWER bytes than requested, at any position (in the middle of a
+  line, a token or a group of bytes), so keep calling it; only a return value of 0 means end of input.
+- Write the output to standard output (file descriptor 1). Only the bytes this task describes may appear on
+  standard output (standard error is ignored). Every output byte must be written before the program exits.
+- Finish with `exit` (or `exit_group`) and the exit status this task gives. The program must not run off the end
+  of its code or crash.
+
+Your previous attempt was:
+<previous>
+.section .rodata
+space: .ascii " "
+newline: .ascii "\n"
+
+.section .bss
+.align 4
+input_buf: .space 4096
+output_buf: .space 64
+lines: .word 0
+words: .word 0
+bytes: .word 0
+in_word: .byte 0
+
+.section .text
+.globl _start
+_start:
+read_loop:
+    mov w8, #63
+    mov w0, #0
+    adrp x1, input_buf
+    add x1, x1, :lo12:input_buf
+    mov w2, #4096
+    svc #0
+
+    cmp x0, #0
+    beq done_reading
+
+    mov x20, x0
+    adrp x19, input_buf
+    add x19, x19, :lo12:input_buf
+
+process_loop:
+    ldrb w21, [x19], #1
+    sub x20, x20, #1
+
+    adrp x0, bytes
+    add x0, x0, :lo12:bytes
+    ldr w1, [x0]
+    add w1, w1, #1
+    str w1, [x0]
+
+    cmp w21, #0x0A
+    bne not_newline
+    adrp x0, lines
+    add x0, x0, :lo12:lines
+    ldr w1, [x0]
+    add w1, w1, #1
+    str w1, [x0]
+not_newline:
+
+    cmp w21, #0x20
+    beq is_whitespace
+    cmp w21, #0x09
+    beq is_whitespace
+    cmp w21, #0x0B
+    beq is_whitespace
+    cmp w21, #0x0C
+    beq is_whitespace
+    cmp w21, #0x0D
+    beq is_whitespace
+    cmp w21, #0x0A
+    beq is_whitespace
+    b not_whitespace
+
+is_whitespace:
+    adrp x0, in_word
+    add x0, x0, :lo12:in_word
+    ldrb w1, [x0]
+    cbz w1, 1f
+    strb wzr, [x0]
+1:
+    cbnz x20, process_loop
+    b read_loop
+
+not_whitespace:
+    adrp x0, in_word
+    add x0, x0, :lo12:in_word
+    ldrb w1, [x0]
+    cbnz w1, 1f
+    adrp x2, words
+    add x2, x2, :lo12:words
+    ldr w3, [x2]
+    add w3, w3, #1
+    str w3, [x2]
+    mov w1, #1
+    strb w1, [x0]
+1:
+    cbnz x20, process_loop
+    b read_loop
+
+done_reading:
+    stp x19, x20, [sp, #-16]!
+    stp x21, x22, [sp, #-16]!
+
+    adrp x0, lines
+    add x0, x0, :lo12:lines
+    ldr w0, [x0]
+    adrp x1, output_buf
+    add x1, x1, :lo12:output_buf
+    bl uint_to_string
+    mov x22, x0
+    adrp x21, output_buf
+    add x21, x21, :lo12:output_buf
+
+    mov w8, #64
+    mov w0, #1
+    mov x1, x21
+    mov x2, x22
+    svc #0
+
+    mov w8, #64
+    mov w0, #1
+    adrp x1, space
+    add x1, x1, :lo12:space
+    mov w2, #1
+    svc #0
+
+    adrp x0, words
+    add x0, x0, :lo12:words
+    ldr w0, [x0]
+    adrp x1, output_buf
+    add x1, x1, :lo12:output_buf
+    bl uint_to_string
+    mov x22, x0
+
+    mov w8, #64
+    mov w0, #1
+    adrp x1, output_buf
+    add x1, x1, :lo12:output_buf
+    mov x2, x22
+    svc #0
+
+    mov w8, #64
+    mov w0, #1
+    adrp x1, space
+    add x1, x1, :lo12:space
+    mov w2, #1
+    svc #0
+
+    adrp x0, bytes
+    add x0, x0, :lo12:bytes
+    ldr w0, [x0]
+    adrp x1, output_buf
+    add x1, x1, :lo12:output_buf
+    bl uint_to_string
+    mov x22, x0
+
+    mov w8, #64
+    mov w0, #1
+    adrp x1, output_buf
+    add x1, x1, :lo12:output_buf
+    mov x2, x22
+    svc #0
+
+    mov w8, #64
+    mov w0, #1
+    adrp x1, newline
+    add x1, x1, :lo12:newline
+    mov w2, #1
+    svc #0
+
+    ldp x21, x22, [sp], #16
+    ldp x19, x20, [sp], #16
+
+    mov w8, #93
+    mov w0, #0
+    svc #0
+
+uint_to_string:
+    stp x29, x30, [sp, #-16]!
+    mov x29, sp
+
+    cmp w0, #0
+    bne 1f
+    mov w1, #'0'
+    strb w1, [x1]
+    mov x0, #1
+    b 9f
+
+1:
+    mov x2, x1
+    add x1, x1, #10
+    mov w3, #10
+    mov w4, w0
+
+2:
+    udiv w5, w4, w3
+    mul w6, w5, w3
+    sub w6, w4, w6
+    add w6, w6, #'0'
+    strb w6, [x1, #-1]!
+    mov w4, w5
+    cbnz w4, 2b
+
+    add x3, x2, #10
+    sub x7, x3, x1
+
+    mov x0, x2
+    mov x5, x1
+    mov x6, x7
+3:
+    ldrb w4, [x5], #1
+    strb w4, [x0], #1
+    subs x6, x6, #1
+    b.ne 3b
+
+    mov x0, x7
+
+9:
+    ldp x29, x30, [sp], #16
+    ret
+</previous>
+It failed:
+<failure>
+GNU as rejected the program:
+line 9: .word is not allowed in .bss (only .zero/.space/.skip and alignment)
+</failure>
+Write a corrected, complete version. Same output format; output only the code.

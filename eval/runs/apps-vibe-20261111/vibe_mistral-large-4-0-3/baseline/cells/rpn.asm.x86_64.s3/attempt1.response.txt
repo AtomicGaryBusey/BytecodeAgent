@@ -1,0 +1,280 @@
+.equ INBUF_SIZE, 65536
+.text
+.globl _start
+
+# rax = syscall number, rdi/rsi/rdx = args, rcx and r11 clobbered by syscall
+_start:
+    lea r15, [rip + inbuf]          # r15 = input end (filled after reading)
+    xor r12, r12                    # r12 = total bytes read
+read_loop:
+    xor eax, eax                    # SYS_read = 0
+    xor edi, edi                    # fd 0
+    lea rsi, [rip + inbuf]
+    add rsi, r12                    # buf = inbuf + r12
+    mov edx, INBUF_SIZE
+    sub rdx, r12                    # count = remaining space
+    syscall
+    test rax, rax
+    jz read_done                    # 0 = end of input
+    add r12, rax
+    jmp read_loop
+read_done:
+    add r15, r12                    # r15 = inbuf + length
+    lea rsi, [rip + inbuf]          # rsi = scan pointer
+    jmp process_loop
+
+# rsi = current position, r15 = end of input
+process_loop:
+    cmp rsi, r15
+    jae all_done                    # no more lines (empty input or trailing newline)
+    mov rdi, rsi                    # rdi = scan for end of line
+scan_nl:
+    cmp rdi, r15
+    jae line_have                   # line ends at EOF (no final newline)
+    cmp byte ptr [rdi], 0x0A
+    je line_have
+    inc rdi
+    jmp scan_nl
+line_have:
+    # line = [rsi, rdi)
+    lea rbx, [rip + stk]            # rbx = value stack base
+    lea r8, [rip + stk]             # r8 = value stack pointer
+line_tokens:
+    cmp rsi, rdi
+    jae line_finish
+    movzx eax, byte ptr [rsi]
+    cmp al, 0x20                    # space
+    je sep_adv
+    cmp al, 0x09                    # tab
+    je sep_adv
+    jmp token_begin
+sep_adv:
+    inc rsi
+    jmp line_tokens
+token_begin:
+    mov r9, rsi                     # r9 = token start
+tok_scan:
+    cmp rsi, rdi
+    jae tok_have
+    movzx eax, byte ptr [rsi]
+    cmp al, 0x20
+    je tok_have
+    cmp al, 0x09
+    je tok_have
+    inc rsi
+    jmp tok_scan
+tok_have:
+    mov r10, rsi
+    sub r10, r9                     # r10 = token length
+    movzx eax, byte ptr [r9]
+    cmp al, 0x2D                    # '-'
+    je tok_minus
+    cmp al, 0x2B                    # '+'
+    je tok_plus
+    cmp al, 0x2A                    # '*'
+    je tok_mul
+    cmp al, 0x2F                    # '/'
+    je tok_div
+    cmp al, 0x25                    # '%'
+    je tok_mod
+    sub al, 0x30                    # must be a digit
+    cmp al, 9
+    ja line_error
+    cmp r10, 18                     # at most 18 digits
+    ja line_error
+    call parse_digits               # rax = value, r11 = 0 ok / 1 bad
+    test r11d, r11d
+    jnz line_error
+    jmp push_rax
+tok_minus:
+    cmp r10, 1
+    je op_sub                       # lone '-' is subtraction
+    inc r9                          # digits start after '-'
+    dec r10
+    cmp r10, 18
+    ja line_error
+    call parse_digits
+    test r11d, r11d
+    jnz line_error
+    neg rax
+    jmp push_rax
+tok_plus:
+    cmp r10, 1
+    jne line_error
+    jmp op_add
+tok_mul:
+    cmp r10, 1
+    jne line_error
+    jmp op_mul
+tok_div:
+    cmp r10, 1
+    jne line_error
+    jmp op_div
+tok_mod:
+    cmp r10, 1
+    jne line_error
+    jmp op_mod
+
+push_rax:
+    mov [r8], rax
+    add r8, 8
+    jmp line_tokens
+
+op_add:
+    lea rcx, [rbx + 16]
+    cmp r8, rcx
+    jb line_error                   # fewer than two values
+    sub r8, 8
+    mov rdx, [r8]                   # b
+    sub r8, 8
+    mov rax, [r8]                   # a
+    add rax, rdx
+    jmp push_rax
+op_sub:
+    lea rcx, [rbx + 16]
+    cmp r8, rcx
+    jb line_error
+    sub r8, 8
+    mov rdx, [r8]
+    sub r8, 8
+    mov rax, [r8]
+    sub rax, rdx
+    jmp push_rax
+op_mul:
+    lea rcx, [rbx + 16]
+    cmp r8, rcx
+    jb line_error
+    sub r8, 8
+    mov rdx, [r8]
+    sub r8, 8
+    mov rax, [r8]
+    imul rax, rdx
+    jmp push_rax
+op_div:
+    lea rcx, [rbx + 16]
+    cmp r8, rcx
+    jb line_error
+    sub r8, 8
+    mov r11, [r8]                   # b
+    sub r8, 8
+    mov rax, [r8]                   # a
+    test r11, r11
+    jz line_error                   # division by zero
+    mov rcx, 0x8000000000000000
+    cmp rax, rcx
+    jne div_ok
+    cmp r11, -1
+    je line_error                   # INT64_MIN / -1 overflow
+div_ok:
+    cqo
+    idiv r11                        # quotient in rax, remainder in rdx
+    jmp push_rax
+op_mod:
+    lea rcx, [rbx + 16]
+    cmp r8, rcx
+    jb line_error
+    sub r8, 8
+    mov r11, [r8]
+    sub r8, 8
+    mov rax, [r8]
+    test r11, r11
+    jz line_error
+    mov rcx, 0x8000000000000000
+    cmp rax, rcx
+    jne mod_ok
+    cmp r11, -1
+    je line_error
+mod_ok:
+    cqo
+    idiv r11
+    mov rax, rdx                    # remainder has sign of a
+    jmp push_rax
+
+line_finish:
+    lea rcx, [rbx + 8]
+    cmp r8, rcx
+    jne line_error                  # stack must hold exactly one value
+    sub r8, 8
+    mov rax, [r8]
+    call print_num
+    jmp line_advance
+line_error:
+    mov eax, 1                      # SYS_write
+    mov edi, 1                      # fd 1
+    lea rsi, [rip + errmsg]
+    mov edx, 6                      # "error\n"
+    syscall
+line_advance:
+    cmp rdi, r15
+    jae all_done                    # last line had no trailing newline
+    lea rsi, [rdi + 1]              # next line starts after the newline
+    jmp process_loop
+all_done:
+    mov edi, 0
+    mov eax, 60                     # SYS_exit
+    syscall
+
+# parse r10 decimal digits at [r9] into rax; r11 = 0 on success, 1 on invalid digit
+parse_digits:
+    xor eax, eax
+    mov rcx, r10
+    xor r11d, r11d
+pd_loop:
+    movzx edx, byte ptr [r9]
+    sub edx, 0x30
+    cmp edx, 9
+    ja pd_bad
+    imul rax, rax, 10
+    add rax, rdx
+    inc r9
+    dec rcx
+    jnz pd_loop
+    ret
+pd_bad:
+    mov r11d, 1
+    ret
+
+# print rax as signed decimal followed by newline to stdout
+print_num:
+    push rdi
+    lea r10, [rip + numbuf + 32]
+    mov byte ptr [r10 - 1], 0x0A
+    dec r10
+    test rax, rax
+    jns pn_nosign
+    neg rax                         # magnitude as unsigned (INT64_MIN ok)
+    mov byte ptr [r10 - 1], 0x2D
+    dec r10
+pn_nosign:
+    mov ecx, 10
+pn_loop:
+    xor edx, edx
+    div rcx
+    add dl, 0x30
+    mov byte ptr [r10 - 1], dl
+    dec r10
+    test rax, rax
+    jnz pn_loop
+    mov rsi, r10
+    lea rdx, [rip + numbuf + 32]
+    sub rdx, r10                    # length including newline
+    mov edi, 1
+    mov eax, 1                      # SYS_write
+    syscall
+    pop rdi
+    ret
+
+.section .rodata
+errmsg:
+    .ascii "error\n"
+
+.bss
+.balign 8
+inbuf:
+    .zero INBUF_SIZE
+.balign 8
+stk:
+    .zero 524288                    # 65536 stack slots
+.balign 8
+numbuf:
+    .zero 32

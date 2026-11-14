@@ -1,0 +1,202 @@
+.globl _start
+
+.section .rodata
+nl:
+    .byte 0x0a
+
+.section .bss
+.balign 8
+buf:
+    .zero 32776          # 32768 input bytes + 8 slack so qword reads stay in bounds
+.balign 8
+ptrs:
+    .zero 8000           # up to 1000 line start pointers
+.balign 8
+lens:
+    .zero 8000           # up to 1000 line lengths
+
+.text
+_start:
+    xor ebx, ebx                  # rbx = total bytes read so far
+.read_loop:
+    mov eax, 0                    # read
+    xor edi, edi                  # fd 0
+    lea rsi, [rip + buf]
+    add rsi, rbx                  # buf + total
+    mov edx, 32768
+    sub edx, ebx                  # remaining capacity
+    syscall
+    test rax, rax
+    jle .read_done                # 0 = EOF
+    add rbx, rax
+    cmp rbx, 32768
+    jb .read_loop
+.read_done:
+    lea r15, [rip + buf]          # r15 = buf base
+    xor r12d, r12d                # r12 = line count n
+    xor r13d, r13d                # r13 = scan position
+    test rbx, rbx
+    jz .split_done                # empty input: no lines
+.split_loop:
+    cmp r13, rbx
+    jae .split_done
+    mov r14, r13
+.scan:
+    cmp r14, rbx
+    jae .no_nl                    # no newline: final line runs to end of input
+    movzx eax, byte ptr [r15 + r14]
+    cmp al, 0x0a
+    je .found
+    inc r14
+    jmp .scan
+.found:
+    lea rax, [r15 + r13]          # line start
+    mov qword ptr [ptrs + r12*8], rax
+    mov rax, r14
+    sub rax, r13                  # line length (newline excluded)
+    mov qword ptr [lens + r12*8], rax
+    inc r12
+    lea r13, [r14 + 1]
+    jmp .split_loop
+.no_nl:
+    lea rax, [r15 + r13]
+    mov qword ptr [ptrs + r12*8], rax
+    mov rax, rbx
+    sub rax, r13
+    mov qword ptr [lens + r12*8], rax
+    inc r12
+.split_done:
+    call sort
+    xor r13d, r13d                # output index
+.out_loop:
+    cmp r13, r12
+    jae .exit
+    mov rsi, qword ptr [ptrs + r13*8]
+    mov rdx, qword ptr [lens + r13*8]
+    call write_all                # the line itself
+    lea rsi, [rip + nl]
+    mov edx, 1
+    call write_all                # trailing newline
+    inc r13
+    jmp .out_loop
+.exit:
+    mov eax, 60                   # exit
+    xor edi, edi                  # status 0
+    syscall
+
+# write_all: write rdx bytes from rsi to fd 1; clobbers rax, rdi, rsi, rdx, rcx, r11
+write_all:
+    test rdx, rdx
+    jz .wa_done
+    mov eax, 1                    # write
+    mov edi, 1                    # fd 1
+    syscall
+    test rax, rax
+    jle .wa_done
+    add rsi, rax
+    sub rdx, rax
+    jmp write_all
+.wa_done:
+    ret
+
+# sort: insertion sort of ptrs[]/lens[] by byte-wise line order; preserves rbx, r12
+sort:
+    cmp r12, 1
+    jbe .s_done
+    mov r13, 1                    # i
+.s_i:
+    cmp r13, r12
+    jae .s_done
+    mov r14, qword ptr [ptrs + r13*8]   # key pointer
+    mov r15, qword ptr [lens + r13*8]   # key length
+    mov rbp, r13
+    dec rbp                           # j = i-1
+.s_j:
+    test rbp, rbp
+    js .s_place
+    mov rdi, r14
+    mov rsi, r15
+    mov rdx, qword ptr [ptrs + rbp*8]
+    mov rcx, qword ptr [lens + rbp*8]
+    call compare
+    test eax, eax
+    jge .s_place                  # key >= element: place here
+    mov rax, qword ptr [ptrs + rbp*8]
+    lea rdi, [rbp + 1]
+    mov qword ptr [ptrs + rdi*8], rax
+    mov rax, qword ptr [lens + rbp*8]
+    mov qword ptr [lens + rdi*8], rax
+    dec rbp
+    jmp .s_j
+.s_place:
+    inc rbp
+    mov qword ptr [ptrs + rbp*8], r14
+    mov qword ptr [lens + rbp*8], r15
+    inc r13
+    jmp .s_i
+.s_done:
+    ret
+
+# compare: rdi=pa, rsi=la, rdx=pb, rcx=lb; returns eax <0, 0, >0
+# byte-wise unsigned comparison of the first min(la,lb) bytes, then shorter first
+# clobbers rax, rcx, rdx, rsi, rdi, r8, r9, r10, r11
+compare:
+    mov r8, rdi                   # pa
+    mov r9, rsi                   # la
+    mov r10, rdx                  # pb
+    mov r11, rcx                  # lb
+    mov rax, r9
+    cmp r9, r11
+    cmova rax, r11                # rax = m = min(la, lb)
+    mov rsi, rax
+    shr rsi, 3                    # rsi = number of full qwords
+    xor ecx, ecx                  # qword index
+.c_q:
+    cmp rcx, rsi
+    jae .c_tail
+    mov rdi, qword ptr [r8 + rcx*8]
+    mov rdx, qword ptr [r10 + rcx*8]
+    cmp rdi, rdx
+    jne .c_qdiff
+    inc rcx
+    jmp .c_q
+.c_qdiff:
+    mov rax, rdi
+    xor rax, rdx                  # nonzero difference
+    bsf rax, rax                  # bit index of first differing bit
+    mov rdx, rax
+    shr rdx, 3                    # byte index inside the qword
+    lea rdi, [r8 + rcx*8]
+    movzx edi, byte ptr [rdi + rdx]
+    lea rsi, [r10 + rcx*8]
+    movzx esi, byte ptr [rsi + rdx]
+    cmp edi, esi
+    jb .c_less
+    ja .c_greater
+.c_tail:
+    mov rsi, r9
+    cmp r9, r11
+    cmova rsi, r11                # rsi = m
+    shl rcx, 3                    # rcx = nq*8 = first tail byte offset
+.c_tl:
+    cmp rcx, rsi
+    jae .c_len
+    movzx rdi, byte ptr [r8 + rcx]
+    movzx rdx, byte ptr [r10 + rcx]
+    cmp rdi, rdx
+    jb .c_less
+    ja .c_greater
+    inc rcx
+    jmp .c_tl
+.c_len:
+    cmp r9, r11
+    jb .c_less
+    ja .c_greater
+    xor eax, eax
+    ret
+.c_less:
+    mov eax, -1
+    ret
+.c_greater:
+    mov eax, 1
+    ret
