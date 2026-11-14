@@ -1,0 +1,160 @@
+Implement the function `int64_t mp_mul(const uint64_t *a, int64_t na, const uint64_t *b, int64_t nb, uint64_t *r)`.
+
+Target: x86-64, Linux System V ABI. Integer/pointer arguments in rdi, rsi, rdx, rcx, r8, r9; 64-bit result in rax. Callee-saved: rbx, rbp, r12, r13, r14, r15 (restore them if you use them); all other registers may be clobbered. rsp is 16-byte aligned before the call, so it is 8 mod 16 at entry; it must be back to its entry value when you return with ret. Never write to the caller's frame (at or above the return address). More ABI facts: arguments beyond the sixth are passed on the stack; at entry the return address is at [rsp], the 7th argument at [rsp+8], the 8th at [rsp+16]. A call clobbers the caller-saved registers rax, rcx, rdx, rsi, rdi, r8-r11, all xmm registers and the flags, so keep values that must survive a call in callee-saved registers (saved/restored by you) or in your own stack frame. rsp must be 16-byte aligned at every call instruction (at entry rsp is 8 mod 16, so an odd number of 8-byte pushes, or `sub rsp, 8` plus any multiple of 16, re-aligns it). Anything below rsp may be overwritten by a callee. The direction flag must be clear at calls and on return.
+
+Output format: QBE intermediate language (the IL of the QBE compiler backend, c9x.me/compile). Write exactly one function, `export function l $mp_mul(...)`, taking every argument as `l` (64-bit; pointers are `l` too) and returning `l`. QBE will compile it for the target above, so you do not handle registers or the ABI yourself. Remember: every block starts with an `@label`; temporaries are `%name`; comparisons such as `csltl`/`ceql` produce a `w` value; `jnz` tests a `w`; loads/stores are `loadl`/`storel`. No data definitions, no calls, no other functions. Output only the QBE code: no Markdown fences, no prose. QBE has no high-multiply instruction: build the 128-bit product of two limbs from 32-bit halves (`and`, `shr` (logical), `mul`, `add`) with explicit carries; an unsigned carry out of `%s =l add %x, %y` is `%c =w cultl %s, %x`.
+
+Specification: Multi-precision multiplication. a holds na and b holds nb 64-bit limbs (0 <= na, nb <= 8), each an unsigned number in little-endian limb order: A = a[0] + a[1]*2^64 + ... . Write the full product A*B to r[0..na+nb-1] (little-endian limbs, every one of the na+nb limbs written, including high zero limbs; r starts out as garbage and does not overlap a or b) and return the number of significant limbs: the smallest k such that r[k..na+nb-1] are all 0 (so 0 when the product is 0, e.g. when na or nb is 0). Limbs are full unsigned 64-bit values (up to 2^64 - 1): the schoolbook method needs the full 128-bit product of two limbs and carries that propagate. Example: a = {2^64-1}, b = {2^64-1} gives r = {1, 2^64-2} and returns 2. Read only a[0..na-1], b[0..nb-1] and r[0..na+nb-1]; write only r[0..na+nb-1] (all checked).
+
+Your previous attempt was:
+<previous>
+export function l $mp_mul(l %a, l %na, l %b, l %nb, l %r) {
+@entry
+	%total =l add %na, %nb
+	jmp @itest
+
+@init
+	%ii =l phi @entry 0, @init %iin
+	%ic =w csltl %ii, %total
+	jnz %ic, @initbody, @itest
+
+@initbody
+	%ioff =l mul %ii, 8
+	%ip =l add %r, %ioff
+	storel 0, %ip
+	%iin =l add %ii, 1
+	jmp @init
+
+@itest
+	%i =l phi @init %ii, @inext %inextval
+	%icond =w csltl %i, %na
+	jnz %icond, @jtest, @scaninit
+
+@jtest
+	%j =l phi @itest 0, @jnext %jnextval
+	%carry =l phi @itest 0, @jnext %carryout
+	%jcond =w csltl %j, %nb
+	jnz %jcond, @jbody, @iend
+
+@jbody
+	%io =l mul %i, 8
+	%jp =l mul %j, 8
+	%ap0 =l add %a, %io
+	%bp0 =l add %b, %jp
+	%av =l loadl %ap0
+	%bv =l loadl %bp0
+
+	%mask =l 4294967295
+	%a0 =l and %av, %mask
+	%a1 =l shr %av, 32
+	%b0 =l and %bv, %mask
+	%b1 =l shr %bv, 32
+
+	%p00 =l mul %a0, %b0
+	%p01 =l mul %a0, %b1
+	%p10 =l mul %a1, %b0
+	%p11 =l mul %a1, %b1
+
+	%p01l =l shl %p01, 32
+	%t0 =l add %p00, %p01l
+	%ct0 =w cultl %t0, %p00
+	%p10l =l shl %p10, 32
+	%t1 =l add %t0, %p10l
+	%ct1 =w cultl %t1, %t0
+
+	%p01h =l shr %p01, 32
+	%p10h =l shr %p10, 32
+	%h0 =l add %p11, %p01h
+	%h1 =l add %h0, %p10h
+	%ct0l =l extuw %ct0
+	%ct1l =l extuw %ct1
+	%h2 =l add %h1, %ct0l
+	%hi =l add %h2, %ct1l
+	%lo =l %t1
+
+	%k =l add %i, %j
+	%ko =l mul %k, 8
+	%kp =l add %r, %ko
+	%rv =l loadl %kp
+	%s0 =l add %rv, %lo
+	%c0 =w cultl %s0, %rv
+	%s1 =l add %s0, %carry
+	%c1 =w cultl %s1, %s0
+	storel %s1, %kp
+
+	%c0l =l extuw %c0
+	%c1l =l extuw %c1
+	%hc0 =l add %hi, %c0l
+	%carryout =l add %hc0, %c1l
+	%jnextval =l add %j, 1
+	jmp @jtest
+
+@iend
+	%endidx =l add %i, %nb
+	%endoff =l mul %endidx, 8
+	%endp =l add %r, %endoff
+	%endv =l loadl %endp
+	%ends =l add %endv, %carry
+	%endc =w cultl %ends, %endv
+	storel %ends, %endp
+	%pidx0 =l add %endidx, 1
+	jmp @pcheck
+
+@pcheck
+	%pidx =l phi @iend %pidx0, @pnext %pidxnext
+	%pcarry =w phi @iend %endc, @pnext %pcarrynext
+	%pvalid =w csltl %pidx, %total
+	jnz %pvalid, @pnonzero, @inext
+
+@pnonzero
+	%pz =w ceql %pcarry, 0
+	jnz %pz, @inext, @pbody
+
+@pbody
+	%poff =l mul %pidx, 8
+	%pp =l add %r, %poff
+	%pv =l loadl %pp
+	%ps =l add %pv, %pcarry
+	%pcarrynext =w cultl %ps, %pv
+	storel %ps, %pp
+	%pidxnext =l add %pidx, 1
+	jmp @pcheck
+
+@inext
+	%inextval =l add %i, 1
+	jmp @itest
+
+@scaninit
+	%scanstart =l %total
+	jmp @scan
+
+@scan
+	%sk =l phi @scaninit %scanstart, @scanloop %sknext
+	%sgt =w csgtl %sk, 0
+	jnz %sgt, @scanbody, @zero
+
+@scanbody
+	%skm =l sub %sk, 1
+	%sko =l mul %skm, 8
+	%skp =l add %r, %sko
+	%skv =l loadl %skp
+	%skz =w ceql %skv, 0
+	jnz %skz, @scanloop, @return
+
+@scanloop
+	%sknext =l sub %sk, 1
+	jmp @scan
+
+@return
+	ret %sk
+
+@zero
+	ret 0
+}
+</previous>
+It failed:
+<failure>
+Compilation failed at stage qbe:
+qbe:-:38: invalid instruction
+</failure>
+Write a corrected, complete version. Same output format; output only the code.

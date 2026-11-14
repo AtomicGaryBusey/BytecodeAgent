@@ -1,0 +1,121 @@
+Implement the function `int64_t mp_mul(const uint64_t *a, int64_t na, const uint64_t *b, int64_t nb, uint64_t *r)`.
+
+Target: AArch64 (ARMv8-A), Linux AAPCS64. Integer/pointer arguments in x0-x7; 64-bit result in x0. Callee-saved: x19-x28, x29 (frame pointer) and d8-d15 (restore them if you use them); x9-x15 are free scratch registers. sp must stay 16-byte aligned and be back to its entry value when you return with ret (return address in x30). More ABI facts: arguments beyond the eighth are passed on the stack (the 9th at [sp] at entry). A call (bl/blr) overwrites x30, so save x30 (e.g. stp x29, x30, [sp, #-16]!) before calling and restore it before ret. A call clobbers the caller-saved registers x0-x18, x30, v0-v7 and v16-v31 (and the upper halves of v8-v15) and the flags, so keep values that must survive a call in callee-saved registers x19-x28 (saved/restored by you) or in your own stack frame. sp must be 16-byte aligned at every call (and whenever it is used as a base register). Anything below sp may be overwritten by a callee.
+
+Output format: QBE intermediate language (the IL of the QBE compiler backend, c9x.me/compile). Write exactly one function, `export function l $mp_mul(...)`, taking every argument as `l` (64-bit; pointers are `l` too) and returning `l`. QBE will compile it for the target above, so you do not handle registers or the ABI yourself. Remember: every block starts with an `@label`; temporaries are `%name`; comparisons such as `csltl`/`ceql` produce a `w` value; `jnz` tests a `w`; loads/stores are `loadl`/`storel`. No data definitions, no calls, no other functions. Output only the QBE code: no Markdown fences, no prose. QBE has no high-multiply instruction: build the 128-bit product of two limbs from 32-bit halves (`and`, `shr` (logical), `mul`, `add`) with explicit carries; an unsigned carry out of `%s =l add %x, %y` is `%c =w cultl %s, %x`.
+
+Specification: Multi-precision multiplication. a holds na and b holds nb 64-bit limbs (0 <= na, nb <= 8), each an unsigned number in little-endian limb order: A = a[0] + a[1]*2^64 + ... . Write the full product A*B to r[0..na+nb-1] (little-endian limbs, every one of the na+nb limbs written, including high zero limbs; r starts out as garbage and does not overlap a or b) and return the number of significant limbs: the smallest k such that r[k..na+nb-1] are all 0 (so 0 when the product is 0, e.g. when na or nb is 0). Limbs are full unsigned 64-bit values (up to 2^64 - 1): the schoolbook method needs the full 128-bit product of two limbs and carries that propagate. Example: a = {2^64-1}, b = {2^64-1} gives r = {1, 2^64-2} and returns 2. Read only a[0..na-1], b[0..nb-1] and r[0..na+nb-1]; write only r[0..na+nb-1] (all checked).
+
+Your previous attempt was:
+<previous>
+export function l mp_mul(l %a, l %na, l %b, l %nb, l %r) {
+@entry:
+	%len = add %na, %nb
+	%zero = 0
+	jmp @zero_r
+
+@zero_r:
+	%z = phi l %zero, @entry, %z_next, @z_body
+	%cond_z = csltl %z, %len
+	jnz w %cond_z, @z_body
+	jmp @outer_start
+
+@z_body:
+	%off_z = shl %z, 3
+	%addr_z = add %r, %off_z
+	storel %zero, %addr_z
+	%z_next = add %z, 1
+	jmp @zero_r
+
+@outer_start:
+	%i = phi l %zero, @zero_r, %i_next, @outer_inc
+	%cond_i = csltl %i, %na
+	jnz w %cond_i, @outer_body
+	; all done, proceed to trim
+	jmp @trim_loop
+
+@outer_inc:
+	%i_next = add %i, 1
+	jmp @outer_start
+
+@outer_body:
+	%j = phi l %zero, @outer_body, %j_next, @inner_inc
+	%carry = phi l %zero, @outer_body, %carry_next, @inner_inc
+	%cond_j = csltl %j, %nb
+	jnz w %cond_j, @inner_body
+	; inner loop finished, store remaining carry
+	%idxc = add %i, %nb
+	%offc = shl %idxc, 3
+	%addrc = add %r, %offc
+	%oldc = loadl %addrc
+	%newc = add %oldc, %carry
+	storel %newc, %addrc
+	jmp @outer_inc
+
+@inner_inc:
+	%j_next = add %j, 1
+	%carry_next = %new_carry
+	jmp @outer_body
+
+@inner_body:
+	%off_i = shl %i, 3
+	%addr_ai = add %a, %off_i
+	%ai = loadl %addr_ai
+	%off_j = shl %j, 3
+	%addr_bj = add %b, %off_j
+	%bj = loadl %addr_bj
+	%ai_lo = and %ai, 0xffffffff
+	%ai_hi = shr %ai, 32
+	%bj_lo = and %bj, 0xffffffff
+	%bj_hi = shr %bj, 32
+	%p0 = mul %ai_lo, %bj_lo
+	%p1 = mul %ai_lo, %bj_hi
+	%p2 = mul %ai_hi, %bj_lo
+	%p3 = mul %ai_hi, %bj_hi
+	%mid = add %p1, %p2
+	%mid_lo = and %mid, 0xffffffff
+	%mid_hi = shr %mid, 32
+	%mid_lo_sh = shl %mid_lo, 32
+	%low = add %p0, %mid_lo_sh
+	%c_low1 = w cultl %low, %p0
+	%high_mid = add %p3, %mid_hi
+	%high = add %high_mid, %c_low1
+	%idx = add %i, %j
+	%off_idx = shl %idx, 3
+	%addr_r = add %r, %off_idx
+	%old = loadl %addr_r
+	%sum0 = add %old, %low
+	%c0 = w cultl %sum0, %old
+	%sum = add %sum0, %carry
+	%c1 = w cultl %sum, %sum0
+	%new_carry = add %high, %c0
+	%new_carry = add %new_carry, %c1
+	storel %sum, %addr_r
+	jmp @inner_inc
+
+@trim_loop:
+	%k = phi l %len, @trim_loop, %k_next, @trim_dec
+	%cond_k = ceql %k, %zero
+	jnz w %cond_k, @trim_done
+	%km1 = sub %k, 1
+	%offk = shl %km1, 3
+	%addrk = add %r, %offk
+	%valk = loadl %addrk
+	%iszero = ceql %valk, %zero
+	jnz w %iszero, @trim_dec
+	jmp @trim_done
+
+@trim_dec:
+	%k_next = sub %k, 1
+	jmp @trim_loop
+
+@trim_done:
+	ret %k
+}
+</previous>
+It failed:
+<failure>
+Compilation failed at stage qbe:
+qbe:-:1: unknown keyword mp_mul
+</failure>
+Write a corrected, complete version. Same output format; output only the code.

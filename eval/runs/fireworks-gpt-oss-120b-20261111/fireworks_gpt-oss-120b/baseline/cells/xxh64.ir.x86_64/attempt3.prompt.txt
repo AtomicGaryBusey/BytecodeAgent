@@ -1,0 +1,226 @@
+Implement the function `uint64_t xxh64(const uint8_t *p, int64_t n, uint64_t seed)`.
+
+Target: x86-64, Linux System V ABI. Integer/pointer arguments in rdi, rsi, rdx, rcx, r8, r9; 64-bit result in rax. Callee-saved: rbx, rbp, r12, r13, r14, r15 (restore them if you use them); all other registers may be clobbered. rsp is 16-byte aligned before the call, so it is 8 mod 16 at entry; it must be back to its entry value when you return with ret. Never write to the caller's frame (at or above the return address). More ABI facts: arguments beyond the sixth are passed on the stack; at entry the return address is at [rsp], the 7th argument at [rsp+8], the 8th at [rsp+16]. A call clobbers the caller-saved registers rax, rcx, rdx, rsi, rdi, r8-r11, all xmm registers and the flags, so keep values that must survive a call in callee-saved registers (saved/restored by you) or in your own stack frame. rsp must be 16-byte aligned at every call instruction (at entry rsp is 8 mod 16, so an odd number of 8-byte pushes, or `sub rsp, 8` plus any multiple of 16, re-aligns it). Anything below rsp may be overwritten by a callee. The direction flag must be clear at calls and on return.
+
+Output format: QBE intermediate language (the IL of the QBE compiler backend, c9x.me/compile). Write exactly one function, `export function l $xxh64(...)`, taking every argument as `l` (64-bit; pointers are `l` too) and returning `l`. QBE will compile it for the target above, so you do not handle registers or the ABI yourself. Remember: every block starts with an `@label`; temporaries are `%name`; comparisons such as `csltl`/`ceql` produce a `w` value; `jnz` tests a `w`; loads/stores are `loadl`/`storel`. No data definitions, no calls, no other functions. Output only the QBE code: no Markdown fences, no prose. QBE has no rotate instruction: rotl(x, r) = (x shl r) or (x shr (64 - r)) (`shr` is logical); `loadl`/`loadw` work on unaligned addresses; zero-extend a 32-bit load with `%v =l loaduw %q`; a 64-bit constant is written as a decimal integer (e.g. -7046029288634856825 for 0x9E3779B185EBCA87).
+
+Specification: Return the 64-bit xxHash (XXH64) of the n bytes at p (0 <= n <= 300) with the given seed. All arithmetic is on unsigned 64-bit values modulo 2^64; rotl(x, r) rotates left by r bits; read64(q) / read32(q) are little-endian unsigned loads of 8 / 4 bytes (p is only byte-aligned). Constants: P1 = 0x9E3779B185EBCA87, P2 = 0xC2B2AE3D27D4EB4F, P3 = 0x165667B19E3779F9, P4 = 0x85EBCA77C2B2AE63, P5 = 0x27D4EB2F165667C5. round(acc, x) = rotl(acc + x * P2, 31) * P1; merge(h, v) = (h ^ round(0, v)) * P1 + P4. (1) If n >= 32: v1 = seed + P1 + P2, v2 = seed + P2, v3 = seed, v4 = seed - P1; for each whole 32-byte stripe at q: v1 = round(v1, read64(q)), v2 = round(v2, read64(q+8)), v3 = round(v3, read64(q+16)), v4 = round(v4, read64(q+24)); then h = rotl(v1, 1) + rotl(v2, 7) + rotl(v3, 12) + rotl(v4, 18); h = merge(h, v1); h = merge(h, v2); h = merge(h, v3); h = merge(h, v4). Otherwise h = seed + P5. (2) h += n. (3) For the remaining bytes after the stripes (fewer than 32), in order: while at least 8 remain: h ^= round(0, read64(q)); h = rotl(h, 27) * P1 + P4; q += 8. If at least 4 remain: h ^= read32(q) * P1; h = rotl(h, 23) * P2 + P3; q += 4. For each remaining byte c: h ^= c * P5; h = rotl(h, 11) * P1. (4) h ^= h >> 33; h *= P2; h ^= h >> 29; h *= P3; h ^= h >> 32 (logical shifts); return h. Check values: xxh64("", 0, 0) = 0xEF46DB3751D8E999, xxh64("abc", 3, 0) = 0x44BC2CF5AD770999. Do not read outside p[0..n-1] (reads are checked) and do not write to memory.
+
+Your previous attempt was:
+<previous>
+export function l $xxh64(l %p, l %n, l %seed) {
+@entry
+	%len =l %n
+	%ptr =l %p
+
+	%c32 =l 32
+	%c8  =l 8
+	%c4  =l 4
+	%c1  =l 1
+	%c31 =l 31
+	%c33 =l 33
+	%c27 =l 27
+	%c11 =l 11
+	%c7  =l 7
+	%c12 =l 12
+	%c18 =l 18
+	%c64m27 =l 37   // 64-27
+	%c64m11 =l 53   // 64-11
+	%c64m23 =l 41   // 64-23
+	%c64m31 =l 33   // 64-31
+
+	%P1 =l -7046029288634856825
+	%P2 =l -4417276706812521889
+	%P3 =l 1609587929392839161
+	%P4 =l -8796714831421723037
+	%P5 =l 2870177450012600261
+
+	%cond_ge32 =csltl %len, %c32
+	jnz %cond_ge32, @no_stripes
+
+	/* n >= 32: init v1..v4 */
+	%v1 =l %seed
+	%v1 =l %v1 + %P1
+	%v1 =l %v1 + %P2
+
+	%v2 =l %seed
+	%v2 =l %v2 + %P2
+
+	%v3 =l %seed
+
+	%v4 =l %seed
+	%v4 =l %v4 - %P1
+
+	%rem =l %len
+
+@stripe_loop
+	%cond =csltl %rem, %c32
+	jnz %cond, @after_stripes
+
+	/* load the four 64-bit words */
+	%addr1 =l %ptr
+	%load1 =l loadl %addr1
+	%addr2 =l %ptr + %c8
+	%load2 =l loadl %addr2
+	%addr3 =l %ptr + %c8*2
+	%load3 =l loadl %addr3
+	%addr4 =l %ptr + %c8*3
+	%load4 =l loadl %addr4
+
+	/* round(v1, load1) */
+	%t =l %load1 * %P2
+	%t =l %v1 + %t
+	%rot =l %t shl %c31
+	%rot2 =l %t shr %c64m31
+	%rot =l %rot or %rot2
+	%v1 =l %rot * %P1
+
+	/* round(v2, load2) */
+	%t =l %load2 * %P2
+	%t =l %v2 + %t
+	%rot =l %t shl %c31
+	%rot2 =l %t shr %c64m31
+	%rot =l %rot or %rot2
+	%v2 =l %rot * %P1
+
+	/* round(v3, load3) */
+	%t =l %load3 * %P2
+	%t =l %v3 + %t
+	%rot =l %t shl %c31
+	%rot2 =l %t shr %c64m31
+	%rot =l %rot or %rot2
+	%v3 =l %rot * %P1
+
+	/* round(v4, load4) */
+	%t =l %load4 * %P2
+	%t =l %v4 + %t
+	%rot =l %t shl %c31
+	%rot2 =l %t shr %c64m31
+	%rot =l %rot or %rot2
+	%v4 =l %rot * %P1
+
+	%ptr =l %ptr + %c32
+	%rem =l %rem - %c32
+	jmp @stripe_loop
+
+@after_stripes
+	/* h = rotl(v1,1)+rotl(v2,7)+rotl(v3,12)+rotl(v4,18) */
+	%rot1 =l %v1 shl %c1
+	%rot1 =l %rot1 or %v1 shr 63
+	%rot2 =l %v2 shl %c7
+	%rot2 =l %rot2 or %v2 shr 57
+	%rot3 =l %v3 shl %c12
+	%rot3 =l %rot3 or %v3 shr 52
+	%rot4 =l %v4 shl %c18
+	%rot4 =l %rot4 or %v4 shr 46
+	%h =l %rot1 + %rot2 + %rot3 + %rot4
+
+	/* merge(h, v1) */
+	%t =l %v1 * %P2
+	%rot =l %t shl %c31
+	%rot2 =l %t shr %c64m31
+	%rot =l %rot or %rot2
+	%r =l %rot * %P1
+	%h =l %h xor %r
+	%h =l %h * %P1 + %P4
+
+	/* merge(h, v2) */
+	%t =l %v2 * %P2
+	%rot =l %t shl %c31
+	%rot2 =l %t shr %c64m31
+	%rot =l %rot or %rot2
+	%r =l %rot * %P1
+	%h =l %h xor %r
+	%h =l %h * %P1 + %P4
+
+	/* merge(h, v3) */
+	%t =l %v3 * %P2
+	%rot =l %t shl %c31
+	%rot2 =l %t shr %c64m31
+	%rot =l %rot or %rot2
+	%r =l %rot * %P1
+	%h =l %h xor %r
+	%h =l %h * %P1 + %P4
+
+	/* merge(h, v4) */
+	%t =l %v4 * %P2
+	%rot =l %t shl %c31
+	%rot2 =l %t shr %c64m31
+	%rot =l %rot or %rot2
+	%r =l %rot * %P1
+	%h =l %h xor %r
+	%h =l %h * %P1 + %P4
+
+	jmp @post_stripes
+
+@no_stripes
+	%h =l %seed + %P5
+	%rem =l %len
+	%ptr =l %p
+
+@post_stripes
+	%h =l %h + %len
+
+/* process remaining 8-byte blocks */
+@while8
+	%cond =csltl %rem, %c8
+	jnz %cond, @after8
+	%addr =l %ptr
+	%load =l loadl %addr
+	/* round(0, load) */
+	%t =l %load * %P2
+	%rot =l %t shl %c31
+	%rot2 =l %t shr %c64m31
+	%rot =l %rot or %rot2
+	%rnd =l %rot * %P1
+	%h =l %h xor %rnd
+	%roth =l %h shl %c27
+	%roth =l %roth or %h shr %c64m27
+	%h =l %roth * %P1 + %P4
+	%ptr =l %ptr + %c8
+	%rem =l %rem - %c8
+	jmp @while8
+
+@after8
+	%cond =csltl %rem, %c4
+	jnz %cond, @after4
+	%addr =l %ptr
+	%load32 =l loaduw %addr
+	%tmp =l %load32 * %P1
+	%h =l %h xor %tmp
+	%roth =l %h shl %c23
+	%roth =l %roth or %h shr %c64m23
+	%h =l %roth * %P2 + %P3
+	%ptr =l %ptr + %c4
+	%rem =l %rem - %c4
+
+@after4
+@while1
+	%cond =csltl %rem, %c1
+	jnz %cond, @final
+	%addr =l %ptr
+	%byte =l loadub %addr
+	%tmp =l %byte * %P5
+	%h =l %h xor %tmp
+	%roth =l %h shl %c11
+	%roth =l %roth or %h shr %c64m11
+	%h =l %roth * %P1
+	%ptr =l %ptr + %c1
+	%rem =l %rem - %c1
+	jmp @while1
+
+@final
+	%h =l %h xor %h shr %c33
+	%h =l %h * %P2
+	%h =l %h xor %h shr %c29
+	%h =l %h * %P3
+	%h =l %h xor %h shr %c32
+	ret %h
+}
+</previous>
+It failed:
+<failure>
+Compilation failed at stage qbe:
+qbe:-:4: invalid instruction
+</failure>
+Write a corrected, complete version. Same output format; output only the code.

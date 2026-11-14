@@ -1,0 +1,156 @@
+Implement the function `int64_t packbits_encode(const uint8_t *src, int64_t n, uint8_t *out, int64_t cap)`.
+
+Target: x86-64, Linux System V ABI. Integer/pointer arguments in rdi, rsi, rdx, rcx, r8, r9; 64-bit result in rax. Callee-saved: rbx, rbp, r12, r13, r14, r15 (restore them if you use them); all other registers may be clobbered. rsp is 16-byte aligned before the call, so it is 8 mod 16 at entry; it must be back to its entry value when you return with ret. Never write to the caller's frame (at or above the return address). More ABI facts: arguments beyond the sixth are passed on the stack; at entry the return address is at [rsp], the 7th argument at [rsp+8], the 8th at [rsp+16]. A call clobbers the caller-saved registers rax, rcx, rdx, rsi, rdi, r8-r11, all xmm registers and the flags, so keep values that must survive a call in callee-saved registers (saved/restored by you) or in your own stack frame. rsp must be 16-byte aligned at every call instruction (at entry rsp is 8 mod 16, so an odd number of 8-byte pushes, or `sub rsp, 8` plus any multiple of 16, re-aligns it). Anything below rsp may be overwritten by a callee. The direction flag must be clear at calls and on return.
+
+Output format: QBE intermediate language (the IL of the QBE compiler backend, c9x.me/compile). Write exactly one function, `export function l $packbits_encode(...)`, taking every argument as `l` (64-bit; pointers are `l` too) and returning `l`. QBE will compile it for the target above, so you do not handle registers or the ABI yourself. Remember: every block starts with an `@label`; temporaries are `%name`; comparisons such as `csltl`/`ceql` produce a `w` value; `jnz` tests a `w`; loads/stores are `loadl`/`storel`. No data definitions, no calls, no other functions. Output only the QBE code: no Markdown fences, no prose. Load a byte zero-extended with `%b =w loadub %p`; store one with `storeb %c, %p`.
+
+Specification: Compress the n bytes at src (0 <= n <= 600) with PackBits run-length encoding into out, which has room for cap bytes (0 <= cap <= 1200), and return the number of bytes written. The output is a sequence of packets: a repeat packet is the header byte 257 - r (i.e. -(r-1) as a signed byte) followed by one byte b, meaning r copies of b (3 <= r <= 128); a literal packet is the header byte L - 1 followed by L bytes copied verbatim (1 <= L <= 128). Encode greedily, left to right, exactly as follows. Let run(j) be the number of consecutive bytes equal to src[j] starting at j, capped at 128. At position i: if run(i) >= 3, emit a repeat packet with r = run(i) and b = src[i], and advance i by r. Otherwise emit a literal packet of the bytes src[i..j-1], where j starts at i and advances while j < n, j - i < 128 and run(j) < 3; then set i = j. (So a pair of equal bytes stays inside a literal; a literal stops just before a run of 3 or more.) Example: "abcccd" -> 01 'a' 'b' FE 'c' 00 'd' (7 bytes). If a whole packet does not fit in the remaining room, write none of it and return -1 immediately (earlier packets stay written). Read only src[0..n-1] (never look past src[n-1] when measuring a run) and write only out[0..cap-1] (both are checked).
+
+Your previous attempt was:
+<previous>
+export function l $packbits_encode(l %src, l %n, l %out, l %cap) {
+@start
+    jump @loop
+
+@loop
+    %i =l phi @start 0, @repdone %inext, @litcopydone %jend
+    %o =l phi @start 0, @repdone %onext, @litcopydone %olit
+    %active =w csltl %i, %n
+    jnz %active, @process, @finish
+
+@process
+    %sp =l add %src, %i
+    %v =w loadub %sp
+    jump @rcheck
+
+@rcheck
+    %k =l phi @process %i, @rinc %knext
+    %has =w csltl %k, %n
+    jnz %has, @rbound, @rstop
+
+@rbound
+    %rd =l sub %k, %i
+    %under =w csltl %rd, 128
+    jnz %under, @rbyte, @rstop
+
+@rbyte
+    %kp =l add %src, %k
+    %x =w loadub %kp
+    %same =w ceql %x, %v
+    jnz %same, @rinc, @rstop
+
+@rinc
+    %knext =l add %k, 1
+    jump @rcheck
+
+@rstop
+    %rend =l phi @rcheck %k, @rbound %k, @rbyte %k
+    %r =l sub %rend, %i
+    %isrun =w cslel 3, %r
+    jnz %isrun, @repcheck, @lit
+
+@repcheck
+    %rem =l sub %cap, %o
+    %fits =w cslel 2, %rem
+    jnz %fits, @repwrite, @fail
+
+@repwrite
+    %head =l sub 257, %r
+    %headw =w copy %head
+    %op =l add %out, %o
+    storeb %headw, %op
+    %bp =l add %op, 1
+    storeb %v, %bp
+    %inext =l add %i, %r
+    %onext =l add %o, 2
+    jump @repdone
+
+@repdone
+    jump @loop
+
+@lit
+    %j =l phi @rstop %i, @litinc %jnext
+    %jn =w csltl %j, %n
+    jnz %jn, @litlen, @litdone
+
+@litlen
+    %llen =l sub %j, %i
+    %lroom =w csltl %llen, 128
+    jnz %lroom, @litv, @litdone
+
+@litv
+    %jp1 =l add %j, 1
+    %has1 =w csltl %jp1, %n
+    jnz %has1, @litv1, @litinc
+
+@litv1
+    %p0 =l add %src, %j
+    %p1 =l add %src, %jp1
+    %b0 =w loadub %p0
+    %b1 =w loadub %p1
+    %eq1 =w ceql %b0, %b1
+    jnz %eq1, @litv2, @litinc
+
+@litv2
+    %jp2 =l add %j, 2
+    %has2 =w csltl %jp2, %n
+    jnz %has2, @litv2load, @litinc
+
+@litv2load
+    %p2 =l add %src, %jp2
+    %b2 =w loadub %p2
+    %eq2 =w ceql %b0, %b2
+    jnz %eq2, @litdone, @litinc
+
+@litinc
+    %jnext =l add %j, 1
+    jump @lit
+
+@litdone
+    %jend =l phi @lit %j, @litlen %j, @litv %j, @litv2 %j, @litv2load %j
+    %llen2 =l sub %jend, %i
+    %lsize =l add %llen2, 1
+    %lrem =l sub %cap, %o
+    %lfits =w cslel %lsize, %lrem
+    jnz %lfits, @litwrite, @fail
+
+@litwrite
+    %lh =l sub %llen2, 1
+    %lhw =w copy %lh
+    %lop =l add %out, %o
+    storeb %lhw, %lop
+    %olit =l add %o, 1
+    %qstart =l copy %i
+    jump @litcopy
+
+@litcopy
+    %q =l phi @litwrite %qstart, @litcopyloop %qnext
+    %co =l phi @litwrite %olit, @litcopyloop %conext
+    %more =w csltl %q, %jend
+    jnz %more, @litcopyloop, @litcopydone
+
+@litcopyloop
+    %qp =l add %src, %q
+    %cb =w loadub %qp
+    %cop =l add %out, %co
+    storeb %cb, %cop
+    %qnext =l add %q, 1
+    %conext =l add %co, 1
+    jump @litcopy
+
+@litcopydone
+    jump @loop
+
+@finish
+    ret %o
+
+@fail
+    ret -1
+}
+</previous>
+It failed:
+<failure>
+Compilation failed at stage qbe:
+qbe:-:3: unknown keyword jump
+</failure>
+Write a corrected, complete version. Same output format; output only the code.

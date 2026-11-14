@@ -1,0 +1,147 @@
+Implement the function `int64_t mp_mul(const uint64_t *a, int64_t na, const uint64_t *b, int64_t nb, uint64_t *r)`.
+
+Target: AArch64 (ARMv8-A), Linux AAPCS64. Integer/pointer arguments in x0-x7; 64-bit result in x0. Callee-saved: x19-x28, x29 (frame pointer) and d8-d15 (restore them if you use them); x9-x15 are free scratch registers. sp must stay 16-byte aligned and be back to its entry value when you return with ret (return address in x30). More ABI facts: arguments beyond the eighth are passed on the stack (the 9th at [sp] at entry). A call (bl/blr) overwrites x30, so save x30 (e.g. stp x29, x30, [sp, #-16]!) before calling and restore it before ret. A call clobbers the caller-saved registers x0-x18, x30, v0-v7 and v16-v31 (and the upper halves of v8-v15) and the flags, so keep values that must survive a call in callee-saved registers x19-x28 (saved/restored by you) or in your own stack frame. sp must be 16-byte aligned at every call (and whenever it is used as a base register). Anything below sp may be overwritten by a callee.
+
+Output format: QBE intermediate language (the IL of the QBE compiler backend, c9x.me/compile). Write exactly one function, `export function l $mp_mul(...)`, taking every argument as `l` (64-bit; pointers are `l` too) and returning `l`. QBE will compile it for the target above, so you do not handle registers or the ABI yourself. Remember: every block starts with an `@label`; temporaries are `%name`; comparisons such as `csltl`/`ceql` produce a `w` value; `jnz` tests a `w`; loads/stores are `loadl`/`storel`. No data definitions, no calls, no other functions. Output only the QBE code: no Markdown fences, no prose. QBE has no high-multiply instruction: build the 128-bit product of two limbs from 32-bit halves (`and`, `shr` (logical), `mul`, `add`) with explicit carries; an unsigned carry out of `%s =l add %x, %y` is `%c =w cultl %s, %x`.
+
+Specification: Multi-precision multiplication. a holds na and b holds nb 64-bit limbs (0 <= na, nb <= 8), each an unsigned number in little-endian limb order: A = a[0] + a[1]*2^64 + ... . Write the full product A*B to r[0..na+nb-1] (little-endian limbs, every one of the na+nb limbs written, including high zero limbs; r starts out as garbage and does not overlap a or b) and return the number of significant limbs: the smallest k such that r[k..na+nb-1] are all 0 (so 0 when the product is 0, e.g. when na or nb is 0). Limbs are full unsigned 64-bit values (up to 2^64 - 1): the schoolbook method needs the full 128-bit product of two limbs and carries that propagate. Example: a = {2^64-1}, b = {2^64-1} gives r = {1, 2^64-2} and returns 2. Read only a[0..na-1], b[0..nb-1] and r[0..na+nb-1]; write only r[0..na+nb-1] (all checked).
+
+Your previous attempt was:
+<previous>
+export function l $mp_mul(l %a, l %na, l %b, l %nb, l %r) {
+@entry:
+	%len = add %na, %nb
+	%zero = 0
+	%i0 = phi l %zero, %i_next
+	%cond_i = csltl %i0, %na
+	jnz w %cond_i, @i_body
+	jmp @zero_r
+
+@zero_r:                     # zero r[0..len-1]
+	%idxz0 = phi l %zero, %idxz_next
+	%condz = csltl %idxz0, %len
+	jnz w %condz, @z_body
+	jmp @after_i
+
+@z_body:
+	%offz = shl %idxz0, 3
+	%addrz = add %r, %offz
+	storel %zero, %addrz
+	%idxz_next = add %idxz0, 1
+	jmp @zero_r
+
+@i_body:                     # outer loop i
+	%j0 = phi l %zero, %j_next
+	%carry0 = phi l %zero, %carry_next
+	%cond_j = csltl %j0, %nb
+	jnz w %cond_j, @j_body
+	# store remaining carry to r[i+nb]
+	%idxc = add %i0, %nb
+	%offc = shl %idxc, 3
+	%addrc = add %r, %offc
+	%oldc = loadl %addrc
+	%newc = add %oldc, %carry0
+	storel %newc, %addrc
+	%i_next = add %i0, 1
+	jmp @entry
+
+@j_body:                     # inner multiplication for a[i] * b[j]
+	# load a[i]
+	%off_i = shl %i0, 3
+	%addr_a = add %a, %off_i
+	%ai = loadl %addr_a
+	# load b[j]
+	%off_j = shl %j0, 3
+	%addr_b = add %b, %off_j
+	%bj = loadl %addr_b
+	# split halves
+	%ai_lo = and %ai, 0xffffffff
+	%ai_hi = shr %ai, 32
+	%bj_lo = and %bj, 0xffffffff
+	%bj_hi = shr %bj, 32
+	# partial products
+	%lo_lo = mul %ai_lo, %bj_lo
+	%lo_hi = mul %ai_lo, %bj_hi
+	%hi_lo = mul %ai_hi, %bj_lo
+	%hi_hi = mul %ai_hi, %bj_hi
+	%mid = add %lo_hi, %hi_lo
+	%mid_lo = and %mid, 0xffffffff
+	%mid_hi = shr %mid, 32
+	%mid_lo_sh = shl %mid_lo, 32
+	%low = add %lo_lo, %mid_lo_sh
+	%carry_low = w cultl %low, %lo_lo
+	%high_tmp = add %hi_hi, %mid_hi
+	%high = add %high_tmp, %carry_low
+	# add to r[i+j] with previous carry
+	%idx = add %i0, %j0
+	%off_idx = shl %idx, 3
+	%addr_r = add %r, %off_idx
+	%old = loadl %addr_r
+	%sum1 = add %old, %low
+	%c1 = w cultl %sum1, %old
+	%sum = add %sum1, %carry0
+	%c2 = w cultl %sum, %sum1
+	%carry_out = add %high, %c1
+	%carry_out = add %carry_out, %c2
+	storel %sum, %addr_r
+	# propagate carry_out forward
+	%k0 = phi l %idx, %k_next
+	%carry_prop0 = phi l %carry_out, %carry_prop_next
+	%cond_prop = ceql %carry_prop0, %zero
+	jnz w %cond_prop, @prop_done
+	%k_next = add %k0, 1
+	%off_k = shl %k_next, 3
+	%addr_k = add %r, %off_k
+	%oldk = loadl %addr_k
+	%newk = add %oldk, %carry_prop0
+	%carry_next_flag = w cultl %newk, %oldk
+	storel %newk, %addr_k
+	%carry_prop_next = %carry_next_flag
+	jmp @prop_loop
+
+@prop_loop:
+	%k_loop = phi l %k0, %k_next_loop
+	%carry_loop = phi l %carry_prop0, %carry_next_loop
+	%cond_loop = ceql %carry_loop, %zero
+	jnz w %cond_loop, @prop_done
+	%k_next_loop = add %k_loop, 1
+	%off_next = shl %k_next_loop, 3
+	%addr_next = add %r, %off_next
+	%old_next = loadl %addr_next
+	%new_next = add %old_next, %carry_loop
+	%carry_next_loop = w cultl %new_next, %old_next
+	storel %new_next, %addr_next
+	jmp @prop_loop
+
+@prop_done:
+	%j_next = add %j0, 1
+	%carry_next = %zero
+	jmp @i_body
+
+@after_i:                     # compute significant length
+	%k0 = phi l %len, %k_next_sig
+	%cond_k = ceql %k0, %zero
+	jnz w %cond_k, @trim_end
+	%km1 = sub %k0, 1
+	%offk = shl %km1, 3
+	%addrk = add %r, %offk
+	%valk = loadl %addrk
+	%iszero = ceql %valk, %zero
+	jnz w %iszero, @dec_k
+	jmp @trim_end
+
+@dec_k:
+	%k_next_sig = sub %k0, 1
+	jmp @after_i
+
+@trim_end:
+	ret %k0
+}
+</previous>
+It failed:
+<failure>
+Compilation failed at stage qbe:
+qbe:-:2: invalid character 
+ (10)
+</failure>
+Write a corrected, complete version. Same output format; output only the code.

@@ -1,0 +1,153 @@
+Implement the function `int64_t packbits_encode(const uint8_t *src, int64_t n, uint8_t *out, int64_t cap)`.
+
+Target: AArch64 (ARMv8-A), Linux AAPCS64. Integer/pointer arguments in x0-x7; 64-bit result in x0. Callee-saved: x19-x28, x29 (frame pointer) and d8-d15 (restore them if you use them); x9-x15 are free scratch registers. sp must stay 16-byte aligned and be back to its entry value when you return with ret (return address in x30). More ABI facts: arguments beyond the eighth are passed on the stack (the 9th at [sp] at entry). A call (bl/blr) overwrites x30, so save x30 (e.g. stp x29, x30, [sp, #-16]!) before calling and restore it before ret. A call clobbers the caller-saved registers x0-x18, x30, v0-v7 and v16-v31 (and the upper halves of v8-v15) and the flags, so keep values that must survive a call in callee-saved registers x19-x28 (saved/restored by you) or in your own stack frame. sp must be 16-byte aligned at every call (and whenever it is used as a base register). Anything below sp may be overwritten by a callee.
+
+Output format: QBE intermediate language (the IL of the QBE compiler backend, c9x.me/compile). Write exactly one function, `export function l $packbits_encode(...)`, taking every argument as `l` (64-bit; pointers are `l` too) and returning `l`. QBE will compile it for the target above, so you do not handle registers or the ABI yourself. Remember: every block starts with an `@label`; temporaries are `%name`; comparisons such as `csltl`/`ceql` produce a `w` value; `jnz` tests a `w`; loads/stores are `loadl`/`storel`. No data definitions, no calls, no other functions. Output only the QBE code: no Markdown fences, no prose. Load a byte zero-extended with `%b =w loadub %p`; store one with `storeb %c, %p`.
+
+Specification: Compress the n bytes at src (0 <= n <= 600) with PackBits run-length encoding into out, which has room for cap bytes (0 <= cap <= 1200), and return the number of bytes written. The output is a sequence of packets: a repeat packet is the header byte 257 - r (i.e. -(r-1) as a signed byte) followed by one byte b, meaning r copies of b (3 <= r <= 128); a literal packet is the header byte L - 1 followed by L bytes copied verbatim (1 <= L <= 128). Encode greedily, left to right, exactly as follows. Let run(j) be the number of consecutive bytes equal to src[j] starting at j, capped at 128. At position i: if run(i) >= 3, emit a repeat packet with r = run(i) and b = src[i], and advance i by r. Otherwise emit a literal packet of the bytes src[i..j-1], where j starts at i and advances while j < n, j - i < 128 and run(j) < 3; then set i = j. (So a pair of equal bytes stays inside a literal; a literal stops just before a run of 3 or more.) Example: "abcccd" -> 01 'a' 'b' FE 'c' 00 'd' (7 bytes). If a whole packet does not fit in the remaining room, write none of it and return -1 immediately (earlier packets stay written). Read only src[0..n-1] (never look past src[n-1] when measuring a run) and write only out[0..cap-1] (both are checked).
+
+Your previous attempt was:
+<previous>
+export function l $packbits_encode(l %src, l %n, l %out, l %cap) {
+    %i =l 0
+    %o =l 0
+    jmp L_main_check
+
+L_main_check:
+    %cond_i_lt_n = csltl %i %n
+    jnz %cond_i_lt_n L_main_body
+    %ret =l %o
+    ret %ret
+
+L_main_body:
+    // compute run length at %i, result in %run
+    %src_i_addr = addl %src %i
+    %first =w loadub %src_i_addr
+    %run =l 0
+    jmp L_run_check
+
+L_run_check:
+    %run_eq_128 = ceql %run 128
+    jnz %run_eq_128 L_run_end
+    %idx = addl %i %run
+    %idx_lt_n = csltl %idx %n
+    jnz %idx_lt_n L_run_continue
+    jmp L_run_end
+
+L_run_continue:
+    %addr = addl %src %idx
+    %b =w loadub %addr
+    %eq = ceql %b %first
+    jnz %eq L_run_inc
+    jmp L_run_end
+
+L_run_inc:
+    %run = addl %run 1
+    jmp L_run_check
+
+L_run_end:
+    // decide repeat or literal
+    %run_lt_3 = csltl %run 3
+    jnz %run_lt_3 L_literal_start
+    // repeat packet
+    %need = addl %o 2
+    %diff = subl %need %cap
+    %ok = csltl %diff 1
+    jnz %ok L_repeat_store
+    %ret =l -1
+    ret %ret
+
+L_repeat_store:
+    %header = subl 257 %run          // 257 - r
+    %out_hdr = addl %out %o
+    storeb %header, %out_hdr
+    %out_val = addl %out %o 1
+    %src_val = addl %src %i
+    %val =w loadub %src_val
+    storeb %val, %out_val
+    %i = addl %i %run
+    %o = addl %o 2
+    jmp L_main_check
+
+L_literal_start:
+    %j =l %i
+    %len =l 0
+    jmp L_lit_check
+
+L_lit_check:
+    %j_lt_n = csltl %j %n
+    jnz %j_lt_n L_lit_len_check
+    jmp L_lit_end
+
+L_lit_len_check:
+    %len_lt_128 = csltl %len 128
+    jnz %len_lt_128 L_lit_run_check
+    jmp L_lit_end
+
+L_lit_run_check:
+    // test if run at %j >= 3
+    %j_plus2 = addl %j 2
+    %has_three = csltl %j_plus2 %n
+    jnz %has_three L_lit_three_check
+    jmp L_lit_extend
+
+L_lit_three_check:
+    %addr0 = addl %src %j
+    %b0 =w loadub %addr0
+    %addr1 = addl %src %j 1
+    %b1 =w loadub %addr1
+    %eq01 = ceql %b0 %b1
+    %addr2 = addl %src %j 2
+    %b2 =w loadub %addr2
+    %eq02 = ceql %b0 %b2
+    %run3 = andl %eq01 %eq02
+    jnz %run3 L_lit_end   // found a run >=3, stop literal
+    jmp L_lit_extend
+
+L_lit_extend:
+    %j = addl %j 1
+    %len = addl %len 1
+    jmp L_lit_check
+
+L_lit_end:
+    // emit literal packet of length %len
+    %need = addl %o (addl %len 1)
+    %diff = subl %need %cap
+    %ok = csltl %diff 1
+    jnz %ok L_literal_store
+    %ret =l -1
+    ret %ret
+
+L_literal_store:
+    %header = subl %len 1
+    %out_hdr = addl %out %o
+    storeb %header, %out_hdr
+    // copy %len bytes
+    %k =l 0
+    jmp L_copy_check
+
+L_copy_check:
+    %k_lt_len = csltl %k %len
+    jnz %k_lt_len L_copy_body
+    jmp L_copy_done
+
+L_copy_body:
+    %src_addr = addl %src (addl %i %k)
+    %b =w loadub %src_addr
+    %dst_addr = addl %out (addl (addl %o 1) %k)
+    storeb %b, %dst_addr
+    %k = addl %k 1
+    jmp L_copy_check
+
+L_copy_done:
+    %i = addl %i %len
+    %o = addl %o (addl %len 1)
+    jmp L_main_check
+}
+</previous>
+It failed:
+<failure>
+Compilation failed at stage qbe:
+qbe:-:2: label or } expected
+</failure>
+Write a corrected, complete version. Same output format; output only the code.
