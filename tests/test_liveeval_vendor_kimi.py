@@ -495,3 +495,19 @@ def test_expiring_token_makes_the_call_the_refresh_leader(tmp_path, kimi_home):
                                               "expires_in": 900}))
     r = subject(tmp_path, kimi_home, refresh='{"access_token": "new", "expires_at": 9999999999}').complete("p")
     assert r.ok and json.loads((kimi_home / CRED).read_text())["access_token"] == "new"
+
+
+def test_tool_select_catalogue_is_bookkeeping_only_while_tool_select_is_off(tmp_path, kimi_home):
+    # kimi-code 2.5.3 (shape captured from a live call 2026-11-11): the deferred-tool catalogue is recorded, but
+    # every llm.request had toolSelect false and the empty tools hash, so nothing reached the model.
+    sel = {"type": "tool_select.initialized", "agentId": "main",
+           "tools": [{"name": "ReadMediaFile"}, {"name": "select_tools"}]}
+    binding = {"type": "environment.set_binding", "environmentId": "local", "agentId": "main"}
+    recs = wire("p")
+    for r in recs:
+        if r.get("type") == "llm.request":
+            r["toolSelect"] = False
+    assert subject(tmp_path, kimi_home, wire_records=[binding, sel] + recs).complete("p").ok
+    on = [dict(r, toolSelect=True) if r.get("type") == "llm.request" else r for r in recs]
+    r = subject(tmp_path, kimi_home, wire_records=[sel] + on).complete("p")
+    assert not r.ok and r.error.startswith("isolation:") and "toolSelect" in r.error

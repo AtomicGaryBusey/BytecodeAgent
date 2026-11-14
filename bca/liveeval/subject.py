@@ -170,7 +170,15 @@ class FakeSubject(Subject):
 
 
 class ClaudeSubject(Subject):
-    """`claude -p` with stream-json output; text deltas are forwarded as they arrive."""
+    """`claude -p` with stream-json output; text deltas are forwarded as they arrive.
+
+    The output cap. When the model stops on `max_tokens`, Claude Code (every version seen, 2.1.285 to 2.1.323) does
+    not end the call: it injects a user message ("Output token limit hit. Resume directly ... Break remaining work
+    into smaller pieces.") and calls the model again, until the model finishes or our time limit kills it. That is a
+    second model call with text the model was never meant to see (found 2026-11-12 in 117 recorded attempts). The
+    call now stops at the first `max_tokens` stop: what the model wrote within the cap is scored as it stands, with a
+    note -- no continuation and no do-over, the rule the Copilot adapter follows for its runtime's continuation. Any
+    other user turn in the stream fails closed (`isolation:`)."""
 
     name = "claude-cli"
 
@@ -258,6 +266,7 @@ class ClaudeSubject(Subject):
         timer.start()
         text, model, usage, cost, error, refusal = [], "", {}, None, "", ""
         first, deltas, killed, result_text = None, 0, False, None
+        capped, notes = False, []
         raw = open(raw_path, "w") if raw_path else None
         try:
             for line in proc.stdout:
@@ -277,6 +286,14 @@ class ClaudeSubject(Subject):
                         model = m if m and m != "<synthetic>" else model
                     elif ev.get("type") == "message_delta" and (ev.get("delta") or {}).get("stop_reason") == "refusal":
                         refusal = refusal or _refusal_text((ev["delta"].get("stop_details") or {}))
+                    elif ev.get("type") == "message_delta" and (ev.get("delta") or {}).get("stop_reason") == "max_tokens":
+                        # the output cap: stop before Claude Code injects its continuation (class docstring)
+                        usage = ev.get("usage") or usage
+                        notes.append("output cap reached (max_tokens): Claude Code's continuation was stopped; the "
+                                     "answer written within the cap is scored as it stands")
+                        capped = True
+                        kill()
+                        break
                     elif ev.get("type") == "content_block_delta" and ev.get("delta", {}).get("type") == "text_delta":
                         delta = ev["delta"].get("text", "")
                         if not delta:
@@ -294,6 +311,12 @@ class ClaudeSubject(Subject):
                                                         "explanation": msg.get("api_refusal_explanation")})
                     if msg.get("fallback_model"):  # switchModelsOnFlag is off; should never happen
                         refusal += f" (answered by fallback model {msg['fallback_model']})"
+                elif typ == "user":
+                    # tool-less -p calls carry no user turn after the prompt; one here was injected by the CLI
+                    content = (msg.get("message") or {}).get("content")
+                    error = error or f"isolation: claude code injected a user turn: {json.dumps(content)[:200]}"
+                    kill()
+                    break
                 elif typ == "result":
                     usage = msg.get("usage", {}) or {}
                     for it in usage.get("iterations") or []:  # a server-side substitution (fallback_message)
@@ -320,12 +343,12 @@ class ClaudeSubject(Subject):
         body = "".join(text)
         if not body and result_text and not killed:
             body = result_text  # no partial messages seen (should not happen)
-        timed_out = timer_fired.is_set() and not killed
-        ok = not timed_out and not error and (killed or proc.returncode == 0)
+        timed_out = timer_fired.is_set() and not killed and not capped
+        ok = not timed_out and not error and (killed or capped or proc.returncode == 0)
         if not ok and not error:
             error = "timeout" if timed_out else f"exit status {proc.returncode}: {stderr.strip()[-500:]}"
         return Response(
             body, ok=ok, killed=killed, timed_out=timed_out, error=error, model=model,
             wall_s=time.perf_counter() - t0, first_text_s=first, deltas=deltas, usage=usage,
-            cost_usd=cost, raw_path=raw_path, refusal=refusal,
+            cost_usd=cost, raw_path=raw_path, refusal=refusal, notes=notes,
         )  # fmt: skip

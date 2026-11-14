@@ -40,7 +40,7 @@ from collections.abc import Callable
 from dataclasses import dataclass, field
 from pathlib import Path
 
-from bca.liveeval.subject import _VERSION_RE, CLI_DEFAULT_EFFORT, OnText, Response, Subject, child_env
+from bca.liveeval.subject import _VERSION_RE, ARGV_PROMPT_MAX, CLI_DEFAULT_EFFORT, OnText, Response, Subject, child_env
 
 
 # Claude-specific variables child_env() keeps for `claude -p`; another vendor's CLI never needs them (grok,
@@ -238,6 +238,9 @@ class CliSubject(Subject):
     binary_name = ""
     efforts: tuple[str, ...] = ()
     audited_versions: tuple[str, ...] = ()  # empty: no version pin (tests)
+    # extra environment for the `--version` probe: a launcher that self-updates on any invocation must be told not
+    # to here too (Muse 1.4.18 updated itself to 1.4.20 from this probe on 2026-11-13, at a resumed step's start)
+    version_env: dict[str, str] = {}
     streams_text = False
     deliver_at_end = False  # True: on_event returns no text; the final answer (p.text, possibly replaced by
     # finish() with the CLI's own record of it) is handed to on_text once, after finish()
@@ -265,6 +268,16 @@ class CliSubject(Subject):
 
     def default_home(self) -> Path:
         raise NotImplementedError
+
+    # Linux caps one argv string at 128 KiB (E2BIG on 2026-11-10 with `claude -p`). An adapter whose CLI reads the
+    # prompt from stdin sets `stdin_prompt` and leaves the prompt out of argv when prompt_on_stdin(); one without an
+    # audited stdin channel refuses an oversized prompt up front with an isolation error (never a crash).
+    stdin_prompt = False
+    prompt_in_argv = True  # False: the adapter hands the prompt over in a file (copilot's driver config, vibe)
+
+    @staticmethod
+    def prompt_on_stdin(prompt: str) -> bool:
+        return len(prompt.encode()) > ARGV_PROMPT_MAX
 
     def argv(self, prompt: str, home: Path) -> list[str]:
         raise NotImplementedError
@@ -294,7 +307,8 @@ class CliSubject(Subject):
         if self._version is None:
             try:
                 out = subprocess.run([self.binary, "--version"], capture_output=True, text=True, timeout=30,
-                                     env=child_env(), stdin=subprocess.DEVNULL, cwd=tempfile.gettempdir())
+                                     env={**child_env(), **self.version_env}, stdin=subprocess.DEVNULL,
+                                     cwd=tempfile.gettempdir())
                 m = _VERSION_RE.search((out.stdout or "") + (out.stderr or ""))
                 self._version = m.group(0) if out.returncode == 0 and m else "unknown"
             except (OSError, subprocess.SubprocessError):
@@ -315,6 +329,10 @@ class CliSubject(Subject):
             self.calls += 1
         t0 = time.perf_counter()
         limit = self.timeout if timeout is None else timeout
+        on_stdin = self.prompt_on_stdin(prompt)
+        if on_stdin and self.prompt_in_argv and not self.stdin_prompt:
+            return self._fail(f"isolation: the prompt is {len(prompt.encode())} bytes, over the {ARGV_PROMPT_MAX}-byte "
+                              f"argv limit, and the {self.vendor} adapter has no audited stdin channel", t0)
         if self.audited_versions and self.cli_version not in self.audited_versions:
             return self._fail(f"isolation: {self.vendor} CLI {self.cli_version} is not an audited version "
                               f"({', '.join(self.audited_versions)}); re-audit the adapter before running it", t0)
@@ -344,12 +362,21 @@ class CliSubject(Subject):
             env = {k: v for k, v in child_env().items() if k not in VENDOR_ENV_DROP}
             env.update(self.extra_env(home.path))
             try:
-                proc = subprocess.Popen(argv, cwd=workdir, stdin=subprocess.DEVNULL, stdout=subprocess.PIPE,
-                                        stderr=subprocess.PIPE, env=env, start_new_session=True)
+                feed_stdin = on_stdin and self.stdin_prompt
+                proc = subprocess.Popen(argv, cwd=workdir, stdin=subprocess.PIPE if feed_stdin else subprocess.DEVNULL,
+                                        stdout=subprocess.PIPE, stderr=subprocess.PIPE, env=env, start_new_session=True)
             except OSError as e:
                 return self._fail(f"setup: cannot start {self.vendor}: {e}", t0)
             with _LIVE_LOCK:
                 _LIVE[id(token)] = (proc.pid, home.path)
+            if feed_stdin:
+                def feed() -> None:  # a thread: the pipe buffer is smaller than the prompt
+                    try:
+                        proc.stdin.write(prompt.encode())
+                        proc.stdin.close()
+                    except (BrokenPipeError, OSError):
+                        pass
+                threading.Thread(target=feed, daemon=True).start()
 
             def kill() -> None:
                 try:

@@ -305,3 +305,27 @@ def test_one_subjects_quota_stops_only_that_subject(tmp_path):
     by = {r["subject"]: r for r in recs}
     assert by["good"]["pass_final"] and not by["good"].get("incomplete")
     assert by["bad"].get("incomplete") and guard.aborted.startswith("bad: fatal")
+
+
+def test_oversized_prompts_go_on_stdin_or_are_refused(tmp_path):
+    """Linux caps one argv string at 128 KiB. Codex reads an oversized prompt from stdin (no PROMPT argument); an
+    adapter without an audited stdin channel refuses it up front (isolation) instead of crashing on E2BIG."""
+    from pathlib import Path
+
+    from bca.liveeval.subject import ARGV_PROMPT_MAX
+    from bca.liveeval.vendor_codex import CodexSubject
+    from bca.liveeval.vendor_copilot import CopilotSubject
+    from bca.liveeval.vendor_grok import GrokSubject
+    from bca.liveeval.vendor_kimi import KimiSubject
+    from bca.liveeval.vendor_vibe import VibeSubject
+
+    big = "x" * (ARGV_PROMPT_MAX + 1)
+    assert CodexSubject.stdin_prompt and CodexSubject.prompt_on_stdin(big) and not CodexSubject.prompt_on_stdin("hi")
+    assert not CopilotSubject.prompt_in_argv and not VibeSubject.prompt_in_argv
+    for cls in (KimiSubject, GrokSubject):
+        assert cls.prompt_in_argv and not cls.stdin_prompt
+    s = GrokSubject("grok-4.7", binary="/bin/true")
+    s.audited_versions = ()
+    s.home_real = Path(tmp_path)
+    r = s.complete(big)
+    assert not r.ok and r.error.startswith("isolation:") and "no audited stdin channel" in r.error

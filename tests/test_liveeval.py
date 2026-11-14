@@ -324,6 +324,39 @@ def test_claude_subject_timeout(tmp_path):
     assert r.timed_out and not r.ok and r.text == "ab"
 
 
+_CAPPED_CLAUDE = r'''#!/usr/bin/env python3
+import json, sys, time
+mode = sys.argv[-1]
+def out(o): print(json.dumps(o), flush=True)
+out({"type": "system", "subtype": "init", "model": "fake-opus", "tools": []})
+out({"type": "stream_event", "event": {"type": "message_start", "message": {"model": "fake-opus"}}})
+out({"type": "stream_event", "event": {"type": "content_block_delta", "delta": {"type": "text_delta", "text": "mov rax, 1\n"}}})
+if mode == "cap":
+    out({"type": "stream_event", "event": {"type": "message_delta", "delta": {"stop_reason": "max_tokens"},
+         "usage": {"output_tokens": 32000}}})
+out({"type": "user", "message": {"role": "user", "content": [{"type": "text", "text": "Output token limit hit. Resume directly"}]}})
+time.sleep(5)  # the continuation: never reached when the adapter stops in time
+out({"type": "stream_event", "event": {"type": "content_block_delta", "delta": {"type": "text_delta", "text": "ret\n"}}})
+out({"type": "result", "subtype": "success", "is_error": False, "usage": {}, "result": "mov rax, 1\nret\n"})
+'''
+
+
+def test_claude_output_cap_is_scored_as_written_and_never_continued(tmp_path):
+    """Claude Code continues past `max_tokens` with an injected user turn (2026-11-12): the adapter stops at the cap
+    and scores what was written; an injected user turn without a cap stop fails closed."""
+    import time
+    exe = tmp_path / "claude"
+    exe.write_text(_CAPPED_CLAUDE)
+    exe.chmod(0o755)
+    subj = ClaudeSubject(binary=str(exe), timeout=30)
+    t0 = time.perf_counter()
+    r = subj.complete("cap")
+    assert time.perf_counter() - t0 < 4 and r.ok and not r.timed_out and r.text == "mov rax, 1\n"
+    assert any("output cap" in n for n in r.notes) and r.usage["output_tokens"] == 32000
+    r = subj.complete("inject")
+    assert not r.ok and r.error.startswith("isolation:") and "injected a user turn" in r.error
+
+
 _ECHO_CLAUDE = r'''#!/usr/bin/env python3
 import json, sys
 args = sys.argv[1:]

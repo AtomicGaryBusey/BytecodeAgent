@@ -323,6 +323,33 @@ FAMILIES = [
 
 SPEC = Spec(ISA_NAME, FAMILIES, {"reg": REG})
 
+# Opt-in ops of harness v2 (bca/liveeval/harness_v2.py): sign/zero extend and add/subtract with
+# carry, which models kept reaching for (reports/live-model-eval-adversarial.md). Only SPEC_V2
+# lists and accepts them; SPEC (the baseline) rejects them as unknown ops, exactly as before.
+V2_FAMILIES = [
+    Family("carry", _ops("adc", "adcs", "sbc", "sbcs"), {"dst": F(REG), "src": F(REG, many=True, min=2, max=2)},
+           ("dst", "src"), "adc: dst = src[0] + src[1] + C; sbc: dst = src[0] - src[1] - (1 - C) (C is the carry "
+           "flag; registers only). The *s forms set flags.",
+           ({"op": "adc", "dst": "x0", "src": ["x1", "x2"]},)),
+    Family("extend", _ops("sxtb", "sxth", "sxtw", "uxtb", "uxth"), {"dst": F(REG), "src": F(REG, many=True)},
+           ("dst", "src"), "Extend the low byte / halfword / word of src[0] (a w register) into dst: sxtb/sxth "
+           "sign-extend into an x or w register, sxtw into an x register; uxtb/uxth zero-extend into a w "
+           "register (writing a w register also clears the upper 32 bits of the x register).",
+           ({"op": "sxtw", "dst": "x0", "src": ["w1"]},)),
+]  # fmt: skip
+_V2_AFTER = {"carry": "arith", "extend": "shift"}  # where each family goes in the schema's list
+
+
+def _v2_families() -> list[Family]:
+    out = []
+    for fam in FAMILIES:
+        out.append(fam)
+        out.extend(v for v in V2_FAMILIES if _V2_AFTER[v.name] == fam.name)
+    return out
+
+
+SPEC_V2 = Spec(ISA_NAME, _v2_families(), {"reg": REG})
+
 # --------------------------------------------------------------------------- field helpers
 
 
@@ -866,14 +893,52 @@ def e_ret(insn: Insn, ctx):
     return [0xD65F0000 | (num(rn, "src[0]") << 5)]
 
 
+# -- harness v2 ops (V2_FAMILIES)
+
+CARRY = {"adc": 0x1A000000, "adcs": 0x3A000000, "sbc": 0x5A000000, "sbcs": 0x7A000000}
+
+
+def e_carry(insn: Insn, ctx):
+    rd = insn.f["dst"]
+    (rn, p0), (rm, p1) = _src(insn, 0), _src(insn, 1)
+    rn, rm = want_reg(rn, p0), want_reg(rm, p1)
+    w = same_width([(rd, "dst"), (rn, p0), (rm, p1)])
+    return [(int(w == 64) << 31) | CARRY[insn.op] | (num(rm, p1) << 16) | (num(rn, p0) << 5) | num(rd, "dst")]
+
+
+EXTEND = {  # op -> (signed, imms: the highest source bit kept)
+    "sxtb": (True, 7), "sxth": (True, 15), "sxtw": (True, 31), "uxtb": (False, 7), "uxth": (False, 15),
+}  # fmt: skip
+
+
+def e_extend(insn: Insn, ctx):
+    """sxt* = sbfm rd, rn, #0, #imms; uxt* = ubfm wd, wn, #0, #imms (the assembler aliases)."""
+    rd = insn.f["dst"]
+    rn, p0 = _src(insn, 0)
+    rn = want_reg(rn, p0)
+    signed, imms = EXTEND[insn.op]
+    if rn.width != 32:
+        w = "w" + rn.name[1:] if rn.name.startswith("x") else "wzr"
+        raise EncodeError(f"{insn.op} takes a w source register (e.g. {w}), got {rn.name}", p0)
+    if insn.op == "sxtw" and rd.width != 64:
+        raise EncodeError("sxtw writes an x register", "dst")
+    if not signed and rd.width != 32:
+        raise EncodeError(f"{insn.op} writes a w register (which also clears the upper 32 bits of the x "
+                          "register)", "dst")
+    sf = int(rd.width == 64)
+    base = 0x13000000 if signed else 0x53000000
+    return [(sf << 31) | base | (sf << 22) | (imms << 10) | (num(rn, p0) << 5) | num(rd, "dst")]
+
+
 ENCODERS = {
     "mov": e_mov, "movwide": e_movwide, "arith": e_arith, "compare": e_compare, "logic": e_logic,
     "unary": e_unary, "shift": e_shift, "mul": e_mul, "muladd": e_muladd, "csel": e_csel,
     "cset": e_cset, "cinc": e_cinc, "load": e_load, "store": e_store, "ldp": e_ldp, "stp": e_stp,
     "branch": e_branch, "bcond": e_bcond, "cbz": e_cbz, "tbz": e_tbz, "adr": e_adr,
     "branch_reg": e_branch_reg, "ret": e_ret, "nop": lambda insn, ctx: [0xD503201F],
+    "carry": e_carry, "extend": e_extend,  # V2_FAMILIES: reachable only through SPEC_V2
 }  # fmt: skip
-assert set(ENCODERS) == {f.name for f in FAMILIES}
+assert set(ENCODERS) == {f.name for f in FAMILIES + V2_FAMILIES}
 
 
 def encode_insn(insn: Insn, pc: int, resolve) -> list[int]:
@@ -883,14 +948,16 @@ def encode_insn(insn: Insn, pc: int, resolve) -> list[int]:
 # --------------------------------------------------------------------------- program
 
 
-def assemble(instructions, *, base: int = 0x100000, allow_undefined: bool = False) -> Program:
+def assemble(instructions, *, base: int = 0x100000, allow_undefined: bool = False,
+             harness_v2: bool = False) -> Program:
     """Encode a whole structured program. Raises AssemblyError listing every bad instruction.
 
     With `allow_undefined`, branches to not-yet-defined labels are encoded as branches to
     themselves and the label names are reported in `Program.pending` (streaming preview).
+    `harness_v2` parses with SPEC_V2 (the baseline ops plus V2_FAMILIES).
     """
     instructions = normalize_program(instructions)
-    items, errors = parse_program(SPEC, instructions)
+    items, errors = parse_program(SPEC_V2 if harness_v2 else SPEC, instructions)
 
     # Pass 1: layout. Instruction sizes never depend on label distances.
     labels: dict[str, int] = {}

@@ -192,7 +192,10 @@ def codex_safety(message: str) -> str:
 # unpinned run's effort would depend on the account's plan. Each pin is the default recorded for that model's
 # committed runs (all made on ChatGPT Plus). A model not listed here must be given --effort explicitly.
 CODEX_PINNED_EFFORT = {"gpt-6-astra": "low", "gpt-daybreak-blue-latest": "low", "gpt-6-luna": "medium",
-                       "gpt-6-sol": "medium", "gpt-5.5": "medium"}
+                       "gpt-6-sol": "medium", "gpt-5.5": "medium",
+                       "gpt-5.6-luna": "medium", "gpt-5.6-terra": "medium",
+                       "gpt-6.1-terra": "low", "gpt-6.1-sol": "low",
+                       "gpt-5.6-sol": "low"}  # live catalog default_reasoning_level, read 2026-11-11
 
 
 class CodexSubject(CliSubject):
@@ -201,6 +204,7 @@ class CodexSubject(CliSubject):
     _entry: dict | None = None  # the model's live catalog entry, as the CLI reported it
     _bundled: dict | None = None
     binary_name = "codex"
+    stdin_prompt = True  # an oversized prompt goes on stdin (CliSubject.prompt_on_stdin)
     efforts = ("low", "medium", "high", "xhigh", "max", "ultra")  # models_cache.json; luna has no ultra
     audited_versions = ("0.157.1", "0.160.0", "0.167.0")
     streams_text = False
@@ -352,6 +356,8 @@ class CodexSubject(CliSubject):
             argv += ["--disable", f]
         if self.effort:
             argv += ["-c", f'model_reasoning_effort="{self.effort}"']
+        if self.prompt_on_stdin(prompt):
+            return argv  # `codex exec` with no PROMPT reads it from stdin (`codex exec --help`, 0.167.0)
         return argv + ["--", prompt]
 
     def extra_env(self, home: Path) -> dict[str, str]:

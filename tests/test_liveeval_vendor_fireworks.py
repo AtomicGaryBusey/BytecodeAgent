@@ -136,3 +136,12 @@ def test_a_stream_cut_mid_chunk_is_a_transient_infrastructure_error(fw):
     assert not r.ok and not r.timed_out and not r.refusal
     assert "stream broken" in r.error and "IncompleteRead" in r.error
     assert infra_kind(r.error) == "transient"
+
+
+def test_gpt_oss_120b_is_priced_at_the_standard_serverless_rate(fw):
+    fake, tmp = fw
+    fake.model = "accounts/fireworks/models/gpt-oss-120b"  # the stream names the full id (live, 2026-11-11)
+    s = subj(tmp, model="gpt-oss-120b")
+    r = s.complete("p")
+    assert r.ok and fake.requests[-1]["body"]["model"] == "accounts/fireworks/models/gpt-oss-120b"
+    assert r.cost_usd == pytest.approx((1000 * 0.15 + 2000 * 0.60) / 1e6)

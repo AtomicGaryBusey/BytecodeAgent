@@ -309,6 +309,21 @@ def test_event_violations_fail_closed(env, typ, data, expect):
     assert not r.ok and r.error.startswith("isolation:") and expect in r.error, r.error
 
 
+def test_a_repetition_notice_is_recorded_and_any_other_telemetry_fails_closed(env):
+    """Copilot's host-only `conversation.repetition.detected` diagnostic (kimi-k3, hex path, 2026-11-12) arrives
+    after the model call: recorded, never fatal; any other telemetry event still fails closed."""
+    notice = {"kind": "telemetry", "telemetry": {"event": "conversation.repetition.detected", "forwardToHostOnly": True,
+                                                 "properties": {"model": "gpt-6-luna"}}}
+    rec = copy.deepcopy(load("luna"))
+    rec["events"].append({"type": "model.telemetry", "data": notice, "ephemeral": True})
+    r = subject(env, rec, "gpt-6-luna").complete(PROMPT)
+    assert r.ok and r.usage["repetition_notices"] == 1 and any("repetition" in n for n in r.notes)
+    rec = copy.deepcopy(load("luna"))
+    rec["events"].append({"type": "model.telemetry", "data": {"kind": "telemetry", "telemetry": {"event": "something.else"}}})
+    r = subject(env, rec, "gpt-6-luna").complete(PROMPT)
+    assert not r.ok and "unexpected copilot event 'model.telemetry'" in r.error
+
+
 def test_a_connected_mcp_server_fails_closed(env):
     # recorded before the built-in GitHub MCP server was disabled: it connected (its tools were excluded)
     rec = load("mai_mcp_connected")

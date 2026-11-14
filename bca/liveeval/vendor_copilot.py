@@ -182,6 +182,15 @@ def _continuation(d) -> str:
     return ""
 
 
+def _repetition_notice(d) -> bool:
+    """A host-only diagnostic the runtime emits AFTER a model call has finished (seen 2026-11-12, kimi-k3 on the hex
+    path: an answer ending in 14 identical lines of zero bytes, `finish_reason: stop`, outcome success, then
+    `conversation.repetition.detected`, ephemeral, forwardToHostOnly). It reports that the streamed text repeated
+    itself; it changes nothing the model wrote and starts no second call (a retry is `model.turn_retry`: void)."""
+    t = d.get("telemetry") if isinstance(d, dict) else None
+    return isinstance(t, dict) and t.get("event") == "conversation.repetition.detected" and bool(t.get("forwardToHostOnly"))
+
+
 def _reasoning_item(d: dict) -> bool:
     """An assistant.message that only carries the model's encrypted reasoning: the Responses API returns
     it as a separate output item of the same model call (gpt-6-luna, seen 2026-09-29), with empty
@@ -199,6 +208,7 @@ class CopilotSubject(CliSubject):
     deliver_at_end = True  # the answer is the recorded assistant message, handed over after verification
     streams_text = False
     home_files: tuple[str, ...] = ()  # nothing of the user's is copied: auth goes through gh (module docstring)
+    prompt_in_argv = False  # the prompt travels in the driver's config file, never in argv
 
     def __init__(self, model: str, **kw):
         super().__init__(model, **kw)
@@ -331,6 +341,10 @@ class CopilotSubject(CliSubject):
                 p.notes.append(f"output cap reached ({_continuation(d)}): the runtime's continuation was stopped; "
                                "the answer written within the cap is scored as it stands")
                 p.abort = True
+            elif typ == "model.telemetry" and _repetition_notice(d):
+                p.usage["repetition_notices"] = p.usage.get("repetition_notices", 0) + 1
+                p.notes.append("copilot reported repetition in the streamed answer (host-only telemetry; the answer "
+                               "is scored as written)")
             elif typ in ("model.turn_retry", "model.model_call_failure"):
                 # the runtime is about to call the model a second time (seen: reason streaming_error, a broken
                 # stream): one attempt must be one model call, so the attempt is void -- a transient error the

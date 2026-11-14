@@ -668,6 +668,7 @@ Variant = Callable[[str, str, str, Task], str]
 
 from bca.liveeval.assist import assisted  # noqa: E402 - the information variant (bca/liveeval/assist.py)
 from bca.liveeval.declared import declared, declared_annotated  # noqa: E402 - statement of purpose (declared.py)
+from bca.liveeval.harness_v2 import harness_v2  # noqa: E402 - harness improvements, opt-in (harness_v2.py)
 
 VARIANTS: dict[str, Variant] = {
     "baseline": baseline,
@@ -679,6 +680,7 @@ VARIANTS: dict[str, Variant] = {
     "assisted": assisted,
     "declared": declared,
     "declared_annotated": declared_annotated,
+    "harness_v2": harness_v2,
 }
 
 VARIANT_INFO: dict[str, dict] = {
@@ -721,6 +723,13 @@ VARIANT_INFO: dict[str, dict] = {
     "declared_annotated": {"description": "declared, plus (hex path only) a `//` assembly comment on every "
                                           "instruction line; comments are ignored, acceptance is baseline's",
                            "misleading": False, "conflicts_with_format": False, "opt_in": True, "apps_ok": True},
+    # Harness improvements for a new round (bca/liveeval/harness_v2.py): they change what models see
+    # and what the structured AArch64 encoder accepts, so they are opt-in and baseline is unchanged.
+    "harness_v2": {"description": "harness v2: QBE errors echo the offending source line; the structured schema "
+                                  "names its register definition register_name; structured AArch64 gains "
+                                  "sxtb/sxth/sxtw/uxtb/uxth and adc/adcs/sbc/sbcs; a differing output buffer "
+                                  "names its first differing index. Tests and limits are baseline's",
+                   "misleading": False, "conflicts_with_format": False, "opt_in": True},
 }
 
 # What `--variant all` expands to: every variant except the format-compliance probes

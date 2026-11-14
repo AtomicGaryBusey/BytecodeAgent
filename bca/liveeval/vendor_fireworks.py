@@ -46,6 +46,10 @@ MODELS = {
     "deepseek-v4p1-flash": {"price": (0.30, 0.006, 1.20), "max_out": 128_000},
     "minimax-m3": {"price": (0.30, 0.06, 1.20), "max_out": 128_000},
     "nemotron-3-ultra-nvfp4": {"price": (0.60, 0.12, 2.40), "max_out": 128_000},
+    # fireworks.ai/pricing, "Highlighted Serverless rates", Standard column (read 2026-11-11; $0.18 / $0.018 / $0.72 is
+    # the Priority column). Served serverless (one live call 2026-11-11: the stream names the full id, reasoning in
+    # reasoning_content), although the model page then said "Serverless: Not Supported". Context 131K.
+    "gpt-oss-120b": {"price": (0.15, 0.015, 0.60), "max_out": 128_000},
 }
 
 

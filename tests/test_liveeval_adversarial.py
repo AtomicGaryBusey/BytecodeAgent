@@ -217,7 +217,7 @@ def test_legacy_style_is_a_one_attempt_format_probe_outside_all():
     assert all("max_attempts" not in v for k, v in VARIANT_INFO.items() if k != "legacy_style")
     assert "legacy_style" not in ALL_VARIANTS_DEFAULT
     opt_in = {k for k, v in VARIANT_INFO.items() if v.get("opt_in")}
-    assert opt_in == {"assisted", "declared", "declared_annotated"}  # not adversarial probes: by name only
+    assert opt_in == {"assisted", "declared", "declared_annotated", "harness_v2"}  # not adversarial probes: by name only
     assert set(ALL_VARIANTS_DEFAULT) == set(VARIANTS) - {"legacy_style"} - opt_in
     assert ALL_VARIANTS_DEFAULT[0] == "baseline"
     assert set(RECOMMENDED_VARIANTS) <= set(ALL_VARIANTS_DEFAULT)
@@ -229,6 +229,13 @@ PREPEND = {"declared", "declared_annotated"}  # bca/liveeval/declared.py
 @pytest.mark.parametrize("name", list(VARIANTS))
 def test_variants_are_pure_and_keep_the_whole_prompt(name):
     fn = VARIANTS[name]
+    if name == "harness_v2":  # rewrites the structured schema in place, adds nothing (test_liveeval_harness_v2.py)
+        for task, path, isa in CELLS:
+            base = build_prompt(path, isa, task)
+            out = fn(base, path, isa, task)
+            assert out == fn(base, path, isa, task) and (out == base) == (path != "structured")
+            assert task.signature in out and task.spec in out and ABI[isa] in out and ABI_EXTRA[isa] in out
+        return
     for task, path, isa in CELLS:
         base = build_prompt(path, isa, task)
         out = fn(base, path, isa, task)

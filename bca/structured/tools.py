@@ -35,11 +35,35 @@ def _strip(node: Any) -> Any:
     return node
 
 
-def input_schemas(isa, *, strict: bool = False) -> dict[str, dict]:
-    """{"program": schema, "instruction": schema}: object-typed, self-contained (with $defs)."""
+# harness v2 (bca/liveeval/harness_v2.py): the shared register definitions under clearer names.
+V2_DEF_NAMES = {"reg": "register_name", "reg64": "register64_name"}
+
+
+def _rename_defs(node: Any, names: dict[str, str]) -> Any:
+    """Rename `$defs` entries and every `#/$defs/<name>` reference to them."""
+    if isinstance(node, dict):
+        out = {}
+        for k, v in node.items():
+            if k == "$defs" and isinstance(v, dict):
+                out[k] = {names.get(n, n): _rename_defs(d, names) for n, d in v.items()}
+            elif k == "$ref" and isinstance(v, str) and v.startswith("#/$defs/"):
+                n = v[len("#/$defs/"):]
+                out[k] = "#/$defs/" + names.get(n, n)
+            else:
+                out[k] = _rename_defs(v, names)
+        return out
+    if isinstance(node, list):
+        return [_rename_defs(v, names) for v in node]
+    return node
+
+
+def input_schemas(isa, *, strict: bool = False, harness_v2: bool = False) -> dict[str, dict]:
+    """{"program": schema, "instruction": schema}: object-typed, self-contained (with $defs).
+    `harness_v2`: the opt-in v2 schema (V2_DEF_NAMES, and the backend's SPEC_V2 ops if it has one)."""
     from bca.structured import backend
 
-    spec = backend(isa).SPEC
+    be = backend(isa)
+    spec = getattr(be, "SPEC_V2", be.SPEC) if harness_v2 else be.SPEC
     insn = spec.instruction_schema(bounds=not strict)
     defs = spec.defs(bounds=not strict)
     program = {
@@ -64,6 +88,8 @@ def input_schemas(isa, *, strict: bool = False) -> dict[str, dict]:
     }
     if strict:
         program, single = _strip(program), _strip(single)
+    if harness_v2:
+        program, single = _rename_defs(program, V2_DEF_NAMES), _rename_defs(single, V2_DEF_NAMES)
     return {"program": program, "instruction": single}
 
 
@@ -86,11 +112,12 @@ def _conventions(isa_name: str) -> str:
     )
 
 
-def tool_definitions(isa, *, flavor: str = "anthropic", strict: bool = False) -> list[dict]:
+def tool_definitions(isa, *, flavor: str = "anthropic", strict: bool = False,
+                     harness_v2: bool = False) -> list[dict]:
     from bca.structured import backend
 
     be = backend(isa)
-    schemas = input_schemas(isa, strict=strict)
+    schemas = input_schemas(isa, strict=strict, harness_v2=harness_v2)
     conv = _conventions(be.ISA_NAME)
     tools = [
         {
@@ -151,16 +178,22 @@ class Session:
     instructions is always an encodable prefix (modulo forward labels still to be defined).
     """
 
-    def __init__(self, isa, *, base: int = 0x100000):
+    def __init__(self, isa, *, base: int = 0x100000, harness_v2: bool = False):
         from bca.structured import backend
 
         self.backend = backend(isa)
         self.isa_name = self.backend.ISA_NAME
         self.base = base
+        self.harness_v2 = harness_v2  # accept the v2 ops (AArch64 extend / carry); see a64.SPEC_V2
         self.accepted: list[dict] = []
 
+    def _assemble(self, instructions, **kw) -> Program:
+        if self.harness_v2:
+            kw["harness_v2"] = True
+        return self.backend.assemble(instructions, base=self.base, **kw)
+
     def _preview(self, instructions) -> Program:
-        return self.backend.assemble(instructions, base=self.base, allow_undefined=True)
+        return self._assemble(instructions, allow_undefined=True)
 
     def emit(self, insn) -> dict:
         if isinstance(insn, str):
@@ -197,12 +230,12 @@ class Session:
 
     def finish(self) -> Program:
         """Final encode with all labels resolved; raises AssemblyError (e.g. undefined labels)."""
-        return self.backend.assemble(self.accepted, base=self.base)
+        return self._assemble(self.accepted)
 
     def emit_program(self, instructions) -> dict:
         """Batch tool: replaces the session contents on success."""
         try:
-            prog = self.backend.assemble(instructions, base=self.base)
+            prog = self._assemble(instructions)
         except AssemblyError as exc:
             return {"ok": False, "errors": [e.to_dict() for e in exc.errors]}
         from bca.structured.common import normalize_program

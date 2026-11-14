@@ -48,6 +48,8 @@ from bca.liveeval.pipelines import Attempt, attempt, code_base, disassemble
 from bca.liveeval.prompts import build_prompt
 from bca.liveeval.subject import Subject
 from bca.liveeval.tasks import Task
+from bca.liveeval.harness_v2 import HARNESS_V2
+from bca.liveeval.harness_v2 import NAME as HARNESS_V2_NAME
 from bca.liveeval.token_budget import CURRENT_BATTERY
 
 Variant = Callable[[str, str, str, Task], str]
@@ -136,7 +138,7 @@ _FATAL_RE = re.compile(
     r"supported)|unknown model|no such model|credits? balance|"
     r"local server unreachable|not an audited version|"  # vendor_local: the Ollama server is down or changed
     r"vllm server unreachable|vllm model [^\n]{0,80} not served|"  # vendor_vllm: likewise for the vLLM server
-    r"^foundry: |^fireworks: |^apple: |spend cap reached|fm is paused to protect this mac|"  # the Mac's governor says: do not retry  # vendor_foundry: Azure setup/auth errors; the per-deployment spend cap
+    r"^foundry: |^fireworks: |^cerebras: |^apple: |spend cap reached|fm is paused to protect this mac|"  # the Mac's governor says: do not retry  # vendor_foundry: Azure setup/auth errors; the per-deployment spend cap
     # a subscription's usage window is spent: retrying in minutes cannot help; resume the run later
     r"usage limit|hit your (?:weekly |daily )?limit|exceeded your current (?:token )?quota|exceeded_current_quota|"
     r"quota (?:exhausted|exceeded)|insufficient balance|login_required|token_unauthorized|"
@@ -332,6 +334,8 @@ def run_cell(subject: Subject, task: Task, path: str, isa: str, run_dir: Path, *
     infra_errors = 0
     n = len(stored) + 1
     CURRENT_BATTERY.set(meta.get("battery"))  # token-budget subjects size their calls by it (token_budget)
+    # Set for every cell (pool threads are reused): on only for the opt-in harness_v2 variant.
+    HARNESS_V2.set(meta.get("variant") == HARNESS_V2_NAME)
     while n <= max_attempts and not final_ok:
         prompt = build_prompt(path, isa, task, previous)
         if variant is not None:

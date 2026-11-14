@@ -27,9 +27,12 @@ def backend(isa):
         raise ValueError(f"no structured backend for {name!r}; have {list(BACKENDS)}") from None
 
 
-def assemble(isa, instructions, *, base: int = 0x100000, allow_undefined: bool = False) -> Program:
-    """Encode a structured program (list, {"instructions": [...]}, or JSON text) for `isa`."""
-    return backend(isa).assemble(instructions, base=base, allow_undefined=allow_undefined)
+def assemble(isa, instructions, *, base: int = 0x100000, allow_undefined: bool = False,
+             harness_v2: bool = False) -> Program:
+    """Encode a structured program (list, {"instructions": [...]}, or JSON text) for `isa`.
+    `harness_v2` also accepts the opt-in v2 ops (bca/liveeval/harness_v2.py; AArch64 only)."""
+    kw = {"harness_v2": True} if harness_v2 else {}
+    return backend(isa).assemble(instructions, base=base, allow_undefined=allow_undefined, **kw)
 
 
 from bca.structured.tools import Session, input_schemas, tool_definitions  # noqa: E402

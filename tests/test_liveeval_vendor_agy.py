@@ -165,9 +165,10 @@ def test_answer_usage_model_and_isolation(tmp_path, real_home, monkeypatch):
     assert agent == AGY_AGENT and agent.endswith("---\n" + SYSTEM_PROMPT + "\n")
     for line in ("excludeDefaultComponents: true", "inheritCustomizations: false", "inheritMcp: false", "tools: []"):
         assert line in agent
-    assert json.loads(hf[".gemini/antigravity-cli/settings.json"]) == {"useG1Credits": False}
+    assert json.loads(hf[".gemini/antigravity-cli/settings.json"]) == {"useG1Credits": False, "agentMode": ""}
     assert sn["cwd_files"] == [] and not Path(sn["cwd"]).exists()
-    assert sorted(p.name for p in real_home.iterdir()) == ["history.jsonl", "settings.json"]  # untouched: not even a lock file
+    # the real home: nothing of it is read (no token file here: the keyring path); only CredHome's lock file is added
+    assert sorted(p.name for p in real_home.iterdir()) == [".bca-cred.lock", "history.jsonl", "settings.json"]
     assert "bca_stderr" in (tmp_path / "raw.jsonl").read_text().splitlines()[-1]
 
 
@@ -392,3 +393,19 @@ def test_error_message_step_is_a_transient_failure_not_isolation(tmp_path, real_
     s = subject(tmp_path, real_home, binary=fake_agy(tmp_path))
     assert s.on_event(ev, p) is None and not p.violations
     assert p.error.startswith("agy error_message step") and runner.infra_kind(p.error) == "transient"
+
+
+def test_a_token_file_is_copied_in_when_the_keyring_is_not_used(tmp_path, real_home):
+    """agy keeps its sign-in in a file when the keyring is unusable (seen 2026-11-12): the private home gets a copy."""
+    from bca.liveeval.vendor_agy import AGY_TOKEN_FILE
+    tok = real_home / AGY_TOKEN_FILE
+    tok.parent.mkdir(parents=True)
+    tok.write_text('{"auth_method": "oauth", "token": {"access_token": "a", "refresh_token": "r", '
+                   '"expiry": "2099-01-01T00:00:00.123456789-08:00"}}')
+    s = subject(tmp_path, real_home, binary=fake_agy(tmp_path))
+    assert s.cred_expiry(AGY_TOKEN_FILE, tok.read_bytes()) > 4e9 and s.cred_expiry(AGY_TOKEN_FILE, b"{}") is None
+    r = s.complete("p")
+    assert r.ok
+    hf = seen(tmp_path)["home_files"]
+    assert json.loads(hf[AGY_TOKEN_FILE])["token"]["refresh_token"] == "r"
+    assert json.loads(hf[".gemini/antigravity-cli/settings.json"]) == {"useG1Credits": False, "agentMode": ""}  # still ours

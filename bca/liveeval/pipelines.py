@@ -55,6 +55,7 @@ from bca.difftest import (
 from bca.emu import CODE_BASE, DATA_BASE, MASK64, EmulationError, callback_segments, run_function
 from bca.ir import IRCompileError, lower
 from bca.isa import ISAS
+from bca.liveeval import harness_v2 as v2
 from bca.liveeval.subject import Response, Subject
 from bca.liveeval.tasks import Task
 from bca.stream import StreamAssembler
@@ -202,8 +203,9 @@ def _buffer_detail(task: Task, m: Mismatch) -> str:
     """Expected vs actual buffer contents for one failing buffer case."""
     if m.expected_data is None or m.actual_data is None or m.expected_data == m.actual_data:
         return ""
-    return (f"; array after the call: expected {_cut(_words(m.expected_data, 8, True))}, "
-            f"got {_cut(_words(m.actual_data, 8, True))}")
+    e, a = _words(m.expected_data, 8, True), _words(m.actual_data, 8, True)
+    note = v2.difference_note(e, a) if v2.active() else ""
+    return f"; array after the call: expected {_cut(e)}, got {_cut(a)}" + note
 
 
 def _split_top(s: str) -> list[str]:
@@ -294,9 +296,9 @@ def _mem_detail(task: Task, m: Mismatch) -> str:
             name = window_name(task, case, idx, lo, hi) if case is not None and case.writable else None
             where = (f"{name} (memory [{lo}, {hi}) of the block)" if name
                      else f"memory [{lo}, {hi}) of the block")
-            parts.append(f"{where} after the call: expected "
-                         f"{_cut(_words(e, task.mem_elem, task.mem_signed))}, got "
-                         f"{_cut(_words(a, task.mem_elem, task.mem_signed))}")
+            ew, aw = _words(e, task.mem_elem, task.mem_signed), _words(a, task.mem_elem, task.mem_signed)
+            note = v2.window_difference_note(name, ew, aw) if v2.active() else ""
+            parts.append(f"{where} after the call: expected {_cut(ew)}, got {_cut(aw)}" + note)
     if not parts:
         parts.append("memory outside the writable range changed")
     return "; " + "; ".join(parts)
@@ -454,9 +456,10 @@ def stream_locator(prog) -> Locator:
                           for i in prog.instructions)
 
 
-def structured_locator(isa_name: str, instructions: list, base: int = CODE_BASE) -> Locator | None:
+def structured_locator(isa_name: str, instructions: list, base: int = CODE_BASE, *,
+                       harness_v2: bool = False) -> Locator | None:
     try:
-        prog = structured_assemble(isa_name, instructions, base=base)
+        prog = structured_assemble(isa_name, instructions, base=base, harness_v2=harness_v2)
     except Exception:  # noqa: BLE001
         return None
     return _range_locator((base + e.offset, len(e.data), f"instruction {e.index}: "
@@ -619,7 +622,7 @@ def _structured_attempt(subject: Subject, isa: str, task: Task, prompt: str, raw
     if not isinstance(obj, dict) or not isinstance(obj.get("instructions"), list):
         a.category, a.failure = "format", 'The output must be a JSON object {"instructions": [...]}.'
         return a
-    res = Session(isa).emit_program(obj["instructions"])
+    res = Session(isa, harness_v2=v2.active()).emit_program(obj["instructions"])
     if not res["ok"]:
         errs = res["errors"]
         a.category = "syntax"
@@ -627,7 +630,7 @@ def _structured_attempt(subject: Subject, isa: str, task: Task, prompt: str, raw
             "  " + e["text"] for e in errs[:8]) + (f"\n  ... ({len(errs) - 8} more)" if len(errs) > 8 else "")
         return a
     a.code = bytes.fromhex(res["code"])
-    a.locate = structured_locator(isa, obj["instructions"])
+    a.locate = structured_locator(isa, obj["instructions"], harness_v2=v2.active())
     return a
 
 
@@ -654,6 +657,8 @@ def _ir_attempt(subject: Subject, isa: str, task: Task, prompt: str, raw_path: s
         head = next((ln.strip() for ln in src.splitlines() if ln.strip()), "")
         a.category = "compile" if _QBE_START_RE.match(head) else "format"
         a.failure = f"Compilation failed at stage {exc.stage}:\n{exc.detail[:1500]}"
+        if v2.active():
+            a.failure += v2.qbe_error_lines(exc.stage, exc.detail, src)
     return a
 
 

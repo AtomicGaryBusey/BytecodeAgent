@@ -45,6 +45,14 @@ hashes, context (the prompt plus the same two injections) and stream-json events
 model; it fails closed if it reports an AGENTS.md. Model catalog refreshed by a fresh `kimi login`: k3.1-pro and
 k3.1-pro-highspeed appear, both with default_effort `max` (k3: `high`).
 
+kimi-code 2.5.3 (re-audited 2026-11-11, two live calls, K3 and K3.1 Pro, the adapter's own record checks): the
+same profile binding, request hashes (toolsHash = sha256("[]"), our systemPromptHash), context (the prompt plus the same
+two injections, messageCount 3) and stream-json events. New in the record: `tool_select.initialized`, a deferred-tool
+catalogue (ReadMediaFile, select_tools), and a `toolSelect` key on llm.request; it is accepted only while every request
+has toolSelect false (it was false on both calls) and the empty tools hash, else fail closed. `runtime.set_binding` is
+now `environment.set_binding`. The catalog's default effort for k3.1-pro is now `high` (it was `max` at 2.3.1 on
+2026-10-23): the K3.1 Pro function run (10-23) ran at max, its app and hex runs (11-10) at high.
+
 Credentials: kimi refreshes its OAuth token when fewer than max(300 s, expires_in / 2) remain before
 `expires_at` (packages/oauth/src/oauth-manager.ts defaultRefreshThreshold); cred_expiry reports that
 moment so CredHome serialises refreshes.
@@ -86,7 +94,7 @@ KIMI_META = frozenset({"system.version", "session.resume_hint", "turn.step.retry
 # wire.jsonl record types seen in a tool-less print run; an unknown type naming tools/skills/MCP/hooks/
 # subagents fails closed, any other unknown type is tolerated (the checks below still apply).
 _WIRE_SUSPECT = re.compile(r"tool|mcp|skill|hook|subagent|plugin", re.I)
-_WIRE_KNOWN = frozenset({"metadata", "runtime.set_binding", "profile.bind", "permission.set_mode", "agent.message.appended",
+_WIRE_KNOWN = frozenset({"metadata", "runtime.set_binding", "environment.set_binding", "profile.bind", "permission.set_mode", "agent.message.appended",
                          "agent.turn.started", "turn.prompt", "context.append_message", "plugin.session_start",
                          "context.append_loop_event", "llm.tools_snapshot", "llm.request", "usage.record",
                          "token_counting.measured", "agent.turn.ended", "turn.ended", "token_counting.turn_recorded",
@@ -129,7 +137,7 @@ class KimiSubject(CliSubject):
     vendor = "kimi"
     binary_name = "kimi"
     efforts = ("low", "high", "max")
-    audited_versions = ("2.1.1", "2.3.1")  # 2.3.1 re-audited 2026-10-23 (module docstring)
+    audited_versions = ("2.1.1", "2.3.1", "2.5.3")  # 2.3.1 re-audited 2026-10-23, 2.5.3 on 2026-11-11 (docstring)
     streams_text = False
     # The OAuth token file is credentials/<key>.json, where config.toml names the key
     # (kimi-code-env-<hash> for a CLI login); copy whatever credential files there are.
@@ -294,6 +302,8 @@ class KimiSubject(CliSubject):
             st["model"] = r.get("model") or st["model"]
             if r.get("toolsHash") != EMPTY_TOOLS_HASH:
                 bad(f"llm.request toolsHash {r.get('toolsHash')} is not the empty list's")
+            if r.get("toolSelect") not in (None, False):  # kimi 2.5: deferred tool selection must stay off
+                bad(f"llm.request toolSelect {r.get('toolSelect')!r}")
             if r.get("systemPromptHash") != SYSTEM_PROMPT_HASH:
                 bad("llm.request system prompt differs from SYSTEM_PROMPT")
             if r.get("messageCount") != st["messages"]:
@@ -345,6 +355,10 @@ class KimiSubject(CliSubject):
             err = r.get("error")
             if isinstance(err, dict) and err.get("code") == KIMI_FILTERED:
                 self._refuse(p, f"{KIMI_FILTERED}: {err.get('message') or KIMI_REFUSAL}")
+        elif t == "tool_select.initialized":
+            # kimi 2.5.3: the deferred-tool catalogue (seen: ReadMediaFile, select_tools). Bookkeeping only when every
+            # llm.request has toolSelect false and an empty tools hash (checked above); its tools never reach the model.
+            st["tool_select"] = True
         elif t == "changeNotifier.snapshot":
             # kimi-code 2.3.1 bookkeeping, not sent to the model: the CLI's installed subagents and a hash of its
             # bundled skills (neither usable: the request's tool list is empty). An AGENTS.md it loaded is not ok.

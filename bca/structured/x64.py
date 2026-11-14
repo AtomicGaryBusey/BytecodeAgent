@@ -617,8 +617,10 @@ _IP_BASE = 1 << 40  # synthetic ips identify instructions to the BlockEncoder
 _IP_STEP = 16
 
 
-def assemble(instructions, *, base: int = 0x100000, allow_undefined: bool = False) -> Program:
-    """Encode a structured program. Raises AssemblyError listing every bad instruction."""
+def assemble(instructions, *, base: int = 0x100000, allow_undefined: bool = False,
+             harness_v2: bool = False) -> Program:
+    """Encode a structured program. Raises AssemblyError listing every bad instruction.
+    `harness_v2` changes nothing on x86-64 (movsx / adc / sbb are already in the baseline ops)."""
     instructions = normalize_program(instructions)
     items, errors = parse_program(SPEC, instructions)
 

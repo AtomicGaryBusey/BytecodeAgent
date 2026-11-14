@@ -7,6 +7,12 @@ private home holds no credential copies at all: the keyring is reached through t
 written back to the keyring by agy itself. Everything else agy reads or writes (settings, agents,
 rules, skills, MCP config, conversations, brain/, history, summaries, logs, the updater stamp, its
 TMPDIR feature-flag cache) lives under HOME, which is the per-call private home.
+When the keyring cannot be used (seen 2026-11-12 after a reboot: the user's new sign-in was written to
+`~/.gemini/antigravity-cli/antigravity-oauth-token`, mode 0600, and a private HOME without it answered
+"authentication failed or timed out"), agy keeps the token in that file. If the file exists it is copied into
+the private home like every other CLI's credential file, and a refreshed token is copied back (CredHome; the
+access token lasts an hour, so a call that would outlive it becomes the refresh leader). If it does not exist
+nothing is copied and the keyring path above applies.
 
 Tools. The subject runs a custom agent (`--agent bca-subject`, in the private home's global config
 dir) whose frontmatter excludes every default component and inherits no customizations; its body is
@@ -38,6 +44,14 @@ turn: an error), and the out-of-credits wording "Your AI credits balance is too 
 runner). Not relevant here: hooks, plugins, rules wording, `agy acp` (none of them reach the private
 home or print mode).
 
+agy 1.5.7 (re-audited 2026-11-12, eval/audits/agy-1.5.7-20261112; the CLI updated itself at a new sign-in): the same
+stream-json events (init, step_update, result) and step types, the same request record layout; the request still
+declares only manage_task, the system instruction is exactly ours and the user turn matches the wrapper; field 19 is
+still `gemini-3.8-flash-n` for gemini-3.8-flash-high. Changed and handled: the default Agent Mode became Auto
+(AGY_SETTINGS pins Default); agy rewrites settings.json without `useG1Credits: false` (the key is `omitempty` and
+false is its default: the binary still reads it); the sign-in may live in a token file (Credentials, above). Not
+relevant here: swarms, hooks fields, plugin import, enterprise gateways, `agy acp`.
+
 Safety blocks (Parsed.refusal). agy 1.2.12 surfaces a content-filter stop (its changelog: "the CLI now
 surfaces a clear content-filter stop reason"; the binary's enums STOP_REASON_CONTENT_FILTER,
 FINISH_REASON_SAFETY/RECITATION/PROHIBITED_CONTENT, Gemini block reasons SAFETY, BLOCKLIST,
@@ -57,6 +71,7 @@ import json
 import re
 import sqlite3
 import threading
+from datetime import datetime
 from pathlib import Path
 
 from bca.liveeval.subject import SYSTEM_PROMPT
@@ -89,7 +104,10 @@ rules: []
 {SYSTEM_PROMPT}
 """
 # `useG1Credits` false (the default, stated): never spend paid credits once the plan quota is gone.
-AGY_SETTINGS = {"useG1Credits": False}
+# `agentMode` "" is Default: agy 1.5.7 made Auto the default for sessions with no saved mode, headless `-p` runs
+# included; "" keeps the mode every earlier run had (the recorded request is identical either way: audited).
+AGY_SETTINGS = {"useG1Credits": False, "agentMode": ""}
+AGY_TOKEN_FILE = ".gemini/antigravity-cli/antigravity-oauth-token"
 # Declared by agy 1.2.12 even with excludeDefaultComponents (see the module docstring).
 AGY_ALLOWED_TOOLS = frozenset({"manage_task"})
 AGY_SYSTEM = f"<System Prompt>\n{SYSTEM_PROMPT}\n</System Prompt>"
@@ -198,23 +216,31 @@ class AgySubject(CliSubject):
     vendor = "agy"
     binary_name = "agy"
     efforts = ("low", "medium", "high", "max")  # `--effort`; `agy models` ids carry it as a suffix
-    audited_versions = ("1.2.12", "1.5.3")
+    audited_versions = ("1.2.12", "1.5.3", "1.5.7")
     # Not killed on an early abort: agy writes its request record (conversations/*.db) only when the turn
     # ends, so a killed call could never be verified (seen live, 2026-09-28). The rest of the answer is
     # read but never scored: the scorer already stopped.
     streams_text = False
-    # No credential files: the token lives in the keyring (module docstring).
-    home_files = ()
+    # The token lives in the keyring, or in this file when the keyring is unusable (module docstring): optional.
+    home_files = (AGY_TOKEN_FILE,)
     home_required = ()
-    home_sync = ()
+    home_sync = (AGY_TOKEN_FILE,)
 
     def __init__(self, model: str, **kw):
         super().__init__(model, **kw)
         self._call = threading.local()  # the private home and prompt of the call running in this thread
 
     def default_home(self) -> Path:
-        # Only CredHome's lock file lands here: agy's state is never read from the real home.
-        return Path("~/.gemini/antigravity-cli").expanduser()
+        # The user's HOME: only the optional token file (AGY_TOKEN_FILE, relative to it) is read from it, and
+        # CredHome's lock file lands in it; nothing else of agy's state is read from the real home.
+        return Path("~").expanduser()
+
+    def cred_expiry(self, rel: str, data: bytes) -> float | None:
+        try:
+            exp = json.loads(data)["token"]["expiry"]  # RFC 3339 with nanoseconds
+            return datetime.fromisoformat(re.sub(r"\.(\d{6})\d*", r".\1", exp)).timestamp()
+        except (ValueError, KeyError, TypeError):
+            return None
 
     def prepare_home(self, home: Path) -> None:
         try:
@@ -222,7 +248,7 @@ class AgySubject(CliSubject):
             agents.mkdir(parents=True, mode=0o700)
             (agents / f"{AGY_AGENT_NAME}.md").write_text(AGY_AGENT)
             app = home / ".gemini" / "antigravity-cli"
-            app.mkdir(parents=True, mode=0o700)
+            app.mkdir(parents=True, mode=0o700, exist_ok=True)  # exists already when the token file was copied
             (app / "settings.json").write_text(json.dumps(AGY_SETTINGS) + "\n")
             # The background self-updater skips its check when this stamp is < 15 minutes old.
             (app / "last_check.timestamp").touch()
