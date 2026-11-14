@@ -1,0 +1,148 @@
+Implement the function `int64_t packbits_encode(const uint8_t *src, int64_t n, uint8_t *out, int64_t cap)`.
+
+Target: AArch64 (ARMv8-A), Linux AAPCS64. Integer/pointer arguments in x0-x7; 64-bit result in x0. Callee-saved: x19-x28, x29 (frame pointer) and d8-d15 (restore them if you use them); x9-x15 are free scratch registers. sp must stay 16-byte aligned and be back to its entry value when you return with ret (return address in x30). More ABI facts: arguments beyond the eighth are passed on the stack (the 9th at [sp] at entry). A call (bl/blr) overwrites x30, so save x30 (e.g. stp x29, x30, [sp, #-16]!) before calling and restore it before ret. A call clobbers the caller-saved registers x0-x18, x30, v0-v7 and v16-v31 (and the upper halves of v8-v15) and the flags, so keep values that must survive a call in callee-saved registers x19-x28 (saved/restored by you) or in your own stack frame. sp must be 16-byte aligned at every call (and whenever it is used as a base register). Anything below sp may be overwritten by a callee.
+
+Output format: QBE intermediate language (the IL of the QBE compiler backend, c9x.me/compile). Write exactly one function, `export function l $packbits_encode(...)`, taking every argument as `l` (64-bit; pointers are `l` too) and returning `l`. QBE will compile it for the target above, so you do not handle registers or the ABI yourself. Remember: every block starts with an `@label`; temporaries are `%name`; comparisons such as `csltl`/`ceql` produce a `w` value; `jnz` tests a `w`; loads/stores are `loadl`/`storel`. No data definitions, no calls, no other functions. Output only the QBE code: no Markdown fences, no prose. Load a byte zero-extended with `%b =w loadub %p`; store one with `storeb %c, %p`.
+
+Specification: Compress the n bytes at src (0 <= n <= 600) with PackBits run-length encoding into out, which has room for cap bytes (0 <= cap <= 1200), and return the number of bytes written. The output is a sequence of packets: a repeat packet is the header byte 257 - r (i.e. -(r-1) as a signed byte) followed by one byte b, meaning r copies of b (3 <= r <= 128); a literal packet is the header byte L - 1 followed by L bytes copied verbatim (1 <= L <= 128). Encode greedily, left to right, exactly as follows. Let run(j) be the number of consecutive bytes equal to src[j] starting at j, capped at 128. At position i: if run(i) >= 3, emit a repeat packet with r = run(i) and b = src[i], and advance i by r. Otherwise emit a literal packet of the bytes src[i..j-1], where j starts at i and advances while j < n, j - i < 128 and run(j) < 3; then set i = j. (So a pair of equal bytes stays inside a literal; a literal stops just before a run of 3 or more.) Example: "abcccd" -> 01 'a' 'b' FE 'c' 00 'd' (7 bytes). If a whole packet does not fit in the remaining room, write none of it and return -1 immediately (earlier packets stay written). Read only src[0..n-1] (never look past src[n-1] when measuring a run) and write only out[0..cap-1] (both are checked).
+
+Your previous attempt was:
+<previous>
+export function l $packbits_encode(l %src, l %n, l %out, l %cap) {
+@start
+	jmp @outer
+@outer
+	%i =l phi @start 0, @repwrite %i_rep, @copydone %i_lit
+	%wr =l phi @start 0, @repwrite %wr_rep, @copydone %wr_lit
+	%i_lt_n =w csltl %i, %n
+	jnz %i_lt_n, @havebyte, @done
+@havebyte
+	%iplus1 =l add %i, 1
+	%ok1 =w csltl %iplus1, %n
+	jnz %ok1, @chk2, @dolit
+@chk2
+	%iplus2 =l add %i, 2
+	%ok2 =w csltl %iplus2, %n
+	jnz %ok2, @chk3eq, @dolit
+@chk3eq
+	%p0 =l add %src, %i
+	%b0 =w loadub %p0
+	%p1 =l add %src, %iplus1
+	%b1 =w loadub %p1
+	%p2 =l add %src, %iplus2
+	%b2 =w loadub %p2
+	%eq01 =w ceqw %b0, %b1
+	jnz %eq01, @chk02, @dolit
+@chk02
+	%eq02 =w ceqw %b0, %b2
+	jnz %eq02, @dorep, @dolit
+@dorep
+	%rp0 =l add %src, %i
+	%rb =w loadub %rp0
+	jmp @runcnt
+@runcnt
+	%r =w phi @dorep 3, @runinc %rnext
+	%r_lt_128 =w csltw %r, 128
+	jnz %r_lt_128, @runmore, @repemit
+@runmore
+	%rext =l extuw %r
+	%ir =l add %i, %rext
+	%ir_lt_n =w csltl %ir, %n
+	jnz %ir_lt_n, @runeq, @repemit
+@runeq
+	%pr =l add %src, %ir
+	%br =w loadub %pr
+	%eqr =w ceqw %rb, %br
+	jnz %eqr, @runinc, @repemit
+@runinc
+	%rnext =w add %r, 1
+	jmp @runcnt
+@repemit
+	%need2 =l add %wr, 2
+	%fit2 =w cslel %need2, %cap
+	jnz %fit2, @repwrite, @fail
+@repwrite
+	%hdr =w sub 257, %r
+	%op =l add %out, %wr
+	storeb %hdr, %op
+	%op1 =l add %op, 1
+	storeb %rb, %op1
+	%wr_rep =l add %wr, 2
+	%rext2 =l extuw %r
+	%i_rep =l add %i, %rext2
+	jmp @outer
+@dolit
+	jmp @litcnt
+@litcnt
+	%j =l phi @dolit %i, @litinc %jnext
+	%Lacc =w phi @dolit 0, @litinc %Lnext
+	%j_lt_n =w csltl %j, %n
+	jnz %j_lt_n, @litlen, @litemit
+@litlen
+	%L_lt_128 =w csltw %Lacc, 128
+	jnz %L_lt_128, @litrun, @litemit
+@litrun
+	%j1 =l add %j, 1
+	%j1_lt_n =w csltl %j1, %n
+	jnz %j1_lt_n, @litc2, @litinc
+@litc2
+	%j2 =l add %j, 2
+	%j2_lt_n =w csltl %j2, %n
+	jnz %j2_lt_n, @liteq, @litinc
+@liteq
+	%qj0 =l add %src, %j
+	%cj0 =w loadub %qj0
+	%qj1 =l add %src, %j1
+	%cj1 =w loadub %qj1
+	%qj2 =l add %src, %j2
+	%cj2 =w loadub %qj2
+	%ceq01 =w ceqw %cj0, %cj1
+	jnz %ceq01, @liteq2, @litinc
+@liteq2
+	%ceq02 =w ceqw %cj0, %cj2
+	jnz %ceq02, @litemit, @litinc
+@litinc
+	%jnext =l add %j, 1
+	%Lnext =w add %Lacc, 1
+	jmp @litcnt
+@litemit
+	%Lext =l extuw %Lacc
+	%needL =l add %Lext, 1
+	%needtot =l add %wr, %needL
+	%fitL =w cslel %needtot, %cap
+	jnz %fitL, @litwrite, @fail
+@litwrite
+	%hdrL =w sub %Lacc, 1
+	%opl =l add %out, %wr
+	storeb %hdrL, %opl
+	%dst_start =l add %opl, 1
+	%src_i =l add %src, %i
+	jmp @copy
+@copy
+	%cs =l phi @litwrite %src_i, @copydo %csn
+	%cd =l phi @litwrite %dst_start, @copydo %cdn
+	%kk =w phi @litwrite %Lacc, @copydo %kk1
+	jnz %kk, @copydo, @copydone
+@copydo
+	%cb =w loadub %cs
+	storeb %cb, %cd
+	%csn =l add %cs, 1
+	%cd =l add %cd, 1
+	%kk1 =w sub %kk, 1
+	jmp @copy
+@copydone
+	%wr_lit =l add %wr, %needL
+	%i_lit =l copy %j
+	jmp @outer
+@done
+	ret %wr
+@fail
+	ret -1
+}
+</previous>
+It failed:
+<failure>
+Compilation failed at stage qbe:
+qbe:-:131: invalid type for operand %cdn in phi %cd
+</failure>
+Write a corrected, complete version. Same output format; output only the code.

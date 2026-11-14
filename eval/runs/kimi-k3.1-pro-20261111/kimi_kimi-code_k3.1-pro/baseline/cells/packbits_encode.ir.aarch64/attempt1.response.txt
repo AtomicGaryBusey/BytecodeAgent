@@ -1,0 +1,174 @@
+export function l $packbits_encode(l %src, l %n, l %out, l %cap) {
+@start
+	%i_slot =l alloc8 8
+	%written_slot =l alloc8 8
+	%j_slot =l alloc8 8
+	%run_slot =l alloc4 4
+	%len_slot =l alloc4 4
+	storel 0, %i_slot
+	storel 0, %written_slot
+	jmp @main_loop
+
+@main_loop
+	%main_i =l loadl %i_slot
+	%main_done =w csgel %main_i, %n
+	jnz %main_done, @success, @packet
+
+@packet
+	%i =l loadl %i_slot
+	storew 1, %run_slot
+	jmp @run_loop
+
+@run_loop
+	%run_value =w loadw %run_slot
+	%run_below_cap =w csltw %run_value, 128
+	jnz %run_below_cap, @run_bounds, @run_finished
+
+@run_bounds
+	%run_offset =l extuw %run_value
+	%run_index =l add %i, %run_offset
+	%run_in_bounds =w csltl %run_index, %n
+	jnz %run_in_bounds, @run_compare, @run_finished
+
+@run_compare
+	%run_base_ptr =l add %src, %i
+	%run_probe_ptr =l add %src, %run_index
+	%run_base_byte =w loadub %run_base_ptr
+	%run_probe_byte =w loadub %run_probe_ptr
+	%run_same =w ceqw %run_base_byte, %run_probe_byte
+	jnz %run_same, @run_grow, @run_finished
+
+@run_grow
+	%run_next =w add %run_value, 1
+	storew %run_next, %run_slot
+	jmp @run_loop
+
+@run_finished
+	%run_final =w loadw %run_slot
+	%is_repeat =w csgew %run_final, 3
+	jnz %is_repeat, @repeat_packet, @literal_begin
+
+@repeat_packet
+	%repeat_run =w loadw %run_slot
+	%repeat_run_l =l extuw %repeat_run
+	%repeat_written =l loadl %written_slot
+	%repeat_remaining =l sub %cap, %repeat_written
+	%repeat_no_room =w csltl %repeat_remaining, 2
+	jnz %repeat_no_room, @failure, @repeat_write
+
+@repeat_write
+	%repeat_header =w sub 257, %repeat_run
+	%repeat_out =l add %out, %repeat_written
+	storeb %repeat_header, %repeat_out
+	%repeat_src =l add %src, %i
+	%repeat_byte =w loadub %repeat_src
+	%repeat_data_out =l add %repeat_out, 1
+	storeb %repeat_byte, %repeat_data_out
+	%repeat_next_i =l add %i, %repeat_run_l
+	%repeat_next_written =l add %repeat_written, 2
+	storel %repeat_next_i, %i_slot
+	storel %repeat_next_written, %written_slot
+	jmp @main_loop
+
+@literal_begin
+	storel %i, %j_slot
+	storew 0, %len_slot
+	jmp @literal_test
+
+@literal_test
+	%literal_j =l loadl %j_slot
+	%literal_in_bounds =w csltl %literal_j, %n
+	jnz %literal_in_bounds, @literal_length_test, @literal_finish
+
+@literal_length_test
+	%literal_len =w loadw %len_slot
+	%literal_has_room =w csltw %literal_len, 128
+	jnz %literal_has_room, @literal_run_begin, @literal_finish
+
+@literal_run_begin
+	storew 1, %run_slot
+	jmp @literal_run_loop
+
+@literal_run_loop
+	%literal_run_value =w loadw %run_slot
+	%literal_run_below_cap =w csltw %literal_run_value, 128
+	jnz %literal_run_below_cap, @literal_run_bounds, @literal_run_finished
+
+@literal_run_bounds
+	%literal_run_offset =l extuw %literal_run_value
+	%literal_run_index =l add %literal_j, %literal_run_offset
+	%literal_run_in_bounds =w csltl %literal_run_index, %n
+	jnz %literal_run_in_bounds, @literal_run_compare, @literal_run_finished
+
+@literal_run_compare
+	%literal_run_base_ptr =l add %src, %literal_j
+	%literal_run_probe_ptr =l add %src, %literal_run_index
+	%literal_run_base_byte =w loadub %literal_run_base_ptr
+	%literal_run_probe_byte =w loadub %literal_run_probe_ptr
+	%literal_run_same =w ceqw %literal_run_base_byte, %literal_run_probe_byte
+	jnz %literal_run_same, @literal_run_grow, @literal_run_finished
+
+@literal_run_grow
+	%literal_run_next =w add %literal_run_value, 1
+	storew %literal_run_next, %run_slot
+	jmp @literal_run_loop
+
+@literal_run_finished
+	%literal_run_final =w loadw %run_slot
+	%literal_run_is_repeat =w csgew %literal_run_final, 3
+	jnz %literal_run_is_repeat, @literal_finish, @literal_accept
+
+@literal_accept
+	%literal_next_j =l add %literal_j, 1
+	%literal_next_len =w add %literal_len, 1
+	storel %literal_next_j, %j_slot
+	storew %literal_next_len, %len_slot
+	jmp @literal_test
+
+@literal_finish
+	%literal_final_len =w loadw %len_slot
+	%literal_len_l =l extuw %literal_final_len
+	%literal_needed =l add %literal_len_l, 1
+	%literal_written =l loadl %written_slot
+	%literal_remaining =l sub %cap, %literal_written
+	%literal_no_room =w csltl %literal_remaining, %literal_needed
+	jnz %literal_no_room, @failure, @literal_write
+
+@literal_write
+	%literal_header =w sub %literal_final_len, 1
+	%literal_out =l add %out, %literal_written
+	storeb %literal_header, %literal_out
+	storew 0, %run_slot
+	jmp @literal_copy_test
+
+@literal_copy_test
+	%copy_index =w loadw %run_slot
+	%copy_more =w csltw %copy_index, %literal_final_len
+	jnz %copy_more, @literal_copy, @literal_copy_done
+
+@literal_copy
+	%copy_offset =l extuw %copy_index
+	%copy_src_base =l add %src, %i
+	%copy_src =l add %copy_src_base, %copy_offset
+	%copy_data_base =l add %literal_out, 1
+	%copy_dst =l add %copy_data_base, %copy_offset
+	%copy_byte =w loadub %copy_src
+	storeb %copy_byte, %copy_dst
+	%copy_next =w add %copy_index, 1
+	storew %copy_next, %run_slot
+	jmp @literal_copy_test
+
+@literal_copy_done
+	%literal_next_i =l loadl %j_slot
+	%literal_next_written =l add %literal_written, %literal_needed
+	storel %literal_next_i, %i_slot
+	storel %literal_next_written, %written_slot
+	jmp @main_loop
+
+@success
+	%result =l loadl %written_slot
+	ret %result
+
+@failure
+	ret -1
+}

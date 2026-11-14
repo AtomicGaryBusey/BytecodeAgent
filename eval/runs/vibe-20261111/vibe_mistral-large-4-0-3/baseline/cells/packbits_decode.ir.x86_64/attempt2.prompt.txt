@@ -1,0 +1,172 @@
+Implement the function `int64_t packbits_decode(const uint8_t *src, int64_t n, uint8_t *out, int64_t cap)`.
+
+Target: x86-64, Linux System V ABI. Integer/pointer arguments in rdi, rsi, rdx, rcx, r8, r9; 64-bit result in rax. Callee-saved: rbx, rbp, r12, r13, r14, r15 (restore them if you use them); all other registers may be clobbered. rsp is 16-byte aligned before the call, so it is 8 mod 16 at entry; it must be back to its entry value when you return with ret. Never write to the caller's frame (at or above the return address). More ABI facts: arguments beyond the sixth are passed on the stack; at entry the return address is at [rsp], the 7th argument at [rsp+8], the 8th at [rsp+16]. A call clobbers the caller-saved registers rax, rcx, rdx, rsi, rdi, r8-r11, all xmm registers and the flags, so keep values that must survive a call in callee-saved registers (saved/restored by you) or in your own stack frame. rsp must be 16-byte aligned at every call instruction (at entry rsp is 8 mod 16, so an odd number of 8-byte pushes, or `sub rsp, 8` plus any multiple of 16, re-aligns it). Anything below rsp may be overwritten by a callee. The direction flag must be clear at calls and on return.
+
+Output format: QBE intermediate language (the IL of the QBE compiler backend, c9x.me/compile). Write exactly one function, `export function l $packbits_decode(...)`, taking every argument as `l` (64-bit; pointers are `l` too) and returning `l`. QBE will compile it for the target above, so you do not handle registers or the ABI yourself. Remember: every block starts with an `@label`; temporaries are `%name`; comparisons such as `csltl`/`ceql` produce a `w` value; `jnz` tests a `w`; loads/stores are `loadl`/`storel`. No data definitions, no calls, no other functions. Output only the QBE code: no Markdown fences, no prose. Load a byte zero-extended with `%b =w loadub %p` or sign-extended with `%b =w loadsb %p`; store one with `storeb %c, %p`.
+
+Specification: Decompress PackBits data: src holds n bytes (0 <= n <= 600) of packets, decoded left to right into out, which has room for cap bytes (0 <= cap <= 1200). Each packet starts with a header byte h read as a signed byte: 0 <= h <= 127: a literal packet, the next h + 1 bytes are copied to the output; -127 <= h <= -1: a repeat packet, the next byte is written 1 - h times; h = -128: no operation (the packet is just that byte). Return the number of bytes written. Errors: if a packet needs more source bytes than remain in src[0..n-1] (checked when its header is read, before any of its output is written), return -2 (the output of earlier packets stays written). If the output would exceed cap bytes, write exactly the first cap bytes of the output (out[0..cap-1] completely filled) and return -1. Example: 01 'a' 'b' FE 'c' 00 'd' decodes to "abcccd" (returns 6); with cap = 4 it writes "abcc" and returns -1. Read only src[0..n-1] and write only out[0..cap-1] (both are checked: never write out[cap], even when cap is 0).
+
+Your previous attempt was:
+<previous>
+export function l $packbits_decode(l %src, l %n, l %out, l %cap) {
+@start
+    %zero =l copy 0
+    %one =l copy 1
+    %two =l copy 2
+    %k128 =l copy 128
+    %neg128 =l sub %zero, %k128
+    %m1 =l sub %zero, %one
+    %m2 =l sub %zero, %two
+    jmp @loop
+
+@loop
+    %i =l phi @start %zero, @cont %i_next
+    %o =l phi @start %zero, @cont %o_next
+    %more =w csltl %i, %n
+    jnz %more, @hdr, @done
+
+@done
+    ret %o
+
+@hdr
+    %hp =l add %src, %i
+    %hwb =w loadsb %hp
+    %h =l extsw %hwb
+    %hneg =w csltl %h, %zero
+    jnz %hneg, @neg, @lit
+
+@lit
+    %lcnt =l add %h, %one
+    %li1 =l add %i, %one
+    %lneed =l add %li1, %lcnt
+    %lsrcok =w cslel %lneed, %n
+    jnz %lsrcok, @lit_ok, @err2
+
+@err2
+    ret %m2
+
+@lit_ok
+    %lrem =l sub %cap, %o
+    %lfits =w cslel %lcnt, %lrem
+    jnz %lfits, @lit_all, @lit_over
+
+@lit_all
+    jmp @lit_copy
+
+@lit_copy
+    %lk =l phi @lit_all %zero, @lit_body %lk_next
+    %lkdone =w csltl %lk, %lcnt
+    jnz %lkdone, @lit_body, @lit_done
+
+@lit_body
+    %lsrc =l add %i, %one
+    %lsrck =l add %lsrc, %lk
+    %lb =w loadub %lsrck
+    %ldst =l add %out, %o
+    %ldstk =l add %ldst, %lk
+    storeb %lb, %ldstk
+    %lk_next =l add %lk, %one
+    jmp @lit_copy
+
+@lit_done
+    %li1b =l add %i, %one
+    %i_lit_next =l add %li1b, %lcnt
+    %o_lit_next =l add %o, %lcnt
+    jmp @cont
+
+@lit_over
+    jmp @lit_ocopy
+
+@lit_ocopy
+    %lok =l phi @lit_over %zero, @lit_obody %lok_next
+    %lodone =w csltl %lok, %lrem
+    jnz %lodone, @lit_obody, @lit_oret
+
+@lit_obody
+    %losrc =l add %i, %one
+    %losrck =l add %losrc, %lok
+    %lob =w loadub %losrck
+    %lodst =l add %out, %o
+    %lodstk =l add %lodst, %lok
+    storeb %lob, %lodstk
+    %lok_next =l add %lok, %one
+    jmp @lit_ocopy
+
+@lit_oret
+    ret %m1
+
+@neg
+    %is128 =w ceql %h, %neg128
+    jnz %is128, @nop_done, @rep
+
+@nop_done
+    %i_nop_next =l add %i, %one
+    %o_nop_next =l copy %o
+    jmp @cont
+
+@rep
+    %rneed =l add %i, %two
+    %rsrcok =w cslel %rneed, %n
+    jnz %rsrcok, @rep_ok, @err2
+
+@rep_ok
+    %rsrc =l add %src, %i
+    %rsrc1 =l add %rsrc, %one
+    %rb =w loadub %rsrc1
+    %rcnt =l sub %one, %h
+    %rrem =l sub %cap, %o
+    %rfit =w cslel %rcnt, %rrem
+    jnz %rfit, @rep_all, @rep_over
+
+@rep_all
+    jmp @rep_copy
+
+@rep_copy
+    %rk =l phi @rep_all %zero, @rep_body %rk_next
+    %rkdone =w csltl %rk, %rcnt
+    jnz %rkdone, @rep_body, @rep_done
+
+@rep_body
+    %rdst =l add %out, %o
+    %rdstk =l add %rdst, %rk
+    storeb %rb, %rdstk
+    %rk_next =l add %rk, %one
+    jmp @rep_copy
+
+@rep_done
+    %i_rep_next =l add %i, %two
+    %o_rep_next =l add %o, %rcnt
+    jmp @cont
+
+@rep_over
+    jmp @rep_ocopy
+
+@rep_ocopy
+    %rok =l phi @rep_over %zero, @rep_obody %rok_next
+    %rodone =w csltl %rok, %rrem
+    jnz %rodone, @rep_obody, @rep_oret
+
+@rep_obody
+    %rodst =l add %out, %o
+    %rodstk =l add %rodst, %rok
+    storeb %rb, %rodstk
+    %rok_next =l add %rok, %one
+    jmp @rep_ocopy
+
+@rep_oret
+    ret %m1
+
+@cont
+    %i_next =l phi @lit_done %i_lit_next, @rep_done %i_rep_next, @nop_done %i_nop_next
+    %o_next =l phi @lit_done %o_lit_next, @rep_done %o_rep_next, @nop_done %o_nop_next
+    jmp @loop
+}
+</previous>
+It failed:
+<failure>
+28 of 46 test cases failed. First failures:
+  packbits_decode(src=bytes.fromhex('0061'), n=2, out, cap=1) [decoded length 1]: expected 1, but the run failed: x86_64: Invalid memory read (UC_ERR_READ_UNMAPPED) at pc=0x100085 [the faulting instruction is `movzx r12d, byte ptr [rbx + r9]` at 0x100085 (disassembly of the compiled code)]
+  packbits_decode(src=bytes.fromhex('8080007a'), n=4, out, cap=1) [decoded length 1]: expected 1, but the run failed: x86_64: Invalid memory read (UC_ERR_READ_UNMAPPED) at pc=0x100085 [the faulting instruction is `movzx r12d, byte ptr [rbx + r9]` at 0x100085 (disassembly of the compiled code)]
+  packbits_decode(src=bytes.fromhex('016162fe630064'), n=7, out, cap=6) [decoded length 6]: expected 6, but the run failed: x86_64: Invalid memory read (UC_ERR_READ_UNMAPPED) at pc=0x100085 [the faulting instruction is `movzx r12d, byte ptr [rbx + r9]` at 0x100085 (disassembly of the compiled code)]
+</failure>
+Write a corrected, complete version. Same output format; output only the code.
