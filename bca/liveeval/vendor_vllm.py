@@ -18,7 +18,8 @@ construction and is checked per call:
   version must be an audited one (/version).
 - Reasoning: the server's reasoning parser returns it in `reasoning_content` / `reasoning` deltas, and a
   leading <think>...</think> block in the content is held back too (vendor_local._ThinkFilter). Either
-  is recorded in notes, never scored. A tool call in the stream fails closed.
+  is recorded in notes, never scored. A model in FINAL_MARKERS (Apriel) writes its reasoning as plain text and
+  its answer after a marker: everything before the marker is held back the same way (_FinalMarkerFilter). A tool call in the stream fails closed.
 - Token-budget mode (`vllm:<model>@budget`, bca.liveeval.token_budget): the call's limit is a number of
   output tokens per battery (the most any vendor model used for one call there), sent as `max_tokens`,
   instead of the battery's wall-clock limit (a generous wall-clock ceiling remains). Reaching it is a
@@ -26,7 +27,9 @@ construction and is checked per call:
   separate subject (its own directory and table row).
 - Server: BCA_VLLM_URL (default http://127.0.0.1:8000). Calls are serialised per server through a
   cross-process file lock (concurrent requests would slow each other down), and the per-call clock
-  starts once the lock is held.
+  starts once the lock is held. BCA_VLLM_SLOTS=N allows N calls at once (N locks): on a memory-bandwidth-bound
+  server batch decoding costs each call almost nothing (Apriel on the GB10, 2026-11-14: 7.9 tok/s alone, 7.8 each
+  at five at once), so a token-budget run may use it; the slot count is recorded in describe().
 - Server setup (docs: reports/cross-vendor-methodology.md, "Local models"): container bca-vllm-kolibri,
   127.0.0.1:8000, weights from the bca-hf-models volume, HF_HUB_OFFLINE=1, `--max-model-len 65536`,
   a reasoning parser and no tool parser.
@@ -56,6 +59,46 @@ class VllmError(RuntimeError):
     pass
 
 
+# Models whose answer follows a plain-text marker instead of a <think> block, and that vLLM 0.29.0 has no reasoning
+# parser for. Apriel-1.6-15B-Thinker (ServiceNow, MIT): its chat template asks for step-by-step reasoning, "then
+# provide the final response after the marker [BEGIN FINAL RESPONSE]"; the model card's own example takes the text
+# between that marker and <|end|>. (The card's vLLM route is an unmerged parser in a third-party image: not used.)
+FINAL_MARKERS = {"apriel": "[BEGIN FINAL RESPONSE]"}
+_FINAL_TAIL = ("<|end|>", "[END FINAL RESPONSE]")
+
+
+def final_marker(model: str) -> str | None:
+    m = model.lower()
+    return next((mark for key, mark in FINAL_MARKERS.items() if key in m), None)
+
+
+class _FinalMarkerFilter:
+    """Hold back everything before the model's final-response marker (recorded as reasoning, never scored); the
+    answer after it is released whole at the end, without the surrounding blank lines or a trailing end tag (a
+    split stream could otherwise leak part of either). No marker at all: the whole output was reasoning, so the
+    answer is empty and scored as such (the model never gave one)."""
+
+    def __init__(self, marker: str) -> None:
+        self.marker = marker
+        self.buf = ""
+        self.thinking = ""
+
+    def feed(self, s: str) -> str:
+        self.buf += s
+        return ""
+
+    def flush(self) -> str:
+        i = self.buf.find(self.marker)
+        if i < 0:
+            self.thinking, self.buf = self.buf, ""
+            return ""
+        self.thinking, out, self.buf = self.buf[:i], self.buf[i + len(self.marker):].strip(), ""
+        for t in _FINAL_TAIL:
+            if out.endswith(t):
+                out = out[: -len(t)].rstrip()
+        return out
+
+
 class VllmSubject(Subject):
     vendor = "vllm"
     efforts: tuple[str, ...] = EFFORTS
@@ -79,8 +122,9 @@ class VllmSubject(Subject):
         self.budget = budget
         u = urlparse(url or VLLM_URL)
         self.host, self.port = u.hostname or "127.0.0.1", u.port or 8000
-        self._lock = threading.Lock()
-        self._lockfile = f"/tmp/bca-vllm-{self.host}-{self.port}.lock"
+        self.slots = max(1, int(os.environ.get("BCA_VLLM_SLOTS", "1")))
+        self._lock = threading.BoundedSemaphore(self.slots)
+        self._lockfile = f"/tmp/bca-vllm-{self.host}-{self.port}.lock"  # slot k > 0: <lockfile>.<k>
         self._setup: dict | None = None
 
     # -- server metadata (no model call) -----------------------------------------------------------
@@ -133,7 +177,8 @@ class VllmSubject(Subject):
                 "vllm": {"max_model_len": s["max_model_len"], "root": s["root"],
                          "sampling": "generation_config.json defaults", "server": f"{self.host}:{self.port}",
                          "limit": "token budget per battery (bca.liveeval.token_budget)" if self.budget_mode
-                         else "wall clock per battery"}}
+                         else "wall clock per battery",
+                         "concurrent_calls": self.slots}}
 
     # -- one call ----------------------------------------------------------------------------------
 
@@ -153,14 +198,32 @@ class VllmSubject(Subject):
                  timeout: float | None = None) -> Response:
         if self.budget is not None and not self.budget():
             return Response("", ok=False, error="call budget exhausted")
-        with self._lock, open(self._lockfile, "a") as lf:
-            fcntl.flock(lf, fcntl.LOCK_EX)
+        with self._lock:
+            lf = self._acquire_slot()
             try:
                 budget = token_budget(CURRENT_BATTERY.get()) if self.budget_mode else None
                 limit = wall_ceiling(budget) if budget else (self.timeout if timeout is None else timeout)
                 return self._complete(prompt, on_text, raw_path, limit, budget)
             finally:
                 fcntl.flock(lf, fcntl.LOCK_UN)
+                lf.close()
+
+    def _acquire_slot(self):
+        """One of the server's `slots` cross-process locks (BCA_VLLM_SLOTS, default 1: calls serialised)."""
+        names = [self._lockfile] + [f"{self._lockfile}.{k}" for k in range(1, self.slots)]
+        if self.slots == 1:
+            lf = open(names[0], "a")
+            fcntl.flock(lf, fcntl.LOCK_EX)
+            return lf
+        while True:
+            for name in names:
+                lf = open(name, "a")
+                try:
+                    fcntl.flock(lf, fcntl.LOCK_EX | fcntl.LOCK_NB)
+                    return lf
+                except BlockingIOError:
+                    lf.close()
+            time.sleep(0.5)
 
     def _complete(self, prompt: str, on_text: OnText | None, raw_path: str, limit: float,
                   budget: int | None = None) -> Response:
@@ -184,7 +247,8 @@ class VllmSubject(Subject):
         timer = threading.Timer(limit, on_timeout)
         timer.start()
         text, reasoning, notes = [], [], []
-        filt = _ThinkFilter()
+        mark = final_marker(self.model)
+        filt = _FinalMarkerFilter(mark) if mark else _ThinkFilter()
         first, deltas, killed, done, error, model, finish, usage = None, 0, False, False, "", "", None, {}
         raw = open(raw_path, "w") if raw_path else None
 

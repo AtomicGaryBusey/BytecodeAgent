@@ -23,6 +23,7 @@ class Fake:
         self.chunks = ["mov rax, 1\n", "ret\n"]
         self.reasoning = None  # streamed as reasoning_content deltas first
         self.served = MODEL
+        self.listed = MODEL  # what /v1/models lists (served differs from it only in the reroute test)
         self.finish = "stop"
         self.tool_call = False
         self.requests = []
@@ -47,7 +48,7 @@ def serve(fake: Fake):
             if self.path == "/version":
                 return self._json({"version": fake.version})
             if self.path == "/v1/models":
-                return self._json({"data": [{"id": MODEL, "root": "/models/kolibri", "max_model_len": 65536}]})
+                return self._json({"data": [{"id": fake.listed, "root": "/models/x", "max_model_len": 65536}]})
             self._json({"error": "nope"}, 404)
 
         def do_POST(self):
@@ -261,3 +262,56 @@ def test_run_cell_publishes_the_battery_and_scores_the_budget_as_a_timeout(env, 
     s = VllmSubject(MODEL + "@budget", url=url)
     rec = run_cell(s, task, "stream", "x86_64", tmp_path, max_attempts=1, meta={"battery": "round1", **s.describe()})
     assert rec["categories"] == ["subject_timeout"] and fake.requests[0]["max_tokens"] == 32768
+
+
+APRIEL = "ServiceNow-AI/Apriel-1.6-15b-Thinker"
+
+
+def test_apriel_answer_is_what_follows_its_final_response_marker(env):
+    """Apriel writes plain-text reasoning, then its answer after [BEGIN FINAL RESPONSE] (no vLLM 0.29.0 parser):
+    the reasoning is held back and recorded, never scored; the end tag is dropped; split chunks change nothing."""
+    fake, url = env
+    fake.served = fake.listed = APRIEL
+    out = "Here are my reasoning steps:\nuse rax\n[BEGIN FINAL RESPONSE]\nmov rax, 1\nret\n<|end|>"
+    fake.chunks = [out[i:i + 3] for i in range(0, len(out), 3)]
+    r = VllmSubject(APRIEL, url=url, timeout=30).complete("PROMPT")
+    assert r.ok and r.text == "mov rax, 1\nret"
+    assert any("reasoning not scored" in n and "use rax" in n for n in r.notes)
+
+
+def test_apriel_without_the_marker_gave_no_answer(env):
+    fake, url = env
+    fake.served = fake.listed = APRIEL
+    fake.chunks = ["Here are my reasoning steps:\n", "still thinking when it stopped"]
+    r = VllmSubject(APRIEL, url=url, timeout=30).complete("PROMPT")
+    assert r.text == "" and any("still thinking" in n for n in r.notes)
+
+
+def test_a_marker_is_only_special_for_the_models_that_use_it(env):
+    fake, url = env
+    fake.chunks = ["[BEGIN FINAL RESPONSE] is just text here\n"]
+    assert subj(url).complete("PROMPT").text == "[BEGIN FINAL RESPONSE] is just text here\n"
+
+
+def _overlap(env, monkeypatch, tmp_path, slots):
+    """Two calls of ~0.6 s each (two chunks 0.3 s apart): ~1.2 s in all when serialised, ~0.6 s at once."""
+    fake, url = env
+    fake.delay = 0.3
+    monkeypatch.setenv("BCA_VLLM_SLOTS", str(slots))
+    s = subj(url)
+    s._lockfile = str(tmp_path / "srv.lock")
+    s.setup()
+    ts = [threading.Thread(target=lambda: s.complete("PROMPT")) for _ in range(2)]
+    t0 = time.time()
+    [t.start() for t in ts]
+    [t.join() for t in ts]
+    assert s.describe()["vllm"]["concurrent_calls"] == slots
+    return time.time() - t0 < 1.0
+
+
+def test_calls_are_serialised_by_default(env, monkeypatch, tmp_path):
+    assert not _overlap(env, monkeypatch, tmp_path, 1)
+
+
+def test_slots_let_calls_run_at_once(env, monkeypatch, tmp_path):
+    assert _overlap(env, monkeypatch, tmp_path, 2)

@@ -182,10 +182,13 @@ class ClaudeSubject(Subject):
 
     name = "claude-cli"
 
-    def __init__(self, *, timeout: float = 180.0, binary: str = "claude", model: str | None = None,
+    def __init__(self, *, timeout: float = 180.0, binary: str | None = None, model: str | None = None,
                  budget: Callable[[], bool] | None = None, effort: str | None = None):
         if effort is not None and effort not in EFFORTS:
             raise ValueError(f"unknown effort {effort!r}; have {', '.join(EFFORTS)}")
+        from bca.liveeval import pins  # an explicit binary (tests), BCA_CLAUDE_BIN, the pinned copy, then PATH
+        pin_path, self.pin_env = pins.resolve("claude", binary)  # a broken pin raises PinError: no call is made
+        binary = pin_path or "claude"
         self.binary = shutil.which(binary) or binary
         self.timeout = timeout
         self.model = model
@@ -210,7 +213,7 @@ class ClaudeSubject(Subject):
         return len(prompt.encode()) > ARGV_PROMPT_MAX
 
     def env(self) -> dict[str, str]:
-        return child_env()
+        return {**child_env(), **self.pin_env}
 
     @property
     def cli_version(self) -> str:

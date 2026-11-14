@@ -40,6 +40,7 @@ from collections.abc import Callable
 from dataclasses import dataclass, field
 from pathlib import Path
 
+from bca.liveeval import pins
 from bca.liveeval.subject import _VERSION_RE, ARGV_PROMPT_MAX, CLI_DEFAULT_EFFORT, OnText, Response, Subject, child_env
 
 
@@ -258,7 +259,13 @@ class CliSubject(Subject):
         self.model = model
         self.timeout = timeout
         self.effort = effort
-        self.binary = shutil.which(binary or self.binary_name) or (binary or self.binary_name)
+        # an explicit binary (tests), BCA_<NAME>_BIN, the pinned copy (bca.liveeval.pins), then PATH; a pin that
+        # cannot be used as recorded fails closed here, before any call
+        try:
+            pin_path, self.pin_env = pins.resolve(self.binary_name, binary)
+        except pins.PinError as e:
+            raise IsolationError(str(e)) from e
+        self.binary = shutil.which(pin_path or self.binary_name) or (pin_path or self.binary_name)
         self.home_real = Path(home_real).expanduser() if home_real else self.default_home()
         self.calls = 0
         self._lock = threading.Lock()
@@ -307,7 +314,7 @@ class CliSubject(Subject):
         if self._version is None:
             try:
                 out = subprocess.run([self.binary, "--version"], capture_output=True, text=True, timeout=30,
-                                     env={**child_env(), **self.version_env}, stdin=subprocess.DEVNULL,
+                                     env={**child_env(), **self.pin_env, **self.version_env}, stdin=subprocess.DEVNULL,
                                      cwd=tempfile.gettempdir())
                 m = _VERSION_RE.search((out.stdout or "") + (out.stderr or ""))
                 self._version = m.group(0) if out.returncode == 0 and m else "unknown"
@@ -360,6 +367,7 @@ class CliSubject(Subject):
             except (SetupError, OSError, subprocess.SubprocessError) as e:  # transient: retried by the runner
                 return self._fail(f"setup: {type(e).__name__}: {e}", t0)
             env = {k: v for k, v in child_env().items() if k not in VENDOR_ENV_DROP}
+            env.update(self.pin_env)
             env.update(self.extra_env(home.path))
             try:
                 feed_stdin = on_stdin and self.stdin_prompt
