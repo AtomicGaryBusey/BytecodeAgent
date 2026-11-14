@@ -74,6 +74,7 @@ results on the other paths (16 cells each):
 | Claude Sonnet 5.5 via Copilot | **1/16** | 16/16 | 16/16 | 15/16 | 14/16 |
 | OpenAI gpt-oss-120b (Cerebras) | **1/16** | 9/16 | 16/16 | 10/16 | 0/16 |
 | Qwen 3.8 27B (Cerebras) | **0/16** | 5/16 | 15/16 | 14/16 | 0/16 |
+| Aleph-Alpha/Kolibri-1 | **0/16** | 0/16 | 11/16 | 6/16 | 0/16 |
 
 Per ISA, hex first attempt:
 
@@ -120,6 +121,7 @@ Per ISA, hex first attempt:
 | Claude Sonnet 5.5 via Copilot | 1/8 | 0/8 |
 | OpenAI gpt-oss-120b (Cerebras) | 0/8 | 1/8 |
 | Qwen 3.8 27B (Cerebras) | 0/8 | 0/8 |
+| Aleph-Alpha/Kolibri-1 | 0/8 | 0/8 |
 
 ## Whole programs (app battery, sample 1)
 
@@ -139,10 +141,10 @@ results (— where that model did not run the app battery):
 | Claude Haiku 5.5 | **11/16** | 16/16 | 14/16 | 14/16 |
 | Claude Opus 5 | **11/16** | 16/16 | 16/16 | 13/16 |
 | Grok 4.6 | **11/16** | 16/16 | 16/16 | 15/16 |
+| Claude Opus 4.7 | **10/16** | 12/16 | 13/16 | 13/16 |
 | Grok 4.7 | **10/16** | 16/16 | 16/16 | 15/16 |
 | Grok 4.7 build-fast | **10/16** | 16/16 | 16/16 | 14/16 |
-| Claude Opus 4.7 | **9/16** | 12/16 | 13/16 | 13/16 |
-| Claude Sonnet 5 | **7/16** | 9/16 | 12/16 | 11/16 |
+| Claude Sonnet 5 | **8/16** | 10/16 | 12/16 | 11/16 |
 | Claude Opus 5.5 | **7/16** | 12/16 | 16/16 | 15/16 |
 | Claude Mythos 5.1 | **7/16** | 15/16 | 15/16 | 15/16 |
 | Codex GPT-6 Sol | **6/16** | 14/16 | 13/16 | 15/16 |
@@ -179,11 +181,11 @@ apart (first attempts only, except the last column):
 | Claude Haiku 5.5 | 16 | 11 | 0 | 5 | 11/16 (69%) | 0 of 25 |
 | Claude Opus 5 | 16 | 11 | 0 | 5 | 11/16 (69%) | 0 of 22 |
 | Grok 4.6 | 16 | 11 | 0 | 5 | 11/16 (69%) | 0 of 23 |
+| Claude Opus 4.7 | 16 | 10 | 0 | 6 | 10/16 (62%) | 0 of 31 |
 | Grok 4.7 | 16 | 10 | 0 | 6 | 10/16 (62%) | 0 of 22 |
 | Grok 4.7 build-fast | 16 | 10 | 0 | 6 | 10/16 (62%) | 0 of 23 |
-| Claude Opus 4.7 | 16 | 9 | 0 | 7 | 9/16 (56%) | 0 of 33 |
-| Claude Sonnet 5 | 16 | 7 | 0 | 9 | 7/16 (44%) | 0 of 40 |
-| Claude Mythos 5.1 | 16 | 7 | 0 | 9 | 7/16 (44%) | 0 of 34 |
+| Claude Sonnet 5 | 16 | 8 | 0 | 8 | 8/16 (50%) | 0 of 37 |
+| Claude Mythos 5.1 | 16 | 7 | 0 | 9 | 7/16 (44%) | 0 of 35 |
 | Codex GPT-6 Sol | 16 | 6 | 0 | 10 | 6/16 (38%) | 0 of 33 |
 | Codex GPT-5.6 Sol | 16 | 4 | 0 | 12 | 4/16 (25%) | 0 of 40 |
 | Codex GPT-6.1 Terra | 16 | 4 | 0 | 12 | 4/16 (25%) | 0 of 47 |
@@ -215,7 +217,7 @@ let through, not as ability: every first attempt Opus 5.5 was allowed to answer 
 - **Claude Fable 5.2, Mythos 5.1 and Mythos 5.2 (2026-11-10) are perfect on hex functions** (16/16 first
   attempt each, with Opus 5.5). On whole programs Fable 5.2 wrote 16/16 correctly first time, the first model
   to do so, and Mythos 5.2 15/16 (16/16 within four); neither was refused once. Mythos 5.1 wrote 7/16 first
-  attempt and 15/16 within four (`rpn` x86-64 lost): in 10 of its 32 hex-program responses it wrote Bash
+  attempt and 15/16 within four (`rpn` x86-64 lost): in 9 of its 35 hex-program responses it wrote Bash
   tool-call markup as plain text (`<invoke name="Bash">`, tools are disabled for every subject), invented the
   tool output, and then gave hex built on it. It never did this on any other path or battery, and the other
   two models never did it at all. One of those responses ran to 128 KB, and quoting it in the repair prompt
@@ -313,9 +315,20 @@ within four attempts):
   hex: 19 of its failed attempts are malformed answers, most of them not machine code at all but a sentence
   declining the job ("I can't reliably produce the complete machine-code program"). That is the model's own answer,
   not a provider block, so it is scored as a malformed answer and not as a refusal.
-- **Opus 4.7's hex programs are limited by time**: 18 of its 21 failed attempts are 900 s timeouts; it passed 9
-  first time and 12 within four.
+- **Opus 4.7's hex programs are limited by its output cap**: 14 of its 19 failed attempts stopped at the cap with
+  the answer unfinished (scored as malformed answers); it passed 10 first time and 12 within four.
 - No safety blocks in any of these hex runs (Opus 5.5 and Sonnet 5.5 drew them on hex programs; see above).
+- **Hex-program rows restated after the output-cap fix (2026-11-13).** Claude Code had been continuing calls that
+  stopped at the output cap (an injected "resume" turn and a second model call), which is more than one model call
+  and often ran into the 900 s limit. With the fix (stop at the cap, score what was written) the affected cells
+  were superseded and re-run from scratch: Opus 4.7 9 -> 10 of 16 first attempt (12 within four, unchanged), Sonnet 5
+  7 -> 8 first and 9 -> 10 within four, Mythos 5.1 unchanged at 7 and 15, Opus 4.8 unchanged at 15 and 16. The
+  failures that were timeouts are now unfinished answers at the cap; the limit that binds on whole hex programs for
+  these models is output length, not time. Method: [cross-vendor-methodology.md](cross-vendor-methodology.md).
+- **Kolibri-1 cannot write machine code as hex (2026-11-13): 0/16 hex functions, on the first attempt and within
+  four.** Of 64 attempts, 27 were words that do not decode, 20 ran and gave wrong results, 11 used up the token
+  budget, and 6 hung, crashed or wrote out of bounds; a median call took 23,000 tokens. It gets 11/16 on the same
+  functions as assembly text. Below the 12/16 gate, so no hex programs were run.
 
 The Vibe and Muse harness studies also ran the hex path; their results are in the
 [agent-harness report](live-model-eval-agent-harness.md) and not in these tables.
@@ -374,9 +387,9 @@ maxed 7-day windows on Kimi Allegretto). Their failures were reviewed by hand: n
 Kimi timeout is a genuine wall-clock timeout, since Kimi's CLI prints its answer only when the call ends).
 
 **Claude Sonnet 5 (2026-10-22): no false rejects.** Hex functions 13/16 first try, 16/16 within four; whole
-programs 7/16 first try, 9/16 within four. Of its 31 failed whole-program attempts, 20 are 900 s wall-clock
-timeouts (every attempt on `rpn` and `json_lint`, both ISAs); its 4 failed function attempts are 3 wrong results
-and 1 timeout. The others are runtime faults, wrong output, and three malformed words: a 9-digit AArch64 word (`17fffffed`, twice) and `8be00164`, which GNU
+programs 8/16 first try, 10/16 within four (restated 2026-11-13, below). Of its 27 failed whole-program attempts, 22
+stopped at the output cap with the answer unfinished (every attempt on `rpn` and `json_lint`, both ISAs); its 4
+failed function attempts are 3 wrong results and 1 timeout. The others are runtime faults, wrong output, and malformed words such as a 9-digit AArch64 word (`17fffffed`, twice) and `8be00164`, which GNU
 objdump also decodes as undefined (an ADD with the reserved shift type).
 
 **Claude Haiku 5.5 (2026-11-07): no false rejects.** Run through `claude -p` on the user's own Claude
@@ -397,5 +410,5 @@ refused (0 of 25), unlike Opus 5.5 and Sonnet 5.5 on the same account.
 | Gemini 3.8 Flash High (Antigravity) | not run: its function battery stopped at 223/224 (2026-10-24) and no hex run has been scheduled |
 | Kimi K3.1 Pro, Gemini 4 Argon High | not run: K3.1 Pro's apps and hex are undecided; Argon's function battery is still in progress |
 | MAI-Thinking-1, DeepSeek-V4-Pro (Azure Foundry) | not run: backlogged on cost (pay-per-token) |
-| Local Qwen models, Kolibri-1 | not run, and not planned: they score 3-26% on the assembly paths, so the hex path would add nothing |
+| Local Qwen models | not run, and not planned: they score 3-26% on the assembly paths, so the hex path would add nothing (Kolibri-1 was run on 2026-11-13 to confirm: 0/16) |
 | Haiku 4.5, MAI-Code (apps) | not run by design: below the 12/16 bar in stage 1 (8/16 and 11/16 within four) |

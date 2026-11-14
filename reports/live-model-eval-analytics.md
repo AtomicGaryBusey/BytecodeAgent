@@ -1446,6 +1446,8 @@ harness, in order:
 | `claude-argv` | 2026-11-10 | Claude adapter: the prompt went to `claude -p` as one argv string, which Linux caps at 128 KiB; a hex-app repair prompt quoting Claude Mythos 5.1's 128 KB previous attempt (135 KB) failed with E2BIG and stopped the run. A prompt over 100 KB now goes on stdin, byte for byte the same. | No verdict changed: the call never started, and the resumed cell ran from that attempt. |
 | `api-incomplete-read` | 2026-11-10 | Foundry/Fireworks adapter: a stream the server cut mid-chunk raises `http.client.IncompleteRead`, an `HTTPException` the adapter did not catch (it caught `OSError` only); it stopped a MiniMax M3 app run. It is now a transient infrastructure error, retried and never scored. | No verdict changed: the broken call recorded no attempt, and the run resumed from where it stopped. |
 | `stream-align` | 2026-11-11 | Stream path (apps): alignment directives were capped at the page (2**12), so AArch64 `.align 16` (64 KiB) was refused although GNU as and the harness linker accept it (the 2026-10-22 fix raised only the linker's limit). The cap is now the linker's 16 MiB, and the GNU as cross-check window is aligned to the largest alignment it holds. | Four first attempts in the 2026-11-10 Fireworks app runs (DeepSeek V4.1 Flash `base64.stream.aarch64.s3`; Nemotron 3 Ultra `bf.stream.aarch64.s2`/`.s3`, `rev_lines.stream.aarch64.s3`) superseded and re-run from scratch: Nemotron's `rev_lines` cell now passes on attempt 1, the other three again fail it genuinely. |
+| `uncommitted` | 2026-11-12 | Claude Code: a call that stopped on max_tokens was continued by the CLI with an injected user turn ('Output token limit hit. Resume directly ...') and a second model call, until the model finished or the time limit hit (every CLI version seen, 2.1.285 to 2.1.323). The adapter now stops at the cap and scores what was written; any other injected user turn fails closed. | 117 attempts in 46 cells (Sonnet 4.6 functions 18 and apps 11, in progress; hex programs: Sonnet 5 7, Opus 4.7 5, Mythos 5.1 4, Opus 4.8 1). 5 continued attempts had passed. All 46 cells superseded and re-run. |
+| `uncommitted` | 2026-11-12 | Copilot: a host-only `conversation.repetition.detected` telemetry event after a finished model call aborted the run as an unknown event; it is now recorded and the answer scored as written. | Kimi K3 via Copilot, hex programs: one attempt unscored and drawn again (kept in infra.jsonl). |
 
 Net effect on the published function-battery counts: 6 cells corrected (+4 first-attempt passes in total; `CELL_ADJ` in this script, `ADJ` in `eval/xv_tables.py`). App
 cells affected by a fix were moved to the run's `superseded/` directory and re-run from scratch, never
@@ -1483,7 +1485,7 @@ is resumed. A run directory without `infra.jsonl` had none, except the two earli
 | Codex Daybreak Blue | 311 | 4 | · | · | 2026-10-01 → 2026-10-01 |
 | Grok 4.7 build-fast | 387 | · | 2 | · | — |
 | OpenAI gpt-oss-120b (Cerebras) | 1007 | 2 | · | · | 2026-11-11 → 2026-11-11 |
-| Claude Sonnet 5 | 651 | · | 2 | · | — |
+| Claude Sonnet 5 | 648 | · | 2 | · | — |
 | GPT-6 Luna via Copilot | 361 | · | · | 1 | — |
 | Claude Opus 4.8 | 424 | · | 1 | · | — |
 | Microsoft MAI-Thinking-1 (Azure Foundry) | 577 | · | 1 | · | — |

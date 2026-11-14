@@ -17,6 +17,9 @@ NEW_NAMES = {
     "copilot:kimi-k3": "Kimi K3 via Copilot",
     "vibe:mistral-large-4-0-3": "Mistral Large 4 (Vibe harness)", "vibe:mistral-medium-3.5": "Mistral Medium 3.5 (Vibe harness)",
     "muse:muse-spark-1.3-contributor": "Meta Muse Spark 1.3 (Muse Code harness)",
+    "muse:muse-wonder-full-1.0-contributor": "Meta Muse Wonder Full 1.0 (Muse Code harness)",
+    "muse:muse-wonder-1.0-contributor": "Meta Muse Wonder 1.0 (Muse Code harness)",
+    "muse:muse-ember-1.0-contributor": "Meta Muse Ember 1.0 (Muse Code harness)",
 }
 
 # Models that run on the user's own hardware through a vendor's route: local models in every table and in the
@@ -43,6 +46,18 @@ IN_PROGRESS = (
     "apps-kimi-kimi-for-coding-highspeed-20261111", "apps-hex-kimi-kimi-for-coding-highspeed-20261111",
     "copilot-kimi-k3-20261112", "hex-copilot-kimi-k3-20261112", "apps-copilot-kimi-k3-20261112",  # started 11-12
     "apps-hex-copilot-kimi-k3-20261112",
+    # Apriel-1.6-15B-Thinker local baseline, started 11-13
+    "apriel-budget-20261113", "hex-apriel-budget-20261113", "apps-apriel-budget-20261113",
+    "apps-hex-apriel-budget-20261113",
+    # Muse round 2: Wonder and Ember wait for the weekly quota (Wonder Full is complete and reported)
+    "muse-wonder-1.0-20261113", "hex-muse-wonder-1.0-20261113", "apps-muse-wonder-1.0-20261113",
+    "apps-hex-muse-wonder-1.0-20261113",
+    "muse-ember-1.0-20261113", "hex-muse-ember-1.0-20261113", "apps-muse-ember-1.0-20261113",
+    "apps-hex-muse-ember-1.0-20261113",
+    # the paid-tier half of the Muse tier comparison (functions done, apps 16/96): a study pair, not a row
+    "muse-tier-paid-spark-1.3-20261113", "apps-muse-tier-paid-spark-1.3-20261113",
+    # second long-battery samples (run-to-run variation; reported apart once written up, never a model's row)
+    "long-s2-grok-4.7-build-fast-20261113", "long-s2-grok-4.7-20261113", "long-s2-grok-4.6-20261113",
 )
 
 
@@ -50,3 +65,13 @@ def in_progress(path: str) -> bool:
     """True for a file under an in-progress run directory (path as globbed: eval/runs/<dir>/...)."""
     parts = path.split("/")
     return len(parts) > 2 and parts[2] in IN_PROGRESS
+
+# Run directories that are incomplete on purpose and reported as they stand (eval/regenerate.py's guard skips them).
+KNOWN_PARTIAL = {
+    "apple-pcc-medium-20261110": "Apple PCC, shelved by the user 2026-11-10; excluded from every table",
+    "apple-system-20261108-021847": "Apple on-device, round 1 reported at 32/48; shelved 2026-11-10",
+    "kolibri-untuned-trial-r1-20261004-221032": "the untuned Kolibri wall-clock trial; not reported",
+    "local-20260929-235149": "local Ollama models: several subjects were stopped as too slow; reported per subject",
+    "local-r3-20260930-105307": "as above",
+    "vendors-all-20260928-202226": "Gemini 3.8 Flash High's last cell (stats_f.ir.aarch64) is open: queue item 3",
+}

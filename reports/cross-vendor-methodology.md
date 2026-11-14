@@ -303,6 +303,32 @@ default config gave 31.9 / 27.8 in October, so the platform itself got faster (t
 7.0 and a newer driver on 2026-11-12) and the tuned config no longer adds speed. It is still the one served, for
 parity with every earlier Kolibri battery; nothing scored depends on it.
 
+## Operations notes, 2026-11-13/14
+
+- **Pinned CLI binaries.** Three vendor CLIs updated themselves during the November runs (Muse Code 1.4.15 ->
+  1.4.18 -> 1.4.20, agy 1.5.3 -> 1.5.7, Claude Code 2.1.322 -> 2.1.323 -> 2.1.325). The adapters refuse a version
+  they were not audited against, so each update stopped runs until a re-audit, and Claude Code's went unnoticed
+  until one. The eval now runs a frozen copy of each (`eval/pins.json`: Muse 1.4.20, agy 1.5.7, Claude Code 2.1.323),
+  kept read-only outside the vendor's install path and checked by SHA-256 before use; a missing or changed pin
+  fails closed. Moving to a new version means auditing it and pinning again (`eval/pin.py`).
+- **Cloudflare 403s in front of Anthropic's API (2026-11-13, 01:47-01:51 and 02:16-02:20).** `claude -p` returned
+  "403 Attention Required! | Cloudflare" for many cells at once in two short bursts; probes between them answered
+  normally. They are infrastructure errors (retried, never scored); five in a row abort a run, which was then resumed.
+- **Gemini 4 Argon High changed backend under the run.** Through agy 1.5.3 the model was served as
+  `gemini-4-argon-c` (118 answered attempts); after Google's quota reset on 2026-11-13, agy 1.5.7 served it as
+  `gemini-4-argon-trial`, and 21 of 24 attempts came back as Gemini safety-filter blocks (0 of 180 before). Those 9
+  cells were superseded unscored and the run is stopped at 120 of 224 cells pending the user's decision; it is not in
+  any table.
+- **Local models: several calls at once, and n-gram speculative decoding (Apriel, from 2026-11-14).** On the GB10
+  a dense model is memory-bandwidth bound at batch 1, so batched requests cost each call almost nothing: Apriel
+  measured 7.9 tok/s alone and 7.8 each at five at once. `BCA_VLLM_SLOTS=4` lets four calls run together (the slot
+  count is recorded with the run); the server also runs vLLM's n-gram speculative decoding (5 tokens proposed from
+  the prompt and the text so far, every one verified, so the output distribution is unchanged; about +30% per call on
+  task prompts). Token-budget mode has no wall-clock limit, so neither changes what is scored. Kolibri's batteries
+  ran one call at a time without it.
+- **Memory guard for local models.** A served model is paused if MemAvailable falls to 4 GB or swap use reaches
+  8 GB (the user's rule since 2026-11-14; before that MemFree <= 1 GB, which tripped on page cache).
+
 ## Known limits
 
 - The vendors' extra context differs (table above); none of it is removable through the CLIs, all of it is

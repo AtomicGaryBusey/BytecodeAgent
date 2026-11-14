@@ -9,7 +9,7 @@ import statistics
 import sys
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
-from model_names import NEW_NAMES  # noqa: E402
+from model_names import NEW_NAMES, in_progress  # noqa: E402
 
 BATS = ["round1", "round2", "long", "adversarial"]
 TOT = {"round1": 48, "round2": 62, "long": 54, "adversarial": 60}
@@ -28,7 +28,7 @@ attempts = collections.defaultdict(list)  # (label, kind) -> attempt records
 infra = collections.Counter()
 for f in sorted(glob.glob("eval/runs/*/vibe_*/baseline/results.jsonl") + glob.glob("eval/runs/*/muse_*/baseline/results.jsonl")):
     rd = f.split("/")[2]
-    if "smoke" in rd:
+    if "smoke" in rd or in_progress(f):  # unfinished batteries and study pairs are unreported (model_names)
         continue
     k = kind(rd)
     for line in open(f):

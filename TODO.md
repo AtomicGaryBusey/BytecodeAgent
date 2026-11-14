@@ -301,7 +301,7 @@ then regenerate the tables and `eval/analytics.py`.
 
 **Hex-path holes**
 
-- [ ] **No hex results for Gemini 3.8 Flash High or Kolibri-1 (Kimi K3.1 Pro done 2026-11-10)**: hex functions (16 cells) each;
+- [ ] **No hex results for Gemini 3.8 Flash High (Kimi K3.1 Pro done 2026-11-10; Kolibri-1 done 2026-11-13: 0/16)**: hex functions (16 cells) each;
   whole-program hex follows only at ≥ 12/16 within four (so Haiku 4.5 and MAI-Code missing from hex apps is by
   design; Haiku 5.5 qualified and ran). Kolibri ~5 GPU hours.
 

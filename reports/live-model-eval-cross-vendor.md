@@ -111,8 +111,9 @@ function cells, paused on the Google AI Pro quota; its remaining cells run on An
 2026-11-12, the first 122 on 1.5.3).
 
 Versions behind the 2026-11-11 and 11-12 rows: Codex CLI 0.167.0; Kimi Code 2.5.3 (K3.1 Pro's app and hex batteries
-of 2026-11-10: 2.3.1); Claude Code 2.1.322 (Opus 4.7's last three hex-program attempts: 2.1.323, after the CLI
-updated itself); Grok Build 1.0.41; the Fireworks and Cerebras APIs directly. The machine lost power on 2026-11-12
+of 2026-11-10: 2.3.1); Claude Code 2.1.322 (2.1.323, after the CLI updated itself, for Opus 4.7's last three
+hex-program attempts and for the hex-program cells re-run after the output-cap fix; the eval now runs a pinned
+2.1.323); Grok Build 1.0.41; the Fireworks and Cerebras APIs directly. The machine lost power on 2026-11-12
 at 03:52 and was rebooted three more times that day for system updates: no record was damaged, a call in flight
 left no attempt record and ran again, and every chain resumed with the same commands and settings.
 

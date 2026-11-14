@@ -15,12 +15,22 @@ PAIRS = [  # (group, label A, run dir A, label B, run dir B)
      "the same on Cerebras", "cerebras-gpt-oss-120b-20261111"),
     ("Serving tier", "Kimi K3.1 Pro", "kimi-k3.1-pro-20261111",
      "Kimi K3.1 Pro Highspeed", "kimi-k3.1-pro-highspeed-20261111"),
+    # A second, independent run of the long battery (54 cells) at the same settings: run-to-run variation.
+    # `dir/subject` picks one subject of a run directory that holds several.
+    ("Second sample (long battery)", "Grok 4.7 build-fast, 2026-09-29", "grok-4.7-build-fast-20260929-081019",
+     "the same, 2026-11-13", "long-s2-grok-4.7-build-fast-20261113"),
+    ("Second sample (long battery)", "Grok 4.7, 2026-09-28", "grok-4.7-20260928-231546",
+     "the same, 2026-11-13", "long-s2-grok-4.7-20261113"),
+    ("Second sample (long battery)", "Grok 4.6, 2026-09-29", "grok-r3-20260929-164507/grok_grok-4.6",
+     "the same, 2026-11-13", "long-s2-grok-4.6-20261113"),
 ]
 
 
 def load(rd):
-    cells = {f.split("/")[-2]: json.load(open(f)) for f in glob.glob(f"eval/runs/{rd}/*/baseline/cells/*/cell.json")}
-    att = [json.loads(ln) for f in glob.glob(f"eval/runs/{rd}/*/baseline/attempts.jsonl") for ln in open(f)]
+    rd, _, subj = rd.partition("/")
+    subj = subj or "*"
+    cells = {f.split("/")[-2]: json.load(open(f)) for f in glob.glob(f"eval/runs/{rd}/{subj}/baseline/cells/*/cell.json")}
+    att = [json.loads(ln) for f in glob.glob(f"eval/runs/{rd}/{subj}/baseline/attempts.jsonl") for ln in open(f)]
     return cells, att
 
 
@@ -48,7 +58,8 @@ for group, la, da, lb, db in PAIRS:
     oa = sum(bool(ca[k]["pass_at_1"]) and not cb[k]["pass_at_1"] for k in ks)
     ob = sum(bool(cb[k]["pass_at_1"]) and not ca[k]["pass_at_1"] for k in ks)
     fa = sum(bool(ca[k]["pass_final"]) for k in ks); fb = sum(bool(cb[k]["pass_final"]) for k in ks)
-    sa, sb = stats(aa), stats(ab)
+    kset = set(ks)  # only the cells both runs have (a second sample covers one battery of the first run)
+    sa, sb = stats([a for a in aa if a["cell"] in kset]), stats([a for a in ab if a["cell"] in kset])
     p = mcnemar(oa, ob)
     print(f"| {group} | {la} | {lb} | {pa} → {pb} of {len(ks)} | {oa} / {ob} | {'< 0.001' if p < 0.001 else f'{p:.2g}'} | {fa} → {fb} | "
           f"{sa[0]} → {sb[0]} | {sa[1]} → {sb[1]} | {sa[2]} → {sb[2]} |")

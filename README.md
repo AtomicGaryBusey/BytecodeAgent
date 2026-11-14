@@ -135,10 +135,15 @@ Cerebras) and Qwen 3.8 27B on Cerebras. Two rows need their notes read:
   batteries ran at; the earlier 218/224 (97%) was at `max`, the default in October, and is kept as an effort study
   ([`reports/live-model-eval-effort.md`](reports/live-model-eval-effort.md): what an effort setting, a host and a
   serving tier are worth on the same cells).
+- **A score moves by a few cells when nothing changes.** Three Grok models re-ran the long battery (54 cells) with
+  the same settings: first-attempt scores moved by +6, -4 and -3 cells, none significantly, and the three models'
+  order flipped; within four attempts the runs agree to two cells (same report). Read small first-attempt gaps on
+  one battery accordingly.
 - **Claude Fable 5's 199/224 is held down by the API's safety classifier**: 21 cells were blocked on all four
   attempts before the model answered; on the 203 it could answer it passed 199 first time (98%).
 
-Mistral Large 4 and Medium 3.5 (through Mistral Vibe) and Meta Muse Spark 1.3 (through Muse Code) are measured
+Mistral Large 4 and Medium 3.5 (through Mistral Vibe) and Meta Muse Spark 1.3 and Muse Wonder Full 1.0 (through
+Muse Code; Wonder Full, added 2026-11-13: 221/224 functions and 95/96 apps on the first attempt) are measured
 **inside their vendors' agent harnesses**, which cannot be made tool-free, and are reported apart and never ranked
 with the table above: [`reports/live-model-eval-agent-harness.md`](reports/live-model-eval-agent-harness.md).
 

@@ -1,6 +1,12 @@
 # Backlog queue — "proceed with the next loop"
 
-Worked by a 10-minute loop (set up 2026-11-12 at the user's request). Each tick:
+Worked by an event-driven loop (2026-11-14; it was a 10-, then 30-minute poll). `eval/watch.py` runs in the
+background and exits on the first event (a run stops or starts, a new abort line, a guard trip, a stall, low memory,
+or a 6-hour heartbeat), which wakes the session; a 3-hourly cron job is the backup and re-arms the watcher. Tools:
+`eval/status.py` (one report of everything live or parked, with real wake times), `eval/stop.py` (stop by PID:
+never `pkill -f`), `eval/pin.py` + `eval/pins.json` (pinned CLI binaries: Muse 1.4.20, agy 1.5.7, Claude Code
+2.1.323; an update needs an audit, then a re-pin), `eval/regenerate.py` (all tables, analytics, dashboard; refuses
+to run while an unfinished run is not in `model_names.IN_PROGRESS`). Each wake:
 
 1. **Is a backlog item actively working?** A live `bca.liveeval run` process or chain script for an item below that
    is making calls. If yes, let it run (check it is healthy: no abort, isolation error or crash; handle one if
@@ -15,7 +21,8 @@ Worked by a 10-minute loop (set up 2026-11-12 at the user's request). Each tick:
 
 Standing rules apply to every item: uniform time limits and output caps; no pay-per-token spend without a cost
 estimate and the user's approval; Codex/ChatGPT plan only for models the user names; never commit or push unless
-asked; never spoof a vendor client; Kolibri yields to the CodeGraph agent (pause at MemFree <= 1 GB).
+asked; never spoof a vendor client; local models yield to the CodeGraph agent (guard: pause at MemAvailable <= 4 GB or
+swap >= 8 GB; user, 2026-11-14, replacing MemFree <= 1 GB).
 
 **Power loss 2026-11-12 03:52** (machine hung; journal ends 03:51 with no panic/OOM/lockup line; NVRM
 NV_ERR_NO_MEMORY allocation failures 22:56-03:34). Rebooted 07:49 into kernel 7.0.0-1019 (was 6.17.0-1032). No record
@@ -72,12 +79,12 @@ cli_version; attempts from 15:34 on are 2.1.323 (Opus 4.7's last 2 hex-program c
    `eval/code_quality.py`, `eval/update_analytics_report.py`, `eval/dashboard.py`; add each model's notes by hand.
 3. **Gemini 3.8 Flash High**: its last function cell (`stats_f.ir.aarch64`) and hex functions (16 cells), when the
    Google AI Pro quota allows (after Argon's window); hex programs at >= 12/16.
-4. **(Grok half DONE 2026-11-13 10:08, grok 1.0.41: first attempt s1 -> s2 on the same 54 cells, Grok 4.7 build-fast 46 -> 52 (1/7 disagree, p 0.07), Grok 4.7 48 -> 44 (8/4, p 0.39), Grok 4.6 50 -> 47 (5/2, p 0.45); within four 54, 52, 54. s1 runs were Sept, older grok CLI. To report: run-to-run variation section. Claude half HELD, user stopped Claude-plan runs) Second long-battery sample, non-Codex members of the top seven**: Opus 5.5, Fable 5.1 (Claude plan); Grok 4.7
+4. **(Grok half DONE 2026-11-13 10:08, grok 1.0.41: first attempt s1 -> s2 on the same 54 cells, Grok 4.7 build-fast 46 -> 52 (1/7 disagree, p 0.07), Grok 4.7 48 -> 44 (8/4, p 0.39), Grok 4.6 50 -> 47 (5/2, p 0.45); within four 54, 52, 54. Reported 2026-11-14 in live-model-eval-effort.md (both samples ran on grok 1.0.41, same effort). Claude half HELD, user stopped Claude-plan runs) Second long-battery sample, non-Codex members of the top seven**: Opus 5.5, Fable 5.1 (Claude plan); Grok 4.7
    build-fast, Grok 4.7, Grok 4.6 (SuperGrok). Whole battery, 54 cells each, ~270 calls.
 5. **(HELD: Claude plan; needs the user's go-ahead since 2026-11-13) `declared` hex variants, two more samples for Opus 5.5** (~65 calls, Claude plan).
 6. **(HELD: Claude plan; needs the user's go-ahead since 2026-11-13) `assisted` on Opus 4.8 and Sonnet 5**, rounds 1 + 2 (~280 calls, Claude plan).
 7. **(DONE 2026-11-13 19:4x)** Kolibri-1 hex functions: 0/16 first and 0/16 within four (64 attempts: encoding 27, wrong result 20, token budget exhausted 11, hang 3, crash 2, oob 1; median 988 s and 23,196 tokens per call); gate not met, no hex programs. Served on vLLM's default MoE config (tuned one lost; speed only).
-8. **Apriel-1.6-15B-Thinker** local baseline: adapter strips `[BEGIN FINAL RESPONSE]`; weights download, local vLLM.
+8. **(IN PROGRESS since 2026-11-13 23:0x; paused 11-14 00:25 by the old MemFree guard, restarted 00:4x with the new rule; from 11-14 ~02:1x 4 calls at once (BCA_VLLM_SLOTS) + n-gram speculative decoding (measured: per call 7.8 -> ~10.3 tok/s on task prompts, 4 at once ~41 tok/s total): `eval/runs/apriel-20261113.sh`, server eval/apriel/serve.sh, guard eval/apriel/mem-guard.sh; smoke 5/5, 4 first; ~7.8 tok/s, functions ~1.5 days) Apriel-1.6-15B-Thinker** local baseline: adapter holds back everything before `[BEGIN FINAL RESPONSE]` (vendor_vllm FINAL_MARKERS, tests added, uncommitted); weights pinned 5810d5f1.
 
 ## Needs the user (the loop does not start these)
 
