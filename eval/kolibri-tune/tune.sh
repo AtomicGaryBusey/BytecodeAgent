@@ -1,6 +1,9 @@
 #!/bin/bash
 # Re-tune Kolibri-1's Triton expert-layer config on this GB10 and keep the result IN THE REPO (eval/kolibri-tune/).
-# The first config (2026-10-04/05) lived in a /tmp scratchpad and was lost in the 2026-11-12 power loss.
+# The first config (2026-10-04/05) lived in a /tmp scratchpad and was lost in the 2026-11-12 power loss; it was then
+# rebuilt verbatim from its session transcript and is the file served (PROVENANCE.json). This script writes a fresh
+# tune for comparison: on 2026-11-13 it chose a different bs-1 tile (retune-20261113.json) that measured slower.
+# NOTE: running it overwrites the served file name in this directory; copy the original back afterwards.
 # Method, as recorded in reports/cross-vendor-methodology.md ("Kolibri-1's serving setup"):
 #   - batch size 1 tuned on the GB10 by vLLM's benchmarks/kernels/benchmark_moe.py (fp8_w8a8, tp 1);
 #   - the 2048 entry borrowed from vLLM's shipped E=256,N=512 NVIDIA_B200 fp8 [128,128] config, with
