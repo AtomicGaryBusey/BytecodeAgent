@@ -125,8 +125,8 @@ its plan quota is spent.
 † Partial, quota-paced (Google AI Plus): rounds 1 + 2 and long complete, adversarial 59/60 (one cell, `stats_f.ir.aarch64`, left; its resume loop was stopped on 2026-10-24 and the cell is run by hand). Like for like on the complete batteries, rounds 1 + 2 + long: **154/164 (94%)**, level with Grok 4.6 (154), just behind Grok 4.7 (155), Grok 4.7 build-fast (156), Claude Opus 5.5 and Fable 5.1 (158 each), Kimi K3.1 Pro (159) and Codex GPT-6 Astra (161), and ahead of Codex GPT-6 Sol (153). Its first-attempt failures were reviewed by hand: no harness false rejects (hex literals in QBE, `%x =l %y` without `copy`, malformed JSON, an invented `subl` opcode, a 400 s timeout spent thinking: 62,910 of 65,532 output tokens, and two 180 s timeouts on adversarial `stats_f`).
 
 In progress and not in the tables until complete: Gemini 4 Argon High (Antigravity, on Google AI Pro; 122 of 224
-cells, paused on the plan's quota; a retry loop resumes it), Claude Sonnet 4.6, Opus 4.6 and Opus 4.5, Kimi K3.1 Pro
-Highspeed's app battery and all of Kimi K2.7 Code Highspeed (paused on Kimi's 7-day cap).
+cells, paused on the plan's quota; a retry loop resumes it), Claude Sonnet 4.6, Opus 4.6 and Opus 4.5, Kimi K2.7 Code
+Highspeed (running between Kimi's usage caps; K3.1 Pro Highspeed is complete: 86/96 apps first attempt).
 
 Added 2026-11-11 and 11-12: five Codex models (GPT-6.1 Sol and Terra; GPT-5.6 Sol, Terra and Luna), Claude Opus 5,
 Fable 5 and Opus 4.7, Kimi K3.1 Pro Highspeed, OpenAI's open-weight gpt-oss-120b on two hosts (Fireworks and
@@ -194,6 +194,7 @@ interpreter and a JSON validator, asm and stream paths, both ISAs, 3 samples, up
 | Grok 4.7 build-fast | **89/96 (93%)** | 96/96 (100%) | 1.08 |
 | Claude Haiku 5.5 | **88/96 (92%)** | 96/96 (100%) | 1.09 |
 | Claude Opus 4.8 | **88/96 (92%)** | 96/96 (100%) | 1.08 |
+| Kimi K3.1 Pro Highspeed | **86/96 (90%)** | 96/96 (100%) | 1.10 |
 | Kimi K3.1 Pro | **85/96 (89%)** | 96/96 (100%) | 1.11 |
 | Claude Fable 5.1 | **84/96 (88%)** | 96/96 (100%) | 1.15 |
 | Claude Fable 5 | **84/96 (88%)** | 96/96 (100%) | 1.14 |
@@ -287,6 +288,11 @@ bca/ir/                           QBE / C / WAT lowering and a minimal ELF extra
 bca/liveeval/                     live-model eval: tasks, prompts, pipelines, runner, vendor adapters (CLI and direct API)
 eval/runs/                        recorded runs (prompts, responses, verdicts; raw vendor streams kept off git)
 eval/*.py                         table generators (xv_, app_, hex_, declared_, assist_tables), analytics, code quality, dashboard
+eval/regenerate.py                every generated table, the analytics report and the dashboard in one command
+eval/status.py, watch.py, stop.py running the eval: one status report, an event watcher, stop-by-PID
+eval/pin.py, pins.json            pinned vendor CLI binaries (a CLI update needs an audit and a re-pin)
+eval/audits/                      request captures behind each CLI audit (raw captures kept off git)
+eval/backlog-queue.md             the live work queue
 tests/                            the test suite (pytest)
 reports/                          eval write-ups, methodology, literature survey and its 2026-11 landscape update
 research_notes/                   the source notes behind the 2026-09 survey

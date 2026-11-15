@@ -41,7 +41,6 @@ IN_PROGRESS = (
     "apps-hex-claude-opus-4-6-20261111",
     "claude-opus-4-5-20251101-20261111", "hex-claude-opus-4-5-20251101-20261111",
     "apps-claude-opus-4-5-20251101-20261111", "apps-hex-claude-opus-4-5-20251101-20261111",
-    "apps-kimi-k3.1-pro-highspeed-20261111", "apps-hex-kimi-k3.1-pro-highspeed-20261111",  # 7-day cap at 19/96
     "kimi-kimi-for-coding-highspeed-20261111", "hex-kimi-kimi-for-coding-highspeed-20261111",
     "apps-kimi-kimi-for-coding-highspeed-20261111", "apps-hex-kimi-kimi-for-coding-highspeed-20261111",
     "copilot-kimi-k3-20261112", "hex-copilot-kimi-k3-20261112", "apps-copilot-kimi-k3-20261112",  # started 11-12

@@ -52,7 +52,9 @@ Where the disagreeing cells fall (only A passed / only B passed, by battery) and
   nothing that is scored here, because neither host is near the time limits on this model.
 - **Kimi's Highspeed tier did not cost accuracy.** K3.1 Pro Highspeed scored 215 against the standard tier's 207 at
   the same `high` effort; the 8-cell difference is not significant (p = 0.12; the two runs disagree on 20 cells, 6 one way and 14 the
-  other). Highspeed answers in half the time for twice the list price and twice the plan quota.
+  other). Highspeed answers in half the time for twice the list price and twice the plan quota. The app and hex batteries
+  (finished 2026-11-14) agree: 86/96 apps first attempt against 85/96, all 96 within four in both; 14/16 hex
+  functions against 11/16; 4/16 hex programs first attempt in both (16 and 15 within four).
 
 - **Run-to-run variation is real and about as large as some of the differences above.** Three Grok models re-ran
   the long battery on 2026-11-13 with the same CLI (grok 1.0.41), effort and limits as in September. Their first-attempt

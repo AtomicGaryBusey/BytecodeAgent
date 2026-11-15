@@ -105,8 +105,8 @@ result class, `xor eax, 0` used to zero a register, malformed JSON, unencodable 
 † Apple Private Cloud Compute covers round 1 only: all 48 cells (completed 2026-11-09 after the daily PCC quota paused it at 37), at the model's default setting (no `reasoning_effort`). Apple's on-device model runs on the user's Mac, not on Apple's servers, so it is listed with the [local models](#local-models-dgx-spark-and-apples-on-device-model-on-a-mac).
 
 **In progress on 2026-11-12, and left out of every table until complete** (`eval/model_names.py`): Claude Sonnet
-4.6, Opus 4.6 and Opus 4.5 (the rest of the older-Claude set); Kimi K3.1 Pro Highspeed's app battery (19 of 96 cells
-when the Kimi plan's 7-day cap was reached) and all of Kimi K2.7 Code Highspeed; Gemini 4 Argon High (122 of 224
+4.6, Opus 4.6 and Opus 4.5 (the rest of the older-Claude set); Kimi K2.7 Code Highspeed (running; Kimi K3.1 Pro Highspeed's app and hex-program batteries
+finished on 2026-11-14 and are in the tables); Gemini 4 Argon High (122 of 224
 function cells, paused on the Google AI Pro quota; its remaining cells run on Antigravity 1.5.7, re-audited
 2026-11-12, the first 122 on 1.5.3).
 

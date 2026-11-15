@@ -58,6 +58,7 @@ samples passed on its first attempt.
 | Grok 4.7 build-fast | **89/96 (93%)** | 96/96 (100%) | 1.08 | 30/32 | 29/32 | 30/32 | 32/32 |
 | Claude Haiku 5.5 | **88/96 (92%)** | 96/96 (100%) | 1.09 | 28/32 | 29/32 | 31/32 | 32/32 |
 | Claude Opus 4.8 | **88/96 (92%)** | 96/96 (100%) | 1.08 | 28/32 | 30/32 | 30/32 | 32/32 |
+| Kimi K3.1 Pro Highspeed | **86/96 (90%)** | 96/96 (100%) | 1.10 | 28/32 | 30/32 | 28/32 | 32/32 |
 | Kimi K3.1 Pro | **85/96 (89%)** | 96/96 (100%) | 1.11 | 29/32 | 25/32 | 31/32 | 32/32 |
 | Claude Fable 5.1 | **84/96 (88%)** | 96/96 (100%) | 1.15 | 26/32 | 27/32 | 31/32 | 31/32 |
 | Claude Fable 5 | **84/96 (88%)** | 96/96 (100%) | 1.14 | 29/32 | 26/32 | 29/32 | 32/32 |
@@ -103,6 +104,7 @@ change the picture; see the local section of the cross-vendor report).
 | Grok 4.7 build-fast | 11/12 | 12/12 | 12/12 | 12/12 | 12/12 | 10/12 | 11/12 | 9/12 |
 | Claude Haiku 5.5 | 12/12 | 12/12 | 12/12 | 11/12 | 9/12 | 12/12 | 11/12 | 9/12 |
 | Claude Opus 4.8 | 11/12 | 12/12 | 10/12 | 10/12 | 12/12 | 12/12 | 12/12 | 9/12 |
+| Kimi K3.1 Pro Highspeed | 11/12 | 9/12 | 9/12 | 12/12 | 10/12 | 11/12 | 12/12 | 12/12 |
 | Kimi K3.1 Pro | 11/12 | 12/12 | 11/12 | 9/12 | 11/12 | 11/12 | 10/12 | 10/12 |
 | Claude Fable 5.1 | 12/12 | 9/12 | 10/12 | 12/12 | 9/12 | 10/12 | 11/12 | 11/12 |
 | Claude Fable 5 | 11/12 | 11/12 | 10/12 | 10/12 | 12/12 | 11/12 | 11/12 | 8/12 |
@@ -142,6 +144,7 @@ change the picture; see the local section of the cross-vendor report).
 | Grok 4.7 build-fast | 24/24 | 22/24 | 23/24 | 20/24 |
 | Claude Haiku 5.5 | 19/24 | 23/24 | 24/24 | 22/24 |
 | Claude Opus 4.8 | 21/24 | 24/24 | 19/24 | 24/24 |
+| Kimi K3.1 Pro Highspeed | 22/24 | 20/24 | 21/24 | 23/24 |
 | Kimi K3.1 Pro | 19/24 | 23/24 | 21/24 | 22/24 |
 | Claude Fable 5.1 | 19/24 | 23/24 | 23/24 | 19/24 |
 | Claude Fable 5 | 19/24 | 24/24 | 21/24 | 20/24 |
@@ -181,6 +184,7 @@ change the picture; see the local section of the cross-vendor report).
 | Grok 4.7 build-fast | · | · | · | 6 | · | · | · | · | · | · | · | 1 | · |
 | Claude Haiku 5.5 | · | · | · | · | · | · | · | · | · | 4 | · | 4 | · |
 | Claude Opus 4.8 | · | · | · | · | · | · | · | · | · | 7 | · | 1 | · |
+| Kimi K3.1 Pro Highspeed | · | · | · | · | · | · | 1 | · | · | 2 | · | 7 | · |
 | Kimi K3.1 Pro | · | · | · | · | · | · | 1 | · | · | 4 | · | 6 | · |
 | Claude Fable 5.1 | · | · | · | · | · | · | · | · | · | 9 | · | 3 | · |
 | Claude Fable 5 | · | · | · | · | · | · | · | · | · | 10 | · | 2 | · |
@@ -296,8 +300,11 @@ gpt-oss-120b on Fireworks and on Cerebras, and Qwen 3.8 27B on Cerebras.
   (32 and 34 within four), Qwen 3.8 27B 9/96 (29 within four). gpt-oss-120b's failures are assembler rejections
   (172 and 204 failed attempts); Qwen's are timeouts (260 of its 303 failed attempts hit the 900 s limit even at
   Cerebras' speed).
-- **In progress, not in the tables**: Kimi K3.1 Pro Highspeed (19 of 96 cells, 17 passed first time, when the
-  Kimi plan's 7-day cap was reached); Claude Sonnet 4.6, Opus 4.6 and Opus 4.5.
+- **Kimi K3.1 Pro Highspeed (finished 2026-11-14): 86/96 first attempt, 96/96 within four**, level with the standard
+  tier's 85/96 at the same `high` effort; its 10 failed attempts are 7 wrong outputs, 2 assembler rejections and 1
+  out-of-bounds read, all the model's own. The run paused twice on Kimi's usage caps and resumed on the same settings.
+- **In progress, not in the tables**: Claude Sonnet 4.6 (80 of 96 cells, stopped at the user's request), Opus 4.6
+  and Opus 4.5 (not started), Kimi K2.7 Code Highspeed (running).
 
 By-hand review of the new runs' failures: no harness false rejects (the record is in the cross-vendor report's
 false-reject review).

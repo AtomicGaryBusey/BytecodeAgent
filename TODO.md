@@ -117,15 +117,26 @@ The live work queue (what is running, what is next, what needs the user) is `eva
 
 ## Waiting
 
-- [ ] **Claude Sonnet 4.6, Opus 4.6, Opus 4.5** (the rest of the older-Claude set): running one after another
-  (`eval/runs/claude-older-resume-20261112.sh`). When complete: remove them from `eval/model_names.IN_PROGRESS`,
+- [ ] **Claude Sonnet 4.6, Opus 4.6, Opus 4.5** (the rest of the older-Claude set): **stopped by the user on
+  2026-11-13** (Claude plan usage). Sonnet 4.6 has functions (224/224) and hex functions, apps 80/96, no hex programs;
+  `eval/runs/claude-sonnet-4-6-finish-20261113.sh` finishes it. Opus 4.6 and 4.5 are not started. No Claude-plan
+  run starts without the user's go-ahead. When complete: remove them from `eval/model_names.IN_PROGRESS`,
   regenerate, review first-attempt failures.
-- [ ] **Kimi K3.1 Pro Highspeed apps and hex programs; Kimi K2.7 Code Highspeed** (everything): paused on the Kimi
-  7-day cap since 2026-11-12 01:53; `eval/runs/kimi-highspeed-resume-20261111.sh` resumes them.
+- [x] **Kimi K3.1 Pro Highspeed apps and hex programs**: done 2026-11-14 (apps 86/96 first, 96 within four; hex
+  programs 4/16 first, 16 within four); in the tables.
+- [ ] **Kimi K2.7 Code Highspeed** (everything): 34/224 function cells; runs between Kimi's 5-hour and 7-day caps,
+  `eval/runs/kimi-highspeed-resume-20261111.sh` resumes it.
+- [ ] **Apriel-1.6-15B-Thinker** (ServiceNow, MIT) local baseline: running since 2026-11-13 (`eval/runs/apriel-20261113.sh`,
+  server `eval/apriel/serve.sh`; token-budget mode, 4 calls at once, n-gram speculative decoding). Functions about a
+  third done; then hex functions, apps, and hex programs if it passes the gate.
+- [ ] **Muse round 2** (Muse Code Power Usage subscription): Wonder Full 1.0 done and reported; Wonder 1.0 (105/224),
+  Ember 1.0 and the paid-tier half of the tier comparison wait for the weekly quota (resets 2026-11-15 16:02).
 
 - [ ] **Gemini 4 Argon High (Antigravity, Google AI Pro), function batteries**: stopped on quota at 122/224 cells
-  (181 calls). The remaining cells run on agy 1.5.7 (re-audited 2026-11-12; quota resets about 2026-11-14). An 8-hourly retry loop resumes it (`eval/runs/agy-argon-20261107-142027.loop.sh`, status in
-  `.loop`). Run as-is with the uniform 180 s limit (user decision 2026-11-07). When complete: by-hand review,
+  (181 calls). **Stopped 2026-11-13, waiting for the user**: on agy 1.5.7 the model is served as
+  `gemini-4-argon-trial` (before: `gemini-4-argon-c`) and 21 of 24 attempts were Gemini safety-filter blocks; those 9
+  cells were superseded, the run stands at 120/224. Decide whether the new route is the same model (continue, restart
+  or end). The agy adapter should score a Gemini filter block as a refusal, not `format`. Run as-is with the uniform 180 s limit (user decision 2026-11-07). When complete: by-hand review,
   then README and the cross-vendor report (state the plan: Google AI Pro).
 - [ ] **Antigravity (Gemini 3.8 Flash High)**: 1 cell left (`stats_f.ir.aarch64`, adversarial). The hourly loop
   was stopped on 2026-10-24 at the user's request; the user triggers it manually after a quota reset: `.venv/bin/python -m bca.liveeval run --run-dir eval/runs/vendors-all-20260928-202226 --tasks
@@ -226,8 +237,8 @@ The live work queue (what is running, what is next, what needs the user) is `eva
   ran in the parity pick-up ($32 in all).
 - [ ] **Further Foundry models** (recommended in the landscape update, not approved): Kimi-K3.1-Pro (a second
   route to a benchmarked model), mistral-medium-3-5.
-- [ ] **Apriel-1.6-15B-Thinker** (ServiceNow, MIT): optional local baseline, practical now that token-budget mode
-  exists. Its answer follows `[BEGIN FINAL RESPONSE]`, which the adapter must strip.
+- [x] **Apriel-1.6-15B-Thinker** (ServiceNow, MIT): adapter support done 2026-11-13 (everything before
+  `[BEGIN FINAL RESPONSE]` is held back as reasoning); the run is under Waiting above.
 
 **Harness improvements for a new round** (each changes what models see, so not a patch to the current runs)
 

@@ -151,6 +151,7 @@ results (— where that model did not run the app battery):
 | Codex GPT-5.6 Sol | **4/16** | 11/16 | 13/16 | 16/16 |
 | Codex GPT-6.1 Terra | **4/16** | 9/16 | 15/16 | 16/16 |
 | DeepSeek V4.1 Flash (Fireworks) | **4/16** | 11/16 | 12/16 | 11/16 |
+| Kimi K3.1 Pro Highspeed | **4/16** | 16/16 | 13/16 | 15/16 |
 | Kimi K3.1 Pro | **4/16** | 15/16 | 15/16 | 14/16 |
 | Codex GPT-5.5 | **3/16** | 12/16 | — | — |
 | Codex Daybreak Blue | **2/16** | 11/16 | — | — |
@@ -190,6 +191,7 @@ apart (first attempts only, except the last column):
 | Codex GPT-5.6 Sol | 16 | 4 | 0 | 12 | 4/16 (25%) | 0 of 40 |
 | Codex GPT-6.1 Terra | 16 | 4 | 0 | 12 | 4/16 (25%) | 0 of 47 |
 | DeepSeek V4.1 Flash (Fireworks) | 16 | 4 | 0 | 12 | 4/16 (25%) | 0 of 43 |
+| Kimi K3.1 Pro Highspeed | 16 | 4 | 0 | 12 | 4/16 (25%) | 0 of 32 |
 | Kimi K3.1 Pro | 16 | 4 | 0 | 12 | 4/16 (25%) | 0 of 34 |
 | Codex GPT-5.5 | 16 | 3 | 0 | 13 | 3/16 (19%) | 0 of 37 |
 | Codex Daybreak Blue | 16 | 2 | 0 | 14 | 2/16 (12%) | 0 of 42 |
@@ -325,6 +327,9 @@ within four attempts):
   7 -> 8 first and 9 -> 10 within four, Mythos 5.1 unchanged at 7 and 15, Opus 4.8 unchanged at 15 and 16. The
   failures that were timeouts are now unfinished answers at the cap; the limit that binds on whole hex programs for
   these models is output length, not time. Method: [cross-vendor-methodology.md](cross-vendor-methodology.md).
+- **Kimi K3.1 Pro Highspeed's hex programs (2026-11-14): 4/16 first attempt, 16/16 within four**, as the standard
+  tier (4/16, 15/16): whole programs in hex are rarely right first time for this model but always repairable. Its 16
+  failed attempts are out-of-bounds accesses (7), wrong output (7) and bad system calls (2); none malformed.
 - **Kolibri-1 cannot write machine code as hex (2026-11-13): 0/16 hex functions, on the first attempt and within
   four.** Of 64 attempts, 27 were words that do not decode, 20 ran and gave wrong results, 11 used up the token
   budget, and 6 hung, crashed or wrote out of bounds; a median call took 23,000 tokens. It gets 11/16 on the same

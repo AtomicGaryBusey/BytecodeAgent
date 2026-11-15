@@ -117,6 +117,8 @@ cli_version; attempts from 15:34 on are 2.1.323 (Opus 4.7's last 2 hex-program c
 
 ## Done (this loop)
 
+- Kimi K3.1 Pro Highspeed complete 2026-11-14 18:43 (apps 86/96 first, 96 within four; hex programs 4/16 first, 16 within four; by-hand check of each failure kind: all the model's own). Removed from IN_PROGRESS, tables regenerated, notes added.
+
 - **Kolibri re-tune and commit** (user, 2026-11-13): config re-tuned (bs 1 on the GB10: M16 N32 K64 G1 w4 s5; 2048
   from B200 E=256 with num_stages 3) and kept in eval/kolibri-tune/; serve.sh verified (vLLM reads it from the repo);
   47.3 / 47.1 tok/s tuned vs 46-48 default, no gain on today's stack. All pending work committed in six commits
