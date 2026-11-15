@@ -1,0 +1,262 @@
+.globl _start
+
+.equ INPUT_CAPACITY, 65536
+.equ OUTPUT_CAPACITY, 393216
+.equ VALUE_STACK_CAPACITY, 8192
+
+.text
+_start:
+    lea r12, [rip + input_buffer]
+
+read_more:
+    xor eax, eax
+    xor edi, edi
+    mov rsi, r12
+    lea rdx, [rip + input_buffer + INPUT_CAPACITY]
+    sub rdx, rsi
+    jz input_loaded
+    syscall
+    test rax, rax
+    jle input_loaded
+    add r12, rax
+    jmp read_more
+
+input_loaded:
+    mov r14, r12
+    lea rsi, [rip + input_buffer]
+    lea rdi, [rip + output_buffer]
+
+line_begin:
+    cmp rsi, r14
+    jae output_done
+    lea r15, [rip + value_stack]
+
+scan_separators:
+    cmp rsi, r14
+    jae line_complete
+    mov al, byte ptr [rsi]
+    cmp al, 10
+    je line_complete
+    cmp al, 32
+    je skip_separator
+    cmp al, 9
+    je skip_separator
+    jmp token_begin
+
+skip_separator:
+    inc rsi
+    jmp scan_separators
+
+token_begin:
+    mov r8, rsi
+
+token_scan:
+    cmp rsi, r14
+    jae token_scanned
+    mov al, byte ptr [rsi]
+    cmp al, 10
+    je token_scanned
+    cmp al, 32
+    je token_scanned
+    cmp al, 9
+    je token_scanned
+    inc rsi
+    jmp token_scan
+
+token_scanned:
+    mov r9, rsi
+    sub r9, r8
+    cmp r9, 1
+    jne parse_literal
+
+    mov r11b, byte ptr [r8]
+    cmp r11b, 43
+    je binary_operator
+    cmp r11b, 45
+    je binary_operator
+    cmp r11b, 42
+    je binary_operator
+    cmp r11b, 47
+    je binary_operator
+    cmp r11b, 37
+    je binary_operator
+
+parse_literal:
+    xor eax, eax
+    xor ecx, ecx
+    xor r10d, r10d
+    cmp byte ptr [r8], 45
+    jne literal_size
+    mov r10d, 1
+    mov ecx, 1
+
+literal_size:
+    mov rdx, r9
+    sub rdx, rcx
+    cmp rdx, 1
+    jb line_error
+    cmp rdx, 18
+    ja line_error
+
+literal_loop:
+    cmp rcx, r9
+    jae literal_done
+    movzx edx, byte ptr [r8 + rcx]
+    sub edx, 48
+    cmp edx, 9
+    ja line_error
+    imul rax, rax, 10
+    add rax, rdx
+    inc rcx
+    jmp literal_loop
+
+literal_done:
+    test r10d, r10d
+    jz push_literal
+    neg rax
+
+push_literal:
+    mov qword ptr [r15], rax
+    add r15, 8
+    jmp scan_separators
+
+binary_operator:
+    lea rdx, [rip + value_stack + 16]
+    cmp r15, rdx
+    jb line_error
+    mov rcx, qword ptr [r15 - 8]
+    mov rax, qword ptr [r15 - 16]
+    sub r15, 8
+
+    cmp r11b, 43
+    je do_add
+    cmp r11b, 45
+    je do_subtract
+    cmp r11b, 42
+    je do_multiply
+
+do_divide:
+    test rcx, rcx
+    jz line_error
+    mov rdx, 0x8000000000000000
+    cmp rax, rdx
+    jne divide_ready
+    cmp rcx, -1
+    je line_error
+
+divide_ready:
+    cqo
+    idiv rcx
+    cmp r11b, 37
+    je store_remainder
+    jmp store_result
+
+do_add:
+    add rax, rcx
+    jmp store_result
+
+do_subtract:
+    sub rax, rcx
+    jmp store_result
+
+do_multiply:
+    imul rax, rcx
+
+store_result:
+    mov qword ptr [r15 - 8], rax
+    jmp scan_separators
+
+store_remainder:
+    mov qword ptr [r15 - 8], rdx
+    jmp scan_separators
+
+line_complete:
+    lea rax, [rip + value_stack + 8]
+    cmp r15, rax
+    jne line_error
+    mov rax, qword ptr [rip + value_stack]
+    cmp rsi, r14
+    jae convert_value
+    inc rsi
+
+convert_value:
+    lea r8, [rip + number_buffer + 32]
+    mov r9, r8
+    xor r10d, r10d
+    test rax, rax
+    jns magnitude_ready
+    mov r10d, 1
+    neg rax
+
+magnitude_ready:
+    mov ecx, 10
+
+convert_digit:
+    xor edx, edx
+    div rcx
+    add dl, 48
+    dec r9
+    mov byte ptr [r9], dl
+    test rax, rax
+    jnz convert_digit
+    test r10d, r10d
+    jz copy_number
+    dec r9
+    mov byte ptr [r9], 45
+
+copy_number:
+    cmp r9, r8
+    jae number_copied
+    mov al, byte ptr [r9]
+    mov byte ptr [rdi], al
+    inc r9
+    inc rdi
+    jmp copy_number
+
+number_copied:
+    mov byte ptr [rdi], 10
+    inc rdi
+    jmp line_begin
+
+line_error:
+    mov dword ptr [rdi], 0x6f727265
+    mov word ptr [rdi + 4], 0x0a72
+    add rdi, 6
+
+skip_error_line:
+    cmp rsi, r14
+    jae line_begin
+    mov al, byte ptr [rsi]
+    inc rsi
+    cmp al, 10
+    jne skip_error_line
+    jmp line_begin
+
+output_done:
+    lea rsi, [rip + output_buffer]
+    mov rdx, rdi
+    sub rdx, rsi
+    test rdx, rdx
+    jz exit_success
+    mov eax, 1
+    mov edi, 1
+    syscall
+
+exit_success:
+    mov eax, 60
+    xor edi, edi
+    syscall
+
+.bss
+.align 16
+input_buffer:
+    .zero INPUT_CAPACITY
+.align 16
+output_buffer:
+    .zero OUTPUT_CAPACITY
+.align 16
+value_stack:
+    .zero VALUE_STACK_CAPACITY
+.align 16
+number_buffer:
+    .zero 32

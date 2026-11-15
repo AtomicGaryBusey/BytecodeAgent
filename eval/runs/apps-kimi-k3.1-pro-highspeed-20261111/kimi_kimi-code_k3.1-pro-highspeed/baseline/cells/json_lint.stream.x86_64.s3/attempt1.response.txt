@@ -1,0 +1,448 @@
+.globl _start
+
+.text
+_start:
+    xor ebx, ebx
+
+read_more:
+    xor eax, eax
+    xor edi, edi
+    lea rsi, [rip + input_buf]
+    add rsi, rbx
+    mov edx, 131072
+    sub rdx, rbx
+    syscall
+    test rax, rax
+    jz input_complete
+    add rbx, rax
+    jmp read_more
+
+input_complete:
+    lea r14, [rip + input_buf]
+    mov r13, rbx
+    xor r12d, r12d
+
+    call parse_value
+    test eax, eax
+    jnz report_error
+
+    call skip_ws
+    cmp r12, r13
+    jne trailing_error
+
+    mov eax, 1
+    mov edi, 1
+    lea rsi, [rip + ok_message]
+    mov edx, 3
+    syscall
+
+    mov eax, 60
+    xor edi, edi
+    syscall
+
+trailing_error:
+    mov qword ptr [rip + error_pos], r12
+
+report_error:
+    mov eax, 1
+    mov edi, 1
+    lea rsi, [rip + error_prefix]
+    mov edx, 9
+    syscall
+
+    mov rax, qword ptr [rip + error_pos]
+    mov ebx, 10
+    lea rdi, [rip + number_buf + 31]
+    mov byte ptr [rdi], 10
+    mov ecx, 1
+
+convert_error_offset:
+    xor edx, edx
+    div rbx
+    add dl, 48
+    dec rdi
+    mov byte ptr [rdi], dl
+    inc ecx
+    test rax, rax
+    jnz convert_error_offset
+
+    mov rsi, rdi
+    mov edx, ecx
+    mov eax, 1
+    mov edi, 1
+    syscall
+
+    mov eax, 60
+    mov edi, 1
+    syscall
+
+# r12 = current input offset
+# r13 = input length
+# r14 = input base address
+# Parsing functions return eax = 0 on success and eax = 1 on failure.
+
+fail_here:
+    mov qword ptr [rip + error_pos], r12
+    mov eax, 1
+    ret
+
+skip_ws:
+    cmp r12, r13
+    jae skip_ws_done
+    movzx eax, byte ptr [r14 + r12]
+    cmp al, 0x20
+    je skip_ws_byte
+    cmp al, 0x09
+    je skip_ws_byte
+    cmp al, 0x0a
+    je skip_ws_byte
+    cmp al, 0x0d
+    jne skip_ws_done
+skip_ws_byte:
+    inc r12
+    jmp skip_ws
+skip_ws_done:
+    ret
+
+parse_value:
+    call skip_ws
+    cmp r12, r13
+    jae fail_here
+
+    movzx eax, byte ptr [r14 + r12]
+    cmp al, 0x7b
+    je value_object
+    cmp al, 0x5b
+    je value_array
+    cmp al, 0x22
+    je value_string
+    cmp al, 0x74
+    je value_true
+    cmp al, 0x66
+    je value_false
+    cmp al, 0x6e
+    je value_null
+    cmp al, 0x2d
+    je value_number
+    cmp al, 0x30
+    jb fail_here
+    cmp al, 0x39
+    jbe value_number
+    jmp fail_here
+
+value_object:
+    jmp parse_object
+value_array:
+    jmp parse_array
+value_string:
+    jmp parse_string
+value_true:
+    lea rsi, [rip + literal_true]
+    mov ecx, 4
+    jmp parse_literal
+value_false:
+    lea rsi, [rip + literal_false]
+    mov ecx, 5
+    jmp parse_literal
+value_null:
+    lea rsi, [rip + literal_null]
+    mov ecx, 4
+    jmp parse_literal
+value_number:
+    jmp parse_number
+
+parse_literal:
+    test ecx, ecx
+    jz literal_ok
+    cmp r12, r13
+    jae fail_here
+    mov al, byte ptr [rsi]
+    cmp al, byte ptr [r14 + r12]
+    jne fail_here
+    inc rsi
+    inc r12
+    dec ecx
+    jmp parse_literal
+literal_ok:
+    xor eax, eax
+    ret
+
+parse_string:
+    inc r12
+
+string_loop:
+    cmp r12, r13
+    jae fail_here
+    movzx eax, byte ptr [r14 + r12]
+    cmp al, 0x22
+    je string_close
+    cmp al, 0x5c
+    je string_escape
+    cmp al, 0x20
+    jb fail_here
+    inc r12
+    jmp string_loop
+
+string_close:
+    inc r12
+    xor eax, eax
+    ret
+
+string_escape:
+    inc r12
+    cmp r12, r13
+    jae fail_here
+    movzx eax, byte ptr [r14 + r12]
+    cmp al, 0x75
+    je string_unicode
+    cmp al, 0x22
+    je simple_escape
+    cmp al, 0x5c
+    je simple_escape
+    cmp al, 0x2f
+    je simple_escape
+    cmp al, 0x62
+    je simple_escape
+    cmp al, 0x66
+    je simple_escape
+    cmp al, 0x6e
+    je simple_escape
+    cmp al, 0x72
+    je simple_escape
+    cmp al, 0x74
+    je simple_escape
+    jmp fail_here
+
+simple_escape:
+    inc r12
+    jmp string_loop
+
+string_unicode:
+    inc r12
+    mov ecx, 4
+
+unicode_hex_loop:
+    cmp r12, r13
+    jae fail_here
+    movzx eax, byte ptr [r14 + r12]
+    cmp al, 0x30
+    jb fail_here
+    cmp al, 0x39
+    jbe unicode_hex_ok
+    cmp al, 0x41
+    jb unicode_check_lower
+    cmp al, 0x46
+    jbe unicode_hex_ok
+unicode_check_lower:
+    cmp al, 0x61
+    jb fail_here
+    cmp al, 0x66
+    ja fail_here
+unicode_hex_ok:
+    inc r12
+    dec ecx
+    jnz unicode_hex_loop
+    jmp string_loop
+
+parse_number:
+    cmp byte ptr [r14 + r12], 0x2d
+    jne number_integer
+    inc r12
+    cmp r12, r13
+    jae fail_here
+
+number_integer:
+    movzx eax, byte ptr [r14 + r12]
+    cmp al, 0x30
+    je number_zero
+    cmp al, 0x31
+    jb fail_here
+    cmp al, 0x39
+    ja fail_here
+    inc r12
+
+number_integer_digits:
+    cmp r12, r13
+    jae number_after_integer
+    movzx eax, byte ptr [r14 + r12]
+    cmp al, 0x30
+    jb number_after_integer
+    cmp al, 0x39
+    ja number_after_integer
+    inc r12
+    jmp number_integer_digits
+
+number_zero:
+    inc r12
+
+number_after_integer:
+    cmp r12, r13
+    jae number_ok
+    movzx eax, byte ptr [r14 + r12]
+    cmp al, 0x2e
+    je number_fraction
+    jmp number_maybe_exponent
+
+number_fraction:
+    inc r12
+    cmp r12, r13
+    jae fail_here
+    movzx eax, byte ptr [r14 + r12]
+    cmp al, 0x30
+    jb fail_here
+    cmp al, 0x39
+    ja fail_here
+    inc r12
+
+number_fraction_digits:
+    cmp r12, r13
+    jae number_ok
+    movzx eax, byte ptr [r14 + r12]
+    cmp al, 0x30
+    jb number_maybe_exponent
+    cmp al, 0x39
+    ja number_maybe_exponent
+    inc r12
+    jmp number_fraction_digits
+
+number_maybe_exponent:
+    cmp r12, r13
+    jae number_ok
+    movzx eax, byte ptr [r14 + r12]
+    cmp al, 0x65
+    je number_exponent
+    cmp al, 0x45
+    je number_exponent
+    jmp number_ok
+
+number_exponent:
+    inc r12
+    cmp r12, r13
+    jae fail_here
+    movzx eax, byte ptr [r14 + r12]
+    cmp al, 0x2b
+    je number_exponent_sign
+    cmp al, 0x2d
+    jne number_exponent_first_digit
+
+number_exponent_sign:
+    inc r12
+    cmp r12, r13
+    jae fail_here
+
+number_exponent_first_digit:
+    movzx eax, byte ptr [r14 + r12]
+    cmp al, 0x30
+    jb fail_here
+    cmp al, 0x39
+    ja fail_here
+    inc r12
+
+number_exponent_digits:
+    cmp r12, r13
+    jae number_ok
+    movzx eax, byte ptr [r14 + r12]
+    cmp al, 0x30
+    jb number_ok
+    cmp al, 0x39
+    ja number_ok
+    inc r12
+    jmp number_exponent_digits
+
+number_ok:
+    xor eax, eax
+    ret
+
+parse_array:
+    inc r12
+    call skip_ws
+    cmp r12, r13
+    jae fail_here
+    cmp byte ptr [r14 + r12], 0x5d
+    je array_close
+
+array_element:
+    call parse_value
+    test eax, eax
+    jnz array_return
+    call skip_ws
+    cmp r12, r13
+    jae fail_here
+    movzx eax, byte ptr [r14 + r12]
+    cmp al, 0x5d
+    je array_close
+    cmp al, 0x2c
+    jne fail_here
+    inc r12
+    call skip_ws
+    jmp array_element
+
+array_close:
+    inc r12
+    xor eax, eax
+array_return:
+    ret
+
+parse_object:
+    inc r12
+    call skip_ws
+    cmp r12, r13
+    jae fail_here
+    cmp byte ptr [r14 + r12], 0x7d
+    je object_close
+
+object_member:
+    cmp r12, r13
+    jae fail_here
+    cmp byte ptr [r14 + r12], 0x22
+    jne fail_here
+    call parse_string
+    test eax, eax
+    jnz object_return
+    call skip_ws
+    cmp r12, r13
+    jae fail_here
+    cmp byte ptr [r14 + r12], 0x3a
+    jne fail_here
+    inc r12
+    call parse_value
+    test eax, eax
+    jnz object_return
+    call skip_ws
+    cmp r12, r13
+    jae fail_here
+    movzx eax, byte ptr [r14 + r12]
+    cmp al, 0x7d
+    je object_close
+    cmp al, 0x2c
+    jne fail_here
+    inc r12
+    call skip_ws
+    jmp object_member
+
+object_close:
+    inc r12
+    xor eax, eax
+object_return:
+    ret
+
+.section .rodata
+literal_true:
+    .ascii "true"
+literal_false:
+    .ascii "false"
+literal_null:
+    .ascii "null"
+ok_message:
+    .ascii "ok\n"
+error_prefix:
+    .ascii "error at "
+
+.bss
+.align 8
+input_buf:
+    .zero 131072
+error_pos:
+    .zero 8
+number_buf:
+    .zero 32
