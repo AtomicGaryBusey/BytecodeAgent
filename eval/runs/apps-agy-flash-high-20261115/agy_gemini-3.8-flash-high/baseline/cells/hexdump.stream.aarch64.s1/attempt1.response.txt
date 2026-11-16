@@ -1,0 +1,194 @@
+.globl _start
+
+.section .rodata
+hex_digits:
+    .ascii "0123456789abcdef"
+
+.text
+_start:
+    // Base address of in_buf
+    adrp x27, in_buf
+    add  x27, x27, :lo12:in_buf
+
+    // Read all standard input into in_buf
+    mov  x21, #0                    // total bytes read = 0
+read_loop:
+    mov  x0, #0                     // stdin fd = 0
+    add  x1, x27, x21               // destination pointer
+    movz x2, #2, lsl #16            // max capacity = 131072
+    sub  x2, x2, x21
+    cbz  x2, read_done              // buffer full
+    mov  x8, #63                    // sys_read
+    svc  #0
+    cmp  x0, #0
+    ble  read_done                  // 0 (EOF) or negative (error)
+    add  x21, x21, x0
+    b    read_loop
+read_done:
+
+    // Initialize output pointers
+    adrp x24, out_buf
+    add  x24, x24, :lo12:out_buf
+    mov  x23, x24                   // x23 = current write pointer
+
+    // Table of hex digits
+    adrp x26, hex_digits
+    add  x26, x26, :lo12:hex_digits
+
+    // Offset in input
+    mov  x22, #0                    // current row offset = 0
+
+row_loop:
+    cmp  x22, x21
+    bge  done_rows
+
+    // Flush output buffer if getting full
+    sub  x0, x23, x24
+    mov  w1, #65000
+    cmp  w0, w1
+    blt  1f
+    bl   flush_out
+1:
+    // Determine row byte count n = min(16, x21 - x22)
+    sub  x19, x21, x22
+    cmp  x19, #16
+    ble  2f
+    mov  x19, #16
+2:
+    // Pointer to current 16-byte slice in in_buf
+    add  x20, x27, x22
+
+    // 1. Format offset as 8 lowercase hex digits
+    mov  x4, #28
+3:
+    lsr  x3, x22, x4
+    and  x3, x3, #0xf
+    ldrb w3, [x26, x3]
+    strb w3, [x23], #1
+    subs x4, x4, #4
+    bge  3b
+
+    // Two spaces after offset
+    mov  w3, #' '
+    strb w3, [x23], #1
+    strb w3, [x23], #1
+
+    // 2. Format hex byte positions 0..15
+    mov  x5, #0
+hex_loop:
+    cmp  x5, x19
+    bge  hex_pad
+    // Position i < n: 2 hex digits + 1 space
+    ldrb w6, [x20, x5]
+    lsr  w3, w6, #4
+    and  w3, w3, #0xf
+    ldrb w3, [x26, x3]
+    strb w3, [x23], #1
+    and  w3, w6, #0xf
+    ldrb w3, [x26, x3]
+    strb w3, [x23], #1
+    mov  w3, #' '
+    strb w3, [x23], #1
+    b    hex_extra_space
+hex_pad:
+    // Position i >= n: 3 spaces
+    mov  w3, #' '
+    strb w3, [x23], #1
+    strb w3, [x23], #1
+    strb w3, [x23], #1
+hex_extra_space:
+    // Extra space after position 7
+    cmp  x5, #7
+    bne  hex_next
+    mov  w3, #' '
+    strb w3, [x23], #1
+hex_next:
+    add  x5, x5, #1
+    cmp  x5, #16
+    blt  hex_loop
+
+    // 3. ASCII characters: space, '|'
+    mov  w3, #' '
+    strb w3, [x23], #1
+    mov  w3, #'|'
+    strb w3, [x23], #1
+
+    // n characters
+    mov  x5, #0
+ascii_loop:
+    cmp  x5, x19
+    bge  ascii_done
+    ldrb w6, [x20, x5]
+    sub  w7, w6, #32
+    cmp  w7, #94
+    bls  4f
+    mov  w6, #'.'
+4:
+    strb w6, [x23], #1
+    add  x5, x5, #1
+    b    ascii_loop
+ascii_done:
+    mov  w3, #'|'
+    strb w3, [x23], #1
+    mov  w3, #'\n'
+    strb w3, [x23], #1
+
+    // Advance offset
+    add  x22, x22, x19
+    b    row_loop
+
+done_rows:
+    // Flush output buffer if near threshold
+    sub  x0, x23, x24
+    mov  w1, #65000
+    cmp  w0, w1
+    blt  1f
+    bl   flush_out
+1:
+    // Print total input length as 8 lowercase hex digits + '\n'
+    mov  x4, #28
+2:
+    lsr  x3, x21, x4
+    and  x3, x3, #0xf
+    ldrb w3, [x26, x3]
+    strb w3, [x23], #1
+    subs x4, x4, #4
+    bge  2b
+
+    mov  w3, #'\n'
+    strb w3, [x23], #1
+
+    // Flush any remaining output
+    bl   flush_out
+
+    // Exit with status 0
+    mov  x0, #0
+    mov  x8, #93                    // sys_exit
+    svc  #0
+
+// flush_out: writes out_buf[0 .. x23 - x24] to stdout (fd 1)
+flush_out:
+    stp  x29, x30, [sp, #-16]!
+    sub  x2, x23, x24
+    cbz  x2, flush_ret
+    mov  x1, x24
+flush_write_loop:
+    mov  x0, #1                     // stdout fd = 1
+    mov  x8, #64                    // sys_write
+    svc  #0
+    cmp  x0, #0
+    ble  flush_ret
+    add  x1, x1, x0
+    sub  x2, x2, x0
+    cbnz x2, flush_write_loop
+    mov  x23, x24
+flush_ret:
+    ldp  x29, x30, [sp], #16
+    ret
+
+.bss
+.balign 16
+in_buf:
+    .zero 131072
+out_buf:
+    .zero 65536

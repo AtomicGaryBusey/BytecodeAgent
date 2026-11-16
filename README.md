@@ -73,6 +73,7 @@ its plan quota is spent.
 
 | Model | Round 1 (48) | Round 2 (62) | Long (54) | Adversarial (60) | Pass@1 | Within 4 | Mean attempts |
 |---|---|---|---|---|---|---|---|
+| Gemini 4 Hydrogen High (Antigravity) | 48 | 62 | 54 | 60 | **224/224 (100%)** | 224/224 (100%) | 1.00 |
 | Codex GPT-6 Astra | 46 | 61 | 54 | 60 | **221/224 (99%)** | 224/224 (100%) | 1.01 |
 | Claude Mythos 5.2 | 47 | 61 | 53 | 59 | **220/224 (98%)** | 224/224 (100%) | 1.02 |
 | Claude Fable 5.2 | 47 | 62 | 50 | 60 | **219/224 (98%)** | 224/224 (100%) | 1.02 |
@@ -85,6 +86,7 @@ its plan quota is spent.
 | Claude Fable 5.1 | 44 | 62 | 52 | 54 | **212/224 (95%)** | 223/224 (100%) | 1.08 |
 | Grok 4.7 | 48 | 59 | 48 | 56 | **211/224 (94%)** | 220/224 (98%) | 1.10 |
 | Grok 4.6 | 45 | 59 | 50 | 57 | **211/224 (94%)** | 223/224 (100%) | 1.07 |
+| Gemini 3.8 Flash High (Antigravity) | 46 | 60 | 47 | 57 | **210/224 (94%)** | 224/224 (100%) | 1.07 |
 | Claude Opus 4.7 | 42 | 58 | 51 | 58 | **209/224 (93%)** | 223/224 (100%) | 1.08 |
 | Codex GPT-5.5 | 47 | 57 | 45 | 58 | **207/224 (92%)** | 224/224 (100%) | 1.08 |
 | Kimi K3.1 Pro | 45 | 61 | 45 | 56 | **207/224 (92%)** | 224/224 (100%) | 1.08 |
@@ -98,6 +100,7 @@ its plan quota is spent.
 | Claude Fable 5 | 45 | 58 | 45 | 51 | **199/224 (89%)** | 203/224 (91%) | 1.30 |
 | Claude Opus 5 | 40 | 57 | 50 | 51 | **198/224 (88%)** | 224/224 (100%) | 1.12 |
 | Grok 4.5 | 47 | 55 | 41 | 54 | **197/224 (88%)** | 222/224 (99%) | 1.16 |
+| Gemini 4 Argon High (Antigravity) | 47 | 60 | 26 | 58 | **191/224 (85%)** | 205/224 (92%) | 1.35 |
 | DeepSeek V4.1 Flash (Fireworks) | 41 | 53 | 46 | 50 | **190/224 (85%)** | 224/224 (100%) | 1.19 |
 | Codex GPT-5.6 Terra | 41 | 55 | 38 | 55 | **189/224 (84%)** | 223/224 (100%) | 1.19 |
 | Qwen 3.8 Max (Fireworks) | 40 | 50 | 42 | 50 | **182/224 (81%)** | 222/224 (99%) | 1.28 |
@@ -118,14 +121,15 @@ its plan quota is spent.
 | Microsoft MAI-Thinking-1 (Azure Foundry) | 22 | 22 | 2 | 26 | **72/224 (32%)** | 144/224 (64%) | 2.58 |
 | OpenAI gpt-oss-120b (Cerebras) | 26 | 21 | 3 | 21 | **71/224 (32%)** | 117/224 (52%) | 2.78 |
 | OpenAI gpt-oss-120b (Fireworks) | 24 | 22 | 4 | 21 | **71/224 (32%)** | 120/224 (54%) | 2.71 |
-| Gemini 3.8 Flash High (Antigravity) † | 46 | 60 | 48 | 57/59 | **211/223 (95%)** | 223/223 (100%) | 1.06 |
 | Apple Private Cloud Compute † | 2 | — | — | — | **2/48 (4%)** | 5/48 (10%) | 3.77 |
 
 
-† Partial, quota-paced (Google AI Plus): rounds 1 + 2 and long complete, adversarial 59/60 (one cell, `stats_f.ir.aarch64`, left; its resume loop was stopped on 2026-10-24 and the cell is run by hand). Like for like on the complete batteries, rounds 1 + 2 + long: **154/164 (94%)**, level with Grok 4.6 (154), just behind Grok 4.7 (155), Grok 4.7 build-fast (156), Claude Opus 5.5 and Fable 5.1 (158 each), Kimi K3.1 Pro (159) and Codex GPT-6 Astra (161), and ahead of Codex GPT-6 Sol (153). Its first-attempt failures were reviewed by hand: no harness false rejects (hex literals in QBE, `%x =l %y` without `copy`, malformed JSON, an invented `subl` opcode, a 400 s timeout spent thinking: 62,910 of 65,532 output tokens, and two 180 s timeouts on adversarial `stats_f`).
+† Gemini 3.8 Flash High's function batteries were quota-paced on Google AI Plus from 2026-09-28; its last cell (`stats_f.ir.aarch64`) ran on 2026-11-15 (Google AI Pro, Antigravity 1.5.7), so the row is now complete: 210/224 first attempt, 224 within four (211 before one output-limit attempt was scored under the 2026-11-15 rule; see the methodology notes).
 
-In progress and not in the tables until complete: Gemini 4 Argon High (Antigravity, on Google AI Pro; 122 of 224
-cells, paused on the plan's quota; a retry loop resumes it), Claude Sonnet 4.6, Opus 4.6 and Opus 4.5, Kimi K2.7 Code
+**Gemini 4 Hydrogen High (Antigravity; added 2026-11-15) is the first model at 224/224 on the first attempt**, and
+leads the app battery (93/96). Gemini 4 Argon High (Antigravity, Google AI Pro; added 2026-11-14) is 191/224: Gemini's safety filter blocked 29
+cells on the first attempt, 28 of them in the long battery; on the 195 it could answer first time it passed 191.
+In progress and not in the tables until complete: Claude Sonnet 4.6, Opus 4.6 and Opus 4.5, Kimi K2.7 Code
 Highspeed (running between Kimi's usage caps; K3.1 Pro Highspeed is complete: 86/96 apps first attempt).
 
 Added 2026-11-11 and 11-12: five Codex models (GPT-6.1 Sol and Terra; GPT-5.6 Sol, Terra and Luna), Claude Opus 5,

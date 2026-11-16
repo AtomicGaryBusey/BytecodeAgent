@@ -1,0 +1,702 @@
+Write the complete program `json_lint`: a static Linux executable for AArch64 (ARMv8-A, little-endian), written directly as machine code. There is no assembler, no linker, no C library, no C runtime and no helper code: you write every instruction, every table and string, and make the system calls yourself.
+
+Entry state (as the Linux kernel sets it up): execution starts at the first instruction of your code, address 0x400000. sp is 16-byte aligned and points at argc = 0, followed by the NULL terminators of an empty argv, an empty envp and an empty auxiliary vector: the program gets no arguments. Every other general-purpose register (x0-x30) is zero; x30 is not a return address; the program ends only through the exit system call.
+
+System calls: the `svc #0` instruction, with the system call number in x8 and the arguments in x0, x1, x2; the result comes back in x0. Every other register is preserved. Exactly these four are available:
+- read = 63: read(fd = 0, buf, count) reads up to count bytes of standard input into buf; returns the number of bytes read, 0 at end of input.
+- write = 64: write(fd, buf, count) with fd 1 (standard output) or 2 (standard error); returns count.
+- exit = 93: exit(status) ends the program; the exit status is the low 8 bits of status.
+- exit_group = 94: the same as exit.
+Any other system call number or file descriptor stops the program with an error, and so does a buffer that is not entirely inside the program's memory.
+
+Memory: the code, data and zero-initialised areas below, plus a stack of 1 MiB below the entry sp. There is no heap (no brk, no mmap, no malloc). Code is not writable. Any access outside these areas stops the program. Each test run may execute at most 50,000,000 instructions.
+
+Output format: the whole program as raw machine code and data bytes, which you encode yourself: there is no assembler, no linker and no encoder, and your bytes are loaded exactly as you write them. The memory layout is fixed:
+- code (read and execute): your instruction lines, from address 0x400000; the entry point is the first instruction; at most 1 MiB.
+- data (read and write): the data bytes you give, from address 0x500000, at most 1 MiB; your strings and tables go here, at offsets you choose and keep track of (the byte you write at position k of the data section is at address 0x500000 + k).
+- a zero-initialised work area (read and write) of 1 MiB from address 0x600000.
+- the stack (above).
+Write a line `.text` followed by the instruction lines, then optionally a line `.data` followed by the data lines. These two markers are the only directives: no labels, no symbols, no other directive, so every address and offset is a number you compute.
+Instructions: one per line as its 32-bit instruction word in hexadecimal, exactly 8 hex digits (an optional 0x prefix is allowed), e.g. `8b010000` is `add x0, x0, x1` and `d4000001` is `svc #0`. The words are stored little-endian one after another: the first instruction line is at 0x400000, the next at 0x400004, and so on. Every branch and PC-relative field (b, b.cond, bl, cbz, cbnz, tbz, tbnz, adr, adrp) holds an offset from the address of that instruction itself, encoded as the architecture specifies (b/bl/b.cond/cbz/tbz: byte offset / 4; adr: byte offset; adrp: (target page - this instruction's page) / 4096, pages being addresses with the low 12 bits cleared), which you compute. Because the addresses below are fixed, you can also build an address with movz/movk (e.g. `d2a00a01` is `movz x1, #0x50, lsl #16`, i.e. x1 = 0x500000).
+Data: bytes in memory order as pairs of hex digits, separated by spaces or not, any number per line (e.g. `68 65 6c 6c 6f 0a` or `68656c6c6f0a` is "hello\n").
+You may end any line with a comment starting with `//` or `;` (e.g. `d4000001 // svc #0`); comments and blank lines are ignored.
+Instruction set: ARMv8.0-A with floating point and Advanced SIMD (NEON). Not supported (rejected): CRC32, LSE atomics, dot product, half-precision, crypto (AES/SHA/PMULL) and SVE.
+Output ONLY the program text: no Markdown fences, no prose before or after it.
+
+Specification: Task `json_lint`: check that standard input is exactly one valid JSON document (RFC 8259 grammar) and report
+the byte offset of the first error.
+
+Grammar (byte-level):
+- document = ws value ws, and nothing else. ws = any number of the bytes space 0x20, tab 0x09, newline 0x0A,
+  carriage return 0x0D (only these four).
+- value = object | array | string | number | `true` | `false` | `null` (lowercase only).
+- object = `{` ws `}`, or `{` ws member (ws `,` ws member)* ws `}`, where member = string ws `:` ws value.
+  array = `[` ws `]`, or `[` ws value (ws `,` ws value)* ws `]`. No trailing commas.
+- string = `"` chars `"`. A char is any byte 0x20-0xFF except `"` (0x22) and `\` (0x5C) (bytes >= 0x80 are
+  accepted as they are; no UTF-8 validation), or an escape: `\` followed by one of `"` `\` `/` `b` `f` `n` `r`
+  `t`, or `\u` followed by exactly 4 hex digits (`0-9a-fA-F`; any code unit, surrogates are not checked).
+  Bytes 0x00-0x1F inside a string are errors.
+- number = `-`? int frac? exp?, where int = `0` | a digit `1`-`9` followed by any digits; frac = `.` and one or
+  more digits; exp = `e` or `E`, an optional `+` or `-`, and one or more digits. (So `01`, `+1`, `.5`, `1.`,
+  `1e`, `-` are not valid numbers.)
+
+Output: if the input is valid, print `ok\n` and exit with status 0. Otherwise print `error at N\n` (N in
+decimal, no padding) and exit with status 1, where N is the 0-based offset of the first byte at which the input
+stops being the beginning of some valid document: the first byte that no valid document could have at that
+position given all the bytes before it. If every byte of the input is such a valid beginning but the document is
+incomplete (this includes empty and whitespace-only input), N is the length of the input.
+
+Examples: `[1, 2]` ok; empty input `error at 0`; `[1,]` `error at 3`; `{"a" 1}` `error at 5`; `01` `error at 1`;
+`tru` `error at 3`; `trux` `error at 3`; `[1] x` `error at 4`; `"a<TAB>b"` (a raw tab byte) `error at 2`;
+`-` `error at 1`; `1.e5` `error at 2`.
+
+Limits: the input is at most 65536 bytes; arrays and objects are nested at most 1000 deep. These limits
+describe the inputs you will be given; you do not need to detect or report inputs that exceed them.
+
+Input and output (applies to this whole task):
+- The input is the complete contents of standard input (file descriptor 0). Read it with `read` until `read`
+  returns 0 (end of input). A `read` may return FEWER bytes than requested, at any position (in the middle of a
+  line, a token or a group of bytes), so keep calling it; only a return value of 0 means end of input.
+- Write the output to standard output (file descriptor 1). Only the bytes this task describes may appear on
+  standard output (standard error is ignored). Every output byte must be written before the program exits.
+- Finish with `exit` (or `exit_group`) and the exit status this task gives. The program must not run off the end
+  of its code or crash.
+
+Your previous attempt was:
+<previous>
+.text
+d2a00c13 // 0: movz x19, #0x60, lsl #16
+d2a00a16 // 1: movz x22, #0x50, lsl #16
+d2800015 // 2: movz x21, #0
+d2a00102 // 3: read_loop: movz x2, #8, lsl #16
+cb150042 // 4: sub x2, x2, x21
+b4000122 // 5: cbz x2, read_done (+9 -> 14)
+d2800000 // 6: movz x0, #0
+8b150261 // 7: add x1, x19, x21
+d28007e8 // 8: movz x8, #63
+d4000001 // 9: svc #0
+f100001f // 10: cmp x0, #0
+5400006d // 11: b.le read_done (+3 -> 14)
+8b0002b5 // 12: add x21, x21, x0
+17fffff6 // 13: b read_loop (-10 -> 3)
+d2800014 // 14: read_done: movz x20, #0
+94000028 // 15: bl skip_ws (+40 -> 55)
+94000040 // 16: bl parse_value (+64 -> 80)
+94000026 // 17: bl skip_ws (+38 -> 55)
+eb15029f // 18: cmp x20, x21
+54000121 // 19: b.ne fail (+9 -> 28)
+d2800020 // 20: movz x0, #1
+aa1603e1 // 21: mov x1, x22
+d2800062 // 22: movz x2, #3
+d2800808 // 23: movz x8, #64
+d4000001 // 24: svc #0
+d2800000 // 25: movz x0, #0
+d2800ba8 // 26: movz x8, #93
+d4000001 // 27: svc #0
+910003e9 // 28: fail: add x9, sp, #0
+d10083ff // 29: sub sp, sp, #32
+aa0903e3 // 30: mov x3, x9
+52800144 // 31: movz w4, #0x0a
+381ffc64 // 32: strb w4, [x3, #-1]!
+d2800144 // 33: movz x4, #10
+aa1403e5 // 34: mov x5, x20
+9ac408a6 // 35: fail_digit_loop: udiv x6, x5, x4
+9b0494c7 // 36: msub x7, x6, x4, x5
+1100c0e7 // 37: add w7, w7, #0x30
+381ffc67 // 38: strb w7, [x3, #-1]!
+aa0603e5 // 39: mov x5, x6
+b5ffff65 // 40: cbnz x5, fail_digit_loop (-5 -> 35)
+910032c4 // 41: add x4, x22, #12
+52800125 // 42: movz w5, #9
+385ffcc6 // 43: fail_prefix_loop: ldrb w6, [x4, #-1]!
+381ffc66 // 44: strb w6, [x3, #-1]!
+710004a5 // 45: subs w5, w5, #1
+54ffffa1 // 46: b.ne fail_prefix_loop (-3 -> 43)
+d2800020 // 47: movz x0, #1
+aa0303e1 // 48: mov x1, x3
+cb030122 // 49: sub x2, x9, x3
+d2800808 // 50: movz x8, #64
+d4000001 // 51: svc #0
+d2800020 // 52: movz x0, #1
+d2800ba8 // 53: movz x8, #93
+d4000001 // 54: svc #0
+eb15029f // 55: skip_ws: cmp x20, x21
+54000182 // 56: b.hs skip_ws_done (+12 -> 68)
+38746a60 // 57: ldrb w0, [x19, x20]
+7100801f // 58: cmp w0, #0x20
+540000e0 // 59: b.eq skip_ws_next (+7 -> 66)
+7100281f // 60: cmp w0, #0x0a
+540000a0 // 61: b.eq skip_ws_next (+5 -> 66)
+7100341f // 62: cmp w0, #0x0d
+54000060 // 63: b.eq skip_ws_next (+3 -> 66)
+7100241f // 64: cmp w0, #0x09
+54000061 // 65: b.ne skip_ws_done (+3 -> 68)
+91000694 // 66: skip_ws_next: add x20, x20, #1
+17fffff4 // 67: b skip_ws (-12 -> 55)
+d65f03c0 // 68: skip_ws_done: ret
+b4000142 // 69: match_lit: cbz x2, match_lit_done (+10 -> 79)
+eb15029f // 70: cmp x20, x21
+54fffaa2 // 71: b.hs fail (-43 -> 28)
+38746a60 // 72: ldrb w0, [x19, x20]
+38401423 // 73: ldrb w3, [x1], #1
+6b03001f // 74: cmp w0, w3
+54fffa21 // 75: b.ne fail (-47 -> 28)
+91000694 // 76: add x20, x20, #1
+d1000442 // 77: sub x2, x2, #1
+17fffff7 // 78: b match_lit (-9 -> 69)
+d65f03c0 // 79: match_lit_done: ret
+f81f0ffe // 80: parse_value: str x30, [sp, #-16]!
+eb15029f // 81: cmp x20, x21
+54fff942 // 82: b.hs fail (-54 -> 28)
+38746a60 // 83: ldrb w0, [x19, x20]
+7101ec1f // 84: cmp w0, #0x7b
+54000720 // 85: b.eq pv_object (+57 -> 142)
+71016c1f // 86: cmp w0, #0x5b
+54000440 // 87: b.eq pv_array (+34 -> 121)
+7100881f // 88: cmp w0, #0x22
+54000380 // 89: b.eq pv_string (+28 -> 117)
+7101d01f // 90: cmp w0, #0x74
+54000160 // 91: b.eq pv_true (+11 -> 102)
+7101981f // 92: cmp w0, #0x66
+540001c0 // 93: b.eq pv_false (+14 -> 107)
+7101b81f // 94: cmp w0, #0x6e
+54000220 // 95: b.eq pv_null (+17 -> 112)
+7100b41f // 96: cmp w0, #0x2d
+540002c0 // 97: b.eq pv_number (+22 -> 119)
+5100c001 // 98: sub w1, w0, #0x30
+7100243f // 99: cmp w1, #9
+54000269 // 100: b.ls pv_number (+19 -> 119)
+17ffffb7 // 101: b fail (-73 -> 28)
+91000694 // 102: pv_true: add x20, x20, #1
+910032c1 // 103: add x1, x22, #12
+d2800062 // 104: movz x2, #3
+97ffffdc // 105: bl match_lit (-36 -> 69)
+14000046 // 106: b pv_ret (+70 -> 176)
+91000694 // 107: pv_false: add x20, x20, #1
+91003ec1 // 108: add x1, x22, #15
+d2800082 // 109: movz x2, #4
+97ffffd7 // 110: bl match_lit (-41 -> 69)
+14000041 // 111: b pv_ret (+65 -> 176)
+91000694 // 112: pv_null: add x20, x20, #1
+91004ec1 // 113: add x1, x22, #19
+d2800062 // 114: movz x2, #3
+97ffffd2 // 115: bl match_lit (-46 -> 69)
+1400003c // 116: b pv_ret (+60 -> 176)
+9400003d // 117: pv_string: bl parse_string (+61 -> 178)
+1400003a // 118: b pv_ret (+58 -> 176)
+94000071 // 119: pv_number: bl parse_number (+113 -> 232)
+14000038 // 120: b pv_ret (+56 -> 176)
+91000694 // 121: pv_array: add x20, x20, #1
+97ffffbd // 122: bl skip_ws (-67 -> 55)
+eb15029f // 123: cmp x20, x21
+54fff402 // 124: b.hs fail (-96 -> 28)
+38746a60 // 125: ldrb w0, [x19, x20]
+7101741f // 126: cmp w0, #0x5d
+540001a0 // 127: b.eq pv_array_end (+13 -> 140)
+97ffffd0 // 128: pv_array_loop: bl parse_value (-48 -> 80)
+97ffffb6 // 129: bl skip_ws (-74 -> 55)
+eb15029f // 130: cmp x20, x21
+54fff322 // 131: b.hs fail (-103 -> 28)
+38746a60 // 132: ldrb w0, [x19, x20]
+7101741f // 133: cmp w0, #0x5d
+540000c0 // 134: b.eq pv_array_end (+6 -> 140)
+7100b01f // 135: cmp w0, #0x2c
+54fff281 // 136: b.ne fail (-108 -> 28)
+91000694 // 137: add x20, x20, #1
+97ffffad // 138: bl skip_ws (-83 -> 55)
+17fffff5 // 139: b pv_array_loop (-11 -> 128)
+91000694 // 140: pv_array_end: add x20, x20, #1
+14000023 // 141: b pv_ret (+35 -> 176)
+91000694 // 142: pv_object: add x20, x20, #1
+97ffffa8 // 143: bl skip_ws (-88 -> 55)
+eb15029f // 144: cmp x20, x21
+54fff162 // 145: b.hs fail (-117 -> 28)
+38746a60 // 146: ldrb w0, [x19, x20]
+7101f41f // 147: cmp w0, #0x7d
+54000360 // 148: b.eq pv_object_end (+27 -> 175)
+eb15029f // 149: pv_object_loop: cmp x20, x21
+54fff0c2 // 150: b.hs fail (-122 -> 28)
+38746a60 // 151: ldrb w0, [x19, x20]
+7100881f // 152: cmp w0, #0x22
+54fff061 // 153: b.ne fail (-125 -> 28)
+94000018 // 154: bl parse_string (+24 -> 178)
+97ffff9c // 155: bl skip_ws (-100 -> 55)
+eb15029f // 156: cmp x20, x21
+54ffefe2 // 157: b.hs fail (-129 -> 28)
+38746a60 // 158: ldrb w0, [x19, x20]
+7100e81f // 159: cmp w0, #0x3a
+54ffef81 // 160: b.ne fail (-132 -> 28)
+91000694 // 161: add x20, x20, #1
+97ffff95 // 162: bl skip_ws (-107 -> 55)
+97ffffad // 163: bl parse_value (-83 -> 80)
+97ffff93 // 164: bl skip_ws (-109 -> 55)
+eb15029f // 165: cmp x20, x21
+54ffeec2 // 166: b.hs fail (-138 -> 28)
+38746a60 // 167: ldrb w0, [x19, x20]
+7101f41f // 168: cmp w0, #0x7d
+540000c0 // 169: b.eq pv_object_end (+6 -> 175)
+7100b01f // 170: cmp w0, #0x2c
+54ffee21 // 171: b.ne fail (-143 -> 28)
+91000694 // 172: add x20, x20, #1
+97ffff8a // 173: bl skip_ws (-118 -> 55)
+17ffffe7 // 174: b pv_object_loop (-25 -> 149)
+91000694 // 175: pv_object_end: add x20, x20, #1
+f84107fe // 176: pv_ret: ldr x30, [sp], #16
+d65f03c0 // 177: ret
+91000694 // 178: parse_string: add x20, x20, #1
+eb15029f // 179: ps_loop: cmp x20, x21
+54ffed02 // 180: b.hs fail (-152 -> 28)
+38746a60 // 181: ldrb w0, [x19, x20]
+7100881f // 182: cmp w0, #0x22
+540000e0 // 183: b.eq ps_end (+7 -> 190)
+7101701f // 184: cmp w0, #0x5c
+540000e0 // 185: b.eq ps_escape (+7 -> 192)
+7100801f // 186: cmp w0, #0x20
+54ffec23 // 187: b.lo fail (-159 -> 28)
+91000694 // 188: add x20, x20, #1
+17fffff6 // 189: b ps_loop (-10 -> 179)
+91000694 // 190: ps_end: add x20, x20, #1
+d65f03c0 // 191: ret
+91000694 // 192: ps_escape: add x20, x20, #1
+eb15029f // 193: cmp x20, x21
+54ffeb42 // 194: b.hs fail (-166 -> 28)
+38746a60 // 195: ldrb w0, [x19, x20]
+7100881f // 196: cmp w0, #0x22
+54000420 // 197: b.eq ps_esc_ok (+33 -> 230)
+7101701f // 198: cmp w0, #0x5c
+540003e0 // 199: b.eq ps_esc_ok (+31 -> 230)
+7100bc1f // 200: cmp w0, #0x2f
+540003a0 // 201: b.eq ps_esc_ok (+29 -> 230)
+7101881f // 202: cmp w0, #0x62
+54000360 // 203: b.eq ps_esc_ok (+27 -> 230)
+7101981f // 204: cmp w0, #0x66
+54000320 // 205: b.eq ps_esc_ok (+25 -> 230)
+7101b81f // 206: cmp w0, #0x6e
+540002e0 // 207: b.eq ps_esc_ok (+23 -> 230)
+7101c81f // 208: cmp w0, #0x72
+540002a0 // 209: b.eq ps_esc_ok (+21 -> 230)
+7101d01f // 210: cmp w0, #0x74
+54000260 // 211: b.eq ps_esc_ok (+19 -> 230)
+7101d41f // 212: cmp w0, #0x75
+54ffe8e1 // 213: b.ne fail (-185 -> 28)
+91000694 // 214: add x20, x20, #1
+52800082 // 215: movz w2, #4
+eb15029f // 216: ps_hex_loop: cmp x20, x21
+54ffe862 // 217: b.hs fail (-189 -> 28)
+38746a60 // 218: ldrb w0, [x19, x20]
+5100c001 // 219: sub w1, w0, #0x30
+7100243f // 220: cmp w1, #9
+540000a9 // 221: b.ls ps_hex_next (+5 -> 226)
+321b0001 // 222: orr w1, w0, #0x20
+51018421 // 223: sub w1, w1, #0x61
+7100143f // 224: cmp w1, #5
+54ffe768 // 225: b.hi fail (-197 -> 28)
+91000694 // 226: ps_hex_next: add x20, x20, #1
+51000442 // 227: sub w2, w2, #1
+35fffe82 // 228: cbnz w2, ps_hex_loop (-12 -> 216)
+17ffffce // 229: b ps_loop (-50 -> 179)
+91000694 // 230: ps_esc_ok: add x20, x20, #1
+17ffffcc // 231: b ps_loop (-52 -> 179)
+38746a60 // 232: parse_number: ldrb w0, [x19, x20]
+7100b41f // 233: cmp w0, #0x2d
+540000a1 // 234: b.ne pn_int (+5 -> 239)
+91000694 // 235: add x20, x20, #1
+eb15029f // 236: cmp x20, x21
+54ffe5e2 // 237: b.hs fail (-209 -> 28)
+38746a60 // 238: ldrb w0, [x19, x20]
+7100c01f // 239: pn_int: cmp w0, #0x30
+54000061 // 240: b.ne pn_nonzero (+3 -> 243)
+91000694 // 241: add x20, x20, #1
+1400000d // 242: b pn_frac (+13 -> 255)
+5100c401 // 243: pn_nonzero: sub w1, w0, #0x31
+7100203f // 244: cmp w1, #8
+54ffe4e8 // 245: b.hi fail (-217 -> 28)
+91000694 // 246: add x20, x20, #1
+eb15029f // 247: pn_int_loop: cmp x20, x21
+54000742 // 248: b.hs pn_done (+58 -> 306)
+38746a60 // 249: ldrb w0, [x19, x20]
+5100c001 // 250: sub w1, w0, #0x30
+7100243f // 251: cmp w1, #9
+54000068 // 252: b.hi pn_frac (+3 -> 255)
+91000694 // 253: add x20, x20, #1
+17fffff9 // 254: b pn_int_loop (-7 -> 247)
+eb15029f // 255: pn_frac: cmp x20, x21
+54000642 // 256: b.hs pn_done (+50 -> 306)
+38746a60 // 257: ldrb w0, [x19, x20]
+7100b81f // 258: cmp w0, #0x2e
+54000221 // 259: b.ne pn_exp (+17 -> 276)
+91000694 // 260: add x20, x20, #1
+eb15029f // 261: cmp x20, x21
+54ffe2c2 // 262: b.hs fail (-234 -> 28)
+38746a60 // 263: ldrb w0, [x19, x20]
+5100c001 // 264: sub w1, w0, #0x30
+7100243f // 265: cmp w1, #9
+54ffe248 // 266: b.hi fail (-238 -> 28)
+91000694 // 267: add x20, x20, #1
+eb15029f // 268: pn_frac_loop: cmp x20, x21
+540004a2 // 269: b.hs pn_done (+37 -> 306)
+38746a60 // 270: ldrb w0, [x19, x20]
+5100c001 // 271: sub w1, w0, #0x30
+7100243f // 272: cmp w1, #9
+54000068 // 273: b.hi pn_exp (+3 -> 276)
+91000694 // 274: add x20, x20, #1
+17fffff9 // 275: b pn_frac_loop (-7 -> 268)
+eb15029f // 276: pn_exp: cmp x20, x21
+540003a2 // 277: b.hs pn_done (+29 -> 306)
+38746a60 // 278: ldrb w0, [x19, x20]
+321b0001 // 279: orr w1, w0, #0x20
+7101943f // 280: cmp w1, #0x65
+54000321 // 281: b.ne pn_done (+25 -> 306)
+91000694 // 282: add x20, x20, #1
+eb15029f // 283: cmp x20, x21
+54ffe002 // 284: b.hs fail (-256 -> 28)
+38746a60 // 285: ldrb w0, [x19, x20]
+7100ac1f // 286: cmp w0, #0x2b
+54000060 // 287: b.eq pn_exp_sign (+3 -> 290)
+7100b41f // 288: cmp w0, #0x2d
+540000a1 // 289: b.ne pn_exp_digits (+5 -> 294)
+91000694 // 290: pn_exp_sign: add x20, x20, #1
+eb15029f // 291: cmp x20, x21
+54ffdf02 // 292: b.hs fail (-264 -> 28)
+38746a60 // 293: ldrb w0, [x19, x20]
+5100c001 // 294: pn_exp_digits: sub w1, w0, #0x30
+7100243f // 295: cmp w1, #9
+54ffde88 // 296: b.hi fail (-268 -> 28)
+91000694 // 297: add x20, x20, #1
+eb15029f // 298: pn_exp_loop: cmp x20, x21
+540000e2 // 299: b.hs pn_done (+7 -> 306)
+38746a60 // 300: ldrb w0, [x19, x20]
+5100c001 // 301: sub w1, w0, #0x30
+7100243f // 302: cmp w1, #9
+54000068 // 303: b.hi pn_done (+3 -> 306)
+91000694 // 304: add x20, x20, #1
+17fffff9 // 305: b pn_exp_loop (-7 -> 298)
+d65f03c0 // 306: pn_done: ret
+
+.data
+6f 6b 0a                   // 0: "ok\n"
+65 72 72 6f 72 20 61 74 20 // 3: "error at "
+72 75 65                   // 12: "rue"
+61 6c 73 65                // 15: "alse"
+75 6c 6c                   // 19: "ull"
+</previous>
+It failed:
+<failure>
+Test `empty` failed (stdin delivered whole; test run 1 of 80; the runs before it passed).
+stdin (0 bytes): ""
+The program stopped with a fault (oob): 1-byte read of unmapped memory at 0xffffffffffffffff, pc=0x4000ac at pc 0x4000ac [the faulting instruction is line 45: `385ffcc6 // 43: fail_prefix_loop: ldrb w6, [x4, #-1]!`]
+exit status: expected 1, got none (the program did not exit)
+stdout differs from byte 0 on (line 1, column 1 of the expected output); expected 11 bytes in total, got 0
+  expected from byte 0: "error at 0\n"
+  actual from byte 0:   (end of output)
+
+Your machine code, as written, decodes as (address, your line, the hex, the disassembly; the entry point is the first line):
+  0x400000 line    2: d2a00c13                 mov x19, #0x600000
+  0x400004 line    3: d2a00a16                 mov x22, #0x500000
+  0x400008 line    4: d2800015                 mov x21, #0
+  0x40000c line    5: d2a00102                 mov x2, #0x80000
+  0x400010 line    6: cb150042                 sub x2, x2, x21
+  0x400014 line    7: b4000122                 cbz x2, #0x400038
+  0x400018 line    8: d2800000                 mov x0, #0
+  0x40001c line    9: 8b150261                 add x1, x19, x21
+  0x400020 line   10: d28007e8                 mov x8, #0x3f
+  0x400024 line   11: d4000001                 svc #0
+  0x400028 line   12: f100001f                 cmp x0, #0
+  0x40002c line   13: 5400006d                 b.le #0x400038
+  0x400030 line   14: 8b0002b5                 add x21, x21, x0
+  0x400034 line   15: 17fffff6                 b #0x40000c
+  0x400038 line   16: d2800014                 mov x20, #0
+  0x40003c line   17: 94000028                 bl #0x4000dc
+  0x400040 line   18: 94000040                 bl #0x400140
+  0x400044 line   19: 94000026                 bl #0x4000dc
+  0x400048 line   20: eb15029f                 cmp x20, x21
+  0x40004c line   21: 54000121                 b.ne #0x400070
+  0x400050 line   22: d2800020                 mov x0, #1
+  0x400054 line   23: aa1603e1                 mov x1, x22
+  0x400058 line   24: d2800062                 mov x2, #3
+  0x40005c line   25: d2800808                 mov x8, #0x40
+  0x400060 line   26: d4000001                 svc #0
+  0x400064 line   27: d2800000                 mov x0, #0
+  0x400068 line   28: d2800ba8                 mov x8, #0x5d
+  0x40006c line   29: d4000001                 svc #0
+  0x400070 line   30: 910003e9                 mov x9, sp
+  0x400074 line   31: d10083ff                 sub sp, sp, #0x20
+  0x400078 line   32: aa0903e3                 mov x3, x9
+  0x40007c line   33: 52800144                 mov w4, #0xa
+  0x400080 line   34: 381ffc64                 strb w4, [x3, #-1]!
+  0x400084 line   35: d2800144                 mov x4, #0xa
+  0x400088 line   36: aa1403e5                 mov x5, x20
+  0x40008c line   37: 9ac408a6                 udiv x6, x5, x4
+  0x400090 line   38: 9b0494c7                 msub x7, x6, x4, x5
+  0x400094 line   39: 1100c0e7                 add w7, w7, #0x30
+  0x400098 line   40: 381ffc67                 strb w7, [x3, #-1]!
+  0x40009c line   41: aa0603e5                 mov x5, x6
+  0x4000a0 line   42: b5ffff65                 cbnz x5, #0x40008c
+  0x4000a4 line   43: 910032c4                 add x4, x22, #0xc
+  0x4000a8 line   44: 52800125                 mov w5, #9
+  0x4000ac line   45: 385ffcc6                 ldrb w6, [x6, #-1]!
+  0x4000b0 line   46: 381ffc66                 strb w6, [x3, #-1]!
+  0x4000b4 line   47: 710004a5                 subs w5, w5, #1
+  0x4000b8 line   48: 54ffffa1                 b.ne #0x4000ac
+  0x4000bc line   49: d2800020                 mov x0, #1
+  0x4000c0 line   50: aa0303e1                 mov x1, x3
+  0x4000c4 line   51: cb030122                 sub x2, x9, x3
+  0x4000c8 line   52: d2800808                 mov x8, #0x40
+  0x4000cc line   53: d4000001                 svc #0
+  0x4000d0 line   54: d2800020                 mov x0, #1
+  0x4000d4 line   55: d2800ba8                 mov x8, #0x5d
+  0x4000d8 line   56: d4000001                 svc #0
+  0x4000dc line   57: eb15029f                 cmp x20, x21
+  0x4000e0 line   58: 54000182                 b.hs #0x400110
+  0x4000e4 line   59: 38746a60                 ldrb w0, [x19, x20]
+  0x4000e8 line   60: 7100801f                 cmp w0, #0x20
+  0x4000ec line   61: 540000e0                 b.eq #0x400108
+  0x4000f0 line   62: 7100281f                 cmp w0, #0xa
+  0x4000f4 line   63: 540000a0                 b.eq #0x400108
+  0x4000f8 line   64: 7100341f                 cmp w0, #0xd
+  0x4000fc line   65: 54000060                 b.eq #0x400108
+  0x400100 line   66: 7100241f                 cmp w0, #9
+  0x400104 line   67: 54000061                 b.ne #0x400110
+  0x400108 line   68: 91000694                 add x20, x20, #1
+  0x40010c line   69: 17fffff4                 b #0x4000dc
+  0x400110 line   70: d65f03c0                 ret
+  0x400114 line   71: b4000142                 cbz x2, #0x40013c
+  0x400118 line   72: eb15029f                 cmp x20, x21
+  0x40011c line   73: 54fffaa2                 b.hs #0x400070
+  0x400120 line   74: 38746a60                 ldrb w0, [x19, x20]
+  0x400124 line   75: 38401423                 ldrb w3, [x1], #1
+  0x400128 line   76: 6b03001f                 cmp w0, w3
+  0x40012c line   77: 54fffa21                 b.ne #0x400070
+  0x400130 line   78: 91000694                 add x20, x20, #1
+  0x400134 line   79: d1000442                 sub x2, x2, #1
+  0x400138 line   80: 17fffff7                 b #0x400114
+  0x40013c line   81: d65f03c0                 ret
+  0x400140 line   82: f81f0ffe                 str x30, [sp, #-0x10]!
+  0x400144 line   83: eb15029f                 cmp x20, x21
+  0x400148 line   84: 54fff942                 b.hs #0x400070
+  0x40014c line   85: 38746a60                 ldrb w0, [x19, x20]
+  0x400150 line   86: 7101ec1f                 cmp w0, #0x7b
+  0x400154 line   87: 54000720                 b.eq #0x400238
+  0x400158 line   88: 71016c1f                 cmp w0, #0x5b
+  0x40015c line   89: 54000440                 b.eq #0x4001e4
+  0x400160 line   90: 7100881f                 cmp w0, #0x22
+  0x400164 line   91: 54000380                 b.eq #0x4001d4
+  0x400168 line   92: 7101d01f                 cmp w0, #0x74
+  0x40016c line   93: 54000160                 b.eq #0x400198
+  0x400170 line   94: 7101981f                 cmp w0, #0x66
+  0x400174 line   95: 540001c0                 b.eq #0x4001ac
+  0x400178 line   96: 7101b81f                 cmp w0, #0x6e
+  0x40017c line   97: 54000220                 b.eq #0x4001c0
+  0x400180 line   98: 7100b41f                 cmp w0, #0x2d
+  0x400184 line   99: 540002c0                 b.eq #0x4001dc
+  0x400188 line  100: 5100c001                 sub w1, w0, #0x30
+  0x40018c line  101: 7100243f                 cmp w1, #9
+  0x400190 line  102: 54000269                 b.ls #0x4001dc
+  0x400194 line  103: 17ffffb7                 b #0x400070
+  0x400198 line  104: 91000694                 add x20, x20, #1
+  0x40019c line  105: 910032c1                 add x1, x22, #0xc
+  0x4001a0 line  106: d2800062                 mov x2, #3
+  0x4001a4 line  107: 97ffffdc                 bl #0x400114
+  0x4001a8 line  108: 14000046                 b #0x4002c0
+  0x4001ac line  109: 91000694                 add x20, x20, #1
+  0x4001b0 line  110: 91003ec1                 add x1, x22, #0xf
+  0x4001b4 line  111: d2800082                 mov x2, #4
+  0x4001b8 line  112: 97ffffd7                 bl #0x400114
+  0x4001bc line  113: 14000041                 b #0x4002c0
+  0x4001c0 line  114: 91000694                 add x20, x20, #1
+  0x4001c4 line  115: 91004ec1                 add x1, x22, #0x13
+  0x4001c8 line  116: d2800062                 mov x2, #3
+  0x4001cc line  117: 97ffffd2                 bl #0x400114
+  0x4001d0 line  118: 1400003c                 b #0x4002c0
+  0x4001d4 line  119: 9400003d                 bl #0x4002c8
+  0x4001d8 line  120: 1400003a                 b #0x4002c0
+  0x4001dc line  121: 94000071                 bl #0x4003a0
+  0x4001e0 line  122: 14000038                 b #0x4002c0
+  0x4001e4 line  123: 91000694                 add x20, x20, #1
+  0x4001e8 line  124: 97ffffbd                 bl #0x4000dc
+  0x4001ec line  125: eb15029f                 cmp x20, x21
+  0x4001f0 line  126: 54fff402                 b.hs #0x400070
+  0x4001f4 line  127: 38746a60                 ldrb w0, [x19, x20]
+  0x4001f8 line  128: 7101741f                 cmp w0, #0x5d
+  0x4001fc line  129: 540001a0                 b.eq #0x400230
+  0x400200 line  130: 97ffffd0                 bl #0x400140
+  0x400204 line  131: 97ffffb6                 bl #0x4000dc
+  0x400208 line  132: eb15029f                 cmp x20, x21
+  0x40020c line  133: 54fff322                 b.hs #0x400070
+  0x400210 line  134: 38746a60                 ldrb w0, [x19, x20]
+  0x400214 line  135: 7101741f                 cmp w0, #0x5d
+  0x400218 line  136: 540000c0                 b.eq #0x400230
+  0x40021c line  137: 7100b01f                 cmp w0, #0x2c
+  0x400220 line  138: 54fff281                 b.ne #0x400070
+  0x400224 line  139: 91000694                 add x20, x20, #1
+  0x400228 line  140: 97ffffad                 bl #0x4000dc
+  0x40022c line  141: 17fffff5                 b #0x400200
+  0x400230 line  142: 91000694                 add x20, x20, #1
+  0x400234 line  143: 14000023                 b #0x4002c0
+  0x400238 line  144: 91000694                 add x20, x20, #1
+  0x40023c line  145: 97ffffa8                 bl #0x4000dc
+  0x400240 line  146: eb15029f                 cmp x20, x21
+  0x400244 line  147: 54fff162                 b.hs #0x400070
+  0x400248 line  148: 38746a60                 ldrb w0, [x19, x20]
+  0x40024c line  149: 7101f41f                 cmp w0, #0x7d
+  0x400250 line  150: 54000360                 b.eq #0x4002bc
+  0x400254 line  151: eb15029f                 cmp x20, x21
+  0x400258 line  152: 54fff0c2                 b.hs #0x400070
+  0x40025c line  153: 38746a60                 ldrb w0, [x19, x20]
+  0x400260 line  154: 7100881f                 cmp w0, #0x22
+  0x400264 line  155: 54fff061                 b.ne #0x400070
+  0x400268 line  156: 94000018                 bl #0x4002c8
+  0x40026c line  157: 97ffff9c                 bl #0x4000dc
+  0x400270 line  158: eb15029f                 cmp x20, x21
+  0x400274 line  159: 54ffefe2                 b.hs #0x400070
+  0x400278 line  160: 38746a60                 ldrb w0, [x19, x20]
+  0x40027c line  161: 7100e81f                 cmp w0, #0x3a
+  0x400280 line  162: 54ffef81                 b.ne #0x400070
+  0x400284 line  163: 91000694                 add x20, x20, #1
+  0x400288 line  164: 97ffff95                 bl #0x4000dc
+  0x40028c line  165: 97ffffad                 bl #0x400140
+  0x400290 line  166: 97ffff93                 bl #0x4000dc
+  0x400294 line  167: eb15029f                 cmp x20, x21
+  0x400298 line  168: 54ffeec2                 b.hs #0x400070
+  0x40029c line  169: 38746a60                 ldrb w0, [x19, x20]
+  0x4002a0 line  170: 7101f41f                 cmp w0, #0x7d
+  0x4002a4 line  171: 540000c0                 b.eq #0x4002bc
+  0x4002a8 line  172: 7100b01f                 cmp w0, #0x2c
+  0x4002ac line  173: 54ffee21                 b.ne #0x400070
+  0x4002b0 line  174: 91000694                 add x20, x20, #1
+  0x4002b4 line  175: 97ffff8a                 bl #0x4000dc
+  0x4002b8 line  176: 17ffffe7                 b #0x400254
+  0x4002bc line  177: 91000694                 add x20, x20, #1
+  0x4002c0 line  178: f84107fe                 ldr x30, [sp], #0x10
+  0x4002c4 line  179: d65f03c0                 ret
+  0x4002c8 line  180: 91000694                 add x20, x20, #1
+  0x4002cc line  181: eb15029f                 cmp x20, x21
+  0x4002d0 line  182: 54ffed02                 b.hs #0x400070
+  0x4002d4 line  183: 38746a60                 ldrb w0, [x19, x20]
+  0x4002d8 line  184: 7100881f                 cmp w0, #0x22
+  0x4002dc line  185: 540000e0                 b.eq #0x4002f8
+  0x4002e0 line  186: 7101701f                 cmp w0, #0x5c
+  0x4002e4 line  187: 540000e0                 b.eq #0x400300
+  0x4002e8 line  188: 7100801f                 cmp w0, #0x20
+  0x4002ec line  189: 54ffec23                 b.lo #0x400070
+  0x4002f0 line  190: 91000694                 add x20, x20, #1
+  0x4002f4 line  191: 17fffff6                 b #0x4002cc
+  0x4002f8 line  192: 91000694                 add x20, x20, #1
+  0x4002fc line  193: d65f03c0                 ret
+  0x400300 line  194: 91000694                 add x20, x20, #1
+  0x400304 line  195: eb15029f                 cmp x20, x21
+  0x400308 line  196: 54ffeb42                 b.hs #0x400070
+  0x40030c line  197: 38746a60                 ldrb w0, [x19, x20]
+  0x400310 line  198: 7100881f                 cmp w0, #0x22
+  0x400314 line  199: 54000420                 b.eq #0x400398
+  0x400318 line  200: 7101701f                 cmp w0, #0x5c
+  0x40031c line  201: 540003e0                 b.eq #0x400398
+  0x400320 line  202: 7100bc1f                 cmp w0, #0x2f
+  0x400324 line  203: 540003a0                 b.eq #0x400398
+  0x400328 line  204: 7101881f                 cmp w0, #0x62
+  0x40032c line  205: 54000360                 b.eq #0x400398
+  0x400330 line  206: 7101981f                 cmp w0, #0x66
+  0x400334 line  207: 54000320                 b.eq #0x400398
+  0x400338 line  208: 7101b81f                 cmp w0, #0x6e
+  0x40033c line  209: 540002e0                 b.eq #0x400398
+  0x400340 line  210: 7101c81f                 cmp w0, #0x72
+  0x400344 line  211: 540002a0                 b.eq #0x400398
+  0x400348 line  212: 7101d01f                 cmp w0, #0x74
+  0x40034c line  213: 54000260                 b.eq #0x400398
+  0x400350 line  214: 7101d41f                 cmp w0, #0x75
+  0x400354 line  215: 54ffe8e1                 b.ne #0x400070
+  0x400358 line  216: 91000694                 add x20, x20, #1
+  0x40035c line  217: 52800082                 mov w2, #4
+  0x400360 line  218: eb15029f                 cmp x20, x21
+  0x400364 line  219: 54ffe862                 b.hs #0x400070
+  0x400368 line  220: 38746a60                 ldrb w0, [x19, x20]
+  0x40036c line  221: 5100c001                 sub w1, w0, #0x30
+  0x400370 line  222: 7100243f                 cmp w1, #9
+  0x400374 line  223: 540000a9                 b.ls #0x400388
+  0x400378 line  224: 321b0001                 orr w1, w0, #0x20
+  0x40037c line  225: 51018421                 sub w1, w1, #0x61
+  0x400380 line  226: 7100143f                 cmp w1, #5
+  0x400384 line  227: 54ffe768                 b.hi #0x400070
+  0x400388 line  228: 91000694                 add x20, x20, #1
+  0x40038c line  229: 51000442                 sub w2, w2, #1
+  0x400390 line  230: 35fffe82                 cbnz w2, #0x400360
+  0x400394 line  231: 17ffffce                 b #0x4002cc
+  0x400398 line  232: 91000694                 add x20, x20, #1
+  0x40039c line  233: 17ffffcc                 b #0x4002cc
+  0x4003a0 line  234: 38746a60                 ldrb w0, [x19, x20]
+  0x4003a4 line  235: 7100b41f                 cmp w0, #0x2d
+  0x4003a8 line  236: 540000a1                 b.ne #0x4003bc
+  0x4003ac line  237: 91000694                 add x20, x20, #1
+  0x4003b0 line  238: eb15029f                 cmp x20, x21
+  0x4003b4 line  239: 54ffe5e2                 b.hs #0x400070
+  0x4003b8 line  240: 38746a60                 ldrb w0, [x19, x20]
+  0x4003bc line  241: 7100c01f                 cmp w0, #0x30
+  0x4003c0 line  242: 54000061                 b.ne #0x4003cc
+  0x4003c4 line  243: 91000694                 add x20, x20, #1
+  0x4003c8 line  244: 1400000d                 b #0x4003fc
+  0x4003cc line  245: 5100c401                 sub w1, w0, #0x31
+  0x4003d0 line  246: 7100203f                 cmp w1, #8
+  0x4003d4 line  247: 54ffe4e8                 b.hi #0x400070
+  0x4003d8 line  248: 91000694                 add x20, x20, #1
+  0x4003dc line  249: eb15029f                 cmp x20, x21
+  0x4003e0 line  250: 54000742                 b.hs #0x4004c8
+  0x4003e4 line  251: 38746a60                 ldrb w0, [x19, x20]
+  0x4003e8 line  252: 5100c001                 sub w1, w0, #0x30
+  0x4003ec line  253: 7100243f                 cmp w1, #9
+  0x4003f0 line  254: 54000068                 b.hi #0x4003fc
+  0x4003f4 line  255: 91000694                 add x20, x20, #1
+  0x4003f8 line  256: 17fffff9                 b #0x4003dc
+  0x4003fc line  257: eb15029f                 cmp x20, x21
+  0x400400 line  258: 54000642                 b.hs #0x4004c8
+  0x400404 line  259: 38746a60                 ldrb w0, [x19, x20]
+  0x400408 line  260: 7100b81f                 cmp w0, #0x2e
+  0x40040c line  261: 54000221                 b.ne #0x400450
+  0x400410 line  262: 91000694                 add x20, x20, #1
+  0x400414 line  263: eb15029f                 cmp x20, x21
+  0x400418 line  264: 54ffe2c2                 b.hs #0x400070
+  0x40041c line  265: 38746a60                 ldrb w0, [x19, x20]
+  0x400420 line  266: 5100c001                 sub w1, w0, #0x30
+  0x400424 line  267: 7100243f                 cmp w1, #9
+  0x400428 line  268: 54ffe248                 b.hi #0x400070
+  0x40042c line  269: 91000694                 add x20, x20, #1
+  0x400430 line  270: eb15029f                 cmp x20, x21
+  0x400434 line  271: 540004a2                 b.hs #0x4004c8
+  0x400438 line  272: 38746a60                 ldrb w0, [x19, x20]
+  0x40043c line  273: 5100c001                 sub w1, w0, #0x30
+  0x400440 line  274: 7100243f                 cmp w1, #9
+  0x400444 line  275: 54000068                 b.hi #0x400450
+  0x400448 line  276: 91000694                 add x20, x20, #1
+  0x40044c line  277: 17fffff9                 b #0x400430
+  0x400450 line  278: eb15029f                 cmp x20, x21
+  0x400454 line  279: 540003a2                 b.hs #0x4004c8
+  0x400458 line  280: 38746a60                 ldrb w0, [x19, x20]
+  0x40045c line  281: 321b0001                 orr w1, w0, #0x20
+  0x400460 line  282: 7101943f                 cmp w1, #0x65
+  0x400464 line  283: 54000321                 b.ne #0x4004c8
+  0x400468 line  284: 91000694                 add x20, x20, #1
+  0x40046c line  285: eb15029f                 cmp x20, x21
+  0x400470 line  286: 54ffe002                 b.hs #0x400070
+  0x400474 line  287: 38746a60                 ldrb w0, [x19, x20]
+  0x400478 line  288: 7100ac1f                 cmp w0, #0x2b
+  0x40047c line  289: 54000060                 b.eq #0x400488
+  0x400480 line  290: 7100b41f                 cmp w0, #0x2d
+  0x400484 line  291: 540000a1                 b.ne #0x400498
+  0x400488 line  292: 91000694                 add x20, x20, #1
+  0x40048c line  293: eb15029f                 cmp x20, x21
+  0x400490 line  294: 54ffdf02                 b.hs #0x400070
+  0x400494 line  295: 38746a60                 ldrb w0, [x19, x20]
+  0x400498 line  296: 5100c001                 sub w1, w0, #0x30
+  0x40049c line  297: 7100243f                 cmp w1, #9
+  0x4004a0 line  298: 54ffde88                 b.hi #0x400070
+  0x4004a4 line  299: 91000694                 add x20, x20, #1
+  0x4004a8 line  300: eb15029f                 cmp x20, x21
+  0x4004ac line  301: 540000e2                 b.hs #0x4004c8
+  0x4004b0 line  302: 38746a60                 ldrb w0, [x19, x20]
+  0x4004b4 line  303: 5100c001                 sub w1, w0, #0x30
+  0x4004b8 line  304: 7100243f                 cmp w1, #9
+  0x4004bc line  305: 54000068                 b.hi #0x4004c8
+  0x4004c0 line  306: 91000694                 add x20, x20, #1
+  0x4004c4 line  307: 17fffff9                 b #0x4004a8
+  0x4004c8 line  308: d65f03c0                 ret
+</failure>
+Write a corrected, complete version. Same output format; output only the program text.

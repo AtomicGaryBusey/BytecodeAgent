@@ -1,0 +1,349 @@
+.globl _start
+.equ INPUT_CAP, 65536
+.equ OUT_CAP, 524288
+.equ STACK_CAP, 1024
+.equ NUM_CAP, 32
+
+.section .rodata
+err_msg: .ascii "error\n"
+
+.text
+_start:
+    call read_input
+    call process_input
+    call flush_output
+    mov eax, 60
+    xor edi, edi
+    syscall
+
+read_input:
+    lea rbx, [rip + input_buf]
+    xor r12d, r12d
+    mov qword ptr [rip + input_len], r12
+read_loop:
+    mov rdx, INPUT_CAP
+    sub rdx, r12
+    test rdx, rdx
+    jz read_done
+    xor eax, eax
+    xor edi, edi
+    lea rsi, [rbx + r12]
+    syscall
+    test rax, rax
+    jz read_done
+    add r12, rax
+    mov qword ptr [rip + input_len], r12
+    jmp read_loop
+read_done:
+    ret
+
+process_input:
+    lea rsi, [rip + input_buf]
+    mov r8, rsi
+    add r8, qword ptr [rip + input_len]
+proc_line:
+    cmp rsi, r8
+    jae proc_done
+    mov rdi, rsi
+proc_scan:
+    cmp rdi, r8
+    jae proc_eof
+    movzx eax, byte ptr [rdi]
+    cmp al, 10
+    je proc_nl
+    inc rdi
+    jmp proc_scan
+proc_nl:
+    mov rax, rdi
+    inc rax
+    jmp proc_ready
+proc_eof:
+    mov rax, r8
+proc_ready:
+    push r8
+    push rax
+    mov rdx, rdi
+    call eval_line
+    pop rsi
+    pop r8
+    jmp proc_line
+proc_done:
+    ret
+
+eval_line:
+    push r14
+    push r15
+    lea r14, [rip + rpn_stack]
+    xor r15d, r15d
+ev_skip:
+    cmp rsi, rdx
+    jae ev_end
+    movzx eax, byte ptr [rsi]
+    cmp al, 0x20
+    je ev_skip_inc
+    cmp al, 0x09
+    je ev_skip_inc
+    jmp ev_token
+ev_skip_inc:
+    inc rsi
+    jmp ev_skip
+ev_token:
+    mov r8, rsi
+    mov rdi, rsi
+ev_tok_scan:
+    cmp rdi, rdx
+    jae ev_tok_end
+    movzx eax, byte ptr [rdi]
+    cmp al, 0x20
+    je ev_tok_end
+    cmp al, 0x09
+    je ev_tok_end
+    inc rdi
+    jmp ev_tok_scan
+ev_tok_end:
+    mov r9, rdi
+    mov rax, r9
+    sub rax, r8
+    cmp rax, 1
+    jne ev_literal
+    movzx eax, byte ptr [r8]
+    cmp al, '+'
+    je ev_op_add
+    cmp al, '-'
+    je ev_op_sub
+    cmp al, '*'
+    je ev_op_mul
+    cmp al, '/'
+    je ev_op_div
+    cmp al, '%'
+    je ev_op_mod
+    jmp ev_invalid
+ev_literal:
+    mov r10, r8
+    movzx eax, byte ptr [r10]
+    cmp al, '-'
+    jne ev_lit_start
+    inc r10
+ev_lit_start:
+    cmp r10, r9
+    jae ev_invalid
+    xor ecx, ecx
+    xor ebx, ebx
+ev_lit_loop:
+    cmp r10, r9
+    jae ev_lit_done
+    movzx eax, byte ptr [r10]
+    sub eax, '0'
+    cmp eax, 9
+    ja ev_invalid
+    inc r10
+    inc rbx
+    cmp rbx, 18
+    ja ev_invalid
+    imul rcx, rcx, 10
+    add rcx, rax
+    jmp ev_lit_loop
+ev_lit_done:
+    movzx eax, byte ptr [r8]
+    cmp al, '-'
+    jne ev_push
+    neg rcx
+ev_push:
+    cmp r15, STACK_CAP
+    jae ev_invalid
+    mov qword ptr [r14 + r15*8], rcx
+    inc r15
+    mov rsi, r9
+    jmp ev_skip
+ev_op_add:
+    cmp r15, 2
+    jb ev_invalid
+    dec r15
+    mov rbx, qword ptr [r14 + r15*8]
+    dec r15
+    mov rax, qword ptr [r14 + r15*8]
+    add rax, rbx
+    mov qword ptr [r14 + r15*8], rax
+    inc r15
+    mov rsi, r9
+    jmp ev_skip
+ev_op_sub:
+    cmp r15, 2
+    jb ev_invalid
+    dec r15
+    mov rbx, qword ptr [r14 + r15*8]
+    dec r15
+    mov rax, qword ptr [r14 + r15*8]
+    sub rax, rbx
+    mov qword ptr [r14 + r15*8], rax
+    inc r15
+    mov rsi, r9
+    jmp ev_skip
+ev_op_mul:
+    cmp r15, 2
+    jb ev_invalid
+    dec r15
+    mov rbx, qword ptr [r14 + r15*8]
+    dec r15
+    mov rax, qword ptr [r14 + r15*8]
+    imul rax, rbx
+    mov qword ptr [r14 + r15*8], rax
+    inc r15
+    mov rsi, r9
+    jmp ev_skip
+ev_op_div:
+    cmp r15, 2
+    jb ev_invalid
+    dec r15
+    mov rbx, qword ptr [r14 + r15*8]
+    dec r15
+    mov rax, qword ptr [r14 + r15*8]
+    test rbx, rbx
+    jz ev_invalid
+    mov ecx, 0x80000000
+    shl rcx, 32
+    cmp rax, rcx
+    jne ev_div_do
+    cmp rbx, -1
+    je ev_invalid
+ev_div_do:
+    cqo
+    idiv rbx
+    mov qword ptr [r14 + r15*8], rax
+    inc r15
+    mov rsi, r9
+    jmp ev_skip
+ev_op_mod:
+    cmp r15, 2
+    jb ev_invalid
+    dec r15
+    mov rbx, qword ptr [r14 + r15*8]
+    dec r15
+    mov rax, qword ptr [r14 + r15*8]
+    test rbx, rbx
+    jz ev_invalid
+    mov ecx, 0x80000000
+    shl rcx, 32
+    cmp rax, rcx
+    jne ev_mod_do
+    cmp rbx, -1
+    je ev_invalid
+ev_mod_do:
+    cqo
+    idiv rbx
+    mov qword ptr [r14 + r15*8], rdx
+    inc r15
+    mov rsi, r9
+    jmp ev_skip
+ev_end:
+    cmp r15, 1
+    jne ev_invalid
+    mov rax, qword ptr [r14]
+    call out_value
+    jmp ev_done
+ev_invalid:
+    call out_error
+ev_done:
+    pop r15
+    pop r14
+    ret
+
+write_all:
+    test rdx, rdx
+    jz write_done
+    mov eax, 1
+    syscall
+    cmp rax, 0
+    jle write_done
+    add rsi, rax
+    sub rdx, rax
+    jmp write_all
+write_done:
+    ret
+
+flush_output:
+    mov rdx, qword ptr [rip + out_len]
+    test rdx, rdx
+    jz flush_done
+    lea rsi, [rip + out_buf]
+    mov edi, 1
+    call write_all
+    xor eax, eax
+    mov qword ptr [rip + out_len], rax
+flush_done:
+    ret
+
+out_write:
+    mov r10, rdx
+    mov rax, qword ptr [rip + out_len]
+    add rax, r10
+    cmp rax, OUT_CAP
+    jbe out_no_flush
+    push rsi
+    push r10
+    call flush_output
+    pop r10
+    pop rsi
+out_no_flush:
+    lea rdi, [rip + out_buf]
+    add rdi, qword ptr [rip + out_len]
+    mov rcx, r10
+out_copy:
+    test rcx, rcx
+    jz out_copy_done
+    mov al, byte ptr [rsi]
+    mov byte ptr [rdi], al
+    inc rsi
+    inc rdi
+    dec rcx
+    jmp out_copy
+out_copy_done:
+    mov rax, qword ptr [rip + out_len]
+    add rax, r10
+    mov qword ptr [rip + out_len], rax
+    ret
+
+out_error:
+    lea rsi, [rip + err_msg]
+    mov edx, 6
+    jmp out_write
+
+out_value:
+    xor r9d, r9d
+    test rax, rax
+    jns out_pos
+    mov r9d, 1
+    neg rax
+out_pos:
+    lea rdi, [rip + num_buf_end]
+    dec rdi
+    mov byte ptr [rdi], 10
+    mov ebx, 10
+out_div_loop:
+    xor edx, edx
+    div rbx
+    add dl, '0'
+    dec rdi
+    mov byte ptr [rdi], dl
+    test rax, rax
+    jnz out_div_loop
+    test r9d, r9d
+    jz out_send
+    dec rdi
+    mov byte ptr [rdi], '-'
+out_send:
+    lea rsi, [rip + num_buf_end]
+    mov rdx, rsi
+    sub rdx, rdi
+    mov rsi, rdi
+    jmp out_write
+
+.bss
+.balign 8
+input_buf: .zero INPUT_CAP
+input_len: .zero 8
+out_buf: .zero OUT_CAP
+out_len: .zero 8
+rpn_stack: .zero STACK_CAP*8
+num_buf: .zero NUM_CAP
+num_buf_end:

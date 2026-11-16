@@ -1,0 +1,672 @@
+Write the complete program `json_lint`: a static Linux executable for AArch64 (ARMv8-A, little-endian), written in assembly. There is no C library, no C runtime and no helper code: you write the entry point `_start`, every function, every table and string, and make the system calls yourself.
+
+Entry state (as the Linux kernel sets it up): execution starts at the label `_start`. sp is 16-byte aligned and points at argc = 0, followed by the NULL terminators of an empty argv, an empty envp and an empty auxiliary vector: the program gets no arguments. Every other general-purpose register (x0-x30) is zero; x30 is not a return address, so `_start` must never return with `ret`; the program ends only through the exit system call.
+
+System calls: the `svc #0` instruction, with the system call number in x8 and the arguments in x0, x1, x2; the result comes back in x0. Every other register is preserved. Exactly these four are available:
+- read = 63: read(fd = 0, buf, count) reads up to count bytes of standard input into buf; returns the number of bytes read, 0 at end of input.
+- write = 64: write(fd, buf, count) with fd 1 (standard output) or 2 (standard error); returns count.
+- exit = 93: exit(status) ends the program; the exit status is the low 8 bits of status.
+- exit_group = 94: the same as exit.
+Any other system call number or file descriptor stops the program with an error, and so does a buffer that is not entirely inside the program's memory.
+
+Memory: the program's own sections plus a stack of 1 MiB below the entry sp. There is no heap (no brk, no mmap, no malloc): put working storage in `.bss` (zero-initialised), at most 1 MiB in total, or on the stack. Code is not writable. Any access outside these areas stops the program. Each test run may execute at most 50,000,000 instructions.
+
+Output format: one complete assembly source file in GNU assembler (GNU as) syntax for AArch64. Examples: `ldr x2, [x0, x1, lsl #3]`, `ldrb w3, [x1], #1`, `stp x29, x30, [sp, #-16]!`. Comments start with `//`; do not use `;`.
+Allowed in the file:
+- Sections: `.text` (code), `.section .rodata` (read-only data), `.data` (initialised writable data), `.bss` (zero-initialised space: only `.zero`/`.space` and alignment). Instructions go in `.text` only.
+- Data directives: `.byte`, `.short`/`.2byte`, `.word` (4 bytes on this target), `.long`/`.int`/`.4byte`, `.quad`/`.8byte`, `.ascii`, `.asciz`/`.string`, `.zero`/`.space`, alignment with `.align`/`.balign`/`.p2align`, and `.globl`/`.global` (write `.globl _start`).
+- Labels `name:` in any section, and GNU local labels `1:` referenced as `1f` (next) / `1b` (previous).
+- Constants: `.equ name, value` (or `.set name, value`, or `name = value`), where value is a number or a difference of labels defined earlier in the same section (e.g. `msg_len = . - msg`). Define every constant before its first use.
+- Addressing data: `adrp x0, label` followed by `add x0, x0, :lo12:label` (or a load/store `ldr x1, [x0, :lo12:label]`); `adr x0, label` also works within +-1 MiB. Literal pools are NOT allowed: no `ldr x0, =label` and no `ldr x0, =constant` (build constants with mov/movz/movk).
+Not allowed: macros (`.macro`, `.rept`, `.irp`), conditional assembly (`.if`), `.include`, `.incbin`, `.fill`, `.org`, `.comm`/`.lcomm`, `.inst`, `.cfi_*` directives, section stacks (`.pushsection`) and any other section. No libc and no other library: there is nothing to link against, so every symbol you use must be defined in your file.
+Instruction set: ARMv8.0-A with floating point and Advanced SIMD (NEON). Not supported (rejected): CRC32, LSE atomics, dot product, half-precision, crypto (AES/SHA/PMULL) and SVE.
+Output ONLY the assembly source: no Markdown fences, no prose before or after it.
+
+Specification: Task `json_lint`: check that standard input is exactly one valid JSON document (RFC 8259 grammar) and report
+the byte offset of the first error.
+
+Grammar (byte-level):
+- document = ws value ws, and nothing else. ws = any number of the bytes space 0x20, tab 0x09, newline 0x0A,
+  carriage return 0x0D (only these four).
+- value = object | array | string | number | `true` | `false` | `null` (lowercase only).
+- object = `{` ws `}`, or `{` ws member (ws `,` ws member)* ws `}`, where member = string ws `:` ws value.
+  array = `[` ws `]`, or `[` ws value (ws `,` ws value)* ws `]`. No trailing commas.
+- string = `"` chars `"`. A char is any byte 0x20-0xFF except `"` (0x22) and `\` (0x5C) (bytes >= 0x80 are
+  accepted as they are; no UTF-8 validation), or an escape: `\` followed by one of `"` `\` `/` `b` `f` `n` `r`
+  `t`, or `\u` followed by exactly 4 hex digits (`0-9a-fA-F`; any code unit, surrogates are not checked).
+  Bytes 0x00-0x1F inside a string are errors.
+- number = `-`? int frac? exp?, where int = `0` | a digit `1`-`9` followed by any digits; frac = `.` and one or
+  more digits; exp = `e` or `E`, an optional `+` or `-`, and one or more digits. (So `01`, `+1`, `.5`, `1.`,
+  `1e`, `-` are not valid numbers.)
+
+Output: if the input is valid, print `ok\n` and exit with status 0. Otherwise print `error at N\n` (N in
+decimal, no padding) and exit with status 1, where N is the 0-based offset of the first byte at which the input
+stops being the beginning of some valid document: the first byte that no valid document could have at that
+position given all the bytes before it. If every byte of the input is such a valid beginning but the document is
+incomplete (this includes empty and whitespace-only input), N is the length of the input.
+
+Examples: `[1, 2]` ok; empty input `error at 0`; `[1,]` `error at 3`; `{"a" 1}` `error at 5`; `01` `error at 1`;
+`tru` `error at 3`; `trux` `error at 3`; `[1] x` `error at 4`; `"a<TAB>b"` (a raw tab byte) `error at 2`;
+`-` `error at 1`; `1.e5` `error at 2`.
+
+Limits: the input is at most 65536 bytes; arrays and objects are nested at most 1000 deep. These limits
+describe the inputs you will be given; you do not need to detect or report inputs that exceed them.
+
+Input and output (applies to this whole task):
+- The input is the complete contents of standard input (file descriptor 0). Read it with `read` until `read`
+  returns 0 (end of input). A `read` may return FEWER bytes than requested, at any position (in the middle of a
+  line, a token or a group of bytes), so keep calling it; only a return value of 0 means end of input.
+- Write the output to standard output (file descriptor 1). Only the bytes this task describes may appear on
+  standard output (standard error is ignored). Every output byte must be written before the program exits.
+- Finish with `exit` (or `exit_group`) and the exit status this task gives. The program must not run off the end
+  of its code or crash.
+
+Your previous attempt was:
+<previous>
+// json_lint: static Linux executable for AArch64
+// Checks that standard input is exactly one valid JSON document (RFC 8259)
+
+    .globl  _start
+
+    .section .rodata
+    .balign 8
+str_ok:
+    .ascii  "ok\n"
+
+str_err_prefix:
+    .ascii  "error at "
+
+    .section .bss
+    .balign 16
+input_buf:
+    .space  131072
+
+out_buf:
+    .space  64
+
+    .section .text
+_start:
+    // x19 = input_buf pointer
+    // x20 = total bytes read
+    adrp    x19, input_buf
+    add     x19, x19, :lo12:input_buf
+    mov     x20, #0
+
+read_loop:
+    movz    x3, #2, lsl #16         // 131072
+    sub     x2, x3, x20             // remaining capacity
+    cbz     x2, read_done
+    mov     x0, #0                  // stdin (fd 0)
+    add     x1, x19, x20            // current buffer write pointer
+    mov     x8, #63                 // read syscall
+    svc     #0
+    cmp     x0, #0
+    ble     read_done
+    add     x20, x20, x0
+    b       read_loop
+
+read_done:
+    // x21 = current parsing offset
+    mov     x21, #0
+
+    // Top-level: ws value ws EOF
+    bl      skip_ws
+
+    // Empty or whitespace-only input -> error at len
+    cmp     x21, x20
+    b.ge    err_at_pos
+
+    // Parse the single JSON value
+    bl      parse_value
+
+    // Skip trailing whitespace
+    bl      skip_ws
+
+    // Must be at end of input
+    cmp     x21, x20
+    b.ne    err_at_pos
+
+    // Valid JSON document: print "ok\n"
+    mov     x0, #1                  // stdout
+    adrp    x1, str_ok
+    add     x1, x1, :lo12:str_ok
+    mov     x2, #3
+    bl      write_all
+
+    mov     x0, #0                  // exit(0)
+    mov     x8, #93
+    svc     #0
+
+// -------------------------------------------------------------
+// skip_ws: advance x21 over whitespace (0x20, 0x09, 0x0A, 0x0D)
+// -------------------------------------------------------------
+skip_ws:
+    cmp     x21, x20
+    b.ge    skip_ws_done
+    ldrb    w0, [x19, x21]
+    cmp     w0, #' '
+    b.eq    skip_ws_adv
+    cmp     w0, #'\t'
+    b.eq    skip_ws_adv
+    cmp     w0, #'\n'
+    b.eq    skip_ws_adv
+    cmp     w0, #'\r'
+    b.eq    skip_ws_adv
+    ret
+
+skip_ws_adv:
+    add     x21, x21, #1
+    b       skip_ws
+
+skip_ws_done:
+    ret
+
+// -------------------------------------------------------------
+// parse_value: dispatches based on first byte
+// -------------------------------------------------------------
+parse_value:
+    cmp     x21, x20
+    b.ge    err_at_pos
+
+    ldrb    w0, [x19, x21]
+    cmp     w0, #'{'
+    b.eq    parse_object
+    cmp     w0, #'['
+    b.eq    parse_array
+    cmp     w0, #'"'
+    b.eq    parse_string
+    cmp     w0, #'t'
+    b.eq    parse_true
+    cmp     w0, #'f'
+    b.eq    parse_false
+    cmp     w0, #'n'
+    b.eq    parse_null
+    cmp     w0, #'-'
+    b.eq    parse_number
+    cmp     w0, #'0'
+    b.lt    err_at_pos
+    cmp     w0, #'9'
+    b.le    parse_number
+
+    b       err_at_pos
+
+// -------------------------------------------------------------
+// parse_true: parses 'true'
+// -------------------------------------------------------------
+parse_true:
+    add     x21, x21, #1            // consume 't'
+    cmp     x21, x20
+    b.ge    err_at_pos
+    ldrb    w0, [x19, x21]
+    cmp     w0, #'r'
+    b.ne    err_at_pos
+
+    add     x21, x21, #1            // consume 'r'
+    cmp     x21, x20
+    b.ge    err_at_pos
+    ldrb    w0, [x19, x21]
+    cmp     w0, #'u'
+    b.ne    err_at_pos
+
+    add     x21, x21, #1            // consume 'u'
+    cmp     x21, x20
+    b.ge    err_at_pos
+    ldrb    w0, [x19, x21]
+    cmp     w0, #'e'
+    b.ne    err_at_pos
+
+    add     x21, x21, #1            // consume 'e'
+    ret
+
+// -------------------------------------------------------------
+// parse_false: parses 'false'
+// -------------------------------------------------------------
+parse_false:
+    add     x21, x21, #1            // consume 'f'
+    cmp     x21, x20
+    b.ge    err_at_pos
+    ldrb    w0, [x19, x21]
+    cmp     w0, #'a'
+    b.ne    err_at_pos
+
+    add     x21, x21, #1            // consume 'a'
+    cmp     x21, x20
+    b.ge    err_at_pos
+    ldrb    w0, [x19, x21]
+    cmp     w0, #'l'
+    b.ne    err_at_pos
+
+    add     x21, x21, #1            // consume 'l'
+    cmp     x21, x20
+    b.ge    err_at_pos
+    ldrb    w0, [x19, x21]
+    cmp     w0, #'s'
+    b.ne    err_at_pos
+
+    add     x21, x21, #1            // consume 's'
+    cmp     x21, x20
+    b.ge    err_at_pos
+    ldrb    w0, [x19, x21]
+    cmp     w0, #'e'
+    b.ne    err_at_pos
+
+    add     x21, x21, #1            // consume 'e'
+    ret
+
+// -------------------------------------------------------------
+// parse_null: parses 'null'
+// -------------------------------------------------------------
+parse_null:
+    add     x21, x21, #1            // consume 'n'
+    cmp     x21, x20
+    b.ge    err_at_pos
+    ldrb    w0, [x19, x21]
+    cmp     w0, #'u'
+    b.ne    err_at_pos
+
+    add     x21, x21, #1            // consume 'u'
+    cmp     x21, x20
+    b.ge    err_at_pos
+    ldrb    w0, [x19, x21]
+    cmp     w0, #'l'
+    b.ne    err_at_pos
+
+    add     x21, x21, #1            // consume 'l'
+    cmp     x21, x20
+    b.ge    err_at_pos
+    ldrb    w0, [x19, x21]
+    cmp     w0, #'l'
+    b.ne    err_at_pos
+
+    add     x21, x21, #1            // consume 'l'
+    ret
+
+// -------------------------------------------------------------
+// parse_string: parses a JSON string
+// -------------------------------------------------------------
+parse_string:
+    add     x21, x21, #1            // consume opening '"'
+
+parse_string_loop:
+    cmp     x21, x20
+    b.ge    err_at_pos
+
+    ldrb    w0, [x19, x21]
+    cmp     w0, #'"'
+    b.eq    parse_string_done
+
+    cmp     w0, #'\\'
+    b.eq    parse_string_escape
+
+    // Control characters 0x00..0x1F are errors
+    cmp     w0, #0x20
+    b.lo    err_at_pos
+
+    add     x21, x21, #1
+    b       parse_string_loop
+
+parse_string_done:
+    add     x21, x21, #1            // consume closing '"'
+    ret
+
+parse_string_escape:
+    add     x21, x21, #1            // consume '\\'
+    cmp     x21, x20
+    b.ge    err_at_pos
+
+    ldrb    w0, [x19, x21]
+    cmp     w0, #'"'
+    b.eq    parse_string_esc_ok
+    cmp     w0, #'\\'
+    b.eq    parse_string_esc_ok
+    cmp     w0, #'/'
+    b.eq    parse_string_esc_ok
+    cmp     w0, #'b'
+    b.eq    parse_string_esc_ok
+    cmp     w0, #'f'
+    b.eq    parse_string_esc_ok
+    cmp     w0, #'n'
+    b.eq    parse_string_esc_ok
+    cmp     w0, #'r'
+    b.eq    parse_string_esc_ok
+    cmp     w0, #'t'
+    b.eq    parse_string_esc_ok
+    cmp     w0, #'u'
+    b.eq    parse_string_unicode
+
+    // Invalid escape character
+    b       err_at_pos
+
+parse_string_esc_ok:
+    add     x21, x21, #1
+    b       parse_string_loop
+
+parse_string_unicode:
+    add     x21, x21, #1            // consume 'u'
+    mov     w1, #4                  // 4 hex digits required
+
+parse_string_hex_loop:
+    cmp     x21, x20
+    b.ge    err_at_pos
+
+    ldrb    w0, [x19, x21]
+    cmp     w0, #'0'
+    b.lt    err_at_pos
+    cmp     w0, #'9'
+    b.le    parse_string_hex_ok
+    cmp     w0, #'A'
+    b.lt    err_at_pos
+    cmp     w0, #'F'
+    b.le    parse_string_hex_ok
+    cmp     w0, #'a'
+    b.lt    err_at_pos
+    cmp     w0, #'f'
+    b.gt    err_at_pos
+
+parse_string_hex_ok:
+    add     x21, x21, #1
+    sub     w1, w1, #1
+    cbnz    w1, parse_string_hex_loop
+    b       parse_string_loop
+
+// -------------------------------------------------------------
+// parse_number: parses a JSON number: -? int frac? exp?
+// -------------------------------------------------------------
+parse_number:
+    ldrb    w0, [x19, x21]
+    cmp     w0, #'-'
+    b.ne    parse_num_int
+
+    // Consume '-'
+    add     x21, x21, #1
+    cmp     x21, x20
+    b.ge    err_at_pos
+
+    ldrb    w0, [x19, x21]
+    cmp     w0, #'0'
+    b.lt    err_at_pos
+    cmp     w0, #'9'
+    b.gt    err_at_pos
+
+parse_num_int:
+    cmp     w0, #'0'
+    b.ne    parse_num_nonzero
+
+    // First digit is '0'
+    add     x21, x21, #1
+    cmp     x21, x20
+    b.ge    parse_num_done
+
+    ldrb    w0, [x19, x21]
+    cmp     w0, #'0'
+    b.lt    parse_num_frac_exp
+    cmp     w0, #'9'
+    b.le    err_at_pos              // no digit allowed after leading 0
+    b       parse_num_frac_exp
+
+parse_num_nonzero:
+    // First digit is '1'..'9'
+    add     x21, x21, #1
+
+parse_num_digits:
+    cmp     x21, x20
+    b.ge    parse_num_done
+    ldrb    w0, [x19, x21]
+    cmp     w0, #'0'
+    b.lt    parse_num_frac_exp
+    cmp     w0, #'9'
+    b.gt    parse_num_frac_exp
+    add     x21, x21, #1
+    b       parse_num_digits
+
+parse_num_frac_exp:
+    // Check for fraction: '.'
+    cmp     w0, #'.'
+    b.ne    parse_num_check_exp
+
+    // Consume '.'
+    add     x21, x21, #1
+    cmp     x21, x20
+    b.ge    err_at_pos
+
+    ldrb    w0, [x19, x21]
+    cmp     w0, #'0'
+    b.lt    err_at_pos
+    cmp     w0, #'9'
+    b.gt    err_at_pos
+
+    // Consume frac digits
+    add     x21, x21, #1
+
+parse_num_frac_digits:
+    cmp     x21, x20
+    b.ge    parse_num_done
+    ldrb    w0, [x19, x21]
+    cmp     w0, #'0'
+    b.lt    parse_num_check_exp
+    cmp     w0, #'9'
+    b.gt    parse_num_check_exp
+    add     x21, x21, #1
+    b       parse_num_frac_digits
+
+parse_num_check_exp:
+    // Check for exponent: 'e' or 'E'
+    cmp     w0, #'e'
+    b.eq    parse_num_exp
+    cmp     w0, #'E'
+    b.ne    parse_num_done
+
+parse_num_exp:
+    // Consume 'e' / 'E'
+    add     x21, x21, #1
+    cmp     x21, x20
+    b.ge    err_at_pos
+
+    ldrb    w0, [x19, x21]
+    cmp     w0, #'+'
+    b.eq    parse_num_exp_sign
+    cmp     w0, #'-'
+    b.eq    parse_num_exp_sign
+    b       parse_num_exp_digits_first
+
+parse_num_exp_sign:
+    add     x21, x21, #1
+    cmp     x21, x20
+    b.ge    err_at_pos
+    ldrb    w0, [x19, x21]
+
+parse_num_exp_digits_first:
+    cmp     w0, #'0'
+    b.lt    err_at_pos
+    cmp     w0, #'9'
+    b.gt    err_at_pos
+
+    add     x21, x21, #1
+
+parse_num_exp_digits:
+    cmp     x21, x20
+    b.ge    parse_num_done
+    ldrb    w0, [x19, x21]
+    cmp     w0, #'0'
+    b.lt    parse_num_done
+    cmp     w0, #'9'
+    b.gt    parse_num_done
+    add     x21, x21, #1
+    b       parse_num_exp_digits
+
+parse_num_done:
+    ret
+
+// -------------------------------------------------------------
+// parse_array: parses a JSON array
+// -------------------------------------------------------------
+parse_array:
+    stp     x29, x30, [sp, #-16]!
+    add     x21, x21, #1            // consume '['
+
+    bl      skip_ws
+    cmp     x21, x20
+    b.ge    err_at_pos
+
+    ldrb    w0, [x19, x21]
+    cmp     w0, #']'
+    b.eq    parse_array_done
+
+parse_array_elem_loop:
+    bl      parse_value
+
+    bl      skip_ws
+    cmp     x21, x20
+    b.ge    err_at_pos
+
+    ldrb    w0, [x19, x21]
+    cmp     w0, #']'
+    b.eq    parse_array_done
+    cmp     w0, #','
+    b.ne    err_at_pos
+
+    // Consume ','
+    add     x21, x21, #1
+    bl      skip_ws
+    b       parse_array_elem_loop
+
+parse_array_done:
+    add     x21, x21, #1            // consume ']'
+    ldp     x29, x30, [sp], #16
+    ret
+
+// -------------------------------------------------------------
+// parse_object: parses a JSON object
+// -------------------------------------------------------------
+parse_object:
+    stp     x29, x30, [sp, #-16]!
+    add     x21, x21, #1            // consume '{'
+
+    bl      skip_ws
+    cmp     x21, x20
+    b.ge    err_at_pos
+
+    ldrb    w0, [x19, x21]
+    cmp     w0, #'}'
+    b.eq    parse_object_done
+
+parse_object_member_loop:
+    ldrb    w0, [x19, x21]
+    cmp     w0, #'"'
+    b.ne    err_at_pos
+
+    bl      parse_string
+
+    bl      skip_ws
+    cmp     x21, x20
+    b.ge    err_at_pos
+
+    ldrb    w0, [x19, x21]
+    cmp     w0, #':'
+    b.ne    err_at_pos
+    add     x21, x21, #1            // consume ':'
+
+    bl      skip_ws
+    bl      parse_value
+
+    bl      skip_ws
+    cmp     x21, x20
+    b.ge    err_at_pos
+
+    ldrb    w0, [x19, x21]
+    cmp     w0, #'}'
+    b.eq    parse_object_done
+    cmp     w0, #','
+    b.ne    err_at_pos
+
+    // Consume ','
+    add     x21, x21, #1
+    bl      skip_ws
+    cmp     x21, x20
+    b.ge    err_at_pos
+
+    b       parse_object_member_loop
+
+parse_object_done:
+    add     x21, x21, #1            // consume '}'
+    ldp     x29, x30, [sp], #16
+    ret
+
+// -------------------------------------------------------------
+// err_at_pos: report "error at N\n" and exit with status 1
+// -------------------------------------------------------------
+err_at_pos:
+    cmp     x21, x20
+    csel    x21, x20, x21, hi       // N = min(x21, len)
+
+    adrp    x0, out_buf
+    add     x0, x0, :lo12:out_buf
+
+    // Copy "error at " (9 bytes)
+    adrp    x1, str_err_prefix
+    add     x1, x1, :lo12:str_err_prefix
+    ldr     x2, [x1]
+    ldrb    w3, [x1, #8]
+    str     x2, [x0]
+    strb    w3, [x0, #8]
+    mov     x2, #9                  // current length in out_buf
+
+    // Convert N to decimal digits
+    mov     x3, x21
+    mov     x4, sp
+    mov     x5, #10
+
+fmt_digit_loop:
+    udiv    x6, x3, x5
+    msub    x7, x6, x5, x3
+    add     w7, w7, #'0'
+    strb    w7, [x4, #-1]!
+    mov     x3, x6
+    cbnz    x3, fmt_digit_loop
+
+copy_digit_loop:
+    cmp     x4, sp
+    b.eq    fmt_done
+    ldrb    w7, [x4], #1
+    strb    w7, [x0, x2]
+    add     x2, x2, #1
+    b       copy_digit_loop
+
+fmt_done:
+    mov     w7, #'\n'
+    strb    w7, [x0, x2]
+    add     x2, x2, #1
+
+    mov     x0, #1                  // stdout
+    adrp    x1, out_buf
+    add     x1, x1, :lo12:out_buf
+    bl      write_all
+
+    mov     x0, #1                  // exit(1)
+    mov     x8, #93
+    svc     #0
+
+// -------------------------------------------------------------
+// write_all: writes count bytes (x2) from buf (x1) to fd (x0)
+// -------------------------------------------------------------
+write_all:
+    cbz     x2, write_all_done
+    mov     w3, w0
+write_all_loop:
+    mov     w0, w3
+    mov     x8, #64                 // write syscall
+    svc     #0
+    cmp     x0, #0
+    ble     write_all_done
+    add     x1, x1, x0
+    sub     x2, x2, x0
+    cbnz    x2, write_all_loop
+write_all_done:
+    ret
+</previous>
+It failed:
+<failure>
+GNU as rejected the program:
+line 563: unexpected register in the immediate operand at operand 2 -- `cmp x4,sp'
+</failure>
+Write a corrected, complete version. Same output format; output only the code.

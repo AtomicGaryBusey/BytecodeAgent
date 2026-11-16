@@ -1,0 +1,548 @@
+    .globl  _start
+
+    .section .rodata
+    .align  3
+msg_ok:
+    .ascii  "ok\n"
+
+msg_err_prefix:
+    .ascii  "error at "
+
+    .bss
+    .align  4
+input_buf:
+    .zero   131072
+
+    .text
+    .align  2
+_start:
+    adrp    x19, input_buf
+    add     x19, x19, :lo12:input_buf
+    mov     x20, #0
+
+.Lread_loop:
+    mov     x0, #0
+    add     x1, x19, x20
+    movz    x2, #2, lsl #16
+    sub     x2, x2, x20
+    cmp     x2, #0
+    b.le    .Lread_done
+    mov     x8, #63
+    svc     #0
+    cmp     x0, #0
+    b.le    .Lread_done
+    add     x20, x20, x0
+    b       .Lread_loop
+
+.Lread_done:
+    mov     x21, #0
+
+    bl      skip_ws
+    cmp     x21, x20
+    b.hs    error_at_len
+
+    bl      parse_value
+
+    bl      skip_ws
+    cmp     x21, x20
+    b.lo    error_at_pos
+
+success:
+    mov     x0, #1
+    adrp    x1, msg_ok
+    add     x1, x1, :lo12:msg_ok
+    mov     x2, #3
+    bl      write_all
+    mov     x0, #0
+    mov     x8, #93
+    svc     #0
+
+error_at_pos:
+    mov     x0, x21
+    b       report_error
+
+error_at_len:
+    mov     x0, x20
+    b       report_error
+
+report_error:
+    sub     sp, sp, #32
+    add     x1, sp, #31
+    mov     w2, #'\n'
+    strb    w2, [x1]
+
+    cbnz    x0, .Lfmt_digits
+    sub     x1, x1, #1
+    mov     w2, #'0'
+    strb    w2, [x1]
+    b       .Lfmt_prefix
+
+.Lfmt_digits:
+    mov     x3, #10
+.Lfmt_div_loop:
+    udiv    x4, x0, x3
+    msub    x2, x4, x3, x0
+    add     w2, w2, #'0'
+    sub     x1, x1, #1
+    strb    w2, [x1]
+    mov     x0, x4
+    cbnz    x0, .Lfmt_div_loop
+
+.Lfmt_prefix:
+    sub     x1, x1, #9
+    adrp    x3, msg_err_prefix
+    add     x3, x3, :lo12:msg_err_prefix
+    mov     x4, #0
+1:
+    ldrb    w5, [x3, x4]
+    strb    w5, [x1, x4]
+    add     x4, x4, #1
+    cmp     x4, #9
+    b.ne    1b
+
+    add     x2, sp, #32
+    sub     x2, x2, x1
+    mov     x0, #1
+    bl      write_all
+
+    mov     x0, #1
+    mov     x8, #93
+    svc     #0
+
+write_all:
+.Lwrite_loop:
+    cbz     x2, .Lwrite_done
+    mov     x8, #64
+    svc     #0
+    cmp     x0, #0
+    b.le    .Lwrite_done
+    add     x1, x1, x0
+    sub     x2, x2, x0
+    mov     x0, #1
+    b       .Lwrite_loop
+.Lwrite_done:
+    ret
+
+skip_ws:
+    cmp     x21, x20
+    b.hs    1f
+    ldrb    w0, [x19, x21]
+    cmp     w0, #' '
+    b.eq    2f
+    cmp     w0, #'\n'
+    b.eq    2f
+    cmp     w0, #'\r'
+    b.eq    2f
+    cmp     w0, #'\t'
+    b.ne    1f
+2:
+    add     x21, x21, #1
+    b       skip_ws
+1:
+    ret
+
+parse_value:
+    stp     x29, x30, [sp, #-16]!
+    mov     x29, sp
+
+    cmp     x21, x20
+    b.hs    error_at_len
+
+    ldrb    w0, [x19, x21]
+    cmp     w0, #'"'
+    b.eq    .Lval_str
+    cmp     w0, #'['
+    b.eq    .Lval_arr
+    cmp     w0, #'{'
+    b.eq    .Lval_obj
+    cmp     w0, #'t'
+    b.eq    .Lval_true
+    cmp     w0, #'f'
+    b.eq    .Lval_false
+    cmp     w0, #'n'
+    b.eq    .Lval_null
+    cmp     w0, #'-'
+    b.eq    .Lval_num
+    sub     w1, w0, #'0'
+    cmp     w1, #9
+    b.ls    .Lval_num
+
+    b       error_at_pos
+
+.Lval_str:
+    bl      parse_string
+    b       .Lval_out
+.Lval_arr:
+    bl      parse_array
+    b       .Lval_out
+.Lval_obj:
+    bl      parse_object
+    b       .Lval_out
+.Lval_true:
+    bl      parse_true
+    b       .Lval_out
+.Lval_false:
+    bl      parse_false
+    b       .Lval_out
+.Lval_null:
+    bl      parse_null
+    b       .Lval_out
+.Lval_num:
+    bl      parse_number
+.Lval_out:
+    ldp     x29, x30, [sp], #16
+    ret
+
+parse_array:
+    stp     x29, x30, [sp, #-16]!
+    mov     x29, sp
+
+    add     x21, x21, #1
+    bl      skip_ws
+    cmp     x21, x20
+    b.hs    error_at_len
+
+    ldrb    w0, [x19, x21]
+    cmp     w0, #']'
+    b.eq    .Larr_close
+
+.Larr_loop:
+    bl      parse_value
+    bl      skip_ws
+    cmp     x21, x20
+    b.hs    error_at_len
+
+    ldrb    w0, [x19, x21]
+    cmp     w0, #']'
+    b.eq    .Larr_close
+    cmp     w0, #','
+    b.ne    error_at_pos
+
+    add     x21, x21, #1
+    bl      skip_ws
+    cmp     x21, x20
+    b.hs    error_at_len
+
+    ldrb    w0, [x19, x21]
+    cmp     w0, #']'
+    b.eq    error_at_pos
+
+    b       .Larr_loop
+
+.Larr_close:
+    add     x21, x21, #1
+    ldp     x29, x30, [sp], #16
+    ret
+
+parse_object:
+    stp     x29, x30, [sp, #-16]!
+    mov     x29, sp
+
+    add     x21, x21, #1
+    bl      skip_ws
+    cmp     x21, x20
+    b.hs    error_at_len
+
+    ldrb    w0, [x19, x21]
+    cmp     w0, #'}'
+    b.eq    .Lobj_close
+
+.Lobj_loop:
+    ldrb    w0, [x19, x21]
+    cmp     w0, #'"'
+    b.ne    error_at_pos
+
+    bl      parse_string
+    bl      skip_ws
+    cmp     x21, x20
+    b.hs    error_at_len
+
+    ldrb    w0, [x19, x21]
+    cmp     w0, #':'
+    b.ne    error_at_pos
+    add     x21, x21, #1
+
+    bl      skip_ws
+    cmp     x21, x20
+    b.hs    error_at_len
+
+    bl      parse_value
+    bl      skip_ws
+    cmp     x21, x20
+    b.hs    error_at_len
+
+    ldrb    w0, [x19, x21]
+    cmp     w0, #'}'
+    b.eq    .Lobj_close
+    cmp     w0, #','
+    b.ne    error_at_pos
+
+    add     x21, x21, #1
+    bl      skip_ws
+    cmp     x21, x20
+    b.hs    error_at_len
+
+    ldrb    w0, [x19, x21]
+    cmp     w0, #'}'
+    b.eq    error_at_pos
+
+    b       .Lobj_loop
+
+.Lobj_close:
+    add     x21, x21, #1
+    ldp     x29, x30, [sp], #16
+    ret
+
+parse_string:
+    add     x21, x21, #1
+.Lstr_loop:
+    cmp     x21, x20
+    b.hs    error_at_len
+    ldrb    w0, [x19, x21]
+    cmp     w0, #'"'
+    b.eq    .Lstr_done
+    cmp     w0, #'\\'
+    b.eq    .Lstr_escape
+    cmp     w0, #0x20
+    b.lo    error_at_pos
+    add     x21, x21, #1
+    b       .Lstr_loop
+
+.Lstr_escape:
+    add     x21, x21, #1
+    cmp     x21, x20
+    b.hs    error_at_len
+    ldrb    w0, [x19, x21]
+    cmp     w0, #'"'
+    b.eq    1f
+    cmp     w0, #'\\'
+    b.eq    1f
+    cmp     w0, #'/'
+    b.eq    1f
+    cmp     w0, #'b'
+    b.eq    1f
+    cmp     w0, #'f'
+    b.eq    1f
+    cmp     w0, #'n'
+    b.eq    1f
+    cmp     w0, #'r'
+    b.eq    1f
+    cmp     w0, #'t'
+    b.eq    1f
+    cmp     w0, #'u'
+    b.eq    .Lstr_unicode
+    b       error_at_pos
+1:
+    add     x21, x21, #1
+    b       .Lstr_loop
+
+.Lstr_unicode:
+    mov     w2, #4
+.Lstr_u_loop:
+    add     x21, x21, #1
+    cmp     x21, x20
+    b.hs    error_at_len
+    ldrb    w0, [x19, x21]
+    sub     w1, w0, #'0'
+    cmp     w1, #9
+    b.ls    2f
+    orr     w1, w0, #0x20
+    sub     w1, w1, #'a'
+    cmp     w1, #5
+    b.hi    error_at_pos
+2:
+    subs    w2, w2, #1
+    b.ne    .Lstr_u_loop
+    add     x21, x21, #1
+    b       .Lstr_loop
+
+.Lstr_done:
+    add     x21, x21, #1
+    ret
+
+parse_number:
+    ldrb    w0, [x19, x21]
+    cmp     w0, #'-'
+    b.ne    .Lnum_after_minus
+    add     x21, x21, #1
+    cmp     x21, x20
+    b.hs    error_at_len
+    ldrb    w0, [x19, x21]
+    sub     w1, w0, #'0'
+    cmp     w1, #9
+    b.hi    error_at_pos
+
+.Lnum_after_minus:
+    cmp     w0, #'0'
+    b.ne    .Lnum_nonzero_int
+
+    add     x21, x21, #1
+    cmp     x21, x20
+    b.hs    .Lnum_frac
+    ldrb    w0, [x19, x21]
+    sub     w1, w0, #'0'
+    cmp     w1, #9
+    b.ls    error_at_pos
+    b       .Lnum_frac
+
+.Lnum_nonzero_int:
+    add     x21, x21, #1
+.Lnum_int_loop:
+    cmp     x21, x20
+    b.hs    .Lnum_frac
+    ldrb    w0, [x19, x21]
+    sub     w1, w0, #'0'
+    cmp     w1, #9
+    b.hi    .Lnum_frac
+    add     x21, x21, #1
+    b       .Lnum_int_loop
+
+.Lnum_frac:
+    cmp     x21, x20
+    b.hs    .Lnum_done
+    ldrb    w0, [x19, x21]
+    cmp     w0, #'.'
+    b.ne    .Lnum_exp
+
+    add     x21, x21, #1
+    cmp     x21, x20
+    b.hs    error_at_len
+    ldrb    w0, [x19, x21]
+    sub     w1, w0, #'0'
+    cmp     w1, #9
+    b.hi    error_at_pos
+
+    add     x21, x21, #1
+.Lnum_frac_loop:
+    cmp     x21, x20
+    b.hs    .Lnum_done
+    ldrb    w0, [x19, x21]
+    sub     w1, w0, #'0'
+    cmp     w1, #9
+    b.hi    .Lnum_exp
+    add     x21, x21, #1
+    b       .Lnum_frac_loop
+
+.Lnum_exp:
+    cmp     x21, x20
+    b.hs    .Lnum_done
+    ldrb    w0, [x19, x21]
+    cmp     w0, #'e'
+    b.eq    1f
+    cmp     w0, #'E'
+    b.ne    .Lnum_done
+1:
+    add     x21, x21, #1
+    cmp     x21, x20
+    b.hs    error_at_len
+    ldrb    w0, [x19, x21]
+    cmp     w0, #'+'
+    b.eq    2f
+    cmp     w0, #'-'
+    b.ne    3f
+2:
+    add     x21, x21, #1
+    cmp     x21, x20
+    b.hs    error_at_len
+    ldrb    w0, [x19, x21]
+3:
+    sub     w1, w0, #'0'
+    cmp     w1, #9
+    b.hi    error_at_pos
+
+    add     x21, x21, #1
+.Lnum_exp_loop:
+    cmp     x21, x20
+    b.hs    .Lnum_done
+    ldrb    w0, [x19, x21]
+    sub     w1, w0, #'0'
+    cmp     w1, #9
+    b.hi    .Lnum_done
+    add     x21, x21, #1
+    b       .Lnum_exp_loop
+
+.Lnum_done:
+    ret
+
+parse_true:
+    add     x21, x21, #1
+    cmp     x21, x20
+    b.hs    error_at_len
+    ldrb    w0, [x19, x21]
+    cmp     w0, #'r'
+    b.ne    error_at_pos
+
+    add     x21, x21, #1
+    cmp     x21, x20
+    b.hs    error_at_len
+    ldrb    w0, [x19, x21]
+    cmp     w0, #'u'
+    b.ne    error_at_pos
+
+    add     x21, x21, #1
+    cmp     x21, x20
+    b.hs    error_at_len
+    ldrb    w0, [x19, x21]
+    cmp     w0, #'e'
+    b.ne    error_at_pos
+
+    add     x21, x21, #1
+    ret
+
+parse_false:
+    add     x21, x21, #1
+    cmp     x21, x20
+    b.hs    error_at_len
+    ldrb    w0, [x19, x21]
+    cmp     w0, #'a'
+    b.ne    error_at_pos
+
+    add     x21, x21, #1
+    cmp     x21, x20
+    b.hs    error_at_len
+    ldrb    w0, [x19, x21]
+    cmp     w0, #'l'
+    b.ne    error_at_pos
+
+    add     x21, x21, #1
+    cmp     x21, x20
+    b.hs    error_at_len
+    ldrb    w0, [x19, x21]
+    cmp     w0, #'s'
+    b.ne    error_at_pos
+
+    add     x21, x21, #1
+    cmp     x21, x20
+    b.hs    error_at_len
+    ldrb    w0, [x19, x21]
+    cmp     w0, #'e'
+    b.ne    error_at_pos
+
+    add     x21, x21, #1
+    ret
+
+parse_null:
+    add     x21, x21, #1
+    cmp     x21, x20
+    b.hs    error_at_len
+    ldrb    w0, [x19, x21]
+    cmp     w0, #'u'
+    b.ne    error_at_pos
+
+    add     x21, x21, #1
+    cmp     x21, x20
+    b.hs    error_at_len
+    ldrb    w0, [x19, x21]
+    cmp     w0, #'l'
+    b.ne    error_at_pos
+
+    add     x21, x21, #1
+    cmp     x21, x20
+    b.hs    error_at_len
+    ldrb    w0, [x19, x21]
+    cmp     w0, #'l'
+    b.ne    error_at_pos
+
+    add     x21, x21, #1
+    ret
+

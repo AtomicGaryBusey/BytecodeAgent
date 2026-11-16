@@ -1,0 +1,239 @@
+.globl _start
+
+.text
+_start:
+    # Read standard input until EOF (read returns 0)
+    xor ebp, ebp
+.Lread_loop:
+    mov eax, 0
+    mov edi, 0
+    lea rsi, [rip + stdin_buf]
+    add rsi, rbp
+    mov edx, 65536
+    sub edx, ebp
+    jz .Lread_done
+    syscall
+    test rax, rax
+    jle .Lread_done
+    add ebp, eax
+    cmp ebp, 65536
+    jb .Lread_loop
+.Lread_done:
+
+    # Split standard input at the first '!' (ASCII 33 / 0x21)
+    lea rsi, [rip + stdin_buf]
+    xor ecx, ecx
+.Lfind_bang:
+    cmp ecx, ebp
+    jae .Lno_bang
+    cmp byte ptr [rsi + rcx], 33
+    je .Lfound_bang
+    inc ecx
+    jmp .Lfind_bang
+
+.Lfound_bang:
+    mov r12d, ecx
+    lea r15d, [ecx + 1]
+    mov r13d, ebp
+    jmp .Lsplit_done
+
+.Lno_bang:
+    mov r12d, ebp
+    mov r15d, ebp
+    mov r13d, ebp
+.Lsplit_done:
+
+    # Validate brackets in the program (indices 0 .. r12d - 1)
+    lea rsi, [rip + stdin_buf]
+    lea rdi, [rip + bracket_stack]
+    lea rbp, [rip + jump_table]
+    xor ecx, ecx
+    xor r8d, r8d
+
+.Lval_loop:
+    cmp ecx, r12d
+    jae .Lval_done
+
+    mov al, byte ptr [rsi + rcx]
+    cmp al, 91
+    je .Lval_open
+    cmp al, 93
+    je .Lval_close
+    inc ecx
+    jmp .Lval_loop
+
+.Lval_open:
+    cmp r8d, 16384
+    jae .Lval_error
+    mov dword ptr [rdi + r8*4], ecx
+    inc r8d
+    inc ecx
+    jmp .Lval_loop
+
+.Lval_close:
+    test r8d, r8d
+    jz .Lval_error
+    dec r8d
+    mov edx, dword ptr [rdi + r8*4]
+    lea eax, [ecx + 1]
+    mov dword ptr [rbp + rdx*4], eax
+    lea eax, [edx + 1]
+    mov dword ptr [rbp + rcx*4], eax
+    inc ecx
+    jmp .Lval_loop
+
+.Lval_done:
+    test r8d, r8d
+    jnz .Lval_error
+
+    # Initialize 256-entry dispatch table
+    cld
+    lea rdi, [rip + dispatch_table]
+    lea rax, [rip + .Lcmd_nop]
+    mov ecx, 256
+    rep stosq
+
+    lea rax, [rip + .Lcmd_plus]
+    mov qword ptr [rip + dispatch_table + 344], rax
+    lea rax, [rip + .Lcmd_minus]
+    mov qword ptr [rip + dispatch_table + 360], rax
+    lea rax, [rip + .Lcmd_right]
+    mov qword ptr [rip + dispatch_table + 496], rax
+    lea rax, [rip + .Lcmd_left]
+    mov qword ptr [rip + dispatch_table + 480], rax
+    lea rax, [rip + .Lcmd_open]
+    mov qword ptr [rip + dispatch_table + 728], rax
+    lea rax, [rip + .Lcmd_close]
+    mov qword ptr [rip + dispatch_table + 744], rax
+    lea rax, [rip + .Lcmd_dot]
+    mov qword ptr [rip + dispatch_table + 368], rax
+    lea rax, [rip + .Lcmd_comma]
+    mov qword ptr [rip + dispatch_table + 352], rax
+
+    # Set up registers for execution
+    lea rsi, [rip + stdin_buf]
+    lea r8, [rip + jump_table]
+    lea r9, [rip + out_buf]
+    lea r10, [rip + dispatch_table]
+    lea rdi, [rip + tape]
+    xor ebx, ebx
+    xor r14d, r14d
+
+.Lloop_start:
+    cmp ebx, r12d
+    jae .Lexec_done
+    movzx eax, byte ptr [rsi + rbx]
+    jmp qword ptr [r10 + rax*8]
+
+.Lcmd_right:
+    inc rdi
+    inc ebx
+    jmp .Lloop_start
+
+.Lcmd_left:
+    dec rdi
+    inc ebx
+    jmp .Lloop_start
+
+.Lcmd_plus:
+    inc byte ptr [rdi]
+    inc ebx
+    jmp .Lloop_start
+
+.Lcmd_minus:
+    dec byte ptr [rdi]
+    inc ebx
+    jmp .Lloop_start
+
+.Lcmd_dot:
+    mov al, byte ptr [rdi]
+    mov byte ptr [r9 + r14], al
+    inc r14d
+    inc ebx
+    jmp .Lloop_start
+
+.Lcmd_comma:
+    cmp r15d, r13d
+    jae 1f
+    mov al, byte ptr [rsi + r15]
+    inc r15d
+    mov byte ptr [rdi], al
+    inc ebx
+    jmp .Lloop_start
+1:
+    mov byte ptr [rdi], 0
+    inc ebx
+    jmp .Lloop_start
+
+.Lcmd_open:
+    cmp byte ptr [rdi], 0
+    jz 1f
+    inc ebx
+    jmp .Lloop_start
+1:
+    mov ebx, dword ptr [r8 + rbx*4]
+    jmp .Lloop_start
+
+.Lcmd_close:
+    cmp byte ptr [rdi], 0
+    jnz 1f
+    inc ebx
+    jmp .Lloop_start
+1:
+    mov ebx, dword ptr [r8 + rbx*4]
+    jmp .Lloop_start
+
+.Lcmd_nop:
+    inc ebx
+    jmp .Lloop_start
+
+.Lexec_done:
+    # Flush output buffer to stdout
+    test r14d, r14d
+    jz .Lexit_ok
+
+    xor ebp, ebp
+.Lwrite_loop:
+    mov eax, 1
+    mov edi, 1
+    lea rsi, [rip + out_buf]
+    add rsi, rbp
+    mov edx, r14d
+    sub edx, ebp
+    syscall
+    test rax, rax
+    jle .Lexit_ok
+    add ebp, eax
+    cmp ebp, r14d
+    jb .Lwrite_loop
+
+.Lexit_ok:
+    mov eax, 60
+    xor edi, edi
+    syscall
+
+.Lval_error:
+    mov eax, 60
+    mov edi, 1
+    syscall
+
+.section .bss
+.p2align 4
+stdin_buf:
+    .zero 65536
+.p2align 4
+tape:
+    .zero 30000
+.p2align 4
+bracket_stack:
+    .zero 65536
+.p2align 4
+jump_table:
+    .zero 262144
+.p2align 4
+out_buf:
+    .zero 131072
+.p2align 4
+dispatch_table:
+    .zero 2048
+

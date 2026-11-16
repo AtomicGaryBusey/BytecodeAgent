@@ -36,8 +36,18 @@ cli_version; attempts from 15:34 on are 2.1.323 (Opus 4.7's last 2 hex-program c
 
 ## In progress
 
-- **Muse tier comparison resumed 07:1x** (`eval/runs/muse-tier-resume-20261113.sh`) after the search-proposal audit
-  (eval/audits/muse-1.4.18-search-20261113: not reproduced in 3 replays). Fails closed if it recurs.
+- **Grok 4.7 `misleading_hint` + `terse`, adversarial battery** (user 2026-11-16: run now on SuperGrok; started 08:4x, `eval/runs/grok-4.7-adv-variants-20261116.sh`, grok 1.0.41, 120 cells, max 320 calls). Baseline to pair: grok-4.7-20260928-231546 adversarial 56/60. When done: paired deltas and refusals beside the Claude rows in live-model-eval-adversarial.md. MAI-Code via Foundry: cost estimate given, awaiting the user.
+
+- **Muse Ember 1.0** resumed 2026-11-16 08:3x (`eval/runs/muse-resume-20261113.sh`) under the user's rule of 11-16: a `tool.muse.search` proposal after the model step stops the call and the text before it is scored (adapter + tests; the 11-15 attempt recorded by eval/replay_voided.py as a failure). When done: hex, apps, hex programs follow in the chain; then remove from IN_PROGRESS, regenerate, report in the agent-harness report.
+- **Mistral Large 4 apps + hex programs** resumed 2026-11-16 08:3x on the user's portal figure ($20.54; real rate 0.56) and go-ahead; caps 37 / 40.5 booked (real worst case ~$25.7 of $30).
+
+- **Mistral Large 4, tool-free, via Mistral's API** (user, 2026-11-15: the $30 monthly API allowance, ~$27 left;
+  Ring-0-Judge no longer uses it). `eval/runs/mistral-large-4-20261115.sh`: functions (cap $12), then hex functions
+  (cap $13.50 cumulative). Adapter `mistral:` (thinking chunks separated from the answer; default cap $0). Medium 3.5
+  is NOT run (deprecated 2026-10-31 per its model card, and ~$45-55). Functions 177/224 and hex functions 8/16 (16) done.
+  Portal 11-15 13:08: $10.48 of $30 used, so real cost = 0.54 x booked. **Apps and hex programs started 13:3x**
+  (`eval/runs/mistral-large-4-apps-20261115.sh`, booked caps 28 / 31). When done: take out of IN_PROGRESS, add
+  `mistral_` to the generators' subject prefixes, regenerate, report beside its Vibe row.
 - **Muse round 2** (user, 2026-11-13, after subscribing to Muse Code Power Usage; contributor mode is fine for
   benchmarks): `eval/runs/muse-models-20261113.sh` runs muse-wonder-full-1.0, muse-wonder-1.0 and muse-ember-1.0 in the
   contributor tier, full set each (smokes 5/5). In parallel `eval/runs/muse-tier-20261113.sh` runs paid muse-spark-1.3
@@ -77,8 +87,6 @@ cli_version; attempts from 15:34 on are 2.1.323 (Opus 4.7's last 2 hex-program c
    `eval/model_names.IN_PROGRESS`, review its first-attempt failures, then `eval/xv_tables.py`, `app_tables.py`,
    `hex_tables.py` > `eval/out/`, `eval/update_report_tables.py` for the cross-vendor, apps, hex reports and README,
    `eval/code_quality.py`, `eval/update_analytics_report.py`, `eval/dashboard.py`; add each model's notes by hand.
-3. **Gemini 3.8 Flash High**: its last function cell (`stats_f.ir.aarch64`) and hex functions (16 cells), when the
-   Google AI Pro quota allows (after Argon's window); hex programs at >= 12/16.
 4. **(Grok half DONE 2026-11-13 10:08, grok 1.0.41: first attempt s1 -> s2 on the same 54 cells, Grok 4.7 build-fast 46 -> 52 (1/7 disagree, p 0.07), Grok 4.7 48 -> 44 (8/4, p 0.39), Grok 4.6 50 -> 47 (5/2, p 0.45); within four 54, 52, 54. Reported 2026-11-14 in live-model-eval-effort.md (both samples ran on grok 1.0.41, same effort). Claude half HELD, user stopped Claude-plan runs) Second long-battery sample, non-Codex members of the top seven**: Opus 5.5, Fable 5.1 (Claude plan); Grok 4.7
    build-fast, Grok 4.7, Grok 4.6 (SuperGrok). Whole battery, 54 cells each, ~270 calls.
 5. **(HELD: Claude plan; needs the user's go-ahead since 2026-11-13) `declared` hex variants, two more samples for Opus 5.5** (~65 calls, Claude plan).
@@ -88,16 +96,9 @@ cli_version; attempts from 15:34 on are 2.1.323 (Opus 4.7's last 2 hex-program c
 
 ## Needs the user (the loop does not start these)
 
-- **Argon (Gemini 4 Argon High) STOPPED 2026-11-13 16:0x**: after Google's quota reset the run resumed on agy 1.5.7
-  and the served backend changed: `gemini-4-argon-high` is now served as `gemini-4-argon-trial` (all 118 earlier
-  answered attempts, agy 1.5.3: `gemini-4-argon-c`). 21 of the 24 new attempts were Gemini safety-filter blocks
-  ("This request was blocked by Gemini's filters ...", returned as answer text, scored `format`); 0 of 180 before.
-  The 9 cells touched on 1.5.7 were superseded (moved to superseded/, not scored). The loop
-  (`agy-argon-20261107-142027.loop.sh`) is stopped. Run has 120/224 cells on 1.5.3. Decide: is the "-trial" route the
-  same model (ask Google / check the agy catalog), and should the run continue on it, restart whole, or end at 120?
-  Also: the agy adapter should score a Gemini filter block as a refusal, not `format` (adapter fix, small).
+- **Muse Ember stopped again at 176/224 (2026-11-16 08:53): Muse proposed `tool.muse.read_file`** (`max_byte.ir.aarch64` attempt 1; same shape as the search cases: the model step completed with no text, then Muse proposed a built-in tool; stopped at the proposal, nothing executed). The 11-16 rule names only `tool.muse.search`. Ask: extend it to any `tool.muse.*` proposal after the model step (recommended), or keep other kinds fatal.
 
-- **Sonnet 4.6 remainder, STOPPED by the user 2026-11-13 03:5x** ("It's using too much usage. I'm about to run out"):
+- **HOLD until Thursday evening 2026-11-19 (user, 11-16), with Opus 4.6/4.5 below. Sonnet 4.6 remainder, STOPPED by the user 2026-11-13 03:5x** ("It's using too much usage. I'm about to run out"):
   apps 80/96 (16 cells left; in-flight attempts were killed unrecorded, so they re-run from their last recorded
   attempt), hex programs (16, gate met) not started. Functions are complete (224/224). Resume only when the user
   says so: `eval/runs/claude-sonnet-4-6-finish-20261113.sh`. No Claude-plan run starts without the user's go-ahead.
@@ -106,16 +107,24 @@ cli_version; attempts from 15:34 on are 2.1.323 (Opus 4.7's last 2 hex-program c
   calls per model, about 12-15 h each): paused by the user on 2026-11-13, after Sonnet 4.6. Do not start until the
   user asks. When approved, run them with a Sonnet-style finisher (one model, 403-aware), not the old six-model chain.
 
-- **Copilot, December**: `gpt-5.3-codex` (the user enables its policy in GitHub's Copilot settings first) and the
+- **Copilot, December**: `gpt-5.3-codex` (no policy step: individual plans have no per-model switch since 2026-02; the SDK still says "policy not set"; one test call confirms it) and the
   rest of `kimi-k3`'s app battery need the credits that reset on 2026-12-01; November's are being spent on kimi-k3.
-- **Qwen3.8-27B on the user's DGX cluster**: needs the endpoint, serving stack, model id, quantisation, sampling.
-- **Pay-per-token**: MAI-Thinking-1 + DeepSeek-V4-Pro apps/hex (Foundry, ~$40-65); GLM-5.3 + Qwen 3.8 Max
+- **Qwen3.8-27B on the user's DGX cluster** (HOLD: ask again Saturday 2026-11-21, user 11-16): needs the endpoint, serving stack, model id, quantisation, sampling.
+- **Pay-per-token** (backlogged by the user 2026-11-16; do not raise unless asked): MAI-Thinking-1 + DeepSeek-V4-Pro apps/hex (Foundry, ~$40-65); GLM-5.3 + Qwen 3.8 Max
   apps/hex (Fireworks, ~$120-190); further Foundry models; Mistral Studio API.
-- **Codex plan**: Astra / Sol second long sample, Astra `declared_annotated` (the user names Codex models).
-- **`misleading_hint` / `terse` on non-Claude models**: the user chooses the set.
-- **Housekeeping**: Docker images (~72 GB), Forgejo GC.
+- **Codex plan** (HOLD: ask again Saturday 2026-11-21, user 11-16): Astra / Sol second long sample, Astra `declared_annotated` (the user names Codex models).
+- **Housekeeping**: Docker images (Forgejo GC dropped by the user 11-16: a private backup repo).
 
 ## Done (this loop)
+
+- Muse tier comparison, 2026-11-16 02:49: paid Spark 1.3 functions 215/224 first (224) vs contributor 222 (9/2, p 0.065; isqrt.ir.aarch64's 11-13 search proposal scored under the 11-16 rule); apps 85/96 (94) vs 90 (96) (7/2, p 0.18). Not significant; confounded with Muse Code 1.4.15 vs 1.4.18/1.4.20. Pair in eval/effort_tables.py; prose in the effort and agent-harness reports.
+
+- Gemini 3.8 Flash High full set, 2026-11-15 20:34: functions 210/224 first (224 within four; was 211 before the xxh64 cut was scored), hex functions 9/16 (16), apps 88/96 (96), hex programs 8/16 (12). Rules (user, 11-15): a `manage_task` call and an output-limit cut each score the text written so far, no do-over; 10 tool-call and 9 cut attempts, the first live cut verified under the corrected check. ADJUSTMENTS.md in the hex-programs, apps and vendors-all runs; methodology notes; set-aside logs renamed `set-aside.*.jsonl` (the report globs had read them).
+- Muse Wonder 1.0 full set, 2026-11-15 21:10: functions 222/224 (224), hex functions 15/16 (16), apps 95/96 (96), hex programs 10/16 (16); in the agent-harness report.
+
+- Gemini 4 Hydrogen High full set, 2026-11-15: functions 224/224 first attempt (first perfect row), hex functions 15/16 (16), apps 93/96 (96), hex programs 10/16 (15; 5 cells filter-blocked on the first attempt, bf x86-64 on all four). Gemini 3.8 Flash High functions completed (211/224, 224 within four) and hex functions 9/16 (13). In the tables; notes written.
+
+- Gemini 4 Argon High complete 2026-11-14 21:45, all on agy 1.5.7 (pinned): 191/224 first, 205 within four; 29 cells filter-blocked on the first attempt (28 long), 19 on all four; 195 answered first time, 191 passed. Earlier-serving cells (122) superseded and re-run (user: option 1). In the tables; notes in cross-vendor, methodology, README, TODO. Follow-up eligible: Gemini 3.8 Flash High's last cell + hex (item 3) can now run (Argon no longer holds the quota).
 
 - Kimi K3.1 Pro Highspeed complete 2026-11-14 18:43 (apps 86/96 first, 96 within four; hex programs 4/16 first, 16 within four; by-hand check of each failure kind: all the model's own). Removed from IN_PROGRESS, tables regenerated, notes added.
 

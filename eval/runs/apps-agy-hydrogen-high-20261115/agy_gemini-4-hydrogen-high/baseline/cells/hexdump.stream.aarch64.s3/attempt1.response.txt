@@ -1,0 +1,221 @@
+.equ SYS_read, 63
+.equ SYS_write, 64
+.equ SYS_exit, 93
+.equ INBUF_SIZE, 4096
+.equ OUTBUF_SIZE, 8192
+.equ OUTBUF_FLUSH_THRESHOLD, 8064
+
+.globl _start
+
+.section .rodata
+hex_digits:
+    .ascii "0123456789abcdef"
+
+.bss
+    .balign 16
+inbuf:
+    .space INBUF_SIZE
+    .balign 16
+outbuf:
+    .space OUTBUF_SIZE
+
+.text
+_start:
+    adrp x19, inbuf
+    add x19, x19, :lo12:inbuf
+    adrp x20, outbuf
+    add x20, x20, :lo12:outbuf
+    mov x21, #0
+    mov x22, #0
+    mov x23, #0
+    mov x24, #0
+    adrp x25, hex_digits
+    add x25, x25, :lo12:hex_digits
+
+main_loop:
+read_loop:
+    cmp x23, #16
+    b.hs process_buf
+    cbnz x24, process_buf
+
+    mov x0, #0
+    add x1, x19, x23
+    mov x2, #INBUF_SIZE
+    sub x2, x2, x23
+    mov x8, #SYS_read
+    svc #0
+    cmp x0, #0
+    b.le set_eof
+    add x23, x23, x0
+    b read_loop
+
+set_eof:
+    mov x24, #1
+
+process_buf:
+    mov x26, x19
+    mov x27, x23
+
+full_rows_loop:
+    cmp x27, #16
+    b.lo after_full_rows
+    mov x0, x26
+    mov x1, #16
+    mov w2, w22
+    bl emit_row
+    add x26, x26, #16
+    sub x27, x27, #16
+    add x22, x22, #16
+    b full_rows_loop
+
+after_full_rows:
+    cbz x24, shift_rem
+
+    cbz x27, finish
+    mov x0, x26
+    mov x1, x27
+    mov w2, w22
+    bl emit_row
+    add x22, x22, x27
+    b finish
+
+shift_rem:
+    cbz x27, shift_done
+    cmp x26, x19
+    b.eq shift_done
+    mov x3, #0
+copy_loop:
+    ldrb w4, [x26, x3]
+    strb w4, [x19, x3]
+    add x3, x3, #1
+    cmp x3, x27
+    b.lt copy_loop
+shift_done:
+    mov x23, x27
+    b main_loop
+
+finish:
+    mov x12, #OUTBUF_FLUSH_THRESHOLD
+    cmp x21, x12
+    b.ls 1f
+    bl flush_out
+1:
+    add x12, x20, x21
+    mov w0, w22
+    mov w2, #28
+2:
+    lsr w3, w0, w2
+    and w3, w3, #0xf
+    ldrb w4, [x25, x3]
+    strb w4, [x12], #1
+    subs w2, w2, #4
+    b.ge 2b
+
+    mov w3, #0x0a
+    strb w3, [x12], #1
+    sub x21, x12, x20
+    bl flush_out
+
+    mov x0, #0
+    mov x8, #SYS_exit
+    svc #0
+
+// emit_row(x0 = ptr, x1 = n (1..16), w2 = offset)
+emit_row:
+    stp x29, x30, [sp, #-16]!
+    mov x9, x0
+    mov x10, x1
+    mov w11, w2
+
+    mov x12, #OUTBUF_FLUSH_THRESHOLD
+    cmp x21, x12
+    b.ls 1f
+    bl flush_out
+1:
+    add x12, x20, x21
+
+    mov w0, w11
+    mov w2, #28
+2:
+    lsr w3, w0, w2
+    and w3, w3, #0xf
+    ldrb w4, [x25, x3]
+    strb w4, [x12], #1
+    subs w2, w2, #4
+    b.ge 2b
+
+    mov w3, #0x20
+    strb w3, [x12], #1
+    strb w3, [x12], #1
+
+    mov x13, #0
+3:
+    cmp x13, x10
+    b.hs 4f
+    ldrb w4, [x9, x13]
+    lsr w5, w4, #4
+    and w6, w4, #0xf
+    ldrb w5, [x25, x5]
+    ldrb w6, [x25, x6]
+    strb w5, [x12], #1
+    strb w6, [x12], #1
+    strb w3, [x12], #1
+    b 5f
+4:
+    strb w3, [x12], #1
+    strb w3, [x12], #1
+    strb w3, [x12], #1
+5:
+    cmp x13, #7
+    b.ne 6f
+    strb w3, [x12], #1
+6:
+    add x13, x13, #1
+    cmp x13, #16
+    b.lt 3b
+
+    strb w3, [x12], #1
+    mov w4, #0x7c
+    strb w4, [x12], #1
+
+    mov x13, #0
+7:
+    ldrb w5, [x9, x13]
+    cmp w5, #0x20
+    b.lo 8f
+    cmp w5, #0x7e
+    b.ls 9f
+8:
+    mov w5, #0x2e
+9:
+    strb w5, [x12], #1
+    add x13, x13, #1
+    cmp x13, x10
+    b.lt 7b
+
+    strb w4, [x12], #1
+    mov w5, #0x0a
+    strb w5, [x12], #1
+
+    sub x21, x12, x20
+    ldp x29, x30, [sp], #16
+    ret
+
+flush_out:
+    cbz x21, 2f
+    mov x3, x20
+    mov x4, x21
+1:
+    mov x0, #1
+    mov x1, x3
+    mov x2, x4
+    mov x8, #SYS_write
+    svc #0
+    cmp x0, #0
+    b.le 2f
+    add x3, x3, x0
+    subs x4, x4, x0
+    b.gt 1b
+2:
+    mov x21, #0
+    ret

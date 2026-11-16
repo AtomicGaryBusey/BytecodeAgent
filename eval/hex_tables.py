@@ -27,7 +27,7 @@ NAMES.update(NEW_NAMES)
 
 def label_of(r: dict) -> str:
     subj = r.get("subject") or ""
-    if subj.startswith(("codex_", "kimi_", "agy_", "grok_", "copilot_", "foundry_", "fireworks_", "cerebras_", "apple_")):
+    if subj.startswith(("codex_", "kimi_", "agy_", "grok_", "copilot_", "foundry_", "fireworks_", "cerebras_", "mistral_", "apple_")):
         return subj.replace("_", ":", 1).replace("kimi-code_", "kimi-code/")
     return subj if subj.startswith("claude-") else (r.get("model") or subj)
 

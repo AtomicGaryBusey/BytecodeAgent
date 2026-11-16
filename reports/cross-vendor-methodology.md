@@ -30,7 +30,7 @@ the user's Mac; see [Direct API routes](#direct-api-routes-foundry-fireworks) an
 | Moonshot / Kimi Code | **Kimi Allegretto** | none known | a 5-hour window (~125-160 calls), a 7-day window on Code usage (reached 100% on 2026-09-29, 10-04 and 10-11) and monthly credits; the 7-day window is the binding one (see below) |
 | Google / Antigravity | **Google AI Pro** since 2026-11-06 (**AI Plus 2 TB** before; every reported Antigravity run used Plus) | none known | on Plus, ~75 calls per week, per account (not per model); on Pro, a Gemini 4 Argon High run stopped on quota at 181 calls |
 | Microsoft / Azure AI Foundry API | **pay-as-you-go** (Global Standard, serverless) | Azure's default content filter (`Microsoft.MAIDefault`, `Microsoft.DefaultV2`) | a per-model spend cap in the harness ($25; raised to $28 for MAI-Thinking-1); token-rate 429s at 2 parallel jobs for DeepSeek |
-| xAI / Grok Build | **SuperGrok** | none known | weekly included usage ~70% at most (app calls cost ~0.4% each); not exceeded, no paid credits used |
+| xAI / Grok Build | **SuperGrok** (Grok Ultimate from 2026-11-14; every Grok row so far ran on SuperGrok) | none known | weekly included usage ~70% at most (app calls cost ~0.4% each); not exceeded, no paid credits used |
 | GitHub / Copilot CLI | **GitHub Copilot Pro** (1,500 AI credits a month, billed per token) | none known | the September credits, spent 2026-09-30 (overage off; resumed after the monthly reset) |
 | Fireworks.ai API | **pay-per-token**, prepaid ($51, plus $50 on 2026-11-10) | none known | a per-model spend cap in the harness; a whole-account stop on the ledger |
 | Cerebras Inference API | **pay-per-token**, prepaid ($60 in all, 2026-11-11) | none known | a per-model spend cap; per-minute token limits (HTTP 429) on Qwen 3.8 27B, which was re-run two calls at a time |
@@ -314,11 +314,31 @@ parity with every earlier Kolibri battery; nothing scored depends on it.
 - **Cloudflare 403s in front of Anthropic's API (2026-11-13, 01:47-01:51 and 02:16-02:20).** `claude -p` returned
   "403 Attention Required! | Cloudflare" for many cells at once in two short bursts; probes between them answered
   normally. They are infrastructure errors (retried, never scored); five in a row abort a run, which was then resumed.
-- **Gemini 4 Argon High changed backend under the run.** Through agy 1.5.3 the model was served as
-  `gemini-4-argon-c` (118 answered attempts); after Google's quota reset on 2026-11-13, agy 1.5.7 served it as
-  `gemini-4-argon-trial`, and 21 of 24 attempts came back as Gemini safety-filter blocks (0 of 180 before). Those 9
-  cells were superseded unscored and the run is stopped at 120 of 224 cells pending the user's decision; it is not in
-  any table.
+- **Gemini 4 Argon High changed under the run, and was re-run whole.** Its first 122 cells ran 2026-11-07 to
+  11-12 on agy 1.5.3, routed to the backend id `gemini-4-argon-c`. After Google's quota reset on 2026-11-13 (agy
+  1.5.7) every Argon effort is routed to `gemini-4-argon-trial`; the id is Antigravity's usual wire name for Argon
+  (community usage trackers have logged it since mid-October) and no longer tells the efforts apart. Two things did
+  change: the same `high` setting thinks four to five times less (long battery, passing calls: a median 29,800
+  thinking tokens and 263 s before, 6,650 and 76 s after), and Gemini's safety filter blocks many of our prompts
+  (0 of 180 attempts before; other users reported the same from that day, with no statement from Google). agy
+  returns such a block as a successful answer whose whole text is Google's fixed notice; the adapter scores exactly
+  that notice as a refusal. Because half a row under each serving would compare with nothing, the 122 earlier cells
+  were superseded (kept under `superseded/` with the reason) and re-run on 2026-11-14 (user decision): the row is
+  all agy 1.5.7, 302 attempts, 92 of them filter blocks.
+- **A model that calls agy's one unremovable tool (from 2026-11-15).** Antigravity's request always declares
+  `manage_task`; in about 3,000 attempts no model had called it until Gemini 3.8 Flash High did, on the hex
+  path (2026-11-15, `{"Action": "list"}`; 10 hex-program attempts, none with answer text before the call). One attempt is one model call, so
+  the adapter now stops the call at the tool call and scores what the model wrote before it: no second call with the
+  tool's result, and no re-run (the rule Claude and Copilot follow at an output cap; user decision). Any other tool
+  step is still an isolation failure. The earlier attempts, first logged as infrastructure errors, are accounted
+  for in their runs' ADJUSTMENTS.md.
+- **agy's output-limit continuation (from 2026-11-15).** When a call reaches Gemini's output token limit, agy makes
+  a second call of its own ("Your previous response was cut off ... Retries remaining: 3"). The adapter scores the
+  first call's text as it stands and drops the continuation, so one attempt stays one model call (user decision).
+  agy writes no request record for the cut call, so verification checks the continuation's request, which carries
+  the whole conversation: the harness prompt, the model's turns and agy's cut-off notice, with no tools beyond
+  `manage_task`. Nine Flash High attempts were cut (6 hex programs, 2 apps, 1 function cell); the eight before the
+  adapter change were recorded from their kept streams (ADJUSTMENTS.md in each run).
 - **Local models: several calls at once, and n-gram speculative decoding (Apriel, from 2026-11-14).** On the GB10
   a dense model is memory-bandwidth bound at batch 1, so batched requests cost each call almost nothing: Apriel
   measured 7.9 tok/s alone and 7.8 each at five at once. `BCA_VLLM_SLOTS=4` lets four calls run together (the slot
@@ -397,8 +417,8 @@ only, and the others keep running; the same command resumes it later. Seen so fa
 
 - **Antigravity (Google AI Plus):** the quota is per account, not per model, about 75 calls a week
   ("Individual quota reached ... Resets in 166h"). Antigravity was therefore run slowly, resuming after each
-  weekly reset, and is reported as partial until complete (Gemini 3.8 Flash High stopped at 223/224; its loop
-  was stopped on 2026-10-24). On AI Pro (from 2026-11-06) the limit is higher but still binding: the Gemini 4
+  weekly reset, and is reported as partial until complete (Gemini 3.8 Flash High stopped at 223/224 and its loop
+  was stopped on 2026-10-24; its last cell ran on AI Pro on 2026-11-15). On AI Pro (from 2026-11-06) the limit is higher but still binding: the Gemini 4
   Argon High run stopped on quota after 181 calls and resumes on an 8-hourly retry. The user's second Google account is not used, so
   the subject stays one account.
 - **Antigravity** also reports a failed model request as a bare `error_message` step; it is a retried

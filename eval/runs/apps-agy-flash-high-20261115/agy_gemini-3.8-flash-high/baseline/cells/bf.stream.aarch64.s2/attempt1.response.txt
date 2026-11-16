@@ -1,0 +1,237 @@
+.text
+.globl _start
+.balign 8
+
+_start:
+    // Read the entire standard input into stdin_buf
+    adrp x19, stdin_buf
+    add x19, x19, :lo12:stdin_buf
+    mov x20, #0
+    movz x21, #1, lsl #16           // 65536 bytes max
+
+1:
+    sub x2, x21, x20                // count = 65536 - total_read
+    cbz x2, 2f                      // buffer full
+    mov x0, #0                      // fd = 0 (stdin)
+    add x1, x19, x20                // buf = stdin_buf + total_read
+    mov x8, #63                     // sys_read
+    svc #0
+    cmp x0, #0
+    b.le 2f                         // EOF or read error
+    add x20, x20, x0
+    b 1b
+
+2:
+    // x20 contains total bytes read
+    // Find the first '!' (0x21) in stdin_buf
+    mov x22, #0                     // index k
+
+1:
+    cmp x22, x20
+    b.hs 2f                         // no '!' found
+    ldrb w0, [x19, x22]
+    cmp w0, #33                     // '!' is ASCII 33
+    b.eq 3f                         // found '!'
+    add x22, x22, #1
+    b 1b
+
+2:
+    // No '!' found: entire input is the program, program input is empty
+    mov x23, x20                    // prog_len = total_read
+    add x24, x19, x20               // input_curr = stdin_buf + total_read
+    mov x25, x24                    // input_end = input_curr
+    b 4f
+
+3:
+    // '!' found at index x22
+    mov x23, x22                    // prog_len = x22
+    add x24, x19, x22
+    add x24, x24, #1                // input_curr = stdin_buf + x22 + 1
+    add x25, x19, x20               // input_end = stdin_buf + total_read
+
+4:
+    // Bracket validation and jump table construction
+    adrp x26, jump_table
+    add x26, x26, :lo12:jump_table
+
+    adrp x27, bracket_stack
+    add x27, x27, :lo12:bracket_stack
+    mov x28, #0                     // bracket stack count
+
+    mov x22, #0                     // instruction index i
+
+1:
+    cmp x22, x23
+    b.hs 4f                         // finished checking program
+
+    ldrb w0, [x19, x22]
+    cmp w0, #91                     // '[' is ASCII 91
+    b.eq 2f
+    cmp w0, #93                     // ']' is ASCII 93
+    b.eq 3f
+    b 5f
+
+2:
+    // '[': push i to bracket stack
+    str w22, [x27, x28, lsl #2]
+    add x28, x28, #1
+    b 5f
+
+3:
+    // ']': pop from bracket stack
+    cbz x28, bracket_error
+    sub x28, x28, #1
+    ldr w1, [x27, x28, lsl #2]      // w1 = open_idx
+
+    // jump_table[open_idx] = i + 1
+    add w2, w22, #1
+    str w2, [x26, x1, lsl #2]
+
+    // jump_table[i] = open_idx + 1
+    add w2, w1, #1
+    str w2, [x26, x22, lsl #2]
+
+5:
+    add x22, x22, #1
+    b 1b
+
+4:
+    // If bracket stack is not empty, unmatched '[' exists
+    cbnz x28, bracket_error
+
+    // Initialize execution state
+    mov x20, #0                     // pc = 0
+    mov x21, x23                    // prog_len
+
+    adrp x22, jump_table
+    add x22, x22, :lo12:jump_table
+
+    adrp x23, tape
+    add x23, x23, :lo12:tape
+
+    adrp x27, out_buf
+    add x27, x27, :lo12:out_buf
+    mov x26, x27                    // out_curr = out_buf
+
+    movz x0, #1, lsl #16
+    add x28, x27, x0                // out_buf_limit = out_buf + 65536
+
+bf_exec_loop:
+    cmp x20, x21
+    b.hs bf_exec_end
+
+    ldrb w0, [x19, x20]
+    add x20, x20, #1
+
+    cmp w0, #43                     // '+'
+    b.eq cmd_plus
+    cmp w0, #45                     // '-'
+    b.eq cmd_minus
+    cmp w0, #62                     // '>'
+    b.eq cmd_right
+    cmp w0, #60                     // '<'
+    b.eq cmd_left
+    cmp w0, #91                     // '['
+    b.eq cmd_open
+    cmp w0, #93                     // ']'
+    b.eq cmd_close
+    cmp w0, #46                     // '.'
+    b.eq cmd_dot
+    cmp w0, #44                     // ','
+    b.eq cmd_comma
+    b bf_exec_loop
+
+cmd_plus:
+    ldrb w1, [x23]
+    add w1, w1, #1
+    strb w1, [x23]
+    b bf_exec_loop
+
+cmd_minus:
+    ldrb w1, [x23]
+    sub w1, w1, #1
+    strb w1, [x23]
+    b bf_exec_loop
+
+cmd_right:
+    add x23, x23, #1
+    b bf_exec_loop
+
+cmd_left:
+    sub x23, x23, #1
+    b bf_exec_loop
+
+cmd_open:
+    ldrb w1, [x23]
+    cbnz w1, bf_exec_loop
+    sub x1, x20, #1
+    ldr w20, [x22, x1, lsl #2]
+    b bf_exec_loop
+
+cmd_close:
+    ldrb w1, [x23]
+    cbz w1, bf_exec_loop
+    sub x1, x20, #1
+    ldr w20, [x22, x1, lsl #2]
+    b bf_exec_loop
+
+cmd_dot:
+    ldrb w1, [x23]
+    strb w1, [x26], #1
+    cmp x26, x28
+    b.ne bf_exec_loop
+    bl flush_buffer
+    b bf_exec_loop
+
+cmd_comma:
+    cmp x24, x25
+    b.hs 1f
+    ldrb w1, [x24], #1
+    b 2f
+1:
+    mov w1, #0
+2:
+    strb w1, [x23]
+    b bf_exec_loop
+
+bf_exec_end:
+    bl flush_buffer
+    mov x0, #0
+    mov x8, #93                     // sys_exit
+    svc #0
+
+bracket_error:
+    mov x0, #1                      // exit status 1
+    mov x8, #93                     // sys_exit
+    svc #0
+
+flush_buffer:
+    sub x2, x26, x27
+    cbz x2, 2f
+    mov x1, x27
+1:
+    mov x0, #1                      // fd = 1 (stdout)
+    mov x8, #64                     // sys_write
+    svc #0
+    cmp x0, #0
+    b.le 2f
+    add x1, x1, x0
+    sub x2, x2, x0
+    cbnz x2, 1b
+2:
+    mov x26, x27
+    ret
+
+.bss
+.balign 8
+stdin_buf:
+    .space 65536
+out_buf:
+    .space 65536
+jump_table:
+    .space 262144
+bracket_stack:
+    .space 8192
+tape:
+    .space 32768
+

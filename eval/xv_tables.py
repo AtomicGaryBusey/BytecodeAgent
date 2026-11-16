@@ -14,7 +14,7 @@ for f in sorted(glob.glob("eval/runs/*/**/results.jsonl", recursive=True) + glob
         r = json.loads(l)
         if r.get("variant", "baseline") != "baseline": continue
         subj = r.get("subject") or "opus"
-        if subj.startswith(("codex_", "kimi_", "agy_", "grok_", "copilot_", "foundry_", "fireworks_", "cerebras_", "apple_")):
+        if subj.startswith(("codex_", "kimi_", "agy_", "grok_", "copilot_", "foundry_", "fireworks_", "cerebras_", "mistral_", "apple_")):
             label = subj.replace("_", ":", 1).replace("kimi-code_", "kimi-code/")
         elif subj.startswith("local_"):  # @think / @nothink runs are separate rows
             think = (r.get("local") or {}).get("think")

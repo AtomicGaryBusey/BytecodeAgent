@@ -58,6 +58,9 @@ FINISH_REASON_SAFETY/RECITATION/PROHIBITED_CONTENT, Gemini block reasons SAFETY,
 PROHIBITED_CONTENT, SPII, IMAGE_SAFETY) in a failed result or an AGY_ERROR line; the exact wording was
 not captured, so AGY_SAFETY_RE matches those names and plain "content filter" / "safety" wording in
 error, status and stop-reason fields only (never the answer text). Any of them is a scored refusal.
+agy 1.5.7 (seen 2026-11-13) returns Gemini's filter block differently: a SUCCESS result whose entire response is
+Google's fixed notice ("This request was blocked by Gemini's filters. They can occasionally trigger by mistake ...").
+That exact notice, alone in a short response, is a scored refusal too (AGY_FILTER_NOTICE_RE); no other answer text is.
 
 Unremovable extras the model sees (A2), from the recorded request: the system prompt is wrapped in
 `<System Prompt>` tags; the user turn is wrapped as `<USER_REQUEST>\\n{prompt}\\n</USER_REQUEST>`
@@ -70,6 +73,7 @@ from __future__ import annotations
 import json
 import re
 import sqlite3
+import time
 import threading
 from datetime import datetime
 from pathlib import Path
@@ -110,6 +114,9 @@ AGY_SETTINGS = {"useG1Credits": False, "agentMode": ""}
 AGY_TOKEN_FILE = ".gemini/antigravity-cli/antigravity-oauth-token"
 # Declared by agy 1.2.12 even with excludeDefaultComponents (see the module docstring).
 AGY_ALLOWED_TOOLS = frozenset({"manage_task"})
+# agy's own statement that the model's answer hit the output token limit (result.error; it then asks the model to
+# continue in a second call). The attempt is scored on what the first call wrote (user decision 2026-11-15).
+AGY_OUTPUT_CUT_RE = re.compile(r"\s*Your previous response was cut off because it exceeded the output token limit")
 AGY_SYSTEM = f"<System Prompt>\n{SYSTEM_PROMPT}\n</System Prompt>"
 AGY_STEP_TYPES = frozenset({"user_input", "agent_response"})
 AGY_EFFORT_SUFFIXES = ("-low", "-medium", "-high", "-max")
@@ -176,7 +183,7 @@ def _str(fields, num: int) -> str:
     return vals[0].decode("utf-8", "replace") if vals else ""
 
 
-def read_requests(db: Path) -> list[dict]:
+def read_requests(db: Path, *, after_cut: bool = False) -> list[dict]:
     """The model requests agy recorded for one conversation: system prompt, tool names, chat messages
     (role, text) and the model id agy asked for (field 19: request side). Raises ValueError when the layout is not the
     one this adapter was written against (a new agy release): the caller fails closed."""
@@ -186,13 +193,18 @@ def read_requests(db: Path) -> list[dict]:
     finally:
         con.close()
     reqs = []
-    for data in rows:
+    for k, data in enumerate(rows):
         if not isinstance(data, bytes):
             raise ValueError(f"gen_metadata row is {type(data).__name__}, not a protobuf blob")
         top = pb_fields(data)
         req = pb_fields(_sub(top, 1)[0]) if top and _sub(top, 1) else None
         if not req or not _sub(req, 1):
-            raise ValueError("gen_metadata row without a request record")
+            # After an output-limit cut agy records no request for the call that was cut (row 1 of 2, seen
+            # 2026-11-15 17:49); the continuation's request follows and carries the whole conversation, which is
+            # what verify_request then checks. At least one request must still be there.
+            if after_cut:
+                continue
+            raise ValueError(f"gen_metadata row {k + 1} of {len(rows)} without a request record")
         msgs = []
         for m in _sub(req, 2):
             mf = pb_fields(m)
@@ -210,6 +222,9 @@ def read_requests(db: Path) -> list[dict]:
     if not reqs:
         raise ValueError("no model request recorded")
     return reqs
+
+
+AGY_FILTER_NOTICE_RE = re.compile(r"\s*This request was blocked by Gemini's filters\.")
 
 
 class AgySubject(CliSubject):
@@ -256,6 +271,9 @@ class AgySubject(CliSubject):
         except OSError as e:
             raise IsolationError(f"isolation: cannot set up the agy home {home}: {e}") from e
         self._call.home = home
+        self._call.cut_at = None  # len(p.text) at an error_message step: later text is another model call's
+        self._call.cut_usage = {}
+        self._call.cut = False  # the result named that step an output-limit cut: the first call is scored
 
     def argv(self, prompt: str, home: Path) -> list[str]:
         self._call.prompt = prompt
@@ -312,7 +330,26 @@ class AgySubject(CliSubject):
                                                                        "step_type", "duration_seconds")}
                 p.error = p.error or ("agy error_message step (model request failed)"
                                       + (f": {json.dumps(detail)[:300]}" if detail else ""))
+                if getattr(self._call, "cut_at", None) is None:
+                    self._call.cut_at, self._call.cut_usage = len(p.text), dict(p.usage)
                 self._safety(body, p, "step error_message")
+                return None
+            if st == "tool" and body.get("tool_name") in AGY_ALLOWED_TOOLS:
+                # The model called the one tool agy cannot remove (manage_task; first seen 2026-11-15, Gemini 3.8
+                # Flash High, after its answer text). One attempt is one model call: stop here, before the tool's
+                # result goes back for a second call, and score what the model wrote before it (user decision
+                # 2026-11-15; the rule Claude and Copilot follow at an output cap). No do-over, nothing re-run.
+                p.notes.append(f"the model called agy's built-in {body.get('tool_name')} tool "
+                               f"({json.dumps((body.get('tool_info') or {}).get('parameters'))[:120]}): the call was "
+                               "stopped there and the answer written before it is scored as it stands")
+                p.usage["tool_stops"] = p.usage.get("tool_stops", 0) + 1
+                # agy records the request a moment after the response ends, and an abort kills it at once: killed
+                # too early there is nothing to verify and the call fails closed (seen 2026-11-15 13:24). Wait for
+                # the record first; without one the verification in finish() still fails closed.
+                waited = self._await_request_record()
+                p.notes.append(f"request record {'present after' if waited is not None else 'still missing after'} "
+                               f"{waited if waited is not None else self.tool_stop_wait_s:.1f} s")
+                p.abort = True
                 return None
             if st not in AGY_STEP_TYPES:
                 p.violations.append(f"step {st!r}: {json.dumps(body)[:200]}")
@@ -328,6 +365,8 @@ class AgySubject(CliSubject):
                 if delta is not None and not isinstance(delta, str):
                     p.violations.append(f"malformed text_delta {json.dumps(delta)[:120]}")
                     return None
+                if delta and getattr(self._call, "cut_at", None) is not None:
+                    return None  # after a failed request: a continuation or retry, never part of the scored answer
                 if delta:
                     p.text += delta
                     return delta
@@ -338,6 +377,18 @@ class AgySubject(CliSubject):
                     return None
                 p.usage = body["usage"]
             self._safety(body, p, "result")
+            cut_at = getattr(self._call, "cut_at", None)
+            if cut_at is not None and AGY_OUTPUT_CUT_RE.match(str(body.get("error") or "")):
+                # The answer hit the output token limit and agy asked the model to continue. One attempt is one
+                # model call: the text of the first call is scored as it stands, as for Claude and Copilot at a cap;
+                # the continuation is dropped. No do-over.
+                p.error, p.text, self._call.cut = "", p.text[:cut_at], True
+                p.usage = {**self._call.cut_usage, "output_cut": 1}
+                p.notes.append("output token limit reached: agy's continuation was dropped; the answer written "
+                               "within the limit is scored as it stands")
+                self._await_request_record()
+                p.abort = True  # the turn is over; an abort without an error scores p.text whatever agy's exit status
+                return None
             if body.get("status") != "SUCCESS":
                 p.error = f"agy {body.get('status') or 'no status'}: {body.get('error') or ''}".strip()
                 return None
@@ -364,7 +415,13 @@ class AgySubject(CliSubject):
         agy_err = [ln.split(":", 1)[1].strip() for ln in stderr.splitlines() if ln.startswith("AGY_ERROR:")]
         for line in agy_err:
             self._safety(line, p, "AGY_ERROR")
-        failed = returncode not in (0, None) or bool(p.error)
+        # Gemini's filter block arrives as a SUCCESS result whose whole response is Google's fixed notice
+        # (seen 2026-11-13, agy 1.5.7): the model never answered. Only that exact canned opening, alone in a short
+        # response, counts -- a model's own text mentioning safety or filters is still an answer.
+        if not p.refusal and AGY_FILTER_NOTICE_RE.match(p.text) and len(p.text) < 600:
+            p.refusal = f"safety: Gemini filter notice returned as the response: {p.text.strip()[:200]}"
+        cut = getattr(self._call, "cut", False)  # agy exits non-zero on the cut it reported: not a failure here
+        failed = (returncode not in (0, None) and not cut) or bool(p.error)
         if failed:
             if agy_err:
                 p.error = f"exit status {returncode}: AGY_ERROR {agy_err[-1]}" + (f" ({p.error})" if p.error else "")
@@ -378,6 +435,22 @@ class AgySubject(CliSubject):
         if p.violations:
             p.refusal = ""  # an isolation failure is never scored, not even as a refusal
 
+    tool_stop_wait_s = 45.0
+
+    def _await_request_record(self) -> float | None:
+        """Seconds until the call's conversation database held a readable request, or None if it never did."""
+        home, t0 = getattr(self._call, "home", None), time.monotonic()
+        while home is not None and time.monotonic() - t0 < self.tool_stop_wait_s:
+            dbs = sorted((home / ".gemini" / "antigravity-cli" / "conversations").glob("*.db"))
+            if len(dbs) == 1:
+                try:
+                    read_requests(dbs[0])
+                    return time.monotonic() - t0
+                except (sqlite3.Error, ValueError):
+                    pass
+            time.sleep(0.2)
+        return None
+
     def verify_request(self, p: Parsed) -> None:
         """Fail closed unless the recorded request carried only allowed tools, our system prompt and
         the harness prompt (the only evidence of what the model got: see the module docstring)."""
@@ -387,17 +460,30 @@ class AgySubject(CliSubject):
             p.violations.append(f"cannot verify the request: {len(dbs)} conversation databases")
             return
         try:
-            reqs = read_requests(dbs[0])
+            reqs = read_requests(dbs[0], after_cut=getattr(self._call, "cut", False))
         except (sqlite3.Error, ValueError) as e:
             p.violations.append(f"cannot verify the request: {e}")
             return
         user_re = agy_user_re(prompt or "")
-        for r in reqs:
+        cut = getattr(self._call, "cut", False)
+        for k, r in enumerate(reqs):
             extra = sorted(set(r["tools"]) - AGY_ALLOWED_TOOLS)
             if extra:
                 p.violations.append("request declares tools " + ",".join(extra))
             if r["system"] != AGY_SYSTEM:
                 p.violations.append(f"system prompt is not SYSTEM_PROMPT: {r['system'][:160]!r}")
+            if cut:
+                # The continuation's conversation: the harness prompt first, then only the model's own text and agy's
+                # "cut off ... continue" nudge. That is the evidence of what the scored first call was sent.
+                first = r["messages"][0] if r["messages"] else (0, "")
+                if first[0] != 1 or not user_re.fullmatch(first[1]):
+                    p.violations.append(f"after an output cut the first turn is not the harness prompt: {first[1][:160]!r}")
+                for role, text in r["messages"][1:]:
+                    if role == 1 and not AGY_OUTPUT_CUT_RE.search(text):
+                        p.violations.append(f"after an output cut, a user turn that is not agy's nudge: {text[:160]!r}")
+                    elif role not in (1, 2):
+                        p.violations.append(f"chat message with role {role}: {text[:120]!r}")
+                continue
             for role, text in r["messages"]:
                 if role == 1 and not user_re.fullmatch(text):
                     p.violations.append(f"user turn is not the harness prompt: {text[:160]!r}")

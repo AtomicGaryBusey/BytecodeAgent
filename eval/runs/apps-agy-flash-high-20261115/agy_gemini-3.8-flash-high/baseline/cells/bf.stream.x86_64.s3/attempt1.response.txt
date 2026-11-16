@@ -1,0 +1,291 @@
+.text
+.globl _start
+
+_start:
+    # Read standard input until EOF (read returns 0)
+    lea r12, [rip + input_buf]
+read_loop:
+    lea rdx, [rip + input_buf_end]
+    sub rdx, r12
+    jle read_done
+    xor eax, eax            # sys_read = 0
+    xor edi, edi            # stdin = 0
+    mov rsi, r12
+    syscall
+    test rax, rax
+    jle read_done
+    add r12, rax
+    jmp read_loop
+
+read_done:
+    # Calculate total bytes read
+    lea rax, [rip + input_buf]
+    sub r12, rax            # r12 = total_read
+
+    # Find the first '!' (ASCII 33)
+    lea rdi, [rip + input_buf]
+    mov rcx, r12
+    test rcx, rcx
+    jz no_bang
+
+    mov al, 33              # '!'
+    cld
+    repne scasb
+    jne no_bang
+
+    # '!' found:
+    # rdi is now pointing 1 byte past '!'
+    # rcx is the number of remaining bytes in input (the program's input)
+    lea rax, [rip + input_buf]
+    mov r8, rdi
+    dec r8                  # r8 points to '!'
+    sub r8, rax             # r8 = program_len (bytes before first '!')
+    mov r12, rdi            # r12 = inp_ptr
+    lea r13, [rdi + rcx]    # r13 = inp_end
+    mov rcx, r8             # rcx = program_len
+    jmp prog_ready
+
+no_bang:
+    mov rcx, r12            # rcx = program_len (entire stdin)
+    xor r12d, r12d          # inp_ptr = 0 (input empty)
+    xor r13d, r13d          # inp_end = 0
+
+prog_ready:
+    # Parse program: filter comments, check brackets, emit compacted opcodes
+    lea rsi, [rip + input_buf]
+    lea rdi, [rip + code_buf]
+    xor ebp, ebp            # bracket nesting depth = 0
+
+parse_loop:
+    test rcx, rcx
+    jz parse_done
+    mov al, byte ptr [rsi]
+    inc rsi
+    dec rcx
+
+    cmp al, 43              # '+'
+    je emit_plus
+    cmp al, 45              # '-'
+    je emit_minus
+    cmp al, 60              # '<'
+    je emit_left
+    cmp al, 62              # '>'
+    je emit_right
+    cmp al, 46              # '.'
+    je emit_dot
+    cmp al, 44              # ','
+    je emit_comma
+    cmp al, 91              # '['
+    je emit_bracket_open
+    cmp al, 93              # ']'
+    je emit_bracket_close
+
+    # Any other byte is a comment
+    jmp parse_loop
+
+emit_plus:
+    mov byte ptr [rdi], 0
+    inc rdi
+    jmp parse_loop
+
+emit_minus:
+    mov byte ptr [rdi], 1
+    inc rdi
+    jmp parse_loop
+
+emit_left:
+    mov byte ptr [rdi], 2
+    inc rdi
+    jmp parse_loop
+
+emit_right:
+    mov byte ptr [rdi], 3
+    inc rdi
+    jmp parse_loop
+
+emit_dot:
+    mov byte ptr [rdi], 4
+    inc rdi
+    jmp parse_loop
+
+emit_comma:
+    mov byte ptr [rdi], 5
+    inc rdi
+    jmp parse_loop
+
+emit_bracket_open:
+    mov byte ptr [rdi], 6
+    lea rdx, [rip + bracket_stack]
+    mov qword ptr [rdx + rbp*8], rdi
+    inc rbp
+    inc rdi
+    jmp parse_loop
+
+emit_bracket_close:
+    test rbp, rbp
+    jz bracket_error
+    dec rbp
+    lea rdx, [rip + bracket_stack]
+    mov r8, qword ptr [rdx + rbp*8]     # matching '[' address
+    mov byte ptr [rdi], 7
+
+    lea r9, [rip + code_buf]
+    mov r10, r8
+    sub r10, r9                         # open bracket index
+    mov r11, rdi
+    sub r11, r9                         # close bracket index
+
+    lea rdx, [rip + jump_table]
+    mov qword ptr [rdx + r10*8], rdi    # jump_table[open] = address of ']'
+    mov qword ptr [rdx + r11*8], r8     # jump_table[close] = address of '['
+
+    inc rdi
+    jmp parse_loop
+
+parse_done:
+    test rbp, rbp
+    jnz bracket_error
+
+    # Set up interpreter execution registers
+    mov r15, rdi                        # r15 = pc_end
+    lea rsi, [rip + code_buf]           # rsi = pc
+    lea rbx, [rip + tape]               # rbx = dp (cell 0)
+    lea r14, [rip + out_buf]            # r14 = out_ptr
+    lea rdi, [rip + code_buf]           # rdi = code_buf base
+    lea r8, [rip + jump_table]          # r8 = jump_table base
+    lea r9, [rip + dispatch_table]      # r9 = dispatch_table base
+
+    jmp run_dispatch
+
+run_next:
+    inc rsi
+run_dispatch:
+    cmp rsi, r15
+    jae run_done
+    movzx eax, byte ptr [rsi]
+    jmp qword ptr [r9 + rax*8]
+
+op_plus:
+    inc byte ptr [rbx]
+    jmp run_next
+
+op_minus:
+    dec byte ptr [rbx]
+    jmp run_next
+
+op_left:
+    dec rbx
+    jmp run_next
+
+op_right:
+    inc rbx
+    jmp run_next
+
+op_dot:
+    mov al, byte ptr [rbx]
+    mov byte ptr [r14], al
+    inc r14
+    lea rax, [rip + out_buf_end]
+    cmp r14, rax
+    jb run_next
+    call flush_out
+    jmp run_next
+
+op_comma:
+    cmp r12, r13
+    jae 1f
+    mov al, byte ptr [r12]
+    inc r12
+    mov byte ptr [rbx], al
+    jmp run_next
+1:
+    mov byte ptr [rbx], 0
+    jmp run_next
+
+op_bracket_open:
+    cmp byte ptr [rbx], 0
+    jne run_next
+    mov rax, rsi
+    sub rax, rdi
+    mov rsi, qword ptr [r8 + rax*8]
+    jmp run_next
+
+op_bracket_close:
+    cmp byte ptr [rbx], 0
+    je run_next
+    mov rax, rsi
+    sub rax, rdi
+    mov rsi, qword ptr [r8 + rax*8]
+    jmp run_next
+
+bracket_error:
+    mov eax, 60             # sys_exit
+    mov edi, 1              # exit status 1
+    syscall
+
+run_done:
+    call flush_out
+    mov eax, 60             # sys_exit
+    xor edi, edi            # exit status 0
+    syscall
+
+flush_out:
+    push rsi
+    push rdi
+    lea rsi, [rip + out_buf]
+    mov rdx, r14
+    sub rdx, rsi
+    test rdx, rdx
+    jle flush_done
+flush_loop:
+    mov eax, 1              # sys_write
+    mov edi, 1              # stdout
+    syscall
+    test rax, rax
+    jle flush_done
+    add rsi, rax
+    sub rdx, rax
+    jg flush_loop
+flush_done:
+    lea r14, [rip + out_buf]
+    pop rdi
+    pop rsi
+    ret
+
+.section .rodata
+.align 8
+dispatch_table:
+    .quad op_plus
+    .quad op_minus
+    .quad op_left
+    .quad op_right
+    .quad op_dot
+    .quad op_comma
+    .quad op_bracket_open
+    .quad op_bracket_close
+
+.bss
+.align 8
+input_buf:
+    .zero 131072
+input_buf_end:
+
+code_buf:
+    .zero 65536
+code_buf_end:
+
+.align 8
+jump_table:
+    .zero 524288
+
+.align 8
+bracket_stack:
+    .zero 8192
+
+tape:
+    .zero 30000
+
+.align 8
+out_buf:
+    .zero 65536
+out_buf_end:

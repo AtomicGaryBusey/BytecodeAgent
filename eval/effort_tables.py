@@ -15,6 +15,8 @@ PAIRS = [  # (group, label A, run dir A, label B, run dir B)
      "the same on Cerebras", "cerebras-gpt-oss-120b-20261111"),
     ("Serving tier", "Kimi K3.1 Pro", "kimi-k3.1-pro-20261111",
      "Kimi K3.1 Pro Highspeed", "kimi-k3.1-pro-highspeed-20261111"),
+    ("Serving tier", "Meta Muse Spark 1.3, contributor tier (Muse Code 1.4.15)", "muse-20261111",
+     "the same, paid tier (Muse Code 1.4.18)", "muse-tier-paid-spark-1.3-20261113"),
     # A second, independent run of the long battery (54 cells) at the same settings: run-to-run variation.
     # `dir/subject` picks one subject of a run directory that holds several.
     ("Second sample (long battery)", "Grok 4.7 build-fast, 2026-09-29", "grok-4.7-build-fast-20260929-081019",

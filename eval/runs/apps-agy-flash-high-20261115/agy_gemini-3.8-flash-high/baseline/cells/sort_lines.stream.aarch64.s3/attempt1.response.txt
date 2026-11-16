@@ -1,0 +1,297 @@
+.globl _start
+
+.text
+_start:
+    // Read standard input into input_buf
+    adrp x20, input_buf
+    add x20, x20, :lo12:input_buf
+    mov x21, #0                  // total_bytes read
+
+read_loop:
+    movz x2, #1, lsl #16         // 65536
+    sub x2, x2, x21              // remaining space = 65536 - total_bytes
+    cbz x2, read_done            // buffer full
+    mov x0, #0                   // fd = 0 (stdin)
+    add x1, x20, x21             // buffer pointer
+    mov x8, #63                  // sys_read
+    svc #0
+    cmp x0, #0
+    b.le read_done
+    add x21, x21, x0             // total_bytes += bytes read
+    b read_loop
+
+read_done:
+    // If input is empty, exit immediately with status 0
+    cbz x21, exit_success
+
+parse_lines:
+    mov x19, #0                  // line_count = 0
+    mov x22, #0                  // cur_pos = 0
+    mov x23, #0                  // line_start = 0
+
+    adrp x24, lines
+    add x24, x24, :lo12:lines
+
+parse_loop:
+    cmp x22, x21
+    b.ge parse_done
+    add x9, x20, x22
+    ldrb w10, [x9]
+    cmp w10, #10                 // newline '\n' (0x0A)
+    b.ne parse_next
+
+    // Newline encountered: record line
+    add x0, x20, x23             // line ptr = input_buf + line_start
+    sub x1, x22, x23             // line len = cur_pos - line_start
+    add x9, x24, x19, lsl #4
+    stp x0, x1, [x9]
+    add x19, x19, #1             // line_count++
+
+    add x23, x22, #1             // line_start = cur_pos + 1
+
+parse_next:
+    add x22, x22, #1
+    b parse_loop
+
+parse_done:
+    // Check for trailing line after last newline
+    cmp x23, x21
+    b.ge parse_finish
+    add x0, x20, x23
+    sub x1, x21, x23
+    add x9, x24, x19, lsl #4
+    stp x0, x1, [x9]
+    add x19, x19, #1
+
+parse_finish:
+    // If line_count <= 1, sorting is not needed
+    cmp x19, #1
+    b.le print_sorted
+
+sort_lines:
+    adrp x27, lines
+    add x27, x27, :lo12:lines
+    adrp x28, tmp_lines
+    add x28, x28, :lo12:tmp_lines
+
+    mov x20, #1                  // width = 1
+
+outer_sort_loop:
+    cmp x20, x19                 // while width < N
+    b.ge sort_done
+
+    mov x21, #0                  // i = 0
+
+chunk_loop:
+    // left = i (in x21)
+    // mid = min(i + width, N)
+    add x22, x21, x20
+    cmp x22, x19
+    csel x22, x19, x22, hi
+
+    // right = min(i + 2 * width, N)
+    add x23, x21, x20, lsl #1
+    cmp x23, x19
+    csel x23, x19, x23, hi
+
+    mov x24, x21                 // p = left
+    mov x25, x22                 // q = mid
+    mov x26, x21                 // dst = left
+
+merge_loop:
+    cmp x24, x22                 // p < mid?
+    b.ge copy_q_loop
+    cmp x25, x23                 // q < right?
+    b.ge copy_p_loop
+
+    add x9, x27, x24, lsl #4
+    ldp x0, x1, [x9]
+    add x9, x27, x25, lsl #4
+    ldp x2, x3, [x9]
+    bl compare_lines
+
+    cmp x0, #0
+    b.gt take_q
+
+    // Take lines[p]
+    add x9, x27, x24, lsl #4
+    ldp x0, x1, [x9]
+    add x10, x28, x26, lsl #4
+    stp x0, x1, [x10]
+    add x24, x24, #1
+    add x26, x26, #1
+    b merge_loop
+
+take_q:
+    // Take lines[q]
+    add x9, x27, x25, lsl #4
+    ldp x0, x1, [x9]
+    add x10, x28, x26, lsl #4
+    stp x0, x1, [x10]
+    add x25, x25, #1
+    add x26, x26, #1
+    b merge_loop
+
+copy_p_loop:
+    cmp x24, x22
+    b.ge chunk_done
+    add x9, x27, x24, lsl #4
+    ldp x0, x1, [x9]
+    add x10, x28, x26, lsl #4
+    stp x0, x1, [x10]
+    add x24, x24, #1
+    add x26, x26, #1
+    b copy_p_loop
+
+copy_q_loop:
+    cmp x25, x23
+    b.ge chunk_done
+    add x9, x27, x25, lsl #4
+    ldp x0, x1, [x9]
+    add x10, x28, x26, lsl #4
+    stp x0, x1, [x10]
+    add x25, x25, #1
+    add x26, x26, #1
+    b copy_q_loop
+
+chunk_done:
+    add x21, x21, x20, lsl #1    // i += 2 * width
+    cmp x21, x19
+    b.lt chunk_loop
+
+    // Copy tmp_lines back to lines
+    mov x9, #0
+copy_back_loop:
+    cmp x9, x19
+    b.ge copy_back_done
+    add x10, x28, x9, lsl #4
+    ldp x0, x1, [x10]
+    add x11, x27, x9, lsl #4
+    stp x0, x1, [x11]
+    add x9, x9, #1
+    b copy_back_loop
+
+copy_back_done:
+    lsl x20, x20, #1             // width *= 2
+    b outer_sort_loop
+
+sort_done:
+
+print_sorted:
+    adrp x27, lines
+    add x27, x27, :lo12:lines
+    adrp x28, out_buf
+    add x28, x28, :lo12:out_buf
+    mov x20, #0                  // current line index = 0
+    mov x21, #0                  // out_len = 0
+
+print_loop:
+    cmp x20, x19
+    b.ge print_done
+
+    add x9, x27, x20, lsl #4
+    ldp x10, x11, [x9]           // x10 = ptr, x11 = len
+
+    // Flush buffer if out_len + len + 1 > 60000
+    add x12, x21, x11
+    add x12, x12, #1
+    mov x13, #60000
+    cmp x12, x13
+    b.le buffer_fits
+
+    bl flush_out_buf
+    add x9, x27, x20, lsl #4
+    ldp x10, x11, [x9]
+
+buffer_fits:
+    cbz x11, append_newline
+
+    add x12, x28, x21            // dest = out_buf + out_len
+    mov x13, x11                 // count = len
+copy_bytes_loop:
+    ldrb w14, [x10], #1
+    strb w14, [x12], #1
+    subs x13, x13, #1
+    b.ne copy_bytes_loop
+    add x21, x21, x11
+
+append_newline:
+    add x12, x28, x21
+    mov w14, #10
+    strb w14, [x12]
+    add x21, x21, #1
+
+    add x20, x20, #1
+    b print_loop
+
+print_done:
+    bl flush_out_buf
+    b exit_success
+
+flush_out_buf:
+    cbz x21, flush_return
+    mov x22, #0                  // total_written = 0
+flush_write_loop:
+    cmp x22, x21
+    b.ge flush_write_done
+    mov x0, #1                   // fd = 1 (stdout)
+    add x1, x28, x22             // buffer = out_buf + total_written
+    sub x2, x21, x22             // count = out_len - total_written
+    mov x8, #64                  // sys_write
+    svc #0
+    cmp x0, #0
+    b.le exit_error
+    add x22, x22, x0
+    b flush_write_loop
+flush_write_done:
+    mov x21, #0                  // out_len = 0
+flush_return:
+    ret
+
+compare_lines:
+    // Compare line A (x0: ptrA, x1: lenA) with line B (x2: ptrB, x3: lenB)
+    cmp x1, x3
+    csel x4, x1, x3, ls          // x4 = min(lenA, lenB)
+compare_loop:
+    cbz x4, compare_by_len
+    ldrb w5, [x0], #1
+    ldrb w6, [x2], #1
+    sub x4, x4, #1
+    cmp w5, w6
+    b.eq compare_loop
+    b.lo compare_a_less
+    mov x0, #1
+    ret
+compare_a_less:
+    mov x0, #-1
+    ret
+compare_by_len:
+    cmp x1, x3
+    b.lo compare_a_less
+    b.hi compare_a_greater
+    mov x0, #0
+    ret
+compare_a_greater:
+    mov x0, #1
+    ret
+
+exit_success:
+    mov x0, #0
+    mov x8, #93                  // sys_exit
+    svc #0
+
+exit_error:
+    mov x0, #1
+    mov x8, #93                  // sys_exit
+    svc #0
+
+.section .bss
+.balign 16
+lines:
+    .zero 32768                  // 2048 entries * 16 bytes
+tmp_lines:
+    .zero 32768                  // 2048 entries * 16 bytes
+out_buf:
+    .zero 65536
+input_buf:
+    .zero 65536

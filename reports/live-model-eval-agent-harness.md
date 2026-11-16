@@ -37,6 +37,7 @@ From `eval/harness_tables.py`. Function batteries (224 cells):
 
 | Model (harness) | Round 1 (48) | Round 2 (62) | Long (54) | Adversarial (60) | Pass@1 | Within 4 | Mean attempts |
 |---|---|---|---|---|---|---|---|
+| Meta Muse Wonder 1.0 (Muse Code harness) | 48 | 62 | 52 | 60 | **222/224 (99%)** | 224/224 (100%) | 1.01 |
 | Meta Muse Spark 1.3 (Muse Code harness) | 48 | 62 | 52 | 60 | **222/224 (99%)** | 224/224 (100%) | 1.01 |
 | Meta Muse Wonder Full 1.0 (Muse Code harness) | 48 | 61 | 54 | 58 | **221/224 (99%)** | 224/224 (100%) | 1.01 |
 | Mistral Large 4 (Vibe harness) | 40 | 52 | 22 | 42 | **156/224 (70%)** | 219/224 (98%) | 1.44 |
@@ -46,6 +47,7 @@ By path, and the app and hex batteries:
 
 | Model (harness) | Stream | Structured | IR (QBE) | Apps, first attempt (96) | Apps within 4 | Hex functions, first / within 4 (16) | Hex programs, first / within 4 (16) |
 |---|---|---|---|---|---|---|---|
+| Meta Muse Wonder 1.0 (Muse Code harness) | 76/76 | 74/74 | 72/74 | 95/96 | 96/96 | 15/16 / 16/16 | 10/16 / 16/16 |
 | Meta Muse Spark 1.3 (Muse Code harness) | 76/76 | 73/74 | 73/74 | 90/96 | 96/96 | 15/16 / 16/16 | 14/16 / 16/16 |
 | Meta Muse Wonder Full 1.0 (Muse Code harness) | 75/76 | 73/74 | 73/74 | 95/96 | 96/96 | 14/16 / 16/16 | 15/16 / 16/16 |
 | Mistral Large 4 (Vibe harness) | 67/76 | 48/74 | 41/74 | 65/96 | 96/96 | 9/16 / 14/16 | 3/16 / 8/16 |
@@ -55,6 +57,7 @@ What the harness added, from each CLI's own record of every scored attempt (all 
 
 | Model (harness) | Scored attempts | CLI versions | Timeouts | Median call | Median input / output tokens | Denied tool attempts | Harness lookups | Guard resamples | Infra retries (not scored) |
 |---|---|---|---|---|---|---|---|---|---|
+| Meta Muse Wonder 1.0 (Muse Code harness) | 363 | muse 1.4.20 ×361, muse 1.4.18 ×2 | 0 | 21 s | 20,668 / 3,329 | none possible (no tools sent) | — | 59 in 59 attempts (16%) | 10 |
 | Meta Muse Spark 1.3 (Muse Code harness) | 366 | muse 1.4.15 ×341, muse 1.4.18 ×25 | 9 | 85 s | 19,691 / 9,971 | none possible (no tools sent) | — | 66 in 66 attempts (18%) | 7 |
 | Meta Muse Wonder Full 1.0 (Muse Code harness) | 360 | muse 1.4.18 ×344, muse 1.4.20 ×16 | 1 | 39 s | 20,670 / 2,776 | none possible (no tools sent) | — | 66 in 66 attempts (18%) | 13 |
 | Mistral Large 4 (Vibe harness) | 539 | vibe 3.1.2 ×539 | 92 | 77 s | 6,029 / 7,433 | 154 in 120 attempts | 307 | — | 0 |
@@ -100,7 +103,9 @@ Tools the Vibe models reached for (every attempt was denied; none ran):
   denied in this environment, so I'll write the assembly carefully by hand (no local assembler available to test
   against)". The long battery shows it most (22 of 54). It also made 307 `search_tool_functions` lookups, the
   harness's own tool-catalogue query, which returns a count and reaches nothing outside.
-- **Mistral Medium 3.5 inside Vibe: 91/224 (41%), 154 within four**; QBE 5/74. It almost never reached for a tool
+- **Mistral Medium 3.5 inside Vibe: 91/224 (41%), 154 within four**; QBE 5/74. (Mistral's model card marks Medium 3.5
+  deprecated since 2026-10-31, with Large 4 as the replacement; it was still Vibe's default model,
+  `mistral-vibe-cli-latest`, when this ran on 2026-11-11/12, and the API still serves it.) It almost never reached for a tool
   (once), so its result is closer to what the model does unaided: 254 of its failed attempts are invalid QBE.
   19/96 on apps, 6/16 hex functions within four, so the hex-program gate was not met.
 - **Whether the harness helps or hurts depends on the model's habits.** Large 4 loses turns to tool attempts a
@@ -138,17 +143,23 @@ request differs.
 
 ## What was not done
 
-- **Muse Wonder 1.0 and Muse Ember 1.0** are started (Wonder: 105 of 224 function cells) and wait for the
-  subscription's weekly quota; they are left out of the tables until complete.
-- **The tier comparison** (paid `muse-spark-1.3` against the contributor run, same cells) has its function half
-  (224 cells) and 16 of 96 app cells; it waits for the same quota and will be reported in
-  [live-model-eval-effort.md](live-model-eval-effort.md). The client sends byte-identical requests in both tiers
+- **Muse Ember 1.0** is running and is left out of the tables until complete. It stopped on 2026-11-15 when Muse
+  proposed a `tool.muse.search` task with no tools sent, after the model step and with no answer text before it
+  (the second such attempt; see below). From 2026-11-16 (user decision) such a proposal is handled as agy's
+  `manage_task` call is: the call is stopped there and the text written before it is scored, with no second try.
+  The 11-15 attempt was recorded that way from its kept stream (`eval/replay_voided.py`): an empty answer, a
+  failure. Muse Wonder 1.0 completed on 2026-11-15 and is in the tables above.
+- **The tier comparison** (paid `muse-spark-1.3` against the contributor run, same cells; functions and apps,
+  complete 2026-11-16) is reported in [live-model-eval-effort.md](live-model-eval-effort.md), not as a row here:
+  215 against 222 of 224 functions and 85 against 90 of 96 apps first attempt, neither significant, on different
+  Muse Code versions. The client sends byte-identical requests in both tiers
   (`eval/audits/muse-1.4.18-tiers-20261113`). One paid attempt was stopped unscored when Muse proposed a
   `tool.muse.search` task with no tools sent; three recorded replays did not reproduce it
   (`eval/audits/muse-1.4.18-search-20261113`).
 
 - GLM-5.3 and GLM-5.3 Flash, also served through Vibe, were not run (GLM-5.3 is measured tool-free on Fireworks).
-- No tool-free Mistral or Meta rows exist. Mistral's API is pay-per-token and was not approved; Meta's API route
+- A tool-free Mistral Large 4 row is being run through Mistral's API (from 2026-11-15, on the user's API allowance)
+  and will appear in the main tables; none is planned for Medium 3.5 (deprecated). No tool-free Meta rows exist; Meta's API route
   was not investigated beyond noting that the Muse binary accepts an API key.
 - The raw 1.4.15 Muse and 3.1.2 Vibe audit captures were lost with `/tmp` in the power loss of 2026-11-12; their
   findings are recorded in the adapters' docstrings (`bca/liveeval/vendor_muse.py`, `vendor_vibe.py`). Audits from

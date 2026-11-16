@@ -1,0 +1,232 @@
+.globl _start
+
+.text
+_start:
+    # Read all input from standard input (fd = 0)
+    xor r13d, r13d              # r13 = total_bytes read
+
+.Lread_loop:
+    mov eax, 0                  # sys_read
+    xor edi, edi                # fd = 0
+    lea rsi, [rip + in_buf]
+    add rsi, r13                # buf = in_buf + total_bytes
+    mov edx, 65536
+    sub rdx, r13                # max count remaining
+    jle .Lread_done
+    syscall
+
+    test rax, rax
+    jle .Lread_done             # EOF (0) or error (<0)
+    add r13, rax                # total_bytes += bytes read
+    jmp .Lread_loop
+
+.Lread_done:
+    test r13, r13
+    jz .Lexit_success           # Empty input prints nothing
+
+    # Parse input into lines array
+    # Each line entry: 8 bytes ptr, 8 bytes len
+    lea rsi, [rip + in_buf]     # p = current byte pointer
+    mov rbx, rsi                # line_start = in_buf
+    lea r12, [rsi + r13]        # end_ptr = in_buf + total_bytes
+    lea r14, [rip + lines]      # pointer into lines array
+    xor r15d, r15d              # line_count = 0
+
+.Lparse_loop:
+    cmp rsi, r12
+    jae .Lparse_end
+
+    cmp r15, 16380
+    jae .Lparse_end
+
+    mov al, byte ptr [rsi]
+    cmp al, 10                  # newline 0x0A
+    jne .Lnot_newline
+
+    # Line terminated by newline
+    mov rax, rsi
+    sub rax, rbx                # len = p - line_start
+    mov qword ptr [r14], rbx    # line.ptr
+    mov qword ptr [r14 + 8], rax # line.len
+    add r14, 16
+    inc r15
+
+    lea rbx, [rsi + 1]          # next line_start = p + 1
+
+.Lnot_newline:
+    inc rsi
+    jmp .Lparse_loop
+
+.Lparse_end:
+    cmp rbx, r12
+    jae .Ldone_lines
+
+    cmp r15, 16380
+    jae .Ldone_lines
+
+    # Final line without trailing newline
+    mov rax, r12
+    sub rax, rbx
+    mov qword ptr [r14], rbx
+    mov qword ptr [r14 + 8], rax
+    add r14, 16
+    inc r15
+
+.Ldone_lines:
+    lea r9, [rip + lines]
+    mov rbp, r15
+    shl rbp, 4
+    add rbp, r9                 # rbp = lines_end = lines + line_count * 16
+
+    cmp r15, 1
+    jbe .Lprint_lines           # 0 or 1 line is already sorted
+
+    # Shellsort with Ciura gap sequence
+    lea r12, [rip + gaps]
+
+.Lgap_loop:
+    movsxd r13, dword ptr [r12]
+    test r13, r13
+    jz .Lprint_lines            # gap == 0 means sorting finished
+    add r12, 4
+    shl r13, 4                  # r13 = gap * 16 (gap in bytes)
+
+    mov rbx, r9
+    add rbx, r13                # i = lines + gap_bytes
+
+.Li_loop:
+    cmp rbx, rbp
+    jae .Lgap_loop
+
+    mov r14, qword ptr [rbx]     # temp.ptr
+    mov r15, qword ptr [rbx + 8] # temp.len
+    mov r11, rbx                 # j = i
+
+.Lwhile_inner:
+    mov r10, r11
+    sub r10, r13                 # prev = j - gap_bytes
+    cmp r10, r9
+    jb .Linsert_temp
+
+    # Compare Line A (at [r10]) with temp (Line B)
+    mov rdi, qword ptr [r10]     # ptr_A
+    mov rsi, qword ptr [r10 + 8] # len_A
+
+    mov r8, rsi
+    cmp r8, r15
+    cmova r8, r15                # min_len = min(len_A, temp.len)
+    test r8, r8
+    jz .Lcmp_prefix
+
+    xor eax, eax
+.Lcmp_bytes:
+    movzx edx, byte ptr [rdi + rax]
+    movzx ecx, byte ptr [r14 + rax]
+    cmp edx, ecx
+    jne .Lcmp_diff
+    inc rax
+    cmp rax, r8
+    jb .Lcmp_bytes
+
+.Lcmp_prefix:
+    # All compared bytes are equal: longer line is greater
+    cmp rsi, r15
+    jbe .Linsert_temp            # len_A <= temp.len: Line A not greater
+    jmp .Ldo_shift
+
+.Lcmp_diff:
+    jbe .Linsert_temp            # byte_A < byte_B (unsigned): Line A not greater
+
+.Ldo_shift:
+    mov rax, qword ptr [r10]
+    mov qword ptr [r11], rax
+    mov rax, qword ptr [r10 + 8]
+    mov qword ptr [r11 + 8], rax
+    mov r11, r10                 # j = prev
+    jmp .Lwhile_inner
+
+.Linsert_temp:
+    mov qword ptr [r11], r14
+    mov qword ptr [r11 + 8], r15
+
+    add rbx, 16                  # i++
+    jmp .Li_loop
+
+.Lprint_lines:
+    mov r12, r9                  # r12 = current line pointer
+    xor r13d, r13d               # r13 = out_buf_len = 0
+
+.Lout_loop:
+    cmp r12, rbp
+    jae .Lout_done
+
+    # Check if line content + newline fits in out_buf
+    mov rax, r13
+    add rax, qword ptr [r12 + 8]
+    inc rax
+    cmp rax, 65536
+    jbe .Lfit
+
+    call flush_buffer
+
+.Lfit:
+    mov rsi, qword ptr [r12]     # src = line.ptr
+    mov rcx, qword ptr [r12 + 8] # count = line.len
+    lea rdi, [rip + out_buf]
+    add rdi, r13                 # dst = out_buf + r13
+    rep movsb
+
+    mov byte ptr [rdi], 10       # append newline 0x0A
+    add r13, qword ptr [r12 + 8]
+    inc r13
+
+    add r12, 16                  # next line
+    jmp .Lout_loop
+
+.Lout_done:
+    call flush_buffer
+
+.Lexit_success:
+    mov eax, 60                  # sys_exit
+    xor edi, edi                 # status = 0
+    syscall
+
+# flush_buffer: writes r13 bytes from out_buf to stdout (fd = 1)
+# Resets r13 to 0. Preserves r12, rbp, rbx.
+flush_buffer:
+    test r13, r13
+    jz .Lflush_ret
+    lea rsi, [rip + out_buf]
+
+.Lwrite_loop:
+    mov eax, 1                   # sys_write
+    mov edi, 1                   # fd = 1
+    mov rdx, r13                 # count
+    syscall
+    test rax, rax
+    jle .Lflush_error
+    add rsi, rax
+    sub r13, rax
+    jnz .Lwrite_loop
+
+.Lflush_ret:
+    ret
+
+.Lflush_error:
+    mov eax, 60
+    xor edi, edi
+    syscall
+
+.section .rodata
+.align 4
+gaps:
+    .long 4000, 1750, 701, 301, 132, 57, 23, 10, 4, 1, 0
+
+.bss
+.align 16
+in_buf:
+    .zero 65536
+lines:
+    .zero 262144
+out_buf:
+    .zero 65536

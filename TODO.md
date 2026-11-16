@@ -132,12 +132,9 @@ The live work queue (what is running, what is next, what needs the user) is `eva
 - [ ] **Muse round 2** (Muse Code Power Usage subscription): Wonder Full 1.0 done and reported; Wonder 1.0 (105/224),
   Ember 1.0 and the paid-tier half of the tier comparison wait for the weekly quota (resets 2026-11-15 16:02).
 
-- [ ] **Gemini 4 Argon High (Antigravity, Google AI Pro), function batteries**: stopped on quota at 122/224 cells
-  (181 calls). **Stopped 2026-11-13, waiting for the user**: on agy 1.5.7 the model is served as
-  `gemini-4-argon-trial` (before: `gemini-4-argon-c`) and 21 of 24 attempts were Gemini safety-filter blocks; those 9
-  cells were superseded, the run stands at 120/224. Decide whether the new route is the same model (continue, restart
-  or end). The agy adapter should score a Gemini filter block as a refusal, not `format`. Run as-is with the uniform 180 s limit (user decision 2026-11-07). When complete: by-hand review,
-  then README and the cross-vendor report (state the plan: Google AI Pro).
+- [x] **Gemini 4 Argon High (Antigravity, Google AI Pro), function batteries**: done 2026-11-14, 191/224 first
+  attempt, 205 within four; 29 cells blocked by Gemini's filter on the first attempt (19 on all four). The first 122
+  cells (earlier serving, 5x the thinking) were superseded and re-run so the row is one configuration.
 - [ ] **Antigravity (Gemini 3.8 Flash High)**: 1 cell left (`stats_f.ir.aarch64`, adversarial). The hourly loop
   was stopped on 2026-10-24 at the user's request; the user triggers it manually after a quota reset: `.venv/bin/python -m bca.liveeval run --run-dir eval/runs/vendors-all-20260928-202226 --tasks
   round1,round2,long,adversarial --subjects agy:gemini-3.8-flash-high --max-calls 3000 --jobs 2`. After it:
@@ -312,7 +309,11 @@ then regenerate the tables and `eval/analytics.py`.
 
 **Hex-path holes**
 
-- [ ] **No hex results for Gemini 3.8 Flash High (Kimi K3.1 Pro done 2026-11-10; Kolibri-1 done 2026-11-13: 0/16)**: hex functions (16 cells) each;
+- [x] **Gemini 4 Hydrogen High** (new on Antigravity): full set done 2026-11-15 (224/224 functions first attempt,
+  apps 93/96, hex functions 15/16, hex programs 10/16).
+- [ ] **Gemini 3.8 Flash High**: functions completed 2026-11-15 (211/224); hex functions 9/16 first, 13 within four;
+  hex programs running; it has no app battery yet (not requested).
+- [x] **No hex results for Gemini 3.8 Flash High (Kimi K3.1 Pro done 2026-11-10; Kolibri-1 done 2026-11-13: 0/16)**: hex functions (16 cells) each;
   whole-program hex follows only at ≥ 12/16 within four (so Haiku 4.5 and MAI-Code missing from hex apps is by
   design; Haiku 5.5 qualified and ran). Kolibri ~5 GPU hours.
 

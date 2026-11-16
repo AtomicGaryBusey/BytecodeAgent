@@ -10,6 +10,7 @@
     foundry:<dep>  a Microsoft Foundry deployment (vendor_foundry.FoundrySubject, Azure pay-per-token API, no CLI)
     fireworks:<id> a Fireworks.ai serverless model (vendor_fireworks.FireworksSubject, pay-per-token API, no CLI)
     cerebras:<id>  a Cerebras Inference model (vendor_cerebras.CerebrasSubject, pay-per-token API, no CLI)
+    mistral:<id>   a Mistral model through Mistral's own API (vendor_mistral.MistralSubject, pay-per-token, no CLI)
     vibe:<alias>   a Mistral model through Mistral Vibe (vendor_vibe.VibeSubject; agent-harness study, reported apart)
     apple:<model>  Apple Foundation Models on the user's Mac (vendor_apple.AppleSubject: `system` on-device or
                    `pcc`, via an SSH forward to `fm serve`; no CLI, no key, no cost)
@@ -28,6 +29,7 @@ from bca.liveeval.vendor_codex import CodexSubject
 from bca.liveeval.vendor_copilot import CopilotSubject
 from bca.liveeval.vendor_apple import AppleSubject
 from bca.liveeval.vendor_cerebras import CerebrasSubject
+from bca.liveeval.vendor_mistral import MistralSubject
 from bca.liveeval.vendor_muse import MuseSubject
 from bca.liveeval.vendor_vibe import VibeSubject
 from bca.liveeval.vendor_fireworks import FireworksSubject
@@ -46,6 +48,7 @@ VENDORS["vllm"] = VllmSubject  # likewise, for models Ollama cannot run
 VENDORS["foundry"] = FoundrySubject  # likewise: Azure-hosted, pay-per-token, spend-capped
 VENDORS["fireworks"] = FireworksSubject  # likewise: Fireworks.ai serverless, spend-capped
 VENDORS["cerebras"] = CerebrasSubject  # likewise: Cerebras Inference, spend-capped
+VENDORS["mistral"] = MistralSubject  # likewise: Mistral's own API (tool-free), spend-capped; default cap $0
 VENDORS["muse"] = MuseSubject  # Meta Muse Code CLI: an agent-harness study, reported apart (vendor_muse docstring)
 VENDORS["vibe"] = VibeSubject  # Mistral Vibe CLI: an agent-harness study, reported apart (vendor_vibe docstring)
 VENDORS["apple"] = AppleSubject  # Apple Foundation Models on the user's Mac, over an SSH forward

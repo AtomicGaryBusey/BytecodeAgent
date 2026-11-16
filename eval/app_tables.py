@@ -23,7 +23,7 @@ for f in sorted(glob.glob("eval/runs/apps-*/*/baseline/results.jsonl") + glob.gl
         if r.get("path") not in ("asm", "stream"):  # the opt-in hex path is reported on its own
             continue
         subj = r.get("subject") or ""
-        if subj.startswith(("codex_", "kimi_", "agy_", "grok_", "copilot_", "foundry_", "fireworks_", "cerebras_", "apple_")):
+        if subj.startswith(("codex_", "kimi_", "agy_", "grok_", "copilot_", "foundry_", "fireworks_", "cerebras_", "mistral_", "apple_")):
             label = subj.replace("_", ":", 1).replace("kimi-code_", "kimi-code/")
         elif subj.startswith("local_"):
             think = (r.get("local") or {}).get("think")  # @think / @nothink runs are separate rows

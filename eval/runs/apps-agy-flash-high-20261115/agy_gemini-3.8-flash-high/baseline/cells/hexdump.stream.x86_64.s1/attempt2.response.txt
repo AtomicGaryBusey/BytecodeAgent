@@ -1,0 +1,202 @@
+.equ BUF_SIZE, 65536
+.equ OUT_BUF_SIZE, 65536
+.equ OUT_THRESH, OUT_BUF_SIZE - 128
+
+.section .rodata
+hex_digits:
+    .ascii "0123456789abcdef"
+
+.section .bss
+.balign 16
+in_buf:
+    .space BUF_SIZE
+out_buf:
+    .space OUT_BUF_SIZE
+
+.text
+.globl _start
+
+_start:
+    xor r12, r12                    # total_offset = 0
+    lea r13, [rip + in_buf]         # in_ptr = in_buf
+    mov r14, r13                    # in_end = in_buf (0 bytes available)
+    lea r15, [rip + out_buf]        # out_ptr = out_buf
+
+.Lprocess_loop:
+    mov rax, r14
+    sub rax, r13                    # in_avail = in_end - in_ptr
+    cmp rax, 16
+    jge .Lhave_row
+
+    # Less than 16 bytes available: flush output, shift remaining bytes, read more
+    call flush_out
+
+    mov rcx, r14
+    sub rcx, r13                    # rcx = in_avail (0..15)
+    lea rdi, [rip + in_buf]
+    mov rsi, r13
+    rep movsb
+    lea r13, [rip + in_buf]
+    mov r14, rdi                    # r14 = in_buf + in_avail
+
+    # sys_read(0, r14, count)
+    xor eax, eax                    # sys_read = 0
+    xor edi, edi                    # fd = 0
+    mov rsi, r14                    # buf
+    lea rdx, [rip + in_buf]
+    add rdx, BUF_SIZE
+    sub rdx, r14                    # count
+    syscall
+
+    test rax, rax
+    jle .Leof
+
+    add r14, rax                    # in_end += bytes_read
+    jmp .Lprocess_loop
+
+.Lhave_row:
+    mov ebx, 16
+    call emit_row
+    jmp .Lprocess_loop
+
+.Leof:
+    mov rax, r14
+    sub rax, r13                    # remaining bytes (0..15)
+    test rax, rax
+    jz .Lfinish
+
+    mov ebx, eax                    # remaining count (1..15)
+    call emit_row
+
+.Lfinish:
+    call ensure_out_space
+    mov eax, r12d
+    call format_hex8
+    mov byte ptr [r15], 10          # '\n'
+    inc r15
+    call flush_out
+
+    mov eax, 60                     # sys_exit
+    xor edi, edi                    # status = 0
+    syscall
+
+emit_row:
+    call ensure_out_space
+
+    # Format offset: r12d as 8 hex digits
+    mov eax, r12d
+    call format_hex8
+
+    # Two spaces after offset
+    mov word ptr [r15], 0x2020
+    add r15, 2
+
+    # Loop i = 0..15 for hex column
+    lea rsi, [rip + hex_digits]
+    xor r8d, r8d                    # r8d = i
+.Lhex_loop:
+    cmp r8d, ebx
+    jge .Lhex_pad
+
+    # i < n: print 2 hex digits + 1 space
+    movzx eax, byte ptr [r13 + r8]
+    mov edx, eax
+    shr edx, 4
+    movzx ecx, al
+    and ecx, 0x0f
+    mov dl, byte ptr [rsi + rdx]
+    mov dh, byte ptr [rsi + rcx]
+    mov word ptr [r15], dx
+    mov byte ptr [r15 + 2], 0x20
+    add r15, 3
+    jmp .Lhex_after_slot
+
+.Lhex_pad:
+    # i >= n: print 3 spaces
+    mov word ptr [r15], 0x2020
+    mov byte ptr [r15 + 2], 0x20
+    add r15, 3
+
+.Lhex_after_slot:
+    cmp r8d, 7
+    jne .Lhex_next
+    mov byte ptr [r15], 0x20
+    inc r15
+
+.Lhex_next:
+    inc r8d
+    cmp r8d, 16
+    jl .Lhex_loop
+
+    # Step 3: one space, '|'
+    mov word ptr [r15], 0x7c20      # ' ' (0x20) then '|' (0x7c)
+    add r15, 2
+
+    # Print n bytes as characters
+    xor r8d, r8d                    # r8d = j
+.Lascii_loop:
+    cmp r8d, ebx
+    jge .Lascii_done
+
+    movzx eax, byte ptr [r13 + r8]
+    lea edx, [rax - 0x20]
+    cmp dl, 0x5e                    # 0x7e - 0x20 = 0x5e
+    jbe 1f
+    mov al, '.'
+1:
+    mov byte ptr [r15], al
+    inc r15
+
+    inc r8d
+    jmp .Lascii_loop
+
+.Lascii_done:
+    # Close '|' and newline
+    mov word ptr [r15], 0x0a7c      # '|' (0x7c) then '\n' (0x0a)
+    add r15, 2
+
+    add r13, rbx
+    add r12, rbx
+    ret
+
+format_hex8:
+    lea rsi, [rip + hex_digits]
+    mov ecx, 8
+.Lhex8_loop:
+    rol eax, 4
+    mov edx, eax
+    and edx, 0x0f
+    mov dl, byte ptr [rsi + rdx]
+    mov byte ptr [r15], dl
+    inc r15
+    dec ecx
+    jnz .Lhex8_loop
+    ret
+
+ensure_out_space:
+    lea rax, [rip + out_buf]
+    add rax, OUT_THRESH
+    cmp r15, rax
+    jb 1f
+    jmp flush_out
+1:
+    ret
+
+flush_out:
+    lea rsi, [rip + out_buf]
+    mov rdx, r15
+    sub rdx, rsi
+    test rdx, rdx
+    jle .Lflush_done
+.Lwrite_loop:
+    mov eax, 1                      # sys_write
+    mov edi, 1                      # fd = 1
+    syscall
+    test rax, rax
+    jle .Lflush_done
+    add rsi, rax
+    sub rdx, rax
+    jnz .Lwrite_loop
+.Lflush_done:
+    lea r15, [rip + out_buf]
+    ret

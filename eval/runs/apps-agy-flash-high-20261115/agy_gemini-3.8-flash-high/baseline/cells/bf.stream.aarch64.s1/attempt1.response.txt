@@ -1,0 +1,279 @@
+.globl _start
+.text
+
+_start:
+    // Read standard input completely into stdin_buf
+    adrp x19, stdin_buf
+    add x19, x19, :lo12:stdin_buf
+    movz w20, #1, lsl #16       // 65536 bytes maximum
+
+.Lread_loop:
+    cbz w20, .Lread_done
+    mov x0, #0                  // fd = 0 (stdin)
+    mov x1, x19                 // buffer pointer
+    mov w2, w20                 // count
+    mov x8, #63                 // sys_read
+    svc #0
+    cmp x0, #0
+    b.le .Lread_done            // EOF or error
+    add x19, x19, x0
+    sub w20, w20, w0
+    b .Lread_loop
+
+.Lread_done:
+    // Find first '!' in stdin
+    // x12: start of stdin
+    // x13: end of stdin
+    // x14: search pointer
+    adrp x12, stdin_buf
+    add x12, x12, :lo12:stdin_buf
+    mov x13, x19
+    mov x14, x12
+
+.Lfind_excl:
+    cmp x14, x13
+    b.hs .Lno_excl
+    ldrb w0, [x14]
+    cmp w0, #'!'
+    b.eq .Lfound_excl
+    add x14, x14, #1
+    b .Lfind_excl
+
+.Lfound_excl:
+    // Program is [x12, x14)
+    // Input is [x14 + 1, x13)
+    mov x15, x13                // in_end
+    mov x13, x14                // raw_prog_end
+    add x14, x13, #1            // in_start
+    b .Lfilter_start
+
+.Lno_excl:
+    // Entire stdin is program, input is empty
+    mov x14, x13                // in_start
+    mov x15, x13                // in_end
+
+.Lfilter_start:
+    adrp x18, prog_buf
+    add x18, x18, :lo12:prog_buf
+    adrp x26, bracket_stack
+    add x26, x26, :lo12:bracket_stack
+    adrp x27, jump_table
+    add x27, x27, :lo12:jump_table
+
+    mov x16, #0                 // prog_len = 0
+    mov x17, #0                 // bracket_stack_depth = 0
+
+.Lfilter_loop:
+    cmp x12, x13
+    b.hs .Lfilter_done
+    ldrb w0, [x12], #1
+
+    cmp w0, #'+'
+    b.eq .Lkeep_cmd
+    cmp w0, #'-'
+    b.eq .Lkeep_cmd
+    cmp w0, #'<'
+    b.eq .Lkeep_cmd
+    cmp w0, #'>'
+    b.eq .Lkeep_cmd
+    cmp w0, #'.'
+    b.eq .Lkeep_cmd
+    cmp w0, #','
+    b.eq .Lkeep_cmd
+    cmp w0, #'['
+    b.eq .Lcmd_open
+    cmp w0, #']'
+    b.eq .Lcmd_close
+
+    // Any other byte is a comment
+    b .Lfilter_loop
+
+.Lkeep_cmd:
+    strb w0, [x18, x16]
+    add x16, x16, #1
+    b .Lfilter_loop
+
+.Lcmd_open:
+    cmp x17, #4096
+    b.hs .Lbracket_error
+    strb w0, [x18, x16]
+    str w16, [x26, x17, lsl #2]
+    add x17, x17, #1
+    add x16, x16, #1
+    b .Lfilter_loop
+
+.Lcmd_close:
+    cbz x17, .Lbracket_error
+    sub x17, x17, #1
+    ldr w1, [x26, x17, lsl #2]  // w1 = open_idx (zeroes upper bits of x1)
+    strb w0, [x18, x16]
+
+    add w2, w16, #1             // close_idx + 1
+    str w2, [x27, x1, lsl #2]   // jump_table[open_idx] = close_idx + 1
+
+    add w3, w1, #1              // open_idx + 1
+    str w3, [x27, x16, lsl #2]  // jump_table[close_idx] = open_idx + 1
+
+    add x16, x16, #1
+    b .Lfilter_loop
+
+.Lfilter_done:
+    cbnz x17, .Lbracket_error   // unmatched '[' left open
+
+    // Initialize execution state
+    adrp x26, prog_buf
+    add x26, x26, :lo12:prog_buf
+    mov x19, x26                // pc = prog_buf
+    add x20, x26, x16           // pc_end = prog_buf + prog_len
+
+    adrp x21, tape
+    add x21, x21, :lo12:tape    // tape pointer at cell 0
+
+    mov x22, x14                // in_ptr
+    mov x23, x15                // in_end
+
+    adrp x28, stdout_buf
+    add x28, x28, :lo12:stdout_buf
+    mov x24, x28                // out_ptr
+    movz x0, #1, lsl #16        // 65536
+    add x25, x28, x0            // out_end = stdout_buf + 65536
+
+    adrp x27, jump_table
+    add x27, x27, :lo12:jump_table
+
+.Lexec_loop:
+    cmp x19, x20
+    b.hs .Lexec_done
+
+    ldrb w0, [x19], #1
+
+    cmp w0, #60
+    b.ge .Lexec_ge60
+
+    // Command in {43, 44, 45, 46}
+    cmp w0, #45
+    b.lt .Lexec_43_44
+    b.gt .Lop_dot
+
+    // '-' = 45
+    ldrb w1, [x21]
+    sub w1, w1, #1
+    strb w1, [x21]
+    b .Lexec_loop
+
+.Lexec_43_44:
+    cmp w0, #'+'
+    b.ne .Lop_comma
+
+    // '+' = 43
+    ldrb w1, [x21]
+    add w1, w1, #1
+    strb w1, [x21]
+    b .Lexec_loop
+
+.Lexec_ge60:
+    cmp w0, #91
+    b.ge .Lexec_91_93
+
+    cmp w0, #'<'
+    b.ne .Lop_right
+
+    // '<' = 60
+    sub x21, x21, #1
+    b .Lexec_loop
+
+.Lop_right:
+    // '>' = 62
+    add x21, x21, #1
+    b .Lexec_loop
+
+.Lexec_91_93:
+    cmp w0, #'['
+    b.ne .Lop_close
+
+.Lop_open:
+    // '[' = 91
+    ldrb w1, [x21]
+    cbnz w1, .Lexec_loop
+    sub x1, x19, #1
+    sub x1, x1, x26
+    ldr w2, [x27, x1, lsl #2]
+    add x19, x26, x2
+    b .Lexec_loop
+
+.Lop_close:
+    // ']' = 93
+    ldrb w1, [x21]
+    cbz w1, .Lexec_loop
+    sub x1, x19, #1
+    sub x1, x1, x26
+    ldr w2, [x27, x1, lsl #2]
+    add x19, x26, x2
+    b .Lexec_loop
+
+.Lop_dot:
+    // '.' = 46
+    ldrb w1, [x21]
+    strb w1, [x24], #1
+    cmp x24, x25
+    b.lo .Lexec_loop
+    bl flush_stdout
+    b .Lexec_loop
+
+.Lop_comma:
+    // ',' = 44
+    cmp x22, x23
+    b.hs .Lin_exhausted
+    ldrb w1, [x22], #1
+    strb w1, [x21]
+    b .Lexec_loop
+
+.Lin_exhausted:
+    strb wzr, [x21]
+    b .Lexec_loop
+
+.Lexec_done:
+    bl flush_stdout
+    mov x0, #0
+    mov x8, #93                 // sys_exit
+    svc #0
+
+.Lbracket_error:
+    mov x0, #1
+    mov x8, #93                 // sys_exit
+    svc #0
+
+flush_stdout:
+    sub x2, x24, x28
+    cbz x2, 2f
+    mov x1, x28
+1:
+    mov x0, #1                  // fd = 1 (stdout)
+    mov x8, #64                 // sys_write
+    svc #0
+    cmp x0, #0
+    b.le 2f
+    add x1, x1, x0
+    sub x2, x2, x0
+    cbnz x2, 1b
+2:
+    mov x24, x28
+    ret
+
+.section .bss
+.balign 16
+stdin_buf:
+    .zero 65536
+stdout_buf:
+    .zero 65536
+prog_buf:
+    .zero 65536
+tape:
+    .zero 30000
+.balign 8
+bracket_stack:
+    .zero 16384
+.balign 8
+jump_table:
+    .zero 262144
+

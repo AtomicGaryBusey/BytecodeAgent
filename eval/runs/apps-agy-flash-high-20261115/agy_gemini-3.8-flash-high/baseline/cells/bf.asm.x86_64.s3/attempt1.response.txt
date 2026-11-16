@@ -1,0 +1,267 @@
+.globl _start
+
+.section .rodata
+    .balign 8
+dispatch_table:
+    .quad .Hop_gt
+    .quad .Hop_lt
+    .quad .Hop_plus
+    .quad .Hop_minus
+    .quad .Hop_dot
+    .quad .Hop_comma
+    .quad .Hop_open
+    .quad .Hop_close
+
+.text
+_start:
+    # Read entire stdin into stdin_buf
+    lea rbx, [rip + stdin_buf]
+    xor r12d, r12d
+.Lread_loop:
+    mov eax, 0                 # sys_read
+    xor edi, edi               # fd = 0 (stdin)
+    lea rsi, [rbx + r12]
+    mov edx, 65536
+    sub edx, r12d
+    jbe .Lread_done
+    syscall
+    test rax, rax
+    jle .Lread_done
+    add r12, rax
+    cmp r12, 65536
+    jb .Lread_loop
+.Lread_done:
+
+    # Find first '!' in stdin_buf[0 .. r12-1]
+    xor ecx, ecx
+.Lfind_bang:
+    cmp rcx, r12
+    jae .Lno_bang
+    cmp byte ptr [rbx + rcx], 0x21   # '!'
+    je .Lfound_bang
+    inc rcx
+    jmp .Lfind_bang
+
+.Lfound_bang:
+    lea r14, [rbx + rcx + 1]   # input_ptr
+    jmp .Lbang_done
+
+.Lno_bang:
+    lea r14, [rbx + r12]       # input_ptr = input_end
+
+.Lbang_done:
+    lea r15, [rbx + r12]       # input_end
+    mov rsi, rbx               # raw prog start
+    lea rdi, [rbx + rcx]       # raw prog end
+
+    # Filter program, validate brackets, build jump table
+    xor r12d, r12d             # prog_len = 0
+    xor ebp, ebp               # bracket_depth = 0
+    lea r8, [rip + prog]
+    lea r9, [rip + jump_table]
+    lea r10, [rip + bracket_stack]
+
+.Lfilter_loop:
+    cmp rsi, rdi
+    jae .Lfilter_done
+    mov al, byte ptr [rsi]
+    inc rsi
+
+    cmp al, '>'
+    je .Lcmd_gt
+    cmp al, '<'
+    je .Lcmd_lt
+    cmp al, '+'
+    je .Lcmd_plus
+    cmp al, '-'
+    je .Lcmd_minus
+    cmp al, '.'
+    je .Lcmd_dot
+    cmp al, ','
+    je .Lcmd_comma
+    cmp al, '['
+    je .Lcmd_open
+    cmp al, ']'
+    je .Lcmd_close
+    jmp .Lfilter_loop
+
+.Lcmd_gt:
+    mov byte ptr [r8 + r12], 0
+    inc r12d
+    jmp .Lfilter_loop
+
+.Lcmd_lt:
+    mov byte ptr [r8 + r12], 1
+    inc r12d
+    jmp .Lfilter_loop
+
+.Lcmd_plus:
+    mov byte ptr [r8 + r12], 2
+    inc r12d
+    jmp .Lfilter_loop
+
+.Lcmd_minus:
+    mov byte ptr [r8 + r12], 3
+    inc r12d
+    jmp .Lfilter_loop
+
+.Lcmd_dot:
+    mov byte ptr [r8 + r12], 4
+    inc r12d
+    jmp .Lfilter_loop
+
+.Lcmd_comma:
+    mov byte ptr [r8 + r12], 5
+    inc r12d
+    jmp .Lfilter_loop
+
+.Lcmd_open:
+    mov dword ptr [r10 + rbp*4], r12d
+    inc ebp
+    mov byte ptr [r8 + r12], 6
+    inc r12d
+    jmp .Lfilter_loop
+
+.Lcmd_close:
+    test ebp, ebp
+    jz .Lexit_error
+    dec ebp
+    mov edx, dword ptr [r10 + rbp*4]
+    mov dword ptr [r9 + r12*4], edx
+    mov dword ptr [r9 + rdx*4], r12d
+    mov byte ptr [r8 + r12], 7
+    inc r12d
+    jmp .Lfilter_loop
+
+.Lfilter_done:
+    test ebp, ebp
+    jnz .Lexit_error
+
+    # Set up interpreter state
+    mov r13, r14               # r13 = input_ptr
+    mov r14, r15               # r14 = input_end
+    mov r15d, r12d             # r15d = prog_len
+    xor r12d, r12d             # r12d = pc (starts at 0)
+    xor ebp, ebp               # ebp = out_count (starts at 0)
+    lea rbx, [rip + tape]      # rbx = tape pointer
+    lea rdi, [rip + dispatch_table]
+
+.Lexec_loop:
+    cmp r12d, r15d
+    jae .Lexec_done
+    movzx eax, byte ptr [r8 + r12]
+    jmp qword ptr [rdi + rax*8]
+
+.Hop_gt:
+    inc rbx
+    inc r12d
+    jmp .Lexec_loop
+
+.Hop_lt:
+    dec rbx
+    inc r12d
+    jmp .Lexec_loop
+
+.Hop_plus:
+    inc byte ptr [rbx]
+    inc r12d
+    jmp .Lexec_loop
+
+.Hop_minus:
+    dec byte ptr [rbx]
+    inc r12d
+    jmp .Lexec_loop
+
+.Hop_dot:
+    lea rdx, [rip + stdout_buf]
+    mov al, byte ptr [rbx]
+    mov byte ptr [rdx + rbp], al
+    inc rbp
+    cmp rbp, 65536
+    jb 1f
+    call flush_stdout
+1:
+    inc r12d
+    jmp .Lexec_loop
+
+.Hop_comma:
+    cmp r13, r14
+    jae 1f
+    mov al, byte ptr [r13]
+    inc r13
+    jmp 2f
+1:
+    xor eax, eax
+2:
+    mov byte ptr [rbx], al
+    inc r12d
+    jmp .Lexec_loop
+
+.Hop_open:
+    cmp byte ptr [rbx], 0
+    jne 1f
+    mov r12d, dword ptr [r9 + r12*4]
+1:
+    inc r12d
+    jmp .Lexec_loop
+
+.Hop_close:
+    cmp byte ptr [rbx], 0
+    je 1f
+    mov r12d, dword ptr [r9 + r12*4]
+1:
+    inc r12d
+    jmp .Lexec_loop
+
+.Lexec_done:
+    call flush_stdout
+    mov eax, 60                # sys_exit
+    xor edi, edi               # status = 0
+    syscall
+
+.Lexit_error:
+    mov eax, 60                # sys_exit
+    mov edi, 1                 # status = 1
+    syscall
+
+flush_stdout:
+    test ebp, ebp
+    jz .Lflush_ret
+    push r12
+    push r13
+    lea r12, [rip + stdout_buf]
+    mov r13d, ebp
+.Lflush_write_loop:
+    mov eax, 1                 # sys_write
+    mov edi, 1                 # fd = 1 (stdout)
+    mov rsi, r12
+    mov edx, r13d
+    syscall
+    test rax, rax
+    jle .Lflush_done
+    add r12, rax
+    sub r13d, eax
+    jnz .Lflush_write_loop
+.Lflush_done:
+    pop r13
+    pop r12
+    xor ebp, ebp
+.Lflush_ret:
+    lea rdi, [rip + dispatch_table]
+    ret
+
+.bss
+    .balign 16
+stdin_buf:
+    .space 65536
+stdout_buf:
+    .space 65536
+prog:
+    .space 65536
+jump_table:
+    .space 262144
+bracket_stack:
+    .space 8192
+tape:
+    .space 32768
+

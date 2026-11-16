@@ -1,0 +1,225 @@
+.equ SYS_READ, 63
+.equ SYS_WRITE, 64
+.equ SYS_EXIT, 93
+
+.text
+.globl _start
+_start:
+    // Read standard input until EOF
+    adrp x19, input_buf
+    add x19, x19, :lo12:input_buf
+    mov x20, #0
+
+.Lread_loop:
+    mov x0, #0
+    add x1, x19, x20
+    movz x2, #1, lsl #16
+    sub x2, x2, x20
+    cbz x2, .Lread_done
+
+    mov x8, #SYS_READ
+    svc #0
+
+    cmp x0, #0
+    b.le .Lread_done
+
+    add x20, x20, x0
+    b .Lread_loop
+
+.Lread_done:
+    // x20 contains total input bytes read
+    cbz x20, .Lexit_success
+
+    // Parse lines
+    adrp x21, input_buf
+    add x21, x21, :lo12:input_buf
+    add x22, x21, x20               // end of input buffer
+    mov x23, x21                    // start of current line
+
+    adrp x24, lines
+    add x24, x24, :lo12:lines
+    mov x25, #0                     // line count
+
+.Lparse_loop:
+    cmp x21, x22
+    b.ge .Lparse_trailing
+
+    ldrb w26, [x21]
+    cmp w26, #10
+    b.ne .Lparse_next
+
+    // Newline found: record line
+    sub x27, x21, x23
+    add x28, x24, x25, lsl #4
+    stp x23, x27, [x28]
+    add x25, x25, #1
+    add x23, x21, #1
+
+.Lparse_next:
+    add x21, x21, #1
+    b .Lparse_loop
+
+.Lparse_trailing:
+    cmp x23, x22
+    b.ge .Lparse_done
+    sub x27, x22, x23
+    add x28, x24, x25, lsl #4
+    stp x23, x27, [x28]
+    add x25, x25, #1
+
+.Lparse_done:
+    cbz x25, .Lexit_success
+
+    // Sort lines with Shellsort
+    mov x19, x25                    // n = num_lines
+    mov x20, x24                    // lines base pointer
+    lsr x21, x19, #1                // gap = n / 2
+
+.Lgap_loop:
+    cbz x21, .Lsort_done
+
+    mov x22, x21                    // i = gap
+.Li_loop:
+    cmp x22, x19
+    b.ge .Lgap_next
+
+    add x26, x20, x22, lsl #4
+    ldp x24, x25, [x26]             // temp_ptr, temp_len
+
+    mov x23, x22                    // j = i
+.Lj_loop:
+    cmp x23, x21
+    b.lo .Linsert_temp
+
+    sub x27, x23, x21               // k = j - gap
+    add x26, x20, x27, lsl #4
+    ldp x0, x1, [x26]               // lines[k]
+
+    mov x2, x24                     // temp_ptr
+    mov x3, x25                     // temp_len
+
+    bl compare_lines
+    cmp x0, #0
+    b.le .Linsert_temp
+
+    // lines[j] = lines[k]
+    sub x27, x23, x21
+    add x26, x20, x27, lsl #4
+    ldp x0, x1, [x26]
+    add x26, x20, x23, lsl #4
+    stp x0, x1, [x26]
+
+    sub x23, x23, x21
+    b .Lj_loop
+
+.Linsert_temp:
+    add x26, x20, x23, lsl #4
+    stp x24, x25, [x26]
+
+    add x22, x22, #1
+    b .Li_loop
+
+.Lgap_next:
+    lsr x21, x21, #1
+    b .Lgap_loop
+
+.Lsort_done:
+    // Format output into out_buf
+    adrp x21, out_buf
+    add x21, x21, :lo12:out_buf     // write pointer
+    mov x22, x21                    // start pointer
+    mov x23, #0                     // line index
+
+.Lout_loop:
+    cmp x23, x19
+    b.ge .Lout_done
+
+    add x26, x20, x23, lsl #4
+    ldp x24, x25, [x26]
+
+    cbz x25, .Lout_newline
+.Lcopy_bytes:
+    ldrb w27, [x24], #1
+    strb w27, [x21], #1
+    subs x25, x25, #1
+    b.ne .Lcopy_bytes
+
+.Lout_newline:
+    mov w27, #10
+    strb w27, [x21], #1
+
+    add x23, x23, #1
+    b .Lout_loop
+
+.Lout_done:
+    sub x19, x21, x22               // total bytes to write
+    mov x20, x22                    // current output pointer
+
+.Lwrite_loop:
+    cbz x19, .Lexit_success
+
+    mov x0, #1
+    mov x1, x20
+    mov x2, x19
+    mov x8, #SYS_WRITE
+    svc #0
+
+    cmp x0, #0
+    b.le .Lexit_success
+
+    add x20, x20, x0
+    sub x19, x19, x0
+    b .Lwrite_loop
+
+.Lexit_success:
+    mov x0, #0
+    mov x8, #SYS_EXIT
+    svc #0
+
+// Function: compare_lines
+// Inputs:
+//   x0: ptr1
+//   x1: len1
+//   x2: ptr2
+//   x3: len2
+// Output:
+//   x0: -1 if line1 < line2, 0 if line1 == line2, 1 if line1 > line2
+compare_lines:
+    cmp x1, x3
+    csel x4, x1, x3, lo
+    cbz x4, .Lcmp_len
+
+.Lcmp_loop:
+    ldrb w5, [x0], #1
+    ldrb w6, [x2], #1
+    cmp w5, w6
+    b.ne .Lcmp_diff
+    subs x4, x4, #1
+    b.ne .Lcmp_loop
+
+.Lcmp_len:
+    cmp x1, x3
+    b.lo .Lcmp_less
+    b.hi .Lcmp_greater
+    mov x0, #0
+    ret
+
+.Lcmp_diff:
+    b.lo .Lcmp_less
+
+.Lcmp_greater:
+    mov x0, #1
+    ret
+
+.Lcmp_less:
+    mov x0, #-1
+    ret
+
+.section .bss
+.balign 16
+input_buf:
+    .space 65536
+out_buf:
+    .space 65536
+lines:
+    .space 32768

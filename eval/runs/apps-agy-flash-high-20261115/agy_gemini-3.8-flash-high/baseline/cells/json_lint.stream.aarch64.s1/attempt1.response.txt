@@ -1,0 +1,538 @@
+.globl _start
+
+.section .rodata
+.balign 8
+msg_ok:
+    .ascii "ok\n"
+.balign 8
+msg_err_prefix:
+    .ascii "error at "
+    .byte 0
+    .balign 8
+
+.section .bss
+.balign 8
+input_buf:
+    .space 131072
+input_buf_end:
+out_buf:
+    .space 64
+digit_buf:
+    .space 32
+digit_buf_end:
+
+.text
+
+// Global register conventions during parsing:
+//   x19: cur_ptr (current read pointer in buffer)
+//   x20: end_ptr (one past the last byte of input)
+//   x21: buf_start (start of input_buf)
+
+_start:
+    adrp x21, input_buf
+    add x21, x21, :lo12:input_buf
+    adrp x22, input_buf_end
+    add x22, x22, :lo12:input_buf_end
+    mov x19, x21
+
+.Lread_loop:
+    subs x2, x22, x19
+    b.le .Lread_done
+    mov x0, #0
+    mov x1, x19
+    mov x8, #63                 // sys_read
+    svc #0
+    cmp x0, #0
+    b.le .Lread_done
+    add x19, x19, x0
+    b .Lread_loop
+
+.Lread_done:
+    mov x20, x19                // x20 = end_ptr
+    mov x19, x21                // x19 = cur_ptr
+
+    bl skip_ws
+    cmp x19, x20
+    b.eq err_cur
+
+    bl parse_value
+
+    bl skip_ws
+    cmp x19, x20
+    b.ne err_cur
+
+    // Document valid
+    adrp x1, msg_ok
+    add x1, x1, :lo12:msg_ok
+    mov x2, #3
+    bl write_stdout
+
+    mov x0, #0
+    mov x8, #93                 // sys_exit
+    svc #0
+
+// Error handler: report error at offset (x19 - x21) and exit with status 1
+err_cur:
+    sub x0, x19, x21
+
+    adrp x10, out_buf
+    add x10, x10, :lo12:out_buf
+
+    adrp x11, msg_err_prefix
+    add x11, x11, :lo12:msg_err_prefix
+    ldr x12, [x11]
+    str x12, [x10]
+    ldrb w12, [x11, #8]
+    strb w12, [x10, #8]
+    add x10, x10, #9
+
+    cbnz x0, .Lerr_digits
+    mov w12, #0x30              // '0'
+    strb w12, [x10], #1
+    b .Lerr_finish
+
+.Lerr_digits:
+    adrp x1, digit_buf_end
+    add x1, x1, :lo12:digit_buf_end
+    mov x5, x1
+    mov x3, #10
+.Lerr_div_loop:
+    udiv x2, x0, x3
+    msub x4, x2, x3, x0
+    add w4, w4, #0x30
+    strb w4, [x1, #-1]!
+    mov x0, x2
+    cbnz x0, .Lerr_div_loop
+
+.Lerr_copy_loop:
+    ldrb w12, [x1], #1
+    strb w12, [x10], #1
+    cmp x1, x5
+    b.ne .Lerr_copy_loop
+
+.Lerr_finish:
+    mov w12, #0x0A              // '\n'
+    strb w12, [x10], #1
+
+    adrp x1, out_buf
+    add x1, x1, :lo12:out_buf
+    sub x2, x10, x1
+    bl write_stdout
+
+    mov x0, #1
+    mov x8, #93                 // sys_exit
+    svc #0
+
+// Write loop for stdout: x1 = buffer, x2 = count
+write_stdout:
+.Lwrite_loop:
+    cbz x2, .Lwrite_done
+    mov x0, #1                  // stdout
+    mov x8, #64                 // sys_write
+    svc #0
+    cmp x0, #0
+    b.le .Lwrite_done
+    add x1, x1, x0
+    sub x2, x2, x0
+    b .Lwrite_loop
+.Lwrite_done:
+    ret
+
+// Skip whitespace (0x20, 0x09, 0x0A, 0x0D)
+skip_ws:
+    cmp x19, x20
+    b.eq .Lws_done
+    ldrb w0, [x19]
+    cmp w0, #0x20               // ' '
+    b.eq .Lws_next
+    cmp w0, #0x0A               // '\n'
+    b.eq .Lws_next
+    cmp w0, #0x09               // '\t'
+    b.eq .Lws_next
+    cmp w0, #0x0D               // '\r'
+    b.ne .Lws_done
+.Lws_next:
+    add x19, x19, #1
+    b skip_ws
+.Lws_done:
+    ret
+
+// Parse JSON value
+parse_value:
+    stp x29, x30, [sp, #-16]!
+    mov x29, sp
+
+    cmp x19, x20
+    b.eq err_cur
+
+    ldrb w0, [x19]
+    cmp w0, #0x22               // '"'
+    b.eq .Lval_str
+    cmp w0, #0x7B               // '{'
+    b.eq .Lval_obj
+    cmp w0, #0x5B               // '['
+    b.eq .Lval_arr
+    cmp w0, #0x74               // 't'
+    b.eq .Lval_t
+    cmp w0, #0x66               // 'f'
+    b.eq .Lval_f
+    cmp w0, #0x6E               // 'n'
+    b.eq .Lval_n
+    cmp w0, #0x2D               // '-'
+    b.eq .Lval_num
+    sub w1, w0, #0x30
+    cmp w1, #10
+    b.lo .Lval_num
+
+    b err_cur
+
+.Lval_str:
+    bl parse_string
+    b .Lval_ret
+
+.Lval_obj:
+    bl parse_object
+    b .Lval_ret
+
+.Lval_arr:
+    bl parse_array
+    b .Lval_ret
+
+.Lval_num:
+    bl parse_number
+    b .Lval_ret
+
+.Lval_t:
+    add x19, x19, #1
+    cmp x19, x20
+    b.eq err_cur
+    ldrb w0, [x19]
+    cmp w0, #0x72               // 'r'
+    b.ne err_cur
+    add x19, x19, #1
+    cmp x19, x20
+    b.eq err_cur
+    ldrb w0, [x19]
+    cmp w0, #0x75               // 'u'
+    b.ne err_cur
+    add x19, x19, #1
+    cmp x19, x20
+    b.eq err_cur
+    ldrb w0, [x19]
+    cmp w0, #0x65               // 'e'
+    b.ne err_cur
+    add x19, x19, #1
+    b .Lval_ret
+
+.Lval_f:
+    add x19, x19, #1
+    cmp x19, x20
+    b.eq err_cur
+    ldrb w0, [x19]
+    cmp w0, #0x61               // 'a'
+    b.ne err_cur
+    add x19, x19, #1
+    cmp x19, x20
+    b.eq err_cur
+    ldrb w0, [x19]
+    cmp w0, #0x6C               // 'l'
+    b.ne err_cur
+    add x19, x19, #1
+    cmp x19, x20
+    b.eq err_cur
+    ldrb w0, [x19]
+    cmp w0, #0x73               // 's'
+    b.ne err_cur
+    add x19, x19, #1
+    cmp x19, x20
+    b.eq err_cur
+    ldrb w0, [x19]
+    cmp w0, #0x65               // 'e'
+    b.ne err_cur
+    add x19, x19, #1
+    b .Lval_ret
+
+.Lval_n:
+    add x19, x19, #1
+    cmp x19, x20
+    b.eq err_cur
+    ldrb w0, [x19]
+    cmp w0, #0x75               // 'u'
+    b.ne err_cur
+    add x19, x19, #1
+    cmp x19, x20
+    b.eq err_cur
+    ldrb w0, [x19]
+    cmp w0, #0x6C               // 'l'
+    b.ne err_cur
+    add x19, x19, #1
+    cmp x19, x20
+    b.eq err_cur
+    ldrb w0, [x19]
+    cmp w0, #0x6C               // 'l'
+    b.ne err_cur
+    add x19, x19, #1
+
+.Lval_ret:
+    ldp x29, x30, [sp], #16
+    ret
+
+// Parse JSON string
+parse_string:
+    add x19, x19, #1            // consume opening '"'
+.Lstr_loop:
+    cmp x19, x20
+    b.eq err_cur
+    ldrb w0, [x19]
+    cmp w0, #0x22               // '"'
+    b.eq .Lstr_done
+    cmp w0, #0x20
+    b.lo err_cur                // control character 0x00..0x1F
+    cmp w0, #0x5C               // '\'
+    b.eq .Lstr_escape
+    add x19, x19, #1
+    b .Lstr_loop
+
+.Lstr_escape:
+    add x19, x19, #1            // skip '\'
+    cmp x19, x20
+    b.eq err_cur
+    ldrb w0, [x19]
+    cmp w0, #0x22               // '"'
+    b.eq .Lstr_esc_single
+    cmp w0, #0x5C               // '\'
+    b.eq .Lstr_esc_single
+    cmp w0, #0x2F               // '/'
+    b.eq .Lstr_esc_single
+    cmp w0, #0x62               // 'b'
+    b.eq .Lstr_esc_single
+    cmp w0, #0x66               // 'f'
+    b.eq .Lstr_esc_single
+    cmp w0, #0x6E               // 'n'
+    b.eq .Lstr_esc_single
+    cmp w0, #0x72               // 'r'
+    b.eq .Lstr_esc_single
+    cmp w0, #0x74               // 't'
+    b.eq .Lstr_esc_single
+    cmp w0, #0x75               // 'u'
+    b.eq .Lstr_esc_u
+    b err_cur
+
+.Lstr_esc_single:
+    add x19, x19, #1
+    b .Lstr_loop
+
+.Lstr_esc_u:
+    add x19, x19, #1            // skip 'u'
+    mov w2, #4
+.Lstr_u_loop:
+    cmp x19, x20
+    b.eq err_cur
+    ldrb w0, [x19]
+    sub w1, w0, #0x30           // '0'..'9'
+    cmp w1, #10
+    b.lo .Lstr_u_ok
+    sub w1, w0, #0x41           // 'A'..'F'
+    cmp w1, #6
+    b.lo .Lstr_u_ok
+    sub w1, w0, #0x61           // 'a'..'f'
+    cmp w1, #6
+    b.lo .Lstr_u_ok
+    b err_cur
+
+.Lstr_u_ok:
+    add x19, x19, #1
+    subs w2, w2, #1
+    b.ne .Lstr_u_loop
+    b .Lstr_loop
+
+.Lstr_done:
+    add x19, x19, #1            // consume closing '"'
+    ret
+
+// Parse JSON number
+parse_number:
+    ldrb w0, [x19]
+    cmp w0, #0x2D               // '-'
+    b.ne .Lnum_int
+    add x19, x19, #1
+    cmp x19, x20
+    b.eq err_cur
+    ldrb w0, [x19]
+    sub w1, w0, #0x30
+    cmp w1, #10
+    b.hs err_cur
+
+.Lnum_int:
+    cmp w0, #0x30               // '0'
+    b.ne .Lnum_digits_1_9
+    add x19, x19, #1
+    b .Lnum_frac
+
+.Lnum_digits_1_9:
+    add x19, x19, #1
+.Lnum_int_loop:
+    cmp x19, x20
+    b.eq .Lnum_done
+    ldrb w0, [x19]
+    sub w1, w0, #0x30
+    cmp w1, #10
+    b.hs .Lnum_frac
+    add x19, x19, #1
+    b .Lnum_int_loop
+
+.Lnum_frac:
+    cmp x19, x20
+    b.eq .Lnum_done
+    ldrb w0, [x19]
+    cmp w0, #0x2E               // '.'
+    b.ne .Lnum_exp
+    add x19, x19, #1
+    cmp x19, x20
+    b.eq err_cur
+    ldrb w0, [x19]
+    sub w1, w0, #0x30
+    cmp w1, #10
+    b.hs err_cur
+    add x19, x19, #1
+.Lnum_frac_loop:
+    cmp x19, x20
+    b.eq .Lnum_done
+    ldrb w0, [x19]
+    sub w1, w0, #0x30
+    cmp w1, #10
+    b.hs .Lnum_exp
+    add x19, x19, #1
+    b .Lnum_frac_loop
+
+.Lnum_exp:
+    cmp x19, x20
+    b.eq .Lnum_done
+    ldrb w0, [x19]
+    cmp w0, #0x65               // 'e'
+    b.eq .Lnum_exp_start
+    cmp w0, #0x45               // 'E'
+    b.ne .Lnum_done
+.Lnum_exp_start:
+    add x19, x19, #1
+    cmp x19, x20
+    b.eq err_cur
+    ldrb w0, [x19]
+    cmp w0, #0x2B               // '+'
+    b.eq .Lnum_exp_sign
+    cmp w0, #0x2D               // '-'
+    b.ne .Lnum_exp_digits
+.Lnum_exp_sign:
+    add x19, x19, #1
+    cmp x19, x20
+    b.eq err_cur
+    ldrb w0, [x19]
+.Lnum_exp_digits:
+    sub w1, w0, #0x30
+    cmp w1, #10
+    b.hs err_cur
+    add x19, x19, #1
+.Lnum_exp_loop:
+    cmp x19, x20
+    b.eq .Lnum_done
+    ldrb w0, [x19]
+    sub w1, w0, #0x30
+    cmp w1, #10
+    b.hs .Lnum_done
+    add x19, x19, #1
+    b .Lnum_exp_loop
+
+.Lnum_done:
+    ret
+
+// Parse JSON array
+parse_array:
+    stp x29, x30, [sp, #-16]!
+    mov x29, sp
+
+    add x19, x19, #1            // consume '['
+    bl skip_ws
+    cmp x19, x20
+    b.eq err_cur
+
+    ldrb w0, [x19]
+    cmp w0, #0x5D               // ']'
+    b.eq .Larr_close
+
+.Larr_loop:
+    bl parse_value
+    bl skip_ws
+    cmp x19, x20
+    b.eq err_cur
+
+    ldrb w0, [x19]
+    cmp w0, #0x5D               // ']'
+    b.eq .Larr_close
+    cmp w0, #0x2C               // ','
+    b.ne err_cur
+
+    add x19, x19, #1            // consume ','
+    bl skip_ws
+    cmp x19, x20
+    b.eq err_cur
+    b .Larr_loop
+
+.Larr_close:
+    add x19, x19, #1            // consume ']'
+    ldp x29, x30, [sp], #16
+    ret
+
+// Parse JSON object
+parse_object:
+    stp x29, x30, [sp, #-16]!
+    mov x29, sp
+
+    add x19, x19, #1            // consume '{'
+    bl skip_ws
+    cmp x19, x20
+    b.eq err_cur
+
+    ldrb w0, [x19]
+    cmp w0, #0x7D               // '}'
+    b.eq .Lobj_close
+
+.Lobj_loop:
+    cmp x19, x20
+    b.eq err_cur
+    ldrb w0, [x19]
+    cmp w0, #0x22               // member key must start with '"'
+    b.ne err_cur
+
+    bl parse_string
+    bl skip_ws
+    cmp x19, x20
+    b.eq err_cur
+
+    ldrb w0, [x19]
+    cmp w0, #0x3A               // ':'
+    b.ne err_cur
+    add x19, x19, #1            // consume ':'
+
+    bl skip_ws
+    bl parse_value
+    bl skip_ws
+    cmp x19, x20
+    b.eq err_cur
+
+    ldrb w0, [x19]
+    cmp w0, #0x7D               // '}'
+    b.eq .Lobj_close
+    cmp w0, #0x2C               // ','
+    b.ne err_cur
+
+    add x19, x19, #1            // consume ','
+    bl skip_ws
+    cmp x19, x20
+    b.eq err_cur
+    b .Lobj_loop
+
+.Lobj_close:
+    add x19, x19, #1            // consume '}'
+    ldp x29, x30, [sp], #16
+    ret
+

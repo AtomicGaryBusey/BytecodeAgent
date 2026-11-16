@@ -1,0 +1,333 @@
+    .text
+    .globl _start
+
+_start:
+    // Read all input into input_buf
+    // x19 = total bytes read
+    mov     x19, #0
+    movz    x20, #32768
+
+read_loop:
+    cmp     x19, x20
+    b.ge    read_done
+    mov     x8, #63             // sys_read
+    mov     x0, #0              // stdin (fd 0)
+    adrp    x1, input_buf
+    add     x1, x1, :lo12:input_buf
+    add     x1, x1, x19
+    sub     x2, x20, x19
+    svc     #0
+    cmp     x0, #0
+    b.le    read_done
+    add     x19, x19, x0
+    b       read_loop
+
+read_done:
+    // If no bytes were read, exit immediately
+    cbz     x19, exit_success
+
+    // Parse lines from input_buf
+    // Line entry in 'lines':
+    //   offset 0: pointer to line start (8 bytes)
+    //   offset 8: line length (8 bytes)
+    adrp    x23, input_buf
+    add     x23, x23, :lo12:input_buf
+    adrp    x24, lines
+    add     x24, x24, :lo12:lines
+
+    mov     x20, #0             // cur = 0
+    mov     x21, #0             // line_start = 0
+    mov     x22, #0             // num_lines = 0
+
+parse_loop:
+    cmp     x20, x19
+    b.ge    parse_end_loop
+    ldrb    w0, [x23, x20]
+    cmp     w0, #10             // '\n'
+    b.ne    1f
+
+    // Newline found: store line from line_start to cur - 1
+    sub     x1, x20, x21        // length
+    add     x2, x23, x21        // pointer
+    add     x3, x24, x22, lsl #4
+    stp     x2, x1, [x3]
+    add     x22, x22, #1
+    add     x21, x20, #1        // line_start = cur + 1
+
+1:
+    add     x20, x20, #1
+    b       parse_loop
+
+parse_end_loop:
+    // If there are bytes after the last newline, form one more line
+    cmp     x21, x19
+    b.ge    parse_done
+    sub     x1, x19, x21        // length
+    add     x2, x23, x21        // pointer
+    add     x3, x24, x22, lsl #4
+    stp     x2, x1, [x3]
+    add     x22, x22, #1
+
+parse_done:
+    mov     x19, x22            // x19 = num_lines
+    cbz     x19, exit_success
+
+    // Sort lines
+    mov     x0, x19
+    bl      sort_lines
+
+    // Format sorted lines into output_buf
+    adrp    x23, output_buf
+    add     x23, x23, :lo12:output_buf
+    adrp    x24, lines
+    add     x24, x24, :lo12:lines
+
+    mov     x20, #0             // line index = 0
+    mov     x21, #0             // output length = 0
+
+format_loop:
+    cmp     x20, x19
+    b.ge    format_done
+
+    add     x0, x24, x20, lsl #4
+    ldp     x1, x2, [x0]        // x1 = ptr, x2 = len
+
+    // Copy line bytes
+    mov     x3, #0
+1:
+    cmp     x3, x2
+    b.ge    2f
+    ldrb    w4, [x1, x3]
+    strb    w4, [x23, x21]
+    add     x21, x21, #1
+    add     x3, x3, #1
+    b       1b
+2:
+    // Append newline '\n' (10)
+    mov     w4, #10
+    strb    w4, [x23, x21]
+    add     x21, x21, #1
+
+    add     x20, x20, #1
+    b       format_loop
+
+format_done:
+    // Write all formatted output to stdout (fd 1)
+    mov     x22, #0             // written = 0
+
+write_loop:
+    cmp     x22, x21
+    b.ge    write_done
+    mov     x8, #64             // sys_write
+    mov     x0, #1              // stdout (fd 1)
+    add     x1, x23, x22        // output_buf + written
+    sub     x2, x21, x22        // count
+    svc     #0
+    cmp     x0, #0
+    b.le    exit_success
+    add     x22, x22, x0
+    b       write_loop
+
+write_done:
+exit_success:
+    mov     x8, #93             // sys_exit
+    mov     x0, #0              // exit status 0
+    svc     #0
+
+
+// Compare line A (ptr = x0, len = x1) and line B (ptr = x2, len = x3)
+// Returns in x0: -1 if A < B, 0 if A == B, 1 if A > B
+compare_lines:
+    cmp     x1, x3
+    csel    x4, x1, x3, lo      // min(lenA, lenB)
+1:
+    cbz     x4, 2f
+    ldrb    w5, [x0], #1
+    ldrb    w6, [x2], #1
+    cmp     w5, w6
+    b.ne    3f
+    sub     x4, x4, #1
+    b       1b
+3:
+    b.lo    4f
+    mov     x0, #1
+    ret
+4:
+    mov     x0, #-1
+    ret
+2:
+    cmp     x1, x3
+    b.lo    4b
+    b.hi    5f
+    mov     x0, #0
+    ret
+5:
+    mov     x0, #1
+    ret
+
+
+// Merge two sorted slices: [left..mid) and [mid..right)
+// merge(left = x0, mid = x1, right = x2)
+merge:
+    stp     x29, x30, [sp, #-80]!
+    stp     x19, x20, [sp, #16]
+    stp     x21, x22, [sp, #32]
+    stp     x23, x24, [sp, #48]
+    stp     x25, x26, [sp, #64]
+
+    mov     x19, x0             // left
+    mov     x20, x1             // mid
+    mov     x21, x2             // right
+    mov     x22, x0             // i = left
+    mov     x23, x1             // j = mid
+    mov     x24, x0             // k = left
+
+    adrp    x25, lines
+    add     x25, x25, :lo12:lines
+    adrp    x26, temp_lines
+    add     x26, x26, :lo12:temp_lines
+
+merge_loop:
+    cmp     x22, x20
+    b.ge    merge_left_done
+    cmp     x23, x21
+    b.ge    merge_left_done
+
+    // Load lines[i]
+    add     x4, x25, x22, lsl #4
+    ldp     x0, x1, [x4]
+
+    // Load lines[j]
+    add     x4, x25, x23, lsl #4
+    ldp     x2, x3, [x4]
+
+    bl      compare_lines
+    cmp     x0, #0
+    b.gt    take_right
+
+take_left:
+    add     x4, x25, x22, lsl #4
+    ldp     x0, x1, [x4]
+    add     x4, x26, x24, lsl #4
+    stp     x0, x1, [x4]
+    add     x22, x22, #1
+    add     x24, x24, #1
+    b       merge_loop
+
+take_right:
+    add     x4, x25, x23, lsl #4
+    ldp     x0, x1, [x4]
+    add     x4, x26, x24, lsl #4
+    stp     x0, x1, [x4]
+    add     x23, x23, #1
+    add     x24, x24, #1
+    b       merge_loop
+
+merge_left_done:
+copy_remaining_left:
+    cmp     x22, x20
+    b.ge    copy_remaining_right
+    add     x4, x25, x22, lsl #4
+    ldp     x0, x1, [x4]
+    add     x4, x26, x24, lsl #4
+    stp     x0, x1, [x4]
+    add     x22, x22, #1
+    add     x24, x24, #1
+    b       copy_remaining_left
+
+copy_remaining_right:
+    cmp     x23, x21
+    b.ge    copy_back
+    add     x4, x25, x23, lsl #4
+    ldp     x0, x1, [x4]
+    add     x4, x26, x24, lsl #4
+    stp     x0, x1, [x4]
+    add     x23, x23, #1
+    add     x24, x24, #1
+    b       copy_remaining_right
+
+copy_back:
+    mov     x4, x19
+copy_back_loop:
+    cmp     x4, x21
+    b.ge    merge_done
+    add     x5, x26, x4, lsl #4
+    ldp     x0, x1, [x5]
+    add     x5, x25, x4, lsl #4
+    stp     x0, x1, [x5]
+    add     x4, x4, #1
+    b       copy_back_loop
+
+merge_done:
+    ldp     x25, x26, [sp, #64]
+    ldp     x23, x24, [sp, #48]
+    ldp     x21, x22, [sp, #32]
+    ldp     x19, x20, [sp, #16]
+    ldp     x29, x30, [sp], #80
+    ret
+
+
+// Bottom-up merge sort: sort_lines(num_lines = x0)
+sort_lines:
+    cmp     x0, #1
+    b.le    sort_done
+
+    stp     x29, x30, [sp, #-48]!
+    stp     x19, x20, [sp, #16]
+    str     x21, [sp, #32]
+
+    mov     x19, x0             // num_lines
+    mov     x20, #1             // width = 1
+
+outer_sort_loop:
+    cmp     x20, x19
+    b.ge    outer_sort_done
+
+    mov     x21, #0             // i = 0
+
+inner_sort_loop:
+    cmp     x21, x19
+    b.ge    inner_sort_done
+
+    add     x1, x21, x20        // mid = i + width
+    cmp     x1, x19
+    b.ge    inner_sort_done
+
+    add     x2, x21, x20, lsl #1 // right = i + 2 * width
+    cmp     x2, x19
+    csel    x2, x19, x2, hi     // right = min(right, n)
+
+    mov     x0, x21             // left = i
+    bl      merge
+
+    add     x21, x21, x20, lsl #1 // i += 2 * width
+    b       inner_sort_loop
+
+inner_sort_done:
+    lsl     x20, x20, #1        // width *= 2
+    b       outer_sort_loop
+
+outer_sort_done:
+    ldr     x21, [sp, #32]
+    ldp     x19, x20, [sp, #16]
+    ldp     x29, x30, [sp], #48
+sort_done:
+    ret
+
+
+    .bss
+    .balign 16
+input_buf:
+    .zero   65536
+
+    .balign 16
+output_buf:
+    .zero   65536
+
+    .balign 16
+lines:
+    .zero   32768
+
+    .balign 16
+temp_lines:
+    .zero   32768

@@ -1,0 +1,209 @@
+.equ BUF_SIZE, 65536
+
+.section .rodata
+hex_digits:
+    .ascii "0123456789abcdef"
+
+.text
+.globl _start
+
+_start:
+    xor r12, r12                    # total_offset = 0
+    lea r13, [rip + in_buf]         # in_ptr = in_buf
+    mov r14, r13                    # in_end = in_buf (0 bytes available)
+    lea r15, [rip + out_buf]        # out_ptr = out_buf
+
+.Lprocess_loop:
+    mov rax, r14
+    sub rax, r13                    # in_avail = in_end - in_ptr
+    cmp rax, 16
+    jge .Lhave_row
+
+    # Less than 16 bytes available: flush output, shift remaining bytes, read more
+    call flush_out
+
+    mov rcx, r14
+    sub rcx, r13                    # rcx = in_avail (0..15)
+    lea rdi, [rip + in_buf]
+    mov rsi, r13
+.Lshift_loop:
+    test rcx, rcx
+    jz .Lshift_done
+    mov al, byte ptr [rsi]
+    mov byte ptr [rdi], al
+    inc rsi
+    inc rdi
+    dec rcx
+    jmp .Lshift_loop
+.Lshift_done:
+    lea r13, [rip + in_buf]
+    mov r14, rdi                    # r14 = in_buf + in_avail
+
+    # sys_read(0, r14, BUF_SIZE - (r14 - in_buf))
+    mov eax, 0                      # sys_read
+    mov edi, 0                      # fd = 0
+    mov rsi, r14                    # buf
+    lea rdx, [rip + in_buf + BUF_SIZE]
+    sub rdx, r14                    # count
+    syscall
+
+    test rax, rax
+    jle .Leof
+
+    add r14, rax                    # in_end += bytes_read
+    jmp .Lprocess_loop
+
+.Lhave_row:
+    mov ebx, 16
+    call emit_row
+    jmp .Lprocess_loop
+
+.Leof:
+    mov rax, r14
+    sub rax, r13                    # remaining bytes (0..15)
+    test rax, rax
+    jz .Lfinish
+
+    mov ebx, eax
+    call emit_row
+
+.Lfinish:
+    call ensure_out_space
+    mov eax, r12d
+    call format_hex8
+    mov byte ptr [r15], 10          # '\n'
+    inc r15
+    call flush_out
+
+    mov eax, 60                     # sys_exit
+    xor edi, edi                    # status = 0
+    syscall
+
+emit_row:
+    call ensure_out_space
+
+    # Format offset: r12d as 8 hex digits
+    mov eax, r12d
+    call format_hex8
+
+    # Two spaces after offset
+    mov word ptr [r15], 0x2020
+    add r15, 2
+
+    # Loop i = 0..15 for hex column
+    xor r8d, r8d
+.Lhex_loop:
+    cmp r8d, ebx
+    jge .Lhex_pad
+
+    # i < n: print 2 hex digits + 1 space
+    movzx eax, byte ptr [r13 + r8]
+    mov edx, eax
+    shr edx, 4
+    mov dl, byte ptr [rip + hex_digits + rdx]
+    mov byte ptr [r15], dl
+    mov edx, eax
+    and edx, 0x0f
+    mov dl, byte ptr [rip + hex_digits + rdx]
+    mov byte ptr [r15 + 1], dl
+    mov byte ptr [r15 + 2], 0x20
+    add r15, 3
+    jmp .Lhex_check_7
+
+.Lhex_pad:
+    # i >= n: print 3 spaces
+    mov word ptr [r15], 0x2020
+    mov byte ptr [r15 + 2], 0x20
+    add r15, 3
+
+.Lhex_check_7:
+    cmp r8d, 7
+    jne .Lhex_next
+    # After position 7, print 1 extra space
+    mov byte ptr [r15], 0x20
+    inc r15
+
+.Lhex_next:
+    inc r8d
+    cmp r8d, 16
+    jl .Lhex_loop
+
+    # Step 3: one space, '|'
+    mov word ptr [r15], 0x7c20
+    add r15, 2
+
+    # Loop i = 0..n-1 for character column
+    xor r8d, r8d
+.Lasc_loop:
+    cmp r8d, ebx
+    jge .Lasc_done
+    movzx eax, byte ptr [r13 + r8]
+    mov edx, eax
+    sub dl, 0x20
+    cmp dl, 0x5e
+    jbe 1f
+    mov al, '.'
+1:
+    mov byte ptr [r15], al
+    inc r15
+    inc r8d
+    jmp .Lasc_loop
+
+.Lasc_done:
+    # '|' and '\n'
+    mov word ptr [r15], 0x0a7c
+    add r15, 2
+
+    # Advance total_offset and in_ptr
+    add r12, rbx
+    add r13, rbx
+    ret
+
+ensure_out_space:
+    lea rax, [rip + out_buf + BUF_SIZE - 128]
+    cmp r15, rax
+    jb .Lspace_ok
+    call flush_out
+.Lspace_ok:
+    ret
+
+flush_out:
+    push rbx
+    lea rbx, [rip + out_buf]
+.Lflush_loop:
+    cmp rbx, r15
+    jnb .Lflush_done
+    mov eax, 1                      # sys_write
+    mov edi, 1                      # fd = 1
+    mov rsi, rbx                    # buf
+    mov rdx, r15
+    sub rdx, rbx                    # count
+    syscall
+    test rax, rax
+    jle .Lflush_done
+    add rbx, rax
+    jmp .Lflush_loop
+.Lflush_done:
+    lea r15, [rip + out_buf]
+    pop rbx
+    ret
+
+format_hex8:
+    mov ecx, 8
+.Lhex8_loop:
+    rol eax, 4
+    mov edx, eax
+    and edx, 0x0f
+    mov dl, byte ptr [rip + hex_digits + rdx]
+    mov byte ptr [r15], dl
+    inc r15
+    dec ecx
+    jnz .Lhex8_loop
+    ret
+
+.bss
+.balign 16
+in_buf:
+    .space BUF_SIZE
+out_buf:
+    .space BUF_SIZE

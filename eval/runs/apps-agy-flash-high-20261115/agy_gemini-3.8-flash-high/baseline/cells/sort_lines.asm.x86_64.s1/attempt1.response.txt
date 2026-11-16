@@ -1,0 +1,285 @@
+.globl _start
+
+.text
+_start:
+    # Read all input from standard input (fd 0) into input_buf
+    lea rbx, [rip + input_buf]
+    xor r13d, r13d                # r13 = total bytes read
+
+.Lread_loop:
+    xor eax, eax                  # sys_read = 0
+    xor edi, edi                  # fd = 0 (stdin)
+    lea rsi, [rbx + r13]
+    mov edx, 32768
+    syscall
+
+    test rax, rax
+    jle .Lread_done
+    add r13, rax
+    jmp .Lread_loop
+
+.Lread_done:
+    # Parse input into lines
+    # Each line is stored as:
+    #   qword ptr (pointer to start of line in input_buf)
+    #   qword len (length of line in bytes, excluding newline)
+    lea rbp, [rip + lines]        # rbp = lines array base
+    xor r14d, r14d                # r14 = number of lines
+
+    lea rsi, [rip + input_buf]    # rsi = current scan pointer
+    lea rbx, [rip + input_buf]    # rbx = start of current line
+    lea r15, [rsi + r13]          # r15 = end of input
+
+.Lparse_loop:
+    cmp rsi, r15
+    je .Lparse_end
+
+    mov al, byte ptr [rsi]
+    cmp al, 0x0A
+    je .Lfound_newline
+
+    inc rsi
+    jmp .Lparse_loop
+
+.Lfound_newline:
+    mov rax, rsi
+    sub rax, rbx                  # rax = line length
+
+    mov rdx, r14
+    shl rdx, 4
+    mov qword ptr [rbp + rdx], rbx
+    mov qword ptr [rbp + rdx + 8], rax
+
+    inc r14
+    inc rsi
+    mov rbx, rsi
+    jmp .Lparse_loop
+
+.Lparse_end:
+    cmp rbx, r15
+    jae .Lparse_done
+
+    # Final line without trailing newline
+    mov rax, r15
+    sub rax, rbx
+    mov rdx, r14
+    shl rdx, 4
+    mov qword ptr [rbp + rdx], rbx
+    mov qword ptr [rbp + rdx + 8], rax
+    inc r14
+
+.Lparse_done:
+    # Sort lines array using heapsort
+    call heapsort
+
+    # Construct output in out_buf
+    lea rbp, [rip + lines]
+    lea rdi, [rip + out_buf]
+    xor r15d, r15d                # r15 = current line index
+
+.Lwrite_lines_loop:
+    cmp r15, r14
+    je .Lwrite_out
+
+    mov rax, r15
+    shl rax, 4
+    mov rsi, qword ptr [rbp + rax]
+    mov rcx, qword ptr [rbp + rax + 8]
+
+    rep movsb
+
+    mov byte ptr [rdi], 0x0A
+    inc rdi
+
+    inc r15
+    jmp .Lwrite_lines_loop
+
+.Lwrite_out:
+    # Write out_buf to stdout (fd 1)
+    lea rbx, [rip + out_buf]
+    mov r12, rdi
+    sub r12, rbx                  # r12 = total bytes to write
+    xor r13d, r13d                # r13 = bytes written so far
+
+.Lsyscall_write_loop:
+    cmp r13, r12
+    jae .Lexit_success
+
+    mov eax, 1                    # sys_write = 1
+    mov edi, 1                    # fd = 1 (stdout)
+    lea rsi, [rbx + r13]
+    mov rdx, r12
+    sub rdx, r13
+    syscall
+
+    test rax, rax
+    jle .Lexit_success
+    add r13, rax
+    jmp .Lsyscall_write_loop
+
+.Lexit_success:
+    mov eax, 60                   # sys_exit = 60
+    xor edi, edi                  # status = 0
+    syscall
+
+# -------------------------------------------------------------
+# heapsort: sorts r14 lines stored at rbp
+# Preserves rbp and r14
+# -------------------------------------------------------------
+heapsort:
+    cmp r14, 1
+    jbe .Lsort_done
+
+    # Heapify phase:
+    mov r15, r14
+    shr r15, 1
+    dec r15
+.Lheapify_loop:
+    mov rbx, r15
+    mov r12, r14
+    call sift_down
+    dec r15
+    jns .Lheapify_loop
+
+    # Sort phase:
+    mov r15, r14
+    dec r15
+.Lsort_loop:
+    mov rdi, rbp
+    mov rax, r15
+    shl rax, 4
+    lea rsi, [rbp + rax]
+    call swap_lines
+
+    xor ebx, ebx
+    mov r12, r15
+    call sift_down
+
+    dec r15
+    jnz .Lsort_loop
+
+.Lsort_done:
+    ret
+
+# -------------------------------------------------------------
+# sift_down:
+#   rbx = index i
+#   r12 = heap size n
+#   rbp = lines array
+# -------------------------------------------------------------
+sift_down:
+.Lsift_loop:
+    lea r13, [rbx + rbx + 1]       # r13 = child = 2 * i + 1
+    cmp r13, r12
+    jae .Lsift_done
+
+    # Check if right child exists and is greater than left child
+    lea rax, [r13 + 1]
+    cmp rax, r12
+    jae .Lcheck_parent
+
+    mov rax, r13
+    shl rax, 4
+    lea rdi, [rbp + rax]          # &lines[child]
+    lea rsi, [rdi + 16]           # &lines[child + 1]
+    call line_less
+    test eax, eax
+    jz .Lcheck_parent
+    inc r13
+
+.Lcheck_parent:
+    mov rax, rbx
+    shl rax, 4
+    lea rdi, [rbp + rax]          # &lines[i]
+
+    mov rax, r13
+    shl rax, 4
+    lea rsi, [rbp + rax]          # &lines[child]
+
+    call line_less
+    test eax, eax
+    jz .Lsift_done
+
+    mov rax, rbx
+    shl rax, 4
+    lea rdi, [rbp + rax]          # &lines[i]
+
+    mov rax, r13
+    shl rax, 4
+    lea rsi, [rbp + rax]          # &lines[child]
+
+    call swap_lines
+
+    mov rbx, r13
+    jmp .Lsift_loop
+
+.Lsift_done:
+    ret
+
+# -------------------------------------------------------------
+# line_less:
+#   rdi = pointer to line A
+#   rsi = pointer to line B
+# Returns:
+#   eax = 1 if line A < line B (unsigned), 0 otherwise
+# Clobbers:
+#   rax, rcx, rdx, rsi, r8, r9, r10, r11
+# -------------------------------------------------------------
+line_less:
+    mov r8, qword ptr [rdi]        # ptrA
+    mov r9, qword ptr [rdi + 8]    # lenA
+    mov r10, qword ptr [rsi]       # ptrB
+    mov r11, qword ptr [rsi + 8]   # lenB
+
+    mov rcx, r9
+    cmp rcx, r11
+    cmova rcx, r11                 # rcx = min(lenA, lenB)
+
+    xor edx, edx                   # index = 0
+.Lcmp_loop:
+    cmp rdx, rcx
+    je .Lcmp_prefix
+    movzx eax, byte ptr [r8 + rdx]
+    movzx esi, byte ptr [r10 + rdx]
+    inc rdx
+    cmp eax, esi
+    je .Lcmp_loop
+
+    setb al
+    movzx eax, al
+    ret
+
+.Lcmp_prefix:
+    cmp r9, r11
+    setb al
+    movzx eax, al
+    ret
+
+# -------------------------------------------------------------
+# swap_lines:
+#   rdi = pointer to line A
+#   rsi = pointer to line B
+# Clobbers:
+#   rax, rcx, rdx, r8
+# -------------------------------------------------------------
+swap_lines:
+    mov rax, qword ptr [rdi]
+    mov rdx, qword ptr [rdi + 8]
+    mov rcx, qword ptr [rsi]
+    mov r8, qword ptr [rsi + 8]
+    mov qword ptr [rsi], rax
+    mov qword ptr [rsi + 8], rdx
+    mov qword ptr [rdi], rcx
+    mov qword ptr [rdi + 8], r8
+    ret
+
+.bss
+.balign 16
+input_buf:
+    .zero 65536
+.balign 16
+lines:
+    .zero 32768
+.balign 16
+out_buf:
+    .zero 65536

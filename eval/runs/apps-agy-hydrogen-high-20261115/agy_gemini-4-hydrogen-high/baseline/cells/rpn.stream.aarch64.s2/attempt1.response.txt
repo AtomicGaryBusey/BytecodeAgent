@@ -1,0 +1,288 @@
+.text
+.globl _start
+
+_start:
+    // Read entire stdin into in_buf
+    adrp x19, in_buf
+    add x19, x19, :lo12:in_buf
+    mov x20, x19
+    movz x21, #1, lsl #16
+    add x21, x21, #8192
+    add x21, x19, x21
+read_loop:
+    cmp x20, x21
+    b.hs read_done
+    mov x0, #0
+    mov x1, x20
+    sub x2, x21, x20
+    mov x8, #63
+    svc #0
+    cmp x0, #0
+    b.le read_done
+    add x20, x20, x0
+    b read_loop
+read_done:
+
+    // x19 = in_ptr, x20 = in_end
+    // x21 = rpn_base, x22 = rpn_sp
+    // x23 = out_base, x24 = out_ptr, x25 = out_flush_limit
+    adrp x21, rpn_stack
+    add x21, x21, :lo12:rpn_stack
+    adrp x23, out_buf
+    add x23, x23, :lo12:out_buf
+    mov x24, x23
+    add x25, x23, #8128
+
+line_loop:
+    cmp x19, x20
+    b.hs all_done
+    mov x22, x21
+
+token_loop:
+skip_ws:
+    cmp x19, x20
+    b.hs line_end
+    ldrb w0, [x19]
+    cmp w0, #0x20
+    b.eq 1f
+    cmp w0, #0x09
+    b.ne 2f
+1:
+    add x19, x19, #1
+    b skip_ws
+2:
+    cmp w0, #0x0A
+    b.ne parse_token
+    add x19, x19, #1
+    b line_end
+
+parse_token:
+    mov x1, x19
+3:
+    add x19, x19, #1
+    cmp x19, x20
+    b.hs 4f
+    ldrb w2, [x19]
+    cmp w2, #0x20
+    b.eq 4f
+    cmp w2, #0x09
+    b.eq 4f
+    cmp w2, #0x0A
+    b.ne 3b
+4:
+    // Token is [x1, x19), length x2 >= 1, first byte in w0
+    sub x2, x19, x1
+    cmp x2, #1
+    b.ne parse_literal
+    cmp w0, #0x2B
+    b.eq op_add
+    cmp w0, #0x2D
+    b.eq op_sub
+    cmp w0, #0x2A
+    b.eq op_mul
+    cmp w0, #0x2F
+    b.eq op_div
+    cmp w0, #0x25
+    b.eq op_mod
+
+parse_literal:
+    mov x3, #0
+    mov x4, x1
+    cmp w0, #0x2D
+    b.ne parse_digits
+    mov x3, #1
+    add x4, x4, #1
+parse_digits:
+    sub x5, x19, x4
+    cmp x5, #1
+    b.lo line_error
+    cmp x5, #18
+    b.hi line_error
+    mov x6, #0
+    mov x7, #10
+5:
+    ldrb w8, [x4], #1
+    sub w8, w8, #0x30
+    cmp w8, #9
+    b.hi line_error
+    mul x6, x6, x7
+    add x6, x6, x8
+    cmp x4, x19
+    b.lo 5b
+    cbz x3, 6f
+    neg x6, x6
+6:
+    str x6, [x22], #8
+    b token_loop
+
+op_add:
+    sub x3, x22, x21
+    cmp x3, #16
+    b.lo line_error
+    sub x22, x22, #8
+    ldr x4, [x22]
+    ldr x5, [x22, #-8]
+    add x5, x5, x4
+    str x5, [x22, #-8]
+    b token_loop
+
+op_sub:
+    sub x3, x22, x21
+    cmp x3, #16
+    b.lo line_error
+    sub x22, x22, #8
+    ldr x4, [x22]
+    ldr x5, [x22, #-8]
+    sub x5, x5, x4
+    str x5, [x22, #-8]
+    b token_loop
+
+op_mul:
+    sub x3, x22, x21
+    cmp x3, #16
+    b.lo line_error
+    sub x22, x22, #8
+    ldr x4, [x22]
+    ldr x5, [x22, #-8]
+    mul x5, x5, x4
+    str x5, [x22, #-8]
+    b token_loop
+
+op_div:
+    sub x3, x22, x21
+    cmp x3, #16
+    b.lo line_error
+    sub x22, x22, #8
+    ldr x4, [x22]
+    ldr x5, [x22, #-8]
+    cbz x4, line_error
+    cmn x4, #1
+    b.ne 7f
+    movz x6, #0x8000, lsl #48
+    cmp x5, x6
+    b.eq line_error
+7:
+    sdiv x5, x5, x4
+    str x5, [x22, #-8]
+    b token_loop
+
+op_mod:
+    sub x3, x22, x21
+    cmp x3, #16
+    b.lo line_error
+    sub x22, x22, #8
+    ldr x4, [x22]
+    ldr x5, [x22, #-8]
+    cbz x4, line_error
+    cmn x4, #1
+    b.ne 8f
+    movz x6, #0x8000, lsl #48
+    cmp x5, x6
+    b.eq line_error
+8:
+    sdiv x6, x5, x4
+    msub x5, x6, x4, x5
+    str x5, [x22, #-8]
+    b token_loop
+
+line_end:
+    sub x3, x22, x21
+    cmp x3, #8
+    b.ne print_error_msg
+    ldr x0, [x21]
+    cmp x24, x25
+    b.lo 1f
+    bl flush_out
+1:
+    bl append_int64_nl
+    b line_loop
+
+line_error:
+1:
+    cmp x19, x20
+    b.hs print_error_msg
+    ldrb w0, [x19], #1
+    cmp w0, #0x0A
+    b.ne 1b
+print_error_msg:
+    cmp x24, x25
+    b.lo 2f
+    bl flush_out
+2:
+    mov w0, #0x65
+    strb w0, [x24], #1
+    mov w0, #0x72
+    strb w0, [x24], #1
+    strb w0, [x24], #1
+    mov w0, #0x6F
+    strb w0, [x24], #1
+    mov w0, #0x72
+    strb w0, [x24], #1
+    mov w0, #0x0A
+    strb w0, [x24], #1
+    b line_loop
+
+all_done:
+    bl flush_out
+    mov x0, #0
+    mov x8, #93
+    svc #0
+
+// Flushes [x23, x24) to stdout and resets x24 = x23
+flush_out:
+    sub x2, x24, x23
+    cbz x2, 2f
+    mov x1, x23
+1:
+    mov x0, #1
+    mov x8, #64
+    svc #0
+    cmp x0, #0
+    b.le 2f
+    add x1, x1, x0
+    sub x2, x2, x0
+    cbnz x2, 1b
+2:
+    mov x24, x23
+    ret
+
+// Appends signed 64-bit integer in x0 followed by 0x0A to [x24], advancing x24
+append_int64_nl:
+    sub sp, sp, #32
+    cmp x0, #0
+    b.ge 1f
+    mov w1, #0x2D
+    strb w1, [x24], #1
+    neg x0, x0
+1:
+    add x1, sp, #32
+    mov x2, #10
+2:
+    udiv x3, x0, x2
+    msub x4, x3, x2, x0
+    add w4, w4, #0x30
+    strb w4, [x1, #-1]!
+    mov x0, x3
+    cbnz x0, 2b
+    add x2, sp, #32
+3:
+    ldrb w4, [x1], #1
+    strb w4, [x24], #1
+    cmp x1, x2
+    b.lo 3b
+    mov w4, #0x0A
+    strb w4, [x24], #1
+    add sp, sp, #32
+    ret
+
+.bss
+.balign 8
+in_buf:
+    .space 73728
+.balign 8
+rpn_stack:
+    .space 524288
+.balign 8
+out_buf:
+    .space 8192
+

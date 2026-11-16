@@ -1,0 +1,306 @@
+// Brainfuck interpreter in AArch64 Linux assembly
+// Entry point: _start
+
+.globl _start
+
+.text
+_start:
+    // Read standard input completely into stdin_buf
+    adrp x21, stdin_buf
+    add x21, x21, :lo12:stdin_buf
+    mov x19, #0
+    movz w22, #1, lsl #16
+
+read_stdin_loop:
+    mov x0, #0
+    add x1, x21, x19
+    sub x2, x22, x19
+    cbz x2, read_stdin_done
+    mov x8, #63
+    svc #0
+    cmp x0, #0
+    b.le read_stdin_done
+    add x19, x19, x0
+    b read_stdin_loop
+
+read_stdin_done:
+    // Find the first '!' separator in stdin
+    mov x22, #0
+find_excl_loop:
+    cmp x22, x19
+    b.eq no_excl_found
+    ldrb w0, [x21, x22]
+    cmp w0, #'!'
+    b.eq excl_found
+    add x22, x22, #1
+    b find_excl_loop
+
+excl_found:
+    // Code is before '!'; input starts after '!'
+    add x24, x21, x22
+    add x24, x24, #1
+    add x25, x21, x19
+    mov x19, x22
+    b filter_code
+
+no_excl_found:
+    // Whole stdin is code; input is empty
+    add x24, x21, x19
+    mov x25, x24
+
+filter_code:
+    // Compact code in-place: keep only valid Brainfuck commands
+    mov x0, #0
+    mov x1, #0
+
+filter_loop:
+    cmp x0, x19
+    b.eq filter_done
+    ldrb w2, [x21, x0]
+    add x0, x0, #1
+
+    // Check if '+' (43) <= w2 <= '.' (46)
+    sub w3, w2, #'+'
+    cmp w3, #3
+    b.ls keep_char
+
+    cmp w2, #'<'
+    b.eq keep_char
+    cmp w2, #'>'
+    b.eq keep_char
+    cmp w2, #'['
+    b.eq keep_char
+    cmp w2, #']'
+    b.eq keep_char
+
+    b filter_loop
+
+keep_char:
+    strb w2, [x21, x1]
+    add x1, x1, #1
+    b filter_loop
+
+filter_done:
+    // Null-terminate compacted code
+    strb wzr, [x21, x1]
+
+    // Validate brackets and precalculate jump targets
+    adrp x22, jump_table
+    add x22, x22, :lo12:jump_table
+    adrp x28, bracket_stack
+    add x28, x28, :lo12:bracket_stack
+    mov x4, #0
+    mov x0, #0
+
+validate_loop:
+    cmp x0, x1
+    b.eq validate_done
+    ldrb w2, [x21, x0]
+    cmp w2, #'['
+    b.eq val_open
+    cmp w2, #']'
+    b.eq val_close
+    add x0, x0, #1
+    b validate_loop
+
+val_open:
+    str x0, [x28, x4, lsl #3]
+    add x4, x4, #1
+    add x0, x0, #1
+    b validate_loop
+
+val_close:
+    cbz x4, syntax_error
+    sub x4, x4, #1
+    ldr x3, [x28, x4, lsl #3]
+
+    // Jump target for '[' at x3 is stdin_buf + x0 + 1
+    add x5, x21, x0
+    add x5, x5, #1
+    str x5, [x22, x3, lsl #3]
+
+    // Jump target for ']' at x0 is stdin_buf + x3 + 1
+    add x6, x21, x3
+    add x6, x6, #1
+    str x6, [x22, x0, lsl #3]
+
+    add x0, x0, #1
+    b validate_loop
+
+validate_done:
+    cbnz x4, syntax_error
+
+    // Initialize 256-entry dispatch table
+    adrp x23, dispatch_table
+    add x23, x23, :lo12:dispatch_table
+    adr x0, op_exit
+    mov x1, #0
+init_dispatch_loop:
+    str x0, [x23, x1, lsl #3]
+    add x1, x1, #1
+    cmp x1, #256
+    b.ne init_dispatch_loop
+
+    adr x0, op_plus
+    str x0, [x23, #344]
+    adr x0, op_comma
+    str x0, [x23, #352]
+    adr x0, op_minus
+    str x0, [x23, #360]
+    adr x0, op_dot
+    str x0, [x23, #368]
+    adr x0, op_left
+    str x0, [x23, #480]
+    adr x0, op_right
+    str x0, [x23, #496]
+    adr x0, op_lbracket
+    str x0, [x23, #728]
+    adr x0, op_rbracket
+    str x0, [x23, #744]
+
+    // Setup interpreter registers
+    mov x19, x21
+    adrp x20, tape
+    add x20, x20, :lo12:tape
+    add x21, x21, #1
+
+    adrp x26, stdout_buf
+    add x26, x26, :lo12:stdout_buf
+    movz w0, #1, lsl #16
+    add x27, x26, x0
+
+    // Fetch and dispatch first instruction
+    ldrb w1, [x19], #1
+    ldr x2, [x23, x1, lsl #3]
+    br x2
+
+syntax_error:
+    mov x0, #1
+    mov x8, #93
+    svc #0
+
+op_plus:
+    ldrb w0, [x20]
+    add w0, w0, #1
+    strb w0, [x20]
+    ldrb w1, [x19], #1
+    ldr x2, [x23, x1, lsl #3]
+    br x2
+
+op_minus:
+    ldrb w0, [x20]
+    sub w0, w0, #1
+    strb w0, [x20]
+    ldrb w1, [x19], #1
+    ldr x2, [x23, x1, lsl #3]
+    br x2
+
+op_right:
+    add x20, x20, #1
+    ldrb w1, [x19], #1
+    ldr x2, [x23, x1, lsl #3]
+    br x2
+
+op_left:
+    sub x20, x20, #1
+    ldrb w1, [x19], #1
+    ldr x2, [x23, x1, lsl #3]
+    br x2
+
+op_lbracket:
+    ldrb w0, [x20]
+    cbnz w0, 1f
+    sub x3, x19, x21
+    ldr x19, [x22, x3, lsl #3]
+1:
+    ldrb w1, [x19], #1
+    ldr x2, [x23, x1, lsl #3]
+    br x2
+
+op_rbracket:
+    ldrb w0, [x20]
+    cbz w0, 1f
+    sub x3, x19, x21
+    ldr x19, [x22, x3, lsl #3]
+1:
+    ldrb w1, [x19], #1
+    ldr x2, [x23, x1, lsl #3]
+    br x2
+
+op_comma:
+    cmp x24, x25
+    b.hs 1f
+    ldrb w0, [x24], #1
+    strb w0, [x20]
+    ldrb w1, [x19], #1
+    ldr x2, [x23, x1, lsl #3]
+    br x2
+1:
+    strb wzr, [x20]
+    ldrb w1, [x19], #1
+    ldr x2, [x23, x1, lsl #3]
+    br x2
+
+op_dot:
+    ldrb w0, [x20]
+    strb w0, [x26], #1
+    cmp x26, x27
+    b.eq flush_buffer
+dot_next:
+    ldrb w1, [x19], #1
+    ldr x2, [x23, x1, lsl #3]
+    br x2
+
+flush_buffer:
+    adrp x0, stdout_buf
+    add x0, x0, :lo12:stdout_buf
+    sub x2, x26, x0
+    cbz x2, flush_done
+    mov x1, x0
+flush_write_loop:
+    mov x0, #1
+    mov x8, #64
+    svc #0
+    sub x2, x2, x0
+    add x1, x1, x0
+    cbnz x2, flush_write_loop
+
+    adrp x26, stdout_buf
+    add x26, x26, :lo12:stdout_buf
+flush_done:
+    b dot_next
+
+op_exit:
+    adrp x0, stdout_buf
+    add x0, x0, :lo12:stdout_buf
+    sub x2, x26, x0
+    cbz x2, do_exit
+    mov x1, x0
+exit_write_loop:
+    mov x0, #1
+    mov x8, #64
+    svc #0
+    sub x2, x2, x0
+    add x1, x1, x0
+    cbnz x2, exit_write_loop
+
+do_exit:
+    mov x0, #0
+    mov x8, #93
+    svc #0
+
+.bss
+.balign 16
+stdin_buf:
+    .space 65552
+stdout_buf:
+    .space 65536
+tape:
+    .space 32768
+jump_table:
+    .space 524288
+bracket_stack:
+    .space 8192
+dispatch_table:
+    .space 2048
+

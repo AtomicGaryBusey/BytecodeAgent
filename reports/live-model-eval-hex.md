@@ -42,6 +42,7 @@ results on the other paths (16 cells each):
 | Codex GPT-5.6 Sol | **16/16** | 16/16 | 16/16 | 14/16 | 12/16 |
 | Codex GPT-6.1 Sol | **16/16** | 16/16 | 16/16 | 16/16 | 12/16 |
 | DeepSeek V4.1 Flash (Fireworks) | **16/16** | 16/16 | 16/16 | 11/16 | 14/16 |
+| Gemini 4 Hydrogen High (Antigravity) | **15/16** | 16/16 | 16/16 | 16/16 | 16/16 |
 | Codex Daybreak Blue | **15/16** | 16/16 | 16/16 | 16/16 | 13/16 |
 | Codex GPT-6 Astra | **15/16** | 16/16 | 16/16 | 16/16 | 14/16 |
 | Claude Fable 5.1 | **15/16** | 16/16 | 15/16 | 15/16 | 14/16 |
@@ -64,6 +65,7 @@ results on the other paths (16 cells each):
 | Grok 4.5 | **10/16** | 16/16 | 16/16 | 16/16 | 15/16 |
 | Claude Sonnet 4.5 | **10/16** | 16/16 | 16/16 | 16/16 | 16/16 |
 | Codex GPT-6 Luna | **10/16** | 15/16 | 15/16 | 12/16 | 6/16 |
+| Gemini 3.8 Flash High (Antigravity) | **9/16** | 13/16 | 16/16 | 16/16 | 14/16 |
 | MiniMax M3 (Fireworks) | **8/16** | 10/16 | 15/16 | 12/16 | 4/16 |
 | Codex GPT-5.6 Luna | **7/16** | 16/16 | 16/16 | 12/16 | 12/16 |
 | Microsoft MAI-Code 1.1 Flash (Copilot) | **6/16** | 11/16 | 16/16 | 10/16 | 0/16 |
@@ -89,6 +91,7 @@ Per ISA, hex first attempt:
 | Codex GPT-5.6 Sol | 8/8 | 8/8 |
 | Codex GPT-6.1 Sol | 8/8 | 8/8 |
 | DeepSeek V4.1 Flash (Fireworks) | 8/8 | 8/8 |
+| Gemini 4 Hydrogen High (Antigravity) | 7/8 | 8/8 |
 | Codex Daybreak Blue | 8/8 | 7/8 |
 | Codex GPT-6 Astra | 8/8 | 7/8 |
 | Claude Fable 5.1 | 7/8 | 8/8 |
@@ -111,6 +114,7 @@ Per ISA, hex first attempt:
 | Grok 4.5 | 5/8 | 5/8 |
 | Claude Sonnet 4.5 | 2/8 | 8/8 |
 | Codex GPT-6 Luna | 5/8 | 5/8 |
+| Gemini 3.8 Flash High (Antigravity) | 1/8 | 8/8 |
 | MiniMax M3 (Fireworks) | 2/8 | 6/8 |
 | Codex GPT-5.6 Luna | 3/8 | 4/8 |
 | Microsoft MAI-Code 1.1 Flash (Copilot) | 2/8 | 4/8 |
@@ -141,9 +145,11 @@ results (— where that model did not run the app battery):
 | Claude Haiku 5.5 | **11/16** | 16/16 | 14/16 | 14/16 |
 | Claude Opus 5 | **11/16** | 16/16 | 16/16 | 13/16 |
 | Grok 4.6 | **11/16** | 16/16 | 16/16 | 15/16 |
+| Gemini 4 Hydrogen High (Antigravity) | **10/16** | 15/16 | 16/16 | 15/16 |
 | Claude Opus 4.7 | **10/16** | 12/16 | 13/16 | 13/16 |
 | Grok 4.7 | **10/16** | 16/16 | 16/16 | 15/16 |
 | Grok 4.7 build-fast | **10/16** | 16/16 | 16/16 | 14/16 |
+| Gemini 3.8 Flash High (Antigravity) | **8/16** | 12/16 | 15/16 | 15/16 |
 | Claude Sonnet 5 | **8/16** | 10/16 | 12/16 | 11/16 |
 | Claude Opus 5.5 | **7/16** | 12/16 | 16/16 | 15/16 |
 | Claude Mythos 5.1 | **7/16** | 15/16 | 15/16 | 15/16 |
@@ -175,6 +181,7 @@ apart (first attempts only, except the last column):
 | Claude Opus 4.8 | 16 | 15 | 0 | 1 | 15/16 (94%) | 0 of 17 |
 | Codex GPT-6 Astra | 16 | 15 | 0 | 1 | 15/16 (94%) | 0 of 17 |
 | Claude Mythos 5.2 | 16 | 15 | 0 | 1 | 15/16 (94%) | 0 of 17 |
+| Gemini 4 Hydrogen High (Antigravity) | 16 | 10 | 5 | 1 | 10/11 (91%) | 9 of 25 |
 | Claude Sonnet 5.5 | 16 | 13 | 1 | 2 | 13/15 (87%) | 3 of 23 |
 | Claude Fable 5 | 16 | 13 | 0 | 3 | 13/16 (81%) | 0 of 19 |
 | Claude Fable 5.1 | 16 | 12 | 0 | 4 | 12/16 (75%) | 0 of 20 |
@@ -185,6 +192,7 @@ apart (first attempts only, except the last column):
 | Claude Opus 4.7 | 16 | 10 | 0 | 6 | 10/16 (62%) | 0 of 31 |
 | Grok 4.7 | 16 | 10 | 0 | 6 | 10/16 (62%) | 0 of 22 |
 | Grok 4.7 build-fast | 16 | 10 | 0 | 6 | 10/16 (62%) | 0 of 23 |
+| Gemini 3.8 Flash High (Antigravity) | 16 | 8 | 0 | 8 | 8/16 (50%) | 0 of 33 |
 | Claude Sonnet 5 | 16 | 8 | 0 | 8 | 8/16 (50%) | 0 of 37 |
 | Claude Mythos 5.1 | 16 | 7 | 0 | 9 | 7/16 (44%) | 0 of 35 |
 | Codex GPT-6 Sol | 16 | 6 | 0 | 10 | 6/16 (38%) | 0 of 33 |
@@ -327,6 +335,14 @@ within four attempts):
   7 -> 8 first and 9 -> 10 within four, Mythos 5.1 unchanged at 7 and 15, Opus 4.8 unchanged at 15 and 16. The
   failures that were timeouts are now unfinished answers at the cap; the limit that binds on whole hex programs for
   these models is output length, not time. Method: [cross-vendor-methodology.md](cross-vendor-methodology.md).
+- **Gemini 4 Hydrogen High (2026-11-15): 15/16 hex functions first attempt (16 within four); hex programs 10/16
+  first attempt, 15 within four.** Gemini's safety filter blocked 5 of the 16 whole-program cells on the first
+  attempt (`hexdump` both ISAs, `wc` and `base64` on AArch64, `bf` on x86-64) and `bf` x86-64 on all four, its one
+  unrecovered cell; they are scored as refusals. It drew no block on hex functions or on any other battery.
+- **Gemini 3.8 Flash High (2026-11-15): 9/16 hex functions first attempt, 13 within four**, so it passes the gate;
+  8 of its 12 failed attempts ran out the 180 s limit. Twice on the hex path it called agy's unremovable `manage_task` tool before writing
+  any answer; such a call now ends the attempt and is scored as written, an empty answer (methodology, operations
+  notes). Its hex programs are running.
 - **Kimi K3.1 Pro Highspeed's hex programs (2026-11-14): 4/16 first attempt, 16/16 within four**, as the standard
   tier (4/16, 15/16): whole programs in hex are rarely right first time for this model but always repairable. Its 16
   failed attempts are out-of-bounds accesses (7), wrong output (7) and bad system calls (2); none malformed.
@@ -412,7 +428,6 @@ refused (0 of 25), unlike Opus 5.5 and Sonnet 5.5 on the same account.
 
 | Models | Status |
 |---|---|
-| Gemini 3.8 Flash High (Antigravity) | not run: its function battery stopped at 223/224 (2026-10-24) and no hex run has been scheduled |
 | Kimi K3.1 Pro, Gemini 4 Argon High | not run: K3.1 Pro's apps and hex are undecided; Argon's function battery is still in progress |
 | MAI-Thinking-1, DeepSeek-V4-Pro (Azure Foundry) | not run: backlogged on cost (pay-per-token) |
 | Local Qwen models | not run, and not planned: they score 3-26% on the assembly paths, so the hex path would add nothing (Kolibri-1 was run on 2026-11-13 to confirm: 0/16) |

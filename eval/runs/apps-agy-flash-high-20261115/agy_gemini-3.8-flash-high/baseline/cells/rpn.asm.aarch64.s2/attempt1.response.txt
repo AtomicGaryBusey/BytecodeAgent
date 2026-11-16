@@ -1,0 +1,431 @@
+// RPN Expression Evaluator for AArch64 Linux
+.text
+.globl _start
+.balign 4
+
+_start:
+.Lmain_line_loop:
+    mov x19, #0
+    adrp x20, line_buf
+    add x20, x20, :lo12:line_buf
+
+.Lread_char_loop:
+    bl read_byte
+    cmp x0, #0
+    b.lt .Leof_reached
+
+    cmp w0, #'\n'
+    b.eq .Lline_complete
+
+    strb w0, [x20, x19]
+    add x19, x19, #1
+    b .Lread_char_loop
+
+.Leof_reached:
+    cbz x19, .Lall_done
+    mov x21, #1
+    b .Lprocess_this_line
+
+.Lline_complete:
+    mov x21, #0
+
+.Lprocess_this_line:
+    mov x0, x19
+    bl process_line
+
+    cbnz x21, .Lall_done
+    b .Lmain_line_loop
+
+.Lall_done:
+    bl flush_out
+    mov x0, #0
+    mov x8, #93
+    svc #0
+
+process_line:
+    stp x29, x30, [sp, #-80]!
+    mov x29, sp
+    stp x19, x20, [sp, #16]
+    stp x21, x22, [sp, #32]
+    stp x23, x24, [sp, #48]
+    stp x25, x26, [sp, #64]
+
+    mov x19, x0
+    mov x20, #0
+    mov x21, #0
+
+    adrp x22, rpn_stack
+    add x22, x22, :lo12:rpn_stack
+
+    adrp x23, line_buf
+    add x23, x23, :lo12:line_buf
+
+.Lskip_ws:
+    cmp x20, x19
+    b.ge .Lcheck_final_stack
+
+    ldrb w0, [x23, x20]
+    cmp w0, #' '
+    b.eq .Lws_next
+    cmp w0, #'\t'
+    b.eq .Lws_next
+    b .Lfound_tok_start
+
+.Lws_next:
+    add x20, x20, #1
+    b .Lskip_ws
+
+.Lfound_tok_start:
+    mov x24, x20
+
+.Lfind_tok_end:
+    add x20, x20, #1
+    cmp x20, x19
+    b.ge .Ltok_end_found
+
+    ldrb w0, [x23, x20]
+    cmp w0, #' '
+    b.eq .Ltok_end_found
+    cmp w0, #'\t'
+    b.eq .Ltok_end_found
+    b .Lfind_tok_end
+
+.Ltok_end_found:
+    sub x25, x20, x24
+
+    cmp x25, #1
+    b.ne .Lparse_number
+
+    ldrb w0, [x23, x24]
+    cmp w0, #'+'
+    b.eq .Lop_add
+    cmp w0, #'-'
+    b.eq .Lop_sub
+    cmp w0, #'*'
+    b.eq .Lop_mul
+    cmp w0, #'/'
+    b.eq .Lop_div
+    cmp w0, #'%'
+    b.eq .Lop_mod
+
+.Lparse_number:
+    mov x9, x24
+    add x10, x24, x25
+
+    mov x11, #0
+    ldrb w12, [x23, x9]
+    cmp w12, #'-'
+    b.ne .Lpn_check_digits
+
+    mov x11, #1
+    add x9, x9, #1
+
+.Lpn_check_digits:
+    sub x13, x10, x9
+    cmp x13, #1
+    b.lt .Lline_error
+    cmp x13, #18
+    b.gt .Lline_error
+
+    mov x14, #0
+    mov x15, #10
+
+.Lpn_digit_loop:
+    cmp x9, x10
+    b.ge .Lpn_done_digits
+
+    ldrb w12, [x23, x9]
+    sub x12, x12, #'0'
+    cmp x12, #9
+    b.hi .Lline_error
+
+    madd x14, x14, x15, x12
+    add x9, x9, #1
+    b .Lpn_digit_loop
+
+.Lpn_done_digits:
+    cbz x11, .Lpn_push
+    neg x14, x14
+
+.Lpn_push:
+    str x14, [x22, x21, lsl #3]
+    add x21, x21, #1
+    b .Lskip_ws
+
+.Lop_add:
+    cmp x21, #2
+    b.lt .Lline_error
+    sub x21, x21, #1
+    ldr x10, [x22, x21, lsl #3]
+    sub x21, x21, #1
+    ldr x9, [x22, x21, lsl #3]
+    add x14, x9, x10
+    b .Lpn_push
+
+.Lop_sub:
+    cmp x21, #2
+    b.lt .Lline_error
+    sub x21, x21, #1
+    ldr x10, [x22, x21, lsl #3]
+    sub x21, x21, #1
+    ldr x9, [x22, x21, lsl #3]
+    sub x14, x9, x10
+    b .Lpn_push
+
+.Lop_mul:
+    cmp x21, #2
+    b.lt .Lline_error
+    sub x21, x21, #1
+    ldr x10, [x22, x21, lsl #3]
+    sub x21, x21, #1
+    ldr x9, [x22, x21, lsl #3]
+    mul x14, x9, x10
+    b .Lpn_push
+
+.Lop_div:
+    cmp x21, #2
+    b.lt .Lline_error
+    sub x21, x21, #1
+    ldr x10, [x22, x21, lsl #3]
+    sub x21, x21, #1
+    ldr x9, [x22, x21, lsl #3]
+    cbz x10, .Lline_error
+    cmn x10, #1
+    b.ne .Ldiv_exec
+    mov x11, #1
+    lsl x11, x11, #63
+    cmp x9, x11
+    b.eq .Lline_error
+.Ldiv_exec:
+    sdiv x14, x9, x10
+    b .Lpn_push
+
+.Lop_mod:
+    cmp x21, #2
+    b.lt .Lline_error
+    sub x21, x21, #1
+    ldr x10, [x22, x21, lsl #3]
+    sub x21, x21, #1
+    ldr x9, [x22, x21, lsl #3]
+    cbz x10, .Lline_error
+    cmn x10, #1
+    b.ne .Lmod_exec
+    mov x11, #1
+    lsl x11, x11, #63
+    cmp x9, x11
+    b.eq .Lline_error
+.Lmod_exec:
+    sdiv x12, x9, x10
+    msub x14, x12, x10, x9
+    b .Lpn_push
+
+.Lcheck_final_stack:
+    cmp x21, #1
+    b.ne .Lline_error
+    ldr x0, [x22]
+    bl print_int64
+    b .Lprocess_line_done
+
+.Lline_error:
+    bl print_error
+
+.Lprocess_line_done:
+    ldp x25, x26, [sp, #64]
+    ldp x23, x24, [sp, #48]
+    ldp x21, x22, [sp, #32]
+    ldp x19, x20, [sp, #16]
+    ldp x29, x30, [sp], #80
+    ret
+
+read_byte:
+    adrp x1, in_head
+    add x1, x1, :lo12:in_head
+    ldr x2, [x1]
+    adrp x3, in_tail
+    add x3, x3, :lo12:in_tail
+    ldr x4, [x3]
+
+    cmp x2, x4
+    b.lt .Lrb_has_byte
+
+    mov x0, #0
+    adrp x1, in_buf
+    add x1, x1, :lo12:in_buf
+    movz x2, #1, lsl #16
+    mov x8, #63
+    svc #0
+
+    cmp x0, #0
+    b.le .Lrb_eof
+
+    adrp x3, in_tail
+    add x3, x3, :lo12:in_tail
+    str x0, [x3]
+
+    adrp x1, in_head
+    add x1, x1, :lo12:in_head
+    str xzr, [x1]
+    mov x2, #0
+
+.Lrb_has_byte:
+    adrp x5, in_buf
+    add x5, x5, :lo12:in_buf
+    ldrb w0, [x5, x2]
+    add x2, x2, #1
+    adrp x1, in_head
+    add x1, x1, :lo12:in_head
+    str x2, [x1]
+    ret
+
+.Lrb_eof:
+    mov x0, #-1
+    ret
+
+flush_out:
+    adrp x1, out_tail
+    add x1, x1, :lo12:out_tail
+    ldr x9, [x1]
+    cbz x9, .Lflush_done
+
+    mov x10, #0
+.Lflush_loop:
+    mov x0, #1
+    adrp x1, out_buf
+    add x1, x1, :lo12:out_buf
+    add x1, x1, x10
+    sub x2, x9, x10
+    mov x8, #64
+    svc #0
+
+    cmp x0, #0
+    b.le .Lflush_err
+    add x10, x10, x0
+    cmp x10, x9
+    b.lt .Lflush_loop
+
+.Lflush_err:
+    adrp x1, out_tail
+    add x1, x1, :lo12:out_tail
+    str xzr, [x1]
+.Lflush_done:
+    ret
+
+out_char:
+    adrp x1, out_tail
+    add x1, x1, :lo12:out_tail
+    ldr x2, [x1]
+
+    movz x3, #1, lsl #16
+    cmp x2, x3
+    b.lt .Loc_store
+
+    stp x29, x30, [sp, #-32]!
+    str x0, [sp, #16]
+    bl flush_out
+    ldr x0, [sp, #16]
+    ldp x29, x30, [sp], #32
+
+    adrp x1, out_tail
+    add x1, x1, :lo12:out_tail
+    ldr x2, [x1]
+
+.Loc_store:
+    adrp x3, out_buf
+    add x3, x3, :lo12:out_buf
+    strb w0, [x3, x2]
+    add x2, x2, #1
+    str x2, [x1]
+    ret
+
+print_error:
+    stp x29, x30, [sp, #-16]!
+    mov w0, #'e'
+    bl out_char
+    mov w0, #'r'
+    bl out_char
+    mov w0, #'r'
+    bl out_char
+    mov w0, #'o'
+    bl out_char
+    mov w0, #'r'
+    bl out_char
+    mov w0, #'\n'
+    bl out_char
+    ldp x29, x30, [sp], #16
+    ret
+
+print_int64:
+    stp x29, x30, [sp, #-80]!
+    mov x29, sp
+    stp x19, x20, [sp, #16]
+    stp x21, x22, [sp, #32]
+
+    cbnz x0, .Lpi_not_zero
+    mov w0, #'0'
+    bl out_char
+    mov w0, #'\n'
+    bl out_char
+    b .Lpi_done
+
+.Lpi_not_zero:
+    cmp x0, #0
+    b.ge .Lpi_pos
+    neg x19, x0
+    mov w0, #'-'
+    bl out_char
+    b .Lpi_extract
+
+.Lpi_pos:
+    mov x19, x0
+
+.Lpi_extract:
+    mov x20, #0
+    mov x21, #10
+    add x22, sp, #48
+
+.Lpi_div_loop:
+    cbz x19, .Lpi_print_digits
+    udiv x2, x19, x21
+    msub x3, x2, x21, x19
+    add w3, w3, #'0'
+    strb w3, [x22, x20]
+    add x20, x20, #1
+    mov x19, x2
+    b .Lpi_div_loop
+
+.Lpi_print_digits:
+.Lpi_print_loop:
+    subs x20, x20, #1
+    b.mi .Lpi_print_nl
+    ldrb w0, [x22, x20]
+    bl out_char
+    b .Lpi_print_loop
+
+.Lpi_print_nl:
+    mov w0, #'\n'
+    bl out_char
+
+.Lpi_done:
+    ldp x21, x22, [sp, #32]
+    ldp x19, x20, [sp, #16]
+    ldp x29, x30, [sp], #80
+    ret
+
+.section .bss
+.balign 16
+in_head:
+    .space 8
+in_tail:
+    .space 8
+out_tail:
+    .space 8
+.balign 16
+in_buf:
+    .space 65536
+line_buf:
+    .space 65536
+out_buf:
+    .space 65536
+rpn_stack:
+    .space 16384
+

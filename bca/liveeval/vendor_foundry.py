@@ -277,6 +277,11 @@ class FoundrySubject(Subject):
         """What to book for a call that ended without a usage report (a timeout or a dropped stream)."""
         return worst
 
+    def _delta(self, d: dict) -> dict:
+        """The stream delta in the common shape (string `content`, string `reasoning`). Vendors whose API nests
+        them differently override this (vendor_mistral)."""
+        return d
+
     def _complete(self, prompt: str, on_text: OnText | None, raw_path: str, limit: float, s: dict,
                   bearer: str) -> Response:
         body = json.dumps(self.request_body(prompt)).encode()
@@ -369,7 +374,10 @@ class FoundrySubject(Subject):
                     if ev.get("usage"):
                         usage = ev["usage"]
                     for ch in ev.get("choices") or []:
-                        d = ch.get("delta") or {}
+                        d = self._delta(ch.get("delta") or {})
+                        if d.get("_isolation"):  # a vendor's delta shape the adapter does not know: never scored
+                            error = f"isolation: {d['_isolation']}"
+                            break
                         if d.get("tool_calls") or d.get("function_call"):
                             error = "isolation: the model emitted a tool call"
                             break

@@ -46,6 +46,7 @@ from bca.liveeval.vendor_base import CliSubject, IsolationError, Parsed
 MUSE_FLAGS = ("--preset", "empty", "--max-model-steps", "1", "--disable-shell", "--disable-write", "--disable-web-tools",
               "--disable-reminders", "--disable-request-user-input", "--no-foreign-personal-context", "--no-session-log")
 MODEL_TASK = "model.meta.response"
+MUSE_SEARCH_TASK = "tool.muse.search"  # proposed by Muse itself after a model step (see on_event)
 _SUSPECT = re.compile(r"tool|mcp|skill|subagent|plugin|approval|shell|workspace\.write", re.I)
 _KNOWN = frozenset({"runtime.command.accepted", "session.run.linked", "run.model.configured", "turn.input.user",
                     "run.lifecycle.started", "task.stream.linked", "task.lifecycle.proposed", "task.lifecycle.accepted",
@@ -118,6 +119,16 @@ class MuseSubject(CliSubject):
                 p.violations.append("the user turn is not the task prompt as sent")
         elif t == "task.lifecycle.proposed":
             kind = (pl.get("event") or {}).get("task_kind")
+            if kind == MUSE_SEARCH_TASK and st["completed"] >= 1:
+                # the model asked for Muse's built-in search after its one step (no tools are sent; seen 11-13 and
+                # 11-15): stop the call there and score what the model wrote before it (user decision 2026-11-16,
+                # the rule agy's manage_task follows; one attempt is one model call)
+                p.notes.append(f"muse proposed its built-in {kind} task after the model step: the call was stopped "
+                               "there and the answer written before it is scored as it stands")
+                p.usage["tool_stops"] = p.usage.get("tool_stops", 0) + 1
+                st["tool_stop"] = True
+                p.abort = True
+                return None
             if kind != MODEL_TASK:
                 p.violations.append(f"a non-model task was proposed: {kind!r}")
             st["model_tasks"] += 1
@@ -147,6 +158,11 @@ class MuseSubject(CliSubject):
 
     def finish(self, p: Parsed, returncode: int | None, stderr: str) -> None:
         st = self._call.st
+        if st.get("tool_stop"):  # stopped at a search proposal: the one completed model step is the answer
+            if st["completed"] != 1 or st["model_tasks"] != 1 + p.usage.get("guard_resamples", 0):
+                p.violations.append(f"{st['model_tasks']} model tasks, {st['completed']} completed (one step expected)")
+            p.text = st["sample"]
+            return
         if returncode not in (0, None):
             lines = [ln for ln in stderr.strip().splitlines() if ln.strip() and not ln.startswith("muse: workspace root")]
             p.error = (lines[-1] if lines else f"exit status {returncode}")[:500]

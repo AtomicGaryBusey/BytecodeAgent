@@ -1,0 +1,233 @@
+.globl _start
+
+.text
+_start:
+    cld
+
+    # Read standard input into input_buf
+    xor r12, r12
+.Lread_loop:
+    xor eax, eax
+    xor edi, edi
+    lea rsi, [rip + input_buf]
+    add rsi, r12
+    mov edx, 65536
+    sub rdx, r12
+    jz .Lread_done
+    syscall
+    test rax, rax
+    jle .Lread_done
+    add r12, rax
+    jmp .Lread_loop
+
+.Lread_done:
+    test r12, r12
+    jz .Lexit_success
+
+    # Parse lines from input_buf
+    # r12 = total bytes read
+    lea rbx, [rip + input_buf]      # line_start
+    mov rsi, rbx                    # rsi = current byte pointer
+    lea r13, [rbx + r12]            # r13 = end_ptr (input_buf + total_bytes)
+    xor r14, r14                    # line_count = 0
+    lea r15, [rip + lines]          # current Line struct pointer
+
+.Lparse_loop:
+    cmp rsi, r13
+    je .Lparse_end
+    mov al, byte ptr [rsi]
+    cmp al, 10
+    jne .Lparse_next
+
+    # Newline found: record line [rbx, rsi)
+    mov rdx, rsi
+    sub rdx, rbx                    # rdx = line length
+    mov qword ptr [r15], rbx        # line.ptr = rbx
+    mov qword ptr [r15 + 8], rdx    # line.len = rdx
+    lea rax, [rip + ptrs]
+    mov qword ptr [rax + r14*8], r15 # ptrs[line_count] = r15
+    add r15, 16
+    inc r14
+
+    lea rbx, [rsi + 1]              # line_start = rsi + 1
+
+.Lparse_next:
+    inc rsi
+    jmp .Lparse_loop
+
+.Lparse_end:
+    # Check if there are trailing bytes after the last newline
+    cmp rbx, r13
+    jae .Lparse_done
+
+    mov rdx, r13
+    sub rdx, rbx
+    mov qword ptr [r15], rbx
+    mov qword ptr [r15 + 8], rdx
+    lea rax, [rip + ptrs]
+    mov qword ptr [rax + r14*8], r15
+    add r15, 16
+    inc r14
+
+.Lparse_done:
+    # r14 = line_count
+    mov r12, r14                    # r12 = line_count (n)
+    cmp r12, 1
+    jle .Lsort_done
+
+    # Shell sort on ptrs array using Ciura's gap sequence
+    lea r13, [rip + gaps]
+
+.Lgap_loop:
+    mov r14, qword ptr [r13]        # gap
+    test r14, r14
+    jz .Lsort_done
+
+    cmp r14, r12
+    jge .Lgap_next
+
+    mov r15, r14                    # i = gap
+.Li_loop:
+    cmp r15, r12
+    jge .Lgap_next
+
+    lea rax, [rip + ptrs]
+    mov rbp, qword ptr [rax + r15*8] # temp = ptrs[i]
+    mov rbx, r15                    # j = i
+
+.Lj_loop:
+    cmp rbx, r14
+    jb .Lj_done
+
+    # Compare temp (Line A) with ptrs[j - gap] (Line B)
+    mov rsi, rbp
+    mov rax, rbx
+    sub rax, r14                    # rax = j - gap
+    lea rdx, [rip + ptrs]
+    mov rdi, qword ptr [rdx + rax*8]
+
+    call compare_lines
+    jnb .Lj_done
+
+    lea rdx, [rip + ptrs]
+    mov qword ptr [rdx + rbx*8], rdi
+
+    sub rbx, r14
+    jmp .Lj_loop
+
+.Lj_done:
+    lea rdx, [rip + ptrs]
+    mov qword ptr [rdx + rbx*8], rbp
+
+    inc r15
+    jmp .Li_loop
+
+.Lgap_next:
+    add r13, 8
+    jmp .Lgap_loop
+
+.Lsort_done:
+    # Format sorted lines into out_buf
+    lea rdi, [rip + out_buf]
+    lea r13, [rip + ptrs]
+    xor r14, r14
+
+.Lout_loop:
+    cmp r14, r12
+    jge .Lout_done
+
+    mov r15, qword ptr [r13 + r14*8]
+    mov rsi, qword ptr [r15]
+    mov rcx, qword ptr [r15 + 8]
+
+    rep movsb
+
+    mov byte ptr [rdi], 10
+    inc rdi
+
+    inc r14
+    jmp .Lout_loop
+
+.Lout_done:
+    # Write out_buf to standard output
+    lea rax, [rip + out_buf]
+    mov r12, rdi
+    sub r12, rax                    # r12 = total bytes to write
+    xor rbx, rbx                    # rbx = bytes written so far
+
+.Lwrite_loop:
+    cmp rbx, r12
+    jge .Lexit_success
+    mov eax, 1                      # sys_write
+    mov edi, 1                      # fd = 1 (stdout)
+    lea rsi, [rip + out_buf]
+    add rsi, rbx
+    mov rdx, r12
+    sub rdx, rbx
+    syscall
+    test rax, rax
+    jle .Lexit_success
+    add rbx, rax
+    jmp .Lwrite_loop
+
+.Lexit_success:
+    mov eax, 60                     # sys_exit
+    xor edi, edi                    # status = 0
+    syscall
+
+# compare_lines: compares Line A (rsi) and Line B (rdi)
+# Returns flags:
+#   CF = 1 if Line A < Line B
+#   CF = 0, ZF = 0 if Line A > Line B
+#   CF = 0, ZF = 1 if Line A == Line B
+compare_lines:
+    mov r8, qword ptr [rsi]         # ptr A
+    mov r9, qword ptr [rsi + 8]     # len A
+    mov r10, qword ptr [rdi]        # ptr B
+    mov r11, qword ptr [rdi + 8]    # len B
+
+    mov rcx, r9
+    cmp rcx, r11
+    jbe .Lcmp_min_set
+    mov rcx, r11
+.Lcmp_min_set:
+
+    xor rdx, rdx                    # offset = 0
+.Lcmp_loop:
+    cmp rdx, rcx
+    je .Lcmp_prefix
+    movzx eax, byte ptr [r8 + rdx]
+    movzx esi, byte ptr [r10 + rdx]
+    cmp eax, esi
+    jne .Lcmp_done
+    inc rdx
+    jmp .Lcmp_loop
+
+.Lcmp_prefix:
+    cmp r9, r11
+.Lcmp_done:
+    ret
+
+.section .rodata
+.balign 8
+gaps:
+    .quad 701
+    .quad 301
+    .quad 132
+    .quad 57
+    .quad 23
+    .quad 10
+    .quad 4
+    .quad 1
+    .quad 0
+
+.section .bss
+.balign 16
+lines:
+    .space 32768
+ptrs:
+    .space 16384
+input_buf:
+    .space 65536
+out_buf:
+    .space 65536

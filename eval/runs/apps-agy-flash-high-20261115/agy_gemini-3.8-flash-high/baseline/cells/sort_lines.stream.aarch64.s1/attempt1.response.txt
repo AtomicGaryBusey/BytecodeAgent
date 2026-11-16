@@ -1,0 +1,341 @@
+.text
+.globl _start
+
+_start:
+    // Read standard input completely into in_buf
+    mov     x19, #0             // total_bytes_read = 0
+    adrp    x20, in_buf
+    add     x20, x20, :lo12:in_buf
+
+.Lread_loop:
+    movz    x3, #1, lsl #16     // buffer capacity = 65536
+    sub     x2, x3, x19         // remaining space
+    cmp     x2, #0
+    b.le    .Lread_done
+
+    mov     x0, #0              // fd = 0 (stdin)
+    add     x1, x20, x19        // buffer + total_bytes_read
+    mov     x8, #63             // sys_read
+    svc     #0
+
+    cmp     x0, #0
+    b.le    .Lread_done
+
+    add     x19, x19, x0
+    b       .Lread_loop
+
+.Lread_done:
+    // Empty input produces no output and exits with 0
+    cmp     x19, #0
+    b.eq    .Lexit_0
+
+    // Parse lines from in_buf
+    mov     x20, #0             // cur = 0
+    mov     x21, #0             // line_start = 0
+    mov     x22, #0             // num_lines = 0
+    adrp    x23, in_buf
+    add     x23, x23, :lo12:in_buf
+    adrp    x24, lines
+    add     x24, x24, :lo12:lines
+
+.Lparse_loop:
+    cmp     x20, x19
+    b.ge    .Lparse_end
+
+    ldrb    w0, [x23, x20]
+    cmp     w0, #10             // '\n'
+    b.ne    .Lparse_next
+
+    // Line found from line_start to cur
+    add     x1, x23, x21        // line pointer
+    sub     x2, x20, x21        // line length
+    add     x3, x24, x22, lsl #4
+    stp     x1, x2, [x3]
+    add     x22, x22, #1
+
+    add     x20, x20, #1
+    mov     x21, x20
+    b       .Lparse_loop
+
+.Lparse_next:
+    add     x20, x20, #1
+    b       .Lparse_loop
+
+.Lparse_end:
+    // Check if there is a trailing line without a terminating newline
+    cmp     x21, x19
+    b.ge    .Lparse_done
+    add     x1, x23, x21
+    sub     x2, x19, x21
+    add     x3, x24, x22, lsl #4
+    stp     x1, x2, [x3]
+    add     x22, x22, #1
+
+.Lparse_done:
+    cmp     x22, #0
+    b.eq    .Lexit_0
+
+    // Sort the lines
+    mov     x0, x22             // num_lines
+    bl      mergesort
+
+    // Format sorted lines into out_buf
+    adrp    x20, out_buf
+    add     x20, x20, :lo12:out_buf   // current out_buf pointer
+    mov     x21, #0                   // line index = 0
+    adrp    x24, lines
+    add     x24, x24, :lo12:lines
+
+.Lformat_loop:
+    cmp     x21, x22
+    b.ge    .Lformat_done
+
+    add     x3, x24, x21, lsl #4
+    ldp     x1, x2, [x3]              // x1 = ptr, x2 = len
+
+    // Copy line bytes
+    mov     x4, #0
+.Lcopy_bytes:
+    cmp     x4, x2
+    b.ge    .Lcopy_done
+    ldrb    w5, [x1, x4]
+    strb    w5, [x20, x4]
+    add     x4, x4, #1
+    b       .Lcopy_bytes
+
+.Lcopy_done:
+    add     x20, x20, x2
+    mov     w5, #10                   // '\n'
+    strb    w5, [x20], #1
+
+    add     x21, x21, #1
+    b       .Lformat_loop
+
+.Lformat_done:
+    // Write out_buf to standard output
+    adrp    x0, out_buf
+    add     x0, x0, :lo12:out_buf
+    sub     x26, x20, x0              // total bytes to write
+    mov     x25, x0                   // current buffer pointer
+
+.Lwrite_loop:
+    cmp     x26, #0
+    b.le    .Lexit_0
+
+    mov     x0, #1                    // fd = 1 (stdout)
+    mov     x1, x25                   // buffer
+    mov     x2, x26                   // count
+    mov     x8, #64                   // sys_write
+    svc     #0
+
+    cmp     x0, #0
+    b.le    .Lexit_0
+
+    add     x25, x25, x0
+    sub     x26, x26, x0
+    b       .Lwrite_loop
+
+.Lexit_0:
+    mov     x0, #0                    // status = 0
+    mov     x8, #93                   // sys_exit
+    svc     #0
+
+.Lhalt:
+    b       .Lhalt
+
+// Compare two lines byte by byte as unsigned values
+// Inputs:  x0 = ptr1, x1 = len1, x2 = ptr2, x3 = len2
+// Returns: x0 < 0 if line1 < line2
+//          x0 == 0 if line1 == line2
+//          x0 > 0 if line1 > line2
+cmp_lines:
+    cmp     x1, x3
+    csel    x4, x1, x3, ls            // x4 = min(len1, len2)
+    mov     x5, #0                    // index = 0
+
+.Lcmp_loop:
+    cmp     x5, x4
+    b.eq    .Lcmp_lens
+    ldrb    w6, [x0, x5]
+    ldrb    w7, [x2, x5]
+    cmp     w6, w7
+    b.ne    .Lcmp_diff
+    add     x5, x5, #1
+    b       .Lcmp_loop
+
+.Lcmp_diff:
+    sub     x0, x6, x7
+    ret
+
+.Lcmp_lens:
+    sub     x0, x1, x3
+    ret
+
+// Merge function for bottom-up mergesort
+// Inputs: x0 = left, x1 = mid, x2 = right
+merge:
+    stp     x29, x30, [sp, #-80]!
+    mov     x29, sp
+    stp     x19, x20, [sp, #16]
+    stp     x21, x22, [sp, #32]
+    stp     x23, x24, [sp, #48]
+    stp     x25, x26, [sp, #64]
+
+    mov     x19, x0                   // left
+    mov     x20, x1                   // mid
+    mov     x21, x2                   // right
+    mov     x22, x0                   // i = left
+    mov     x23, x1                   // j = mid
+    mov     x24, x0                   // k = left
+
+    adrp    x25, lines
+    add     x25, x25, :lo12:lines
+    adrp    x26, temp_lines
+    add     x26, x26, :lo12:temp_lines
+
+.Lmerge_loop:
+    cmp     x22, x20                  // i < mid?
+    b.ge    .Lmerge_right_rem
+    cmp     x23, x21                  // j < right?
+    b.ge    .Lmerge_left_rem
+
+    // Load line[i]
+    add     x8, x25, x22, lsl #4
+    ldp     x0, x1, [x8]
+    // Load line[j]
+    add     x9, x25, x23, lsl #4
+    ldp     x2, x3, [x9]
+
+    bl      cmp_lines
+
+    cmp     x0, #0
+    b.gt    .Lpick_j
+
+.Lpick_i:
+    add     x8, x25, x22, lsl #4
+    ldp     x0, x1, [x8]
+    add     x10, x26, x24, lsl #4
+    stp     x0, x1, [x10]
+    add     x22, x22, #1
+    add     x24, x24, #1
+    b       .Lmerge_loop
+
+.Lpick_j:
+    add     x9, x25, x23, lsl #4
+    ldp     x2, x3, [x9]
+    add     x10, x26, x24, lsl #4
+    stp     x2, x3, [x10]
+    add     x23, x23, #1
+    add     x24, x24, #1
+    b       .Lmerge_loop
+
+.Lmerge_left_rem:
+    cmp     x22, x20
+    b.ge    .Lmerge_copy_back
+    add     x8, x25, x22, lsl #4
+    ldp     x0, x1, [x8]
+    add     x10, x26, x24, lsl #4
+    stp     x0, x1, [x10]
+    add     x22, x22, #1
+    add     x24, x24, #1
+    b       .Lmerge_left_rem
+
+.Lmerge_right_rem:
+    cmp     x23, x21
+    b.ge    .Lmerge_copy_back
+    add     x9, x25, x23, lsl #4
+    ldp     x2, x3, [x9]
+    add     x10, x26, x24, lsl #4
+    stp     x2, x3, [x10]
+    add     x23, x23, #1
+    add     x24, x24, #1
+    b       .Lmerge_right_rem
+
+.Lmerge_copy_back:
+    mov     x8, x19                   // p = left
+.Lcopy_loop:
+    cmp     x8, x21                   // p < right?
+    b.ge    .Lmerge_done
+    add     x10, x26, x8, lsl #4
+    ldp     x0, x1, [x10]
+    add     x9, x25, x8, lsl #4
+    stp     x0, x1, [x9]
+    add     x8, x8, #1
+    b       .Lcopy_loop
+
+.Lmerge_done:
+    ldp     x19, x20, [sp, #16]
+    ldp     x21, x22, [sp, #32]
+    ldp     x23, x24, [sp, #48]
+    ldp     x25, x26, [sp, #64]
+    ldp     x29, x30, [sp], #80
+    ret
+
+// Bottom-up mergesort
+// Input: x0 = num_lines
+mergesort:
+    stp     x29, x30, [sp, #-48]!
+    mov     x29, sp
+    stp     x19, x20, [sp, #16]
+    stp     x21, x22, [sp, #32]
+
+    mov     x19, x0                   // N = num_lines
+    cmp     x19, #1
+    b.le    .Lsort_done
+
+    mov     x20, #1                   // width = 1
+
+.Lwidth_loop:
+    cmp     x20, x19
+    b.ge    .Lsort_done
+
+    mov     x21, #0                   // i = 0
+.Li_loop:
+    cmp     x21, x19
+    b.ge    .Lnext_width
+
+    // mid = min(i + width, N)
+    add     x1, x21, x20
+    cmp     x1, x19
+    csel    x1, x1, x19, ls
+
+    // right = min(i + 2 * width, N)
+    add     x2, x21, x20, lsl #1
+    cmp     x2, x19
+    csel    x2, x2, x19, ls
+
+    // if (mid < right) merge(left, mid, right)
+    cmp     x1, x2
+    b.ge    .Lskip_merge
+
+    mov     x0, x21                   // left = i
+    bl      merge
+
+.Lskip_merge:
+    add     x21, x21, x20, lsl #1     // i += 2 * width
+    b       .Li_loop
+
+.Lnext_width:
+    lsl     x20, x20, #1              // width *= 2
+    b       .Lwidth_loop
+
+.Lsort_done:
+    ldp     x19, x20, [sp, #16]
+    ldp     x21, x22, [sp, #32]
+    ldp     x29, x30, [sp], #48
+    ret
+
+.bss
+.balign 16
+in_buf:
+    .space 65536
+.balign 16
+lines:
+    .space 32768
+.balign 16
+temp_lines:
+    .space 32768
+.balign 16
+out_buf:
+    .space 65536
+

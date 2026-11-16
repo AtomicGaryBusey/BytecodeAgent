@@ -1,0 +1,319 @@
+.equ SYS_READ, 63
+.equ SYS_WRITE, 64
+.equ SYS_EXIT, 93
+.equ IN_BUF_SIZE, 131072
+.equ OUT_BUF_SIZE, 8192
+.equ OUT_FLUSH_THRESH, 4096
+.equ RPN_CAP, 1024
+
+.bss
+.balign 8
+rpn_stack:
+    .space RPN_CAP * 8
+in_buf:
+    .space IN_BUF_SIZE
+out_buf:
+    .space OUT_BUF_SIZE
+
+.text
+.globl _start
+
+_start:
+    // Read all of stdin into in_buf
+    adrp x19, in_buf
+    add x19, x19, :lo12:in_buf
+    mov x20, #0
+    movz x21, #2, lsl #16
+
+read_loop:
+    sub x2, x21, x20
+    cbz x2, read_done
+    mov x0, #0
+    add x1, x19, x20
+    mov x8, #SYS_READ
+    svc #0
+    cmp x0, #0
+    b.le read_done
+    add x20, x20, x0
+    b read_loop
+
+read_done:
+    // x19 = cursor in in_buf, x20 = end of input
+    add x20, x19, x20
+    adrp x21, out_buf
+    add x21, x21, :lo12:out_buf
+    mov x22, #0
+    adrp x23, rpn_stack
+    add x23, x23, :lo12:rpn_stack
+
+main_loop:
+    cmp x19, x20
+    b.hs main_done
+
+    mov x24, x19
+    mov x25, x19
+find_eol:
+    cmp x25, x20
+    b.hs eol_eof
+    ldrb w0, [x25]
+    cmp w0, #0x0a
+    b.eq eol_nl
+    add x25, x25, #1
+    b find_eol
+
+eol_nl:
+    add x19, x25, #1
+    b have_line
+
+eol_eof:
+    mov x19, x25
+
+have_line:
+    mov x26, #0
+
+tok_loop:
+skip_sep:
+    cmp x24, x25
+    b.hs line_end
+    ldrb w0, [x24]
+    cmp w0, #0x20
+    b.eq 1f
+    cmp w0, #0x09
+    b.ne tok_found
+1:
+    add x24, x24, #1
+    b skip_sep
+
+tok_found:
+    mov x27, x24
+1:
+    add x27, x27, #1
+    cmp x27, x25
+    b.hs tok_sliced
+    ldrb w0, [x27]
+    cmp w0, #0x20
+    b.eq tok_sliced
+    cmp w0, #0x09
+    b.ne 1b
+
+tok_sliced:
+    sub x28, x27, x24
+    mov x0, x24
+    mov x24, x27
+
+    cmp x28, #1
+    b.ne parse_multi
+
+    // Length 1: single digit or binary operator
+    ldrb w1, [x0]
+    sub w2, w1, #'0'
+    cmp w2, #9
+    b.ls push_val
+
+    cmp x26, #2
+    b.lo line_error
+
+    cmp w1, #'+'
+    b.eq op_add
+    cmp w1, #'-'
+    b.eq op_sub
+    cmp w1, #'*'
+    b.eq op_mul
+    cmp w1, #'/'
+    b.eq op_div
+    cmp w1, #'%'
+    b.eq op_mod
+    b line_error
+
+push_val:
+    cmp x26, #RPN_CAP
+    b.hs line_error
+    str x2, [x23, x26, lsl #3]
+    add x26, x26, #1
+    b tok_loop
+
+op_add:
+    sub x26, x26, #1
+    ldr x2, [x23, x26, lsl #3]
+    sub x3, x26, #1
+    ldr x1, [x23, x3, lsl #3]
+    add x0, x1, x2
+    str x0, [x23, x3, lsl #3]
+    b tok_loop
+
+op_sub:
+    sub x26, x26, #1
+    ldr x2, [x23, x26, lsl #3]
+    sub x3, x26, #1
+    ldr x1, [x23, x3, lsl #3]
+    sub x0, x1, x2
+    str x0, [x23, x3, lsl #3]
+    b tok_loop
+
+op_mul:
+    sub x26, x26, #1
+    ldr x2, [x23, x26, lsl #3]
+    sub x3, x26, #1
+    ldr x1, [x23, x3, lsl #3]
+    mul x0, x1, x2
+    str x0, [x23, x3, lsl #3]
+    b tok_loop
+
+op_div:
+    sub x26, x26, #1
+    ldr x2, [x23, x26, lsl #3]
+    sub x3, x26, #1
+    ldr x1, [x23, x3, lsl #3]
+    cbz x2, line_error
+    movz x4, #0x8000, lsl #48
+    cmp x1, x4
+    b.ne 1f
+    cmn x2, #1
+    b.eq line_error
+1:
+    sdiv x0, x1, x2
+    str x0, [x23, x3, lsl #3]
+    b tok_loop
+
+op_mod:
+    sub x26, x26, #1
+    ldr x2, [x23, x26, lsl #3]
+    sub x3, x26, #1
+    ldr x1, [x23, x3, lsl #3]
+    cbz x2, line_error
+    movz x4, #0x8000, lsl #48
+    cmp x1, x4
+    b.ne 1f
+    cmn x2, #1
+    b.eq line_error
+1:
+    sdiv x4, x1, x2
+    msub x0, x4, x2, x1
+    str x0, [x23, x3, lsl #3]
+    b tok_loop
+
+parse_multi:
+    ldrb w1, [x0]
+    mov x3, #0
+    cmp w1, #'-'
+    b.ne 1f
+    mov x3, #1
+    add x0, x0, #1
+    sub x28, x28, #1
+1:
+    cmp x28, #1
+    b.lo line_error
+    cmp x28, #18
+    b.hi line_error
+
+    mov x2, #0
+    mov x5, #10
+2:
+    ldrb w1, [x0], #1
+    sub w1, w1, #'0'
+    cmp w1, #9
+    b.hi line_error
+    mul x2, x2, x5
+    add x2, x2, x1
+    subs x28, x28, #1
+    b.ne 2b
+
+    cbz x3, push_val
+    neg x2, x2
+    b push_val
+
+line_end:
+    cmp x26, #1
+    b.ne line_error
+    ldr x0, [x23]
+    bl emit_int
+    b main_loop
+
+line_error:
+    bl emit_error
+    b main_loop
+
+main_done:
+    bl flush_out
+    mov x0, #0
+    mov x8, #SYS_EXIT
+    svc #0
+
+// Flush x22 bytes from out_buf (x21) to stdout. Clobbers x0-x3, x8.
+flush_out:
+    cbz x22, 2f
+    mov x3, #0
+1:
+    mov x0, #1
+    add x1, x21, x3
+    sub x2, x22, x3
+    mov x8, #SYS_WRITE
+    svc #0
+    cmp x0, #0
+    b.le 2f
+    add x3, x3, x0
+    cmp x3, x22
+    b.lo 1b
+    mov x22, #0
+2:
+    ret
+
+// Append "error\n" to out_buf, flushing first if needed.
+emit_error:
+    stp x29, x30, [sp, #-16]!
+    cmp x22, #OUT_FLUSH_THRESH
+    b.lo 1f
+    bl flush_out
+1:
+    add x0, x21, x22
+    mov w1, #'e'
+    strb w1, [x0]
+    mov w1, #'r'
+    strb w1, [x0, #1]
+    strb w1, [x0, #2]
+    strb w1, [x0, #4]
+    mov w1, #'o'
+    strb w1, [x0, #3]
+    mov w1, #'\n'
+    strb w1, [x0, #5]
+    add x22, x22, #6
+    ldp x29, x30, [sp], #16
+    ret
+
+// Append signed 64-bit integer x0 in decimal + '\n' to out_buf.
+emit_int:
+    stp x29, x30, [sp, #-48]!
+    mov x4, x0
+    cmp x22, #OUT_FLUSH_THRESH
+    b.lo 1f
+    bl flush_out
+1:
+    add x5, x21, x22
+    cmp x4, #0
+    b.ge 2f
+    mov w1, #'-'
+    strb w1, [x5], #1
+    neg x4, x4
+2:
+    add x6, sp, #16
+    mov x7, x6
+    mov x1, #10
+3:
+    udiv x2, x4, x1
+    msub x3, x2, x1, x4
+    add w3, w3, #'0'
+    strb w3, [x7], #1
+    mov x4, x2
+    cbnz x4, 3b
+4:
+    ldrb w3, [x7, #-1]!
+    strb w3, [x5], #1
+    cmp x7, x6
+    b.hi 4b
+
+    mov w1, #'\n'
+    strb w1, [x5], #1
+    sub x22, x5, x21
+    ldp x29, x30, [sp], #48
+    ret
+

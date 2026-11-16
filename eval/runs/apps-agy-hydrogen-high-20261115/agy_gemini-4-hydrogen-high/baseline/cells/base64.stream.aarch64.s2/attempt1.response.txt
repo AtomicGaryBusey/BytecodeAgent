@@ -1,0 +1,169 @@
+.text
+.globl _start
+
+_start:
+    adrp x21, b64_table
+    add  x21, x21, :lo12:b64_table
+    adrp x22, inbuf
+    add  x22, x22, :lo12:inbuf
+    adrp x23, outbuf
+    add  x23, x23, :lo12:outbuf
+
+    mov  x19, #0                // leftover bytes (0, 1, or 2)
+    mov  x20, #0                // groups emitted on current line (0..18)
+
+read_loop:
+    mov  x0, #0                 // fd = stdin
+    add  x1, x22, x19           // buf = inbuf + leftover
+    movz x2, #60000             // max bytes to read
+    mov  x8, #63                // SYS_read
+    svc  #0
+    cmp  x0, #0
+    b.le eof
+
+    add  x1, x19, x0            // total bytes available in inbuf
+    mov  x2, x22                // in_ptr = inbuf
+    mov  x24, x23               // out_ptr = outbuf
+
+group_loop:
+    cmp  x1, #3
+    b.lt group_done
+
+    ldrb w3, [x2], #1           // b0
+    ldrb w4, [x2], #1           // b1
+    ldrb w5, [x2], #1           // b2
+    sub  x1, x1, #3
+
+    lsr  w6, w3, #2             // c0 = b0 >> 2
+
+    and  w7, w3, #3
+    lsl  w7, w7, #4
+    orr  w7, w7, w4, lsr #4     // c1 = ((b0 & 3) << 4) | (b1 >> 4)
+
+    and  w9, w4, #0xf
+    lsl  w9, w9, #2
+    orr  w9, w9, w5, lsr #6     // c2 = ((b1 & 0xf) << 2) | (b2 >> 6)
+
+    and  w10, w5, #0x3f         // c3 = b2 & 0x3f
+
+    ldrb w6, [x21, x6]
+    ldrb w7, [x21, x7]
+    ldrb w9, [x21, x9]
+    ldrb w10, [x21, x10]
+
+    strb w6, [x24], #1
+    strb w7, [x24], #1
+    strb w9, [x24], #1
+    strb w10, [x24], #1
+
+    add  x20, x20, #1
+    cmp  x20, #19
+    b.ne group_loop
+
+    mov  w11, #10               // '\n'
+    strb w11, [x24], #1
+    mov  x20, #0
+    b    group_loop
+
+group_done:
+    mov  x19, x1                // save new leftover count (0, 1, or 2)
+    cbz  x1, leftover_done
+    ldrb w3, [x2]
+    strb w3, [x22]
+    cmp  x1, #1
+    b.eq leftover_done
+    ldrb w3, [x2, #1]
+    strb w3, [x22, #1]
+
+leftover_done:
+    sub  x1, x24, x23           // output bytes produced in this chunk
+    cbz  x1, read_loop
+    mov  x0, x23
+    bl   write_all
+    b    read_loop
+
+eof:
+    mov  x24, x23               // out_ptr = outbuf
+    cbz  x19, check_trailing_newline
+
+    cmp  x19, #1
+    b.ne final_two
+
+    // 1 leftover byte
+    ldrb w3, [x22]
+    lsr  w6, w3, #2
+    and  w7, w3, #3
+    lsl  w7, w7, #4
+    ldrb w6, [x21, x6]
+    ldrb w7, [x21, x7]
+    mov  w9, #61                // '='
+    mov  w10, #61               // '='
+    b    emit_final
+
+final_two:
+    // 2 leftover bytes
+    ldrb w3, [x22]
+    ldrb w4, [x22, #1]
+    lsr  w6, w3, #2
+    and  w7, w3, #3
+    lsl  w7, w7, #4
+    orr  w7, w7, w4, lsr #4
+    and  w9, w4, #0xf
+    lsl  w9, w9, #2
+    ldrb w6, [x21, x6]
+    ldrb w7, [x21, x7]
+    ldrb w9, [x21, x9]
+    mov  w10, #61               // '='
+
+emit_final:
+    strb w6, [x24], #1
+    strb w7, [x24], #1
+    strb w9, [x24], #1
+    strb w10, [x24], #1
+    add  x20, x20, #1
+
+check_trailing_newline:
+    cbz  x20, flush_eof
+    mov  w11, #10               // '\n'
+    strb w11, [x24], #1
+
+flush_eof:
+    sub  x1, x24, x23
+    cbz  x1, exit_prog
+    mov  x0, x23
+    bl   write_all
+
+exit_prog:
+    mov  x0, #0
+    mov  x8, #93                // SYS_exit
+    svc  #0
+
+// write_all(x0 = buf, x1 = count)
+write_all:
+    mov  x2, x1
+    mov  x1, x0
+1:
+    cbz  x2, 2f
+    mov  x0, #1                 // fd = stdout
+    mov  x8, #64                // SYS_write
+    svc  #0
+    cmp  x0, #0
+    b.le 2f
+    add  x1, x1, x0
+    sub  x2, x2, x0
+    b    1b
+2:
+    ret
+
+.section .rodata
+b64_table:
+    .ascii "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/"
+
+.bss
+.balign 16
+inbuf:
+    .space 65536
+.balign 16
+outbuf:
+    .space 131072
+

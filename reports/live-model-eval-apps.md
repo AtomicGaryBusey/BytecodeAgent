@@ -50,12 +50,14 @@ samples passed on its first attempt.
 |---|---|---|---|---|---|---|---|
 | Grok 4.6 | **95/96 (99%)** | 96/96 (100%) | 1.01 | 31/32 | 32/32 | 32/32 | 32/32 |
 | Codex GPT-6 Astra | **94/96 (98%)** | 96/96 (100%) | 1.02 | 32/32 | 32/32 | 30/32 | 32/32 |
+| Gemini 4 Hydrogen High (Antigravity) | **93/96 (97%)** | 96/96 (100%) | 1.04 | 31/32 | 30/32 | 32/32 | 32/32 |
 | Codex GPT-6.1 Terra | **92/96 (96%)** | 96/96 (100%) | 1.05 | 31/32 | 31/32 | 30/32 | 32/32 |
 | Claude Mythos 5.1 | **90/96 (94%)** | 96/96 (100%) | 1.06 | 30/32 | 31/32 | 29/32 | 32/32 |
 | Claude Opus 5.5 | **89/96 (93%)** | 96/96 (100%) | 1.07 | 31/32 | 28/32 | 30/32 | 32/32 |
 | Codex GPT-6.1 Sol | **89/96 (93%)** | 96/96 (100%) | 1.07 | 29/32 | 29/32 | 31/32 | 32/32 |
 | Grok 4.7 | **89/96 (93%)** | 96/96 (100%) | 1.08 | 31/32 | 29/32 | 29/32 | 32/32 |
 | Grok 4.7 build-fast | **89/96 (93%)** | 96/96 (100%) | 1.08 | 30/32 | 29/32 | 30/32 | 32/32 |
+| Gemini 3.8 Flash High (Antigravity) | **88/96 (92%)** | 96/96 (100%) | 1.09 | 30/32 | 27/32 | 31/32 | 32/32 |
 | Claude Haiku 5.5 | **88/96 (92%)** | 96/96 (100%) | 1.09 | 28/32 | 29/32 | 31/32 | 32/32 |
 | Claude Opus 4.8 | **88/96 (92%)** | 96/96 (100%) | 1.08 | 28/32 | 30/32 | 30/32 | 32/32 |
 | Kimi K3.1 Pro Highspeed | **86/96 (90%)** | 96/96 (100%) | 1.10 | 28/32 | 30/32 | 28/32 | 32/32 |
@@ -96,12 +98,14 @@ change the picture; see the local section of the cross-vendor report).
 |---|---|---|---|---|---|---|---|---|
 | Grok 4.6 | 12/12 | 12/12 | 11/12 | 12/12 | 12/12 | 12/12 | 12/12 | 12/12 |
 | Codex GPT-6 Astra | 12/12 | 12/12 | 12/12 | 12/12 | 12/12 | 12/12 | 10/12 | 12/12 |
+| Gemini 4 Hydrogen High (Antigravity) | 12/12 | 12/12 | 11/12 | 12/12 | 10/12 | 12/12 | 12/12 | 12/12 |
 | Codex GPT-6.1 Terra | 12/12 | 12/12 | 11/12 | 10/12 | 12/12 | 12/12 | 12/12 | 11/12 |
 | Claude Mythos 5.1 | 11/12 | 12/12 | 9/12 | 12/12 | 11/12 | 11/12 | 12/12 | 12/12 |
 | Claude Opus 5.5 | 11/12 | 11/12 | 10/12 | 11/12 | 11/12 | 12/12 | 11/12 | 12/12 |
 | Codex GPT-6.1 Sol | 11/12 | 11/12 | 11/12 | 11/12 | 9/12 | 12/12 | 12/12 | 12/12 |
 | Grok 4.7 | 12/12 | 12/12 | 10/12 | 11/12 | 11/12 | 12/12 | 12/12 | 9/12 |
 | Grok 4.7 build-fast | 11/12 | 12/12 | 12/12 | 12/12 | 12/12 | 10/12 | 11/12 | 9/12 |
+| Gemini 3.8 Flash High (Antigravity) | 11/12 | 12/12 | 10/12 | 10/12 | 11/12 | 12/12 | 12/12 | 10/12 |
 | Claude Haiku 5.5 | 12/12 | 12/12 | 12/12 | 11/12 | 9/12 | 12/12 | 11/12 | 9/12 |
 | Claude Opus 4.8 | 11/12 | 12/12 | 10/12 | 10/12 | 12/12 | 12/12 | 12/12 | 9/12 |
 | Kimi K3.1 Pro Highspeed | 11/12 | 9/12 | 9/12 | 12/12 | 10/12 | 11/12 | 12/12 | 12/12 |
@@ -136,12 +140,14 @@ change the picture; see the local section of the cross-vendor report).
 |---|---|---|---|---|
 | Grok 4.6 | 24/24 | 24/24 | 24/24 | 23/24 |
 | Codex GPT-6 Astra | 24/24 | 23/24 | 24/24 | 23/24 |
+| Gemini 4 Hydrogen High (Antigravity) | 24/24 | 24/24 | 22/24 | 23/24 |
 | Codex GPT-6.1 Terra | 21/24 | 23/24 | 24/24 | 24/24 |
 | Claude Mythos 5.1 | 24/24 | 22/24 | 22/24 | 22/24 |
 | Claude Opus 5.5 | 23/24 | 23/24 | 23/24 | 20/24 |
 | Codex GPT-6.1 Sol | 23/24 | 20/24 | 24/24 | 22/24 |
 | Grok 4.7 | 23/24 | 21/24 | 23/24 | 22/24 |
 | Grok 4.7 build-fast | 24/24 | 22/24 | 23/24 | 20/24 |
+| Gemini 3.8 Flash High (Antigravity) | 22/24 | 22/24 | 22/24 | 22/24 |
 | Claude Haiku 5.5 | 19/24 | 23/24 | 24/24 | 22/24 |
 | Claude Opus 4.8 | 21/24 | 24/24 | 19/24 | 24/24 |
 | Kimi K3.1 Pro Highspeed | 22/24 | 20/24 | 21/24 | 23/24 |
@@ -176,12 +182,14 @@ change the picture; see the local section of the cross-vendor report).
 |---|---|---|---|---|---|---|---|---|---|---|---|---|---|
 | Grok 4.6 | · | · | · | · | · | · | · | · | · | 1 | · | · | · |
 | Codex GPT-6 Astra | · | · | · | · | · | · | · | · | · | 2 | · | · | · |
+| Gemini 4 Hydrogen High (Antigravity) | · | · | · | · | · | · | · | · | · | 1 | · | 2 | · |
 | Codex GPT-6.1 Terra | · | · | · | · | · | · | 1 | · | · | · | · | 3 | · |
 | Claude Mythos 5.1 | · | · | · | · | · | · | · | · | · | 6 | · | · | · |
 | Claude Opus 5.5 | · | · | 1 | · | · | · | · | · | · | 6 | · | · | · |
 | Codex GPT-6.1 Sol | · | · | · | · | · | · | · | · | · | 6 | · | 1 | · |
 | Grok 4.7 | · | · | · | 6 | · | · | · | · | 1 | · | · | · | · |
 | Grok 4.7 build-fast | · | · | · | 6 | · | · | · | · | · | · | · | 1 | · |
+| Gemini 3.8 Flash High (Antigravity) | · | · | · | · | 1 | · | · | · | · | 7 | · | · | · |
 | Claude Haiku 5.5 | · | · | · | · | · | · | · | · | · | 4 | · | 4 | · |
 | Claude Opus 4.8 | · | · | · | · | · | · | · | · | · | 7 | · | 1 | · |
 | Kimi K3.1 Pro Highspeed | · | · | · | · | · | · | 1 | · | · | 2 | · | 7 | · |
@@ -300,6 +308,9 @@ gpt-oss-120b on Fireworks and on Cerebras, and Qwen 3.8 27B on Cerebras.
   (32 and 34 within four), Qwen 3.8 27B 9/96 (29 within four). gpt-oss-120b's failures are assembler rejections
   (172 and 204 failed attempts); Qwen's are timeouts (260 of its 303 failed attempts hit the 900 s limit even at
   Cerebras' speed).
+- **Gemini 4 Hydrogen High (2026-11-15): 93/96 first attempt, the best on this battery, and 96/96 within four.** Its
+  three first-attempt misses are `rpn` (two cells) and `hexdump` (one), all on the stream path: wrong output twice
+  and an assembler rejection; no safety-filter blocks. A median call took 71 s.
 - **Kimi K3.1 Pro Highspeed (finished 2026-11-14): 86/96 first attempt, 96/96 within four**, level with the standard
   tier's 85/96 at the same `high` effort; its 10 failed attempts are 7 wrong outputs, 2 assembler rejections and 1
   out-of-bounds read, all the model's own. The run paused twice on Kimi's usage caps and resumed on the same settings.

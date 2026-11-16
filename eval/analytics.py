@@ -40,17 +40,14 @@ CELL_ADJ = {
 }
 BATS = ["round1", "round2", "long", "adversarial"]
 FULL_FN, FULL_APPS = 224, 96
-# Gemini 4 Argon High (agy:gemini-4-argon-high) is in progress, paused on quota, and deliberately unreported until it
-# completes. Its run directory is skipped everywhere the script walks eval/runs.
-EXCLUDED_RUN = "eval/runs/agy-argon-20261107-142027"
 # PCC with reasoning_effort=medium was paused after one cell (2026-11-10: empty, zero-usage answers) and is unreported.
 # Batteries still running or paused (eval/model_names.IN_PROGRESS) are unreported until complete, as in the tables.
-EXCLUDED_RUNS = (EXCLUDED_RUN, "eval/runs/apple-pcc-medium-20261110") + tuple(f"eval/runs/{d}/" for d in IN_PROGRESS)
+EXCLUDED_RUNS = ("eval/runs/apple-pcc-medium-20261110",) + tuple(f"eval/runs/{d}/" for d in IN_PROGRESS)
 
 
 def label_of(r: dict) -> str:
     subj = r.get("subject") or "opus"
-    if subj.startswith(("codex_", "kimi_", "agy_", "grok_", "copilot_", "foundry_", "fireworks_", "cerebras_", "apple_")):
+    if subj.startswith(("codex_", "kimi_", "agy_", "grok_", "copilot_", "foundry_", "fireworks_", "cerebras_", "mistral_", "apple_")):
         return subj.replace("_", ":", 1).replace("kimi-code_", "kimi-code/")
     if subj.startswith("local_"):
         think = (r.get("local") or {}).get("think")

@@ -1,0 +1,234 @@
+.equ SYS_READ, 63
+.equ SYS_WRITE, 64
+.equ SYS_EXIT, 93
+
+.equ IN_BUF_SIZE, 65536
+.equ OUT_BUF_SIZE, 65536
+.equ LINES_BYTES, 524288
+
+.text
+.globl _start
+
+_start:
+    adrp x19, in_buf
+    add x19, x19, :lo12:in_buf
+    mov x20, #0
+    mov x21, #IN_BUF_SIZE
+
+read_loop:
+    sub x2, x21, x20
+    cbz x2, read_done
+    mov x0, #0
+    add x1, x19, x20
+    mov x8, #SYS_READ
+    svc #0
+    cmp x0, #0
+    b.le read_done
+    add x20, x20, x0
+    b read_loop
+
+read_done:
+    cbz x20, exit_zero
+
+    adrp x22, lines
+    add x22, x22, :lo12:lines
+    mov x23, #0
+    mov x1, #0
+    mov x2, #0
+
+parse_loop:
+    cmp x1, x20
+    b.hs parse_after
+    ldrb w3, [x19, x1]
+    cmp w3, #0x0A
+    b.ne parse_next
+    sub x4, x1, x2
+    orr x5, x2, x4, lsl #32
+    str x5, [x22, x23, lsl #3]
+    add x23, x23, #1
+    add x1, x1, #1
+    mov x2, x1
+    b parse_loop
+
+parse_next:
+    add x1, x1, #1
+    b parse_loop
+
+parse_after:
+    cmp x2, x20
+    b.hs parse_done
+    sub x4, x20, x2
+    orr x5, x2, x4, lsl #32
+    str x5, [x22, x23, lsl #3]
+    add x23, x23, #1
+
+parse_done:
+    cbz x23, exit_zero
+    cmp x23, #2
+    b.lo sort_done
+
+    lsr x24, x23, #1
+build_heap_loop:
+    sub x24, x24, #1
+    mov x8, x24
+    mov x9, x23
+    bl sift_down
+    cbnz x24, build_heap_loop
+
+    mov x24, x23
+sort_loop:
+    sub x24, x24, #1
+    cbz x24, sort_done
+    ldr x0, [x22]
+    ldr x1, [x22, x24, lsl #3]
+    str x1, [x22]
+    str x0, [x22, x24, lsl #3]
+    mov x8, #0
+    mov x9, x24
+    bl sift_down
+    b sort_loop
+
+sort_done:
+    adrp x25, out_buf
+    add x25, x25, :lo12:out_buf
+    mov x26, #0
+    mov x24, #OUT_BUF_SIZE
+    mov x27, #0
+
+out_line_loop:
+    cmp x27, x23
+    b.hs out_flush_final
+    ldr x3, [x22, x27, lsl #3]
+    mov w20, w3
+    add x20, x19, x20
+    lsr x21, x3, #32
+    cbz x21, out_newline
+
+out_byte_loop:
+    cmp x26, x24
+    b.lo 1f
+    mov x0, x25
+    mov x1, x26
+    bl write_all
+    mov x26, #0
+1:
+    ldrb w3, [x20], #1
+    strb w3, [x25, x26]
+    add x26, x26, #1
+    subs x21, x21, #1
+    b.ne out_byte_loop
+
+out_newline:
+    cmp x26, x24
+    b.lo 2f
+    mov x0, x25
+    mov x1, x26
+    bl write_all
+    mov x26, #0
+2:
+    mov w3, #0x0A
+    strb w3, [x25, x26]
+    add x26, x26, #1
+    add x27, x27, #1
+    b out_line_loop
+
+out_flush_final:
+    cbz x26, exit_zero
+    mov x0, x25
+    mov x1, x26
+    bl write_all
+
+exit_zero:
+    mov x0, #0
+    mov x8, #SYS_EXIT
+    svc #0
+
+// cmp_lines(x0 = desc_A, x1 = desc_B) -> w0 (<0, 0, >0)
+// Uses x19 (in_buf), clobbers x0-x7
+cmp_lines:
+    mov w2, w0
+    mov w3, w1
+    lsr x4, x0, #32
+    lsr x5, x1, #32
+    add x2, x19, x2
+    add x3, x19, x3
+    cmp x4, x5
+    csel x6, x4, x5, ls
+    cbz x6, 2f
+1:
+    ldrb w0, [x2], #1
+    ldrb w7, [x3], #1
+    sub w0, w0, w7
+    cbnz w0, 3f
+    subs x6, x6, #1
+    b.ne 1b
+2:
+    sub w0, w4, w5
+3:
+    ret
+
+// sift_down(x8 = root, x9 = end)
+// Uses x19 (in_buf), x22 (lines), clobbers x0-x14
+sift_down:
+    stp x29, x30, [sp, #-16]!
+    ldr x10, [x22, x8, lsl #3]
+1:
+    lsl x11, x8, #1
+    add x11, x11, #1
+    cmp x11, x9
+    b.hs 3f
+    ldr x12, [x22, x11, lsl #3]
+    add x13, x11, #1
+    cmp x13, x9
+    b.hs 2f
+    ldr x14, [x22, x13, lsl #3]
+    mov x0, x12
+    mov x1, x14
+    bl cmp_lines
+    cmp w0, #0
+    b.ge 2f
+    mov x11, x13
+    mov x12, x14
+2:
+    mov x0, x10
+    mov x1, x12
+    bl cmp_lines
+    cmp w0, #0
+    b.ge 3f
+    str x12, [x22, x8, lsl #3]
+    mov x8, x11
+    b 1b
+3:
+    str x10, [x22, x8, lsl #3]
+    ldp x29, x30, [sp], #16
+    ret
+
+// write_all(x0 = buf, x1 = count)
+// Clobbers x0-x2, x8-x10
+write_all:
+    cbz x1, 2f
+    mov x9, x0
+    mov x10, x1
+1:
+    mov x0, #1
+    mov x1, x9
+    mov x2, x10
+    mov x8, #SYS_WRITE
+    svc #0
+    cmp x0, #0
+    b.le 2f
+    add x9, x9, x0
+    subs x10, x10, x0
+    b.ne 1b
+2:
+    ret
+
+.bss
+.balign 8
+lines:
+    .space LINES_BYTES
+in_buf:
+    .space IN_BUF_SIZE
+out_buf:
+    .space OUT_BUF_SIZE
+

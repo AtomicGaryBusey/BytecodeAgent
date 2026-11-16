@@ -1,0 +1,230 @@
+.globl _start
+
+.text
+.align 16
+_start:
+    # 1. Initialize dispatch_table: set all 256 entries to op_nop
+    lea rdi, [rip + dispatch_table]
+    lea rax, [rip + op_nop]
+    mov ecx, 256
+    rep stosq
+
+    # Set command handlers in dispatch_table
+    lea rdi, [rip + dispatch_table]
+    lea rax, [rip + op_plus]
+    mov [rdi + 344], rax        # '+' (43 * 8)
+    lea rax, [rip + op_comma]
+    mov [rdi + 352], rax        # ',' (44 * 8)
+    lea rax, [rip + op_minus]
+    mov [rdi + 360], rax        # '-' (45 * 8)
+    lea rax, [rip + op_dot]
+    mov [rdi + 368], rax        # '.' (46 * 8)
+    lea rax, [rip + op_left]
+    mov [rdi + 480], rax        # '<' (60 * 8)
+    lea rax, [rip + op_right]
+    mov [rdi + 496], rax        # '>' (62 * 8)
+    lea rax, [rip + op_open_bracket]
+    mov [rdi + 728], rax        # '[' (91 * 8)
+    lea rax, [rip + op_close_bracket]
+    mov [rdi + 744], rax        # ']' (93 * 8)
+
+    # 2. Read standard input into input_buf
+    xor ebx, ebx                # ebx = total bytes read
+.Lread_loop:
+    xor eax, eax                # sys_read = 0
+    xor edi, edi                # fd = 0
+    lea rsi, [rip + input_buf]
+    add rsi, rbx
+    mov edx, 65536
+    sub edx, ebx
+    jle .Lread_done
+    syscall
+    test rax, rax
+    jle .Lread_done
+    add rbx, rax
+    cmp ebx, 65536
+    jb .Lread_loop
+.Lread_done:
+
+    # 3. Split input at first '!'
+    test rbx, rbx
+    jz .Lno_bang
+    lea rdi, [rip + input_buf]
+    mov rcx, rbx
+    mov al, 0x21                # '!'
+    repne scasb
+    jne .Lno_bang
+
+    # Found '!': rdi points after '!', rcx is remaining bytes after '!'
+    mov r14, rdi                # bf_input_ptr
+    lea r15, [rdi + rcx]        # bf_input_end
+    sub rbx, rcx
+    dec rbx                     # rbx = program_len
+    jmp .Lsplit_done
+
+.Lno_bang:
+    lea r14, [rip + input_buf]
+    add r14, rbx                # bf_input_ptr = end of input
+    mov r15, r14                # bf_input_end
+    # rbx = program_len
+
+.Lsplit_done:
+
+    # 4. Check brackets and build jump_table
+    lea r8, [rip + jump_table]
+    lea r9, [rip + input_buf]
+    lea rdx, [rip + bracket_stack]
+    xor esi, esi                # esi = index i
+.Lbracket_scan_loop:
+    cmp rsi, rbx
+    jae .Lbracket_scan_done
+    movzx eax, byte ptr [r9 + rsi]
+    cmp al, '['
+    je .Lopen_bracket_scan
+    cmp al, ']'
+    je .Lclose_bracket_scan
+    inc rsi
+    jmp .Lbracket_scan_loop
+
+.Lopen_bracket_scan:
+    lea rax, [rip + bracket_stack + 8192]
+    cmp rdx, rax
+    jae .Lbracket_error         # nesting overflow
+    mov [rdx], rsi
+    add rdx, 8
+    inc rsi
+    jmp .Lbracket_scan_loop
+
+.Lclose_bracket_scan:
+    lea rax, [rip + bracket_stack]
+    cmp rdx, rax
+    je .Lbracket_error         # stack underflow: unmatched ']'
+    sub rdx, 8
+    mov rdi, [rdx]              # rdi = matching '[' index
+    lea rax, [r9 + rsi + 1]     # target for '[': after matching ']'
+    mov [r8 + rdi*8], rax
+    lea rax, [r9 + rdi + 1]     # target for ']': after matching '['
+    mov [r8 + rsi*8], rax
+    inc rsi
+    jmp .Lbracket_scan_loop
+
+.Lbracket_scan_done:
+    lea rax, [rip + bracket_stack]
+    cmp rdx, rax
+    jne .Lbracket_error         # unmatched '[' left open
+
+    # 5. Initialize execution registers
+    mov r12, r9                 # r12 = pc (start of program)
+    lea r13, [r9 + rbx]         # r13 = pc_end (input_buf + program_len)
+    lea rbx, [rip + tape]       # rbx = tape pointer (cell 0)
+    lea r10, [rip + dispatch_table]
+    lea rbp, [rip + out_buf]
+
+.align 16
+dispatch:
+    cmp r12, r13
+    jae .Lexec_done
+    movzx eax, byte ptr [r12]
+    inc r12
+    jmp [r10 + rax*8]
+
+op_plus:
+    inc byte ptr [rbx]
+    jmp dispatch
+
+op_minus:
+    dec byte ptr [rbx]
+    jmp dispatch
+
+op_right:
+    inc rbx
+    jmp dispatch
+
+op_left:
+    dec rbx
+    jmp dispatch
+
+op_open_bracket:
+    cmp byte ptr [rbx], 0
+    jnz dispatch
+    lea rax, [r12 - 1]
+    sub rax, r9
+    mov r12, [r8 + rax*8]
+    jmp dispatch
+
+op_close_bracket:
+    cmp byte ptr [rbx], 0
+    jz dispatch
+    lea rax, [r12 - 1]
+    sub rax, r9
+    mov r12, [r8 + rax*8]
+    jmp dispatch
+
+op_dot:
+    mov al, byte ptr [rbx]
+    mov [rbp], al
+    inc rbp
+    lea rax, [rip + out_buf + 65536]
+    cmp rbp, rax
+    jb dispatch
+    call flush_output
+    jmp dispatch
+
+op_comma:
+    xor eax, eax
+    cmp r14, r15
+    jae 1f
+    movzx eax, byte ptr [r14]
+    inc r14
+1:
+    mov byte ptr [rbx], al
+    jmp dispatch
+
+op_nop:
+    jmp dispatch
+
+.Lexec_done:
+    call flush_output
+    xor edi, edi                # status 0
+    mov eax, 60                 # sys_exit
+    syscall
+
+.Lbracket_error:
+    mov edi, 1                  # status 1
+    mov eax, 60                 # sys_exit
+    syscall
+
+flush_output:
+    lea rdi, [rip + out_buf]
+    mov rdx, rbp
+    sub rdx, rdi                # count
+    test rdx, rdx
+    jle .Lflush_done
+    mov rsi, rdi
+.Lwrite_loop:
+    mov eax, 1                  # sys_write
+    mov edi, 1                  # fd = 1
+    syscall
+    test rax, rax
+    jle .Lflush_done
+    add rsi, rax
+    sub rdx, rax
+    jnz .Lwrite_loop
+.Lflush_done:
+    lea rbp, [rip + out_buf]
+    ret
+
+.section .bss
+.align 16
+tape:
+    .zero 32768
+input_buf:
+    .zero 65552
+out_buf:
+    .zero 65552
+bracket_stack:
+    .zero 8192
+jump_table:
+    .zero 524288
+dispatch_table:
+    .zero 2048

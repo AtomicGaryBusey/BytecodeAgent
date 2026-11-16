@@ -1,0 +1,230 @@
+.globl _start
+
+.text
+_start:
+    // Phase 1: Read all standard input into stdin_buf
+    mov x19, #0                 // x19 = total bytes read
+.Lread_loop:
+    movz x2, #1, lsl #16        // x2 = 65536
+    sub x2, x2, x19             // remaining space in buffer
+    cbz x2, .Lread_done         // buffer is full
+    mov x0, #0                  // fd = 0 (stdin)
+    adrp x1, stdin_buf
+    add x1, x1, :lo12:stdin_buf
+    add x1, x1, x19             // buffer pointer
+    mov x8, #63                 // sys_read
+    svc #0
+    cmp x0, #0
+    b.le .Lread_done            // EOF or error
+    add x19, x19, x0            // update total bytes read
+    b .Lread_loop
+
+.Lread_done:
+    // Phase 2: Partition stdin into program and input
+    // Find the first '!' (ASCII 33)
+    adrp x20, stdin_buf
+    add x20, x20, :lo12:stdin_buf
+    mov x21, #0                 // index
+.Lfind_excl:
+    cmp x21, x19
+    b.hs .Lno_excl
+    ldrb w0, [x20, x21]
+    cmp w0, #33                 // '!'
+    b.eq .Lfound_excl
+    add x21, x21, #1
+    b .Lfind_excl
+
+.Lfound_excl:
+    mov x22, x21                // x22 = program_len
+    add x24, x21, #1
+    add x24, x20, x24           // x24 = input_ptr = stdin_buf + x21 + 1
+    add x25, x20, x19           // x25 = input_end = stdin_buf + total_bytes
+    b .Lparse_brackets
+
+.Lno_excl:
+    mov x22, x19                // program_len = total_bytes
+    add x24, x20, x19           // input_ptr = stdin_buf + total_bytes
+    add x25, x20, x19           // input_end = stdin_buf + total_bytes
+
+.Lparse_brackets:
+    // Phase 3: Validate bracket balance and build jump table
+    adrp x27, bracket_stack
+    add x27, x27, :lo12:bracket_stack
+    adrp x28, jump_table
+    add x28, x28, :lo12:jump_table
+    mov x26, #0                 // stack depth
+    mov x21, #0                 // index i
+
+.Lcheck_loop:
+    cmp x21, x22
+    b.hs .Lcheck_done
+    ldrb w0, [x20, x21]
+    cmp w0, #91                 // '['
+    b.eq .Lcheck_open
+    cmp w0, #93                 // ']'
+    b.eq .Lcheck_close
+    add x21, x21, #1
+    b .Lcheck_loop
+
+.Lcheck_open:
+    str w21, [x27, x26, lsl #2] // push open index
+    add x26, x26, #1
+    add x21, x21, #1
+    b .Lcheck_loop
+
+.Lcheck_close:
+    cbz x26, .Lbracket_error    // unmatched ']'
+    sub x26, x26, #1
+    ldr w1, [x27, x26, lsl #2]  // w1 = open_idx
+    add w2, w21, #1             // close_idx + 1
+    str w2, [x28, x1, lsl #2]   // jump_table[open_idx] = close_idx + 1
+    add w2, w1, #1              // open_idx + 1
+    str w2, [x28, x21, lsl #2]  // jump_table[close_idx] = open_idx + 1
+    add x21, x21, #1
+    b .Lcheck_loop
+
+.Lcheck_done:
+    cbnz x26, .Lbracket_error   // unmatched '[' remaining
+
+    // Phase 4: Execute Brainfuck program
+    adrp x20, stdin_buf
+    add x20, x20, :lo12:stdin_buf
+    adrp x21, tape
+    add x21, x21, :lo12:tape     // x21 = tape pointer (cell 0)
+    adrp x27, out_buf
+    add x27, x27, :lo12:out_buf  // x27 = out_buf pointer
+    adrp x28, jump_table
+    add x28, x28, :lo12:jump_table // x28 = jump_table pointer
+    mov x19, #0                 // x19 = pc
+    mov x23, #0                 // x23 = out_len
+    b .Lexec_loop
+
+.Lop_plus:
+    ldrb w1, [x21]
+    add w1, w1, #1
+    strb w1, [x21]
+    b .Lnext
+
+.Lop_minus:
+    ldrb w1, [x21]
+    sub w1, w1, #1
+    strb w1, [x21]
+    b .Lnext
+
+.Lop_right:
+    add x21, x21, #1
+    b .Lnext
+
+.Lop_left:
+    sub x21, x21, #1
+    b .Lnext
+
+.Lop_open:
+    ldrb w1, [x21]
+    cbz w1, .Lopen_zero
+    b .Lnext
+.Lopen_zero:
+    ldr w19, [x28, x19, lsl #2]
+    b .Lexec_loop
+
+.Lop_close:
+    ldrb w1, [x21]
+    cbnz w1, .Lclose_nonzero
+    b .Lnext
+.Lclose_nonzero:
+    ldr w19, [x28, x19, lsl #2]
+    b .Lexec_loop
+
+.Lop_dot:
+    ldrb w1, [x21]
+    strb w1, [x27, x23]
+    add x23, x23, #1
+    cmp x23, #16, lsl #12       // 65536 bytes
+    b.lo .Lnext
+    bl flush_out
+    b .Lnext
+
+.Lop_comma:
+    cmp x24, x25
+    b.hs .Lcomma_eof
+    ldrb w1, [x24], #1
+    strb w1, [x21]
+    b .Lnext
+.Lcomma_eof:
+    strb wzr, [x21]
+    b .Lnext
+
+.Lnext:
+    add x19, x19, #1
+.Lexec_loop:
+    cmp x19, x22
+    b.hs .Lexec_done
+    ldrb w0, [x20, x19]
+
+    cmp w0, #43                 // '+'
+    b.eq .Lop_plus
+    cmp w0, #45                 // '-'
+    b.eq .Lop_minus
+    cmp w0, #62                 // '>'
+    b.eq .Lop_right
+    cmp w0, #60                 // '<'
+    b.eq .Lop_left
+    cmp w0, #91                 // '['
+    b.eq .Lop_open
+    cmp w0, #93                 // ']'
+    b.eq .Lop_close
+    cmp w0, #46                 // '.'
+    b.eq .Lop_dot
+    cmp w0, #44                 // ','
+    b.eq .Lop_comma
+
+    // Comment: ignore
+    b .Lnext
+
+.Lexec_done:
+    bl flush_out
+    mov x0, #0                  // exit status 0
+    mov x8, #93                 // sys_exit
+    svc #0
+
+.Lbracket_error:
+    mov x0, #1                  // exit status 1
+    mov x8, #93                 // sys_exit
+    svc #0
+
+flush_out:
+    cbz x23, .Lflush_ret
+    mov x3, #0
+.Lflush_loop:
+    cmp x3, x23
+    b.hs .Lflush_done
+    mov x0, #1                  // fd = 1 (stdout)
+    add x1, x27, x3
+    sub x2, x23, x3
+    mov x8, #64                 // sys_write
+    svc #0
+    cmp x0, #0
+    b.le .Lflush_done
+    add x3, x3, x0
+    b .Lflush_loop
+.Lflush_done:
+    mov x23, #0
+.Lflush_ret:
+    ret
+
+.section .bss
+.balign 16
+stdin_buf:
+    .zero 65536
+.balign 16
+tape:
+    .zero 30000
+.balign 16
+bracket_stack:
+    .zero 262144
+.balign 16
+jump_table:
+    .zero 262144
+.balign 16
+out_buf:
+    .zero 65536

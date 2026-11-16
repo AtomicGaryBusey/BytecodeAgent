@@ -1,0 +1,230 @@
+.text
+.globl _start
+
+_start:
+    // Read entire standard input into stdin_buf
+    adrp x19, stdin_buf
+    add x19, x19, :lo12:stdin_buf
+    mov x20, #0             // total_read = 0
+
+read_loop:
+    movz x2, #1, lsl #16    // x2 = 65536
+    sub x2, x2, x20         // remaining = 65536 - total_read
+    cbz x2, read_done
+
+    mov x0, #0              // fd = 0 (stdin)
+    add x1, x19, x20        // buf = stdin_buf + total_read
+    mov x8, #63             // sys_read
+    svc #0
+
+    cmp x0, #0
+    b.le read_done
+
+    add x20, x20, x0
+    b read_loop
+
+read_done:
+    // Find delimiter '!' (ASCII 33)
+    mov x21, #0             // prog_len = 0
+
+find_delim:
+    cmp x21, x20
+    b.eq no_delim
+    ldrb w0, [x19, x21]
+    cmp w0, #33             // '!'
+    b.eq found_delim
+    add x21, x21, #1
+    b find_delim
+
+found_delim:
+    add x24, x21, #1        // input_start_idx = prog_len + 1
+    sub x25, x20, x24       // prog_input_len = total_read - input_start_idx
+    add x24, x19, x24       // prog_input_ptr = stdin_buf + input_start_idx
+    b parse_done
+
+no_delim:
+    mov x21, x20            // prog_len = total_read
+    mov x24, x19            // prog_input_ptr
+    mov x25, #0             // prog_input_len = 0
+
+parse_done:
+    // Validate brackets and populate jump_table
+    adrp x0, bracket_stack
+    add x0, x0, :lo12:bracket_stack
+    adrp x23, jump_table
+    add x23, x23, :lo12:jump_table
+
+    mov x1, #0              // pc = 0
+    mov x2, #0              // stack_depth = 0
+
+val_loop:
+    cmp x1, x21
+    b.eq val_loop_done
+
+    ldrb w3, [x19, x1]
+    cmp w3, #91             // '['
+    b.eq val_open
+    cmp w3, #93             // ']'
+    b.eq val_close
+    b val_next
+
+val_open:
+    str w1, [x0, x2, lsl #2]
+    add x2, x2, #1
+    b val_next
+
+val_close:
+    cbz x2, bracket_error
+    sub x2, x2, #1
+    ldr w4, [x0, x2, lsl #2]       // matching open bracket pc
+    add w5, w1, #1                 // pc + 1
+    str w5, [x23, x4, lsl #2]      // jump_table[matching_open] = pc + 1
+    add w5, w4, #1                 // matching_open + 1
+    str w5, [x23, x1, lsl #2]      // jump_table[pc] = matching_open + 1
+    b val_next
+
+val_next:
+    add x1, x1, #1
+    b val_loop
+
+val_loop_done:
+    cbnz x2, bracket_error
+
+    // Setup for execution
+    mov x20, x21            // x20 = prog_len
+    mov x21, #0             // x21 = pc
+    adrp x22, tape
+    add x22, x22, :lo12:tape // x22 = tape pointer (data pointer)
+    // x23 = jump_table
+    // x24 = prog_input_ptr
+    // x25 = prog_input_len
+    mov x26, #0             // x26 = in_pos
+    adrp x27, out_buf
+    add x27, x27, :lo12:out_buf // x27 = out_buf
+    mov x28, #0             // x28 = out_len
+
+exec_loop:
+    cmp x21, x20
+    b.hs exec_done
+
+    ldrb w0, [x19, x21]
+
+    cmp w0, #43             // '+'
+    b.eq do_plus
+    cmp w0, #45             // '-'
+    b.eq do_minus
+    cmp w0, #62             // '>'
+    b.eq do_right
+    cmp w0, #60             // '<'
+    b.eq do_left
+    cmp w0, #91             // '['
+    b.eq do_lbracket
+    cmp w0, #93             // ']'
+    b.eq do_rbracket
+    cmp w0, #46             // '.'
+    b.eq do_dot
+    cmp w0, #44             // ','
+    b.eq do_comma
+
+    // Any other character is a comment; ignore it.
+next_insn:
+    add x21, x21, #1
+    b exec_loop
+
+do_plus:
+    ldrb w1, [x22]
+    add w1, w1, #1
+    strb w1, [x22]
+    b next_insn
+
+do_minus:
+    ldrb w1, [x22]
+    sub w1, w1, #1
+    strb w1, [x22]
+    b next_insn
+
+do_right:
+    add x22, x22, #1
+    b next_insn
+
+do_left:
+    sub x22, x22, #1
+    b next_insn
+
+do_lbracket:
+    ldrb w1, [x22]
+    cbz w1, 1f
+    b next_insn
+1:
+    ldr w21, [x23, x21, lsl #2]
+    b exec_loop
+
+do_rbracket:
+    ldrb w1, [x22]
+    cbnz w1, 1f
+    b next_insn
+1:
+    ldr w21, [x23, x21, lsl #2]
+    b exec_loop
+
+do_dot:
+    ldrb w1, [x22]
+    strb w1, [x27, x28]
+    add x28, x28, #1
+    b next_insn
+
+do_comma:
+    cmp x26, x25
+    b.hs comma_eof
+    ldrb w1, [x24, x26]
+    add x26, x26, #1
+    strb w1, [x22]
+    b next_insn
+
+comma_eof:
+    strb wzr, [x22]
+    b next_insn
+
+exec_done:
+    cbz x28, exit_success
+    mov x24, #0             // written = 0
+
+flush_loop:
+    cmp x24, x28
+    b.hs exit_success
+    mov x0, #1              // fd = 1 (stdout)
+    add x1, x27, x24        // buf = out_buf + written
+    sub x2, x28, x24        // count = total - written
+    mov x8, #64             // sys_write
+    svc #0
+    cmp x0, #0
+    b.le exit_success
+    add x24, x24, x0
+    b flush_loop
+
+exit_success:
+    mov x0, #0              // status = 0
+    mov x8, #93             // sys_exit
+    svc #0
+
+bracket_error:
+    mov x0, #1              // status = 1
+    mov x8, #93             // sys_exit
+    svc #0
+
+.section .bss
+.balign 16
+stdin_buf:
+    .zero 65536
+.balign 16
+jump_table:
+    .zero 262144
+.balign 16
+bracket_stack:
+    .zero 4096
+.balign 16
+tape:
+    .zero 32768
+.balign 16
+out_buf:
+    .zero 131072

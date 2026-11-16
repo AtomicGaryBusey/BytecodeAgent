@@ -19,6 +19,7 @@ attempts. The effort, host and tier pairs cover the 224 function cells; the seco
 | Effort | Kimi K3.1 Pro, `high` (catalog default since Kimi Code 2.5.3) | the same, `max` (catalog default on 2026-10-23) | 207 → 218 of 224 | 4 / 15 | 0.019 | 224 → 223 | 37.4 s → 77.8 s | 846 → 1,974 | 0 → 5 |
 | Host | OpenAI gpt-oss-120b on Fireworks | the same on Cerebras | 71 → 71 of 224 | 16 / 16 | 1 | 120 → 117 | 11.5 s → 1.4 s | 2,077 → 1,997 | 0 → 1 |
 | Serving tier | Kimi K3.1 Pro | Kimi K3.1 Pro Highspeed | 207 → 215 of 224 | 6 / 14 | 0.12 | 224 → 224 | 37.4 s → 19.3 s | 846 → 815 | 0 → 0 |
+| Serving tier | Meta Muse Spark 1.3, contributor tier (Muse Code 1.4.15) | the same, paid tier (Muse Code 1.4.18) | 222 → 215 of 224 | 9 / 2 | 0.065 | 224 → 224 | 39.1 s → 42.7 s | 4,661 → 4,325 | 0 → 2 |
 | Second sample (long battery) | Grok 4.7 build-fast, 2026-09-29 | the same, 2026-11-13 | 46 → 52 of 54 | 1 / 7 | 0.07 | 53 → 54 | 145.0 s → 144.4 s | 15,621 → 15,366 | 8 → 3 |
 | Second sample (long battery) | Grok 4.7, 2026-09-28 | the same, 2026-11-13 | 48 → 44 of 54 | 8 / 4 | 0.39 | 50 → 52 | 275.5 s → 318.7 s | 16,024 → 15,639 | 18 → 21 |
 | Second sample (long battery) | Grok 4.6, 2026-09-29 | the same, 2026-11-13 | 50 → 47 of 54 | 5 / 2 | 0.45 | 53 → 54 | 175.8 s → 128.9 s | 11,823 → 11,868 | 3 → 1 |
@@ -31,6 +32,7 @@ Where the disagreeing cells fall (only A passed / only B passed, by battery) and
 | Kimi K3.1 Pro, `high` (catalog default since Kimi Code 2.5.3) | the same, `max` (catalog default on 2026-10-23) | 1 / 3 | 2 / 1 | 0 / 7 | 1 / 4 | high | cli-default, max |
 | OpenAI gpt-oss-120b on Fireworks | the same on Cerebras | 1 / 3 | 7 / 6 | 1 / 0 | 7 / 7 | model-default | model-default |
 | Kimi K3.1 Pro | Kimi K3.1 Pro Highspeed | 1 / 3 | 3 / 1 | 2 / 6 | 0 / 4 | high | high |
+| Meta Muse Spark 1.3, contributor tier (Muse Code 1.4.15) | the same, paid tier (Muse Code 1.4.18) | 3 / 0 | 1 / 0 | 4 / 2 | 1 / 0 | model-default (max, as audited) | model-default (max, as audited) |
 | Grok 4.7 build-fast, 2026-09-29 | the same, 2026-11-13 | 0 / 0 | 0 / 0 | 1 / 7 | 0 / 0 | cli-default | cli-default |
 | Grok 4.7, 2026-09-28 | the same, 2026-11-13 | 0 / 0 | 0 / 0 | 8 / 4 | 0 / 0 | cli-default | cli-default |
 | Grok 4.6, 2026-09-29 | the same, 2026-11-13 | 0 / 0 | 0 / 0 | 5 / 2 | 0 / 0 | cli-default | cli-default |
@@ -55,6 +57,16 @@ Where the disagreeing cells fall (only A passed / only B passed, by battery) and
   other). Highspeed answers in half the time for twice the list price and twice the plan quota. The app and hex batteries
   (finished 2026-11-14) agree: 86/96 apps first attempt against 85/96, all 96 within four in both; 14/16 hex
   functions against 11/16; 4/16 hex programs first attempt in both (16 and 15 within four).
+- **Muse's paid tier did not do better than its contributor tier.** Muse Spark 1.3 on the paid tier scored 215 of
+  224 function cells first attempt against the contributor tier's 222 (they disagree on 11 cells, 9 one way and 2 the
+  other; p = 0.065), 224 within four in both; on the 96 app cells, 85 against 90 first attempt (7 / 2, p = 0.18) and
+  94 against 96 within four. Neither difference is significant at 0.05, and both are within the run-to-run variation below. One paid attempt is a Muse search proposal scored as an empty answer under the 2026-11-16 rule (the run's ADJUSTMENTS.md).
+  The client sends byte-identical requests in both tiers apart from the account's tier
+  (`eval/audits/muse-1.4.18-tiers-20261113`), but the two halves did not run on the same Muse Code version: the
+  contributor run used 1.4.15 (6 app attempts on 1.4.18), the paid run 1.4.18 (functions) and mostly 1.4.20 (apps),
+  as the CLI updated itself before it was pinned. So this pair compares tier and client version together. Muse
+  Spark 1.3 is an agent-harness row (Muse's own instructions present, no tools sent), reported in
+  [live-model-eval-agent-harness.md](live-model-eval-agent-harness.md).
 
 - **Run-to-run variation is real and about as large as some of the differences above.** Three Grok models re-ran
   the long battery on 2026-11-13 with the same CLI (grok 1.0.41), effort and limits as in September. Their first-attempt
@@ -85,4 +97,4 @@ added to the Kimi adapter later.
   for Claude Opus 5.5 and Fable 5.1 are queued (they wait on the Claude plan), and for the Codex models on the user
   naming them. For the other pairs there is one run per setting; as a rough guide, the two Kimi serving tiers at
   the same effort differ on 20 of 224 cells and the two gpt-oss-120b hosts on 32.
-- The Muse tier comparison (paid against contributor tier, same model) is half run; it waits for Muse's weekly quota.
+- The Muse tier comparison covers functions and apps only: the paid tier did not run the hex batteries.

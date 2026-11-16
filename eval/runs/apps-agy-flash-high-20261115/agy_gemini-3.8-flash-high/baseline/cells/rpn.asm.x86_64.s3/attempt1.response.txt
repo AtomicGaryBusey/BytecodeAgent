@@ -1,0 +1,319 @@
+.globl _start
+
+.section .text
+_start:
+    xor r12d, r12d                  # line_len = 0
+
+.Lmain_loop:
+    call get_char
+    jc .Leof_reached
+
+    cmp al, 10                      # newline?
+    je .Lend_of_line
+
+    cmp r12, 2000
+    jae .Lmain_loop
+
+    lea rdi, [rip + line_buf]
+    mov byte ptr [rdi + r12], al
+    inc r12
+    jmp .Lmain_loop
+
+.Lend_of_line:
+    call process_line
+    xor r12d, r12d                  # reset line_len
+    jmp .Lmain_loop
+
+.Leof_reached:
+    test r12, r12
+    jz .Lexit
+    call process_line
+
+.Lexit:
+    mov eax, 60                     # sys_exit
+    xor edi, edi                    # exit status 0
+    syscall
+
+process_line:
+    xor r14d, r14d                  # stack_count = 0
+    xor r13d, r13d                  # pos = 0
+    lea rbp, [rip + line_buf]
+
+.Ltok_loop:
+.Lskip_sep:
+    cmp r13, r12
+    jae .Ltok_loop_done
+    movzx eax, byte ptr [rbp + r13]
+    cmp al, ' '
+    je .Lis_sep
+    cmp al, 9
+    je .Lis_sep
+    jmp .Lfound_tok_start
+.Lis_sep:
+    inc r13
+    jmp .Lskip_sep
+
+.Ltok_loop_done:
+    cmp r14, 1
+    jne .Lline_error
+    lea rbx, [rip + eval_stack]
+    mov rax, qword ptr [rbx]
+    call print_number
+    ret
+
+.Lline_error:
+    lea rsi, [rip + str_error]
+    mov edx, str_error_len
+    call write_all
+    ret
+
+.Lfound_tok_start:
+    mov r15, r13                    # tok_start = pos
+
+.Lscan_tok_end:
+    inc r13
+    cmp r13, r12
+    jae .Lfound_tok_end
+    movzx eax, byte ptr [rbp + r13]
+    cmp al, ' '
+    je .Lfound_tok_end
+    cmp al, 9
+    je .Lfound_tok_end
+    jmp .Lscan_tok_end
+
+.Lfound_tok_end:
+    mov rbx, r13
+    sub rbx, r15                    # rbx = tok_len
+    lea rsi, [rbp + r15]            # rsi = token start ptr
+
+    cmp rbx, 1
+    jne .Lmulti_char_token
+
+    # 1-char token
+    movzx eax, byte ptr [rsi]
+    cmp al, '+'
+    je .Lop_add
+    cmp al, '-'
+    je .Lop_sub
+    cmp al, '*'
+    je .Lop_mul
+    cmp al, '/'
+    je .Lop_div
+    cmp al, '%'
+    je .Lop_mod
+
+    # Single digit literal
+    sub eax, '0'
+    cmp eax, 9
+    ja .Lline_error
+
+    lea rdi, [rip + eval_stack]
+    mov qword ptr [rdi + r14*8], rax
+    inc r14
+    jmp .Ltok_loop
+
+.Lmulti_char_token:
+    xor edx, edx                    # is_neg = 0
+    xor ecx, ecx                    # digit_start_idx = 0
+    cmp byte ptr [rsi], '-'
+    jne .Lcheck_digits_len
+    mov edx, 1                      # is_neg = 1
+    mov ecx, 1                      # digit_start_idx = 1
+
+.Lcheck_digits_len:
+    mov rax, rbx
+    sub rax, rcx                    # rax = num_digits
+    cmp rax, 1
+    jb .Lline_error
+    cmp rax, 18
+    ja .Lline_error
+
+    xor r8, r8                      # accumulator
+.Lparse_digits_loop:
+    cmp rcx, rbx
+    jae .Lparse_digits_done
+    movzx eax, byte ptr [rsi + rcx]
+    sub eax, '0'
+    cmp eax, 9
+    ja .Lline_error
+    lea r9, [r8 + r8*4]
+    lea r8, [rax + r9*2]
+    inc rcx
+    jmp .Lparse_digits_loop
+
+.Lparse_digits_done:
+    test edx, edx
+    jz .Lpush_literal
+    neg r8
+.Lpush_literal:
+    lea rdi, [rip + eval_stack]
+    mov qword ptr [rdi + r14*8], r8
+    inc r14
+    jmp .Ltok_loop
+
+.Lop_add:
+    cmp r14, 2
+    jb .Lline_error
+    lea rdi, [rip + eval_stack]
+    mov rbx, qword ptr [rdi + r14*8 - 8]
+    mov rax, qword ptr [rdi + r14*8 - 16]
+    add rax, rbx
+    dec r14
+    mov qword ptr [rdi + r14*8 - 8], rax
+    jmp .Ltok_loop
+
+.Lop_sub:
+    cmp r14, 2
+    jb .Lline_error
+    lea rdi, [rip + eval_stack]
+    mov rbx, qword ptr [rdi + r14*8 - 8]
+    mov rax, qword ptr [rdi + r14*8 - 16]
+    sub rax, rbx
+    dec r14
+    mov qword ptr [rdi + r14*8 - 8], rax
+    jmp .Ltok_loop
+
+.Lop_mul:
+    cmp r14, 2
+    jb .Lline_error
+    lea rdi, [rip + eval_stack]
+    mov rbx, qword ptr [rdi + r14*8 - 8]
+    mov rax, qword ptr [rdi + r14*8 - 16]
+    imul rax, rbx
+    dec r14
+    mov qword ptr [rdi + r14*8 - 8], rax
+    jmp .Ltok_loop
+
+.Lop_div:
+    cmp r14, 2
+    jb .Lline_error
+    lea rdi, [rip + eval_stack]
+    mov rbx, qword ptr [rdi + r14*8 - 8]
+    mov rax, qword ptr [rdi + r14*8 - 16]
+    test rbx, rbx
+    jz .Lline_error
+    cmp rbx, -1
+    jne .Ldo_div
+    mov rdx, 1
+    shl rdx, 63
+    cmp rax, rdx
+    je .Lline_error
+.Ldo_div:
+    cqo
+    idiv rbx
+    dec r14
+    mov qword ptr [rdi + r14*8 - 8], rax
+    jmp .Ltok_loop
+
+.Lop_mod:
+    cmp r14, 2
+    jb .Lline_error
+    lea rdi, [rip + eval_stack]
+    mov rbx, qword ptr [rdi + r14*8 - 8]
+    mov rax, qword ptr [rdi + r14*8 - 16]
+    test rbx, rbx
+    jz .Lline_error
+    cmp rbx, -1
+    jne .Ldo_mod
+    mov rdx, 1
+    shl rdx, 63
+    cmp rax, rdx
+    je .Lline_error
+.Ldo_mod:
+    cqo
+    idiv rbx
+    dec r14
+    mov qword ptr [rdi + r14*8 - 8], rdx
+    jmp .Ltok_loop
+
+print_number:
+    lea rdi, [rip + num_buf + 31]
+    mov byte ptr [rdi], 10          # '\n'
+    mov r8b, 0
+    test rax, rax
+    jns .Lpn_start
+    neg rax
+    mov r8b, 1
+.Lpn_start:
+    mov rbx, 10
+.Lpn_loop:
+    xor edx, edx
+    div rbx
+    add dl, '0'
+    dec rdi
+    mov byte ptr [rdi], dl
+    test rax, rax
+    jnz .Lpn_loop
+
+    test r8b, r8b
+    jz .Lpn_write
+    dec rdi
+    mov byte ptr [rdi], '-'
+
+.Lpn_write:
+    lea rsi, [rip + num_buf + 32]
+    sub rsi, rdi
+    mov rdx, rsi
+    mov rsi, rdi
+    call write_all
+    ret
+
+write_all:
+.Lwrite_loop:
+    test rdx, rdx
+    jz .Lwrite_done
+    mov eax, 1                      # sys_write
+    mov edi, 1                      # fd = stdout
+    syscall
+    test rax, rax
+    jle .Lwrite_done
+    add rsi, rax
+    sub rdx, rax
+    jmp .Lwrite_loop
+.Lwrite_done:
+    ret
+
+get_char:
+    mov rsi, qword ptr [rip + in_head]
+    cmp rsi, qword ptr [rip + in_tail]
+    jb .Lhave_char
+    xor eax, eax                    # sys_read
+    xor edi, edi                    # fd = stdin
+    lea rsi, [rip + in_buf]
+    mov edx, 8192
+    syscall
+    test rax, rax
+    jle .Leof
+    mov qword ptr [rip + in_tail], rax
+    xor esi, esi
+.Lhave_char:
+    lea rdi, [rip + in_buf]
+    movzx eax, byte ptr [rdi + rsi]
+    inc rsi
+    mov qword ptr [rip + in_head], rsi
+    clc
+    ret
+.Leof:
+    stc
+    ret
+
+.section .rodata
+str_error:
+    .ascii "error\n"
+str_error_len = . - str_error
+
+.section .bss
+    .align 16
+in_buf:
+    .space 8192
+in_head:
+    .space 8
+in_tail:
+    .space 8
+line_buf:
+    .space 2048
+eval_stack:
+    .space 8192
+num_buf:
+    .space 32
+

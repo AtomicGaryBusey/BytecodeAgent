@@ -1,0 +1,161 @@
+Implement the function `int64_t packbits_decode(const uint8_t *src, int64_t n, uint8_t *out, int64_t cap)`.
+
+Target: AArch64 (ARMv8-A), Linux AAPCS64. Integer/pointer arguments in x0-x7; 64-bit result in x0. Callee-saved: x19-x28, x29 (frame pointer) and d8-d15 (restore them if you use them); x9-x15 are free scratch registers. sp must stay 16-byte aligned and be back to its entry value when you return with ret (return address in x30). More ABI facts: arguments beyond the eighth are passed on the stack (the 9th at [sp] at entry). A call (bl/blr) overwrites x30, so save x30 (e.g. stp x29, x30, [sp, #-16]!) before calling and restore it before ret. A call clobbers the caller-saved registers x0-x18, x30, v0-v7 and v16-v31 (and the upper halves of v8-v15) and the flags, so keep values that must survive a call in callee-saved registers x19-x28 (saved/restored by you) or in your own stack frame. sp must be 16-byte aligned at every call (and whenever it is used as a base register). Anything below sp may be overwritten by a callee.
+
+Output format: QBE intermediate language (the IL of the QBE compiler backend, c9x.me/compile). Write exactly one function, `export function l $packbits_decode(...)`, taking every argument as `l` (64-bit; pointers are `l` too) and returning `l`. QBE will compile it for the target above, so you do not handle registers or the ABI yourself. Remember: every block starts with an `@label`; temporaries are `%name`; comparisons such as `csltl`/`ceql` produce a `w` value; `jnz` tests a `w`; loads/stores are `loadl`/`storel`. No data definitions, no calls, no other functions. Output only the QBE code: no Markdown fences, no prose. Load a byte zero-extended with `%b =w loadub %p` or sign-extended with `%b =w loadsb %p`; store one with `storeb %c, %p`.
+
+Specification: Decompress PackBits data: src holds n bytes (0 <= n <= 600) of packets, decoded left to right into out, which has room for cap bytes (0 <= cap <= 1200). Each packet starts with a header byte h read as a signed byte: 0 <= h <= 127: a literal packet, the next h + 1 bytes are copied to the output; -127 <= h <= -1: a repeat packet, the next byte is written 1 - h times; h = -128: no operation (the packet is just that byte). Return the number of bytes written. Errors: if a packet needs more source bytes than remain in src[0..n-1] (checked when its header is read, before any of its output is written), return -2 (the output of earlier packets stays written). If the output would exceed cap bytes, write exactly the first cap bytes of the output (out[0..cap-1] completely filled) and return -1. Example: 01 'a' 'b' FE 'c' 00 'd' decodes to "abcccd" (returns 6); with cap = 4 it writes "abcc" and returns -1. Read only src[0..n-1] and write only out[0..cap-1] (both are checked: never write out[cap], even when cap is 0).
+
+Your previous attempt was:
+<previous>
+export function l $packbits_decode(l %src, l %n, l %out, l %cap) {
+@start
+	%zero =l copy 0
+	%one =l copy 1
+	%two =l copy 2
+	%c128 =l copy 128
+	%neg1 =l sub %zero, %one
+	%neg2 =l sub %zero, %two
+	%neg128 =l sub %zero, %c128
+	%pos =l copy 0
+	%written =l copy 0
+	br @packet
+
+@packet
+	%rem0 =l sub %n, %pos
+	%nohdr =w ceql %rem0, %zero
+	jnz %nohdr, @done, @hdr
+
+@hdr
+	%hp =l add %src, %pos
+	%hb =w loadsb %hp
+	%h =l extsw %hb
+	%pos =l add %pos, %one
+	%nop =w ceql %h, %neg128
+	jnz %nop, @packet, @notnop
+
+@notnop
+	%islit =w csgel %h, %zero
+	jnz %islit, @literal, @repeat
+
+@literal
+	%lcount =l add %h, %one
+	%lrem =l sub %n, %pos
+	%lok =w csgel %lrem, %lcount
+	jnz %lok, @lit_src_ok, @src_err
+
+@lit_src_ok
+	%lroom =l sub %cap, %written
+	%lover =w csltl %lroom, %lcount
+	jnz %lover, @lit_over, @lit_copy_start
+
+@lit_copy_start
+	%li =l copy 0
+	br @lit_copy
+
+@lit_copy
+	%ldone =w ceql %li, %lcount
+	jnz %ldone, @lit_finish, @lit_body
+
+@lit_body
+	%ls =l add %src, %pos
+	%lsi =l add %ls, %li
+	%lb =w loadub %lsi
+	%ld =l add %out, %written
+	%ldi =l add %ld, %li
+	storeb %lb, %ldi
+	%li =l add %li, %one
+	br @lit_copy
+
+@lit_finish
+	%written =l add %written, %lcount
+	%pos =l add %pos, %lcount
+	br @packet
+
+@lit_over
+	%lroom2 =l sub %cap, %written
+	%li2 =l copy 0
+	br @lit_over_copy
+
+@lit_over_copy
+	%lol =w ceql %li2, %lroom2
+	jnz %lol, @lit_over_done, @lit_over_body
+
+@lit_over_body
+	%ls2 =l add %src, %pos
+	%lsi2 =l add %ls2, %li2
+	%lb2 =w loadub %lsi2
+	%ld2 =l add %out, %written
+	%ldi2 =l add %ld2, %li2
+	storeb %lb2, %ldi2
+	%li2 =l add %li2, %one
+	br @lit_over_copy
+
+@lit_over_done
+	ret %neg1
+
+@src_err
+	ret %neg2
+
+@repeat
+	%rrem =l sub %n, %pos
+	%rok =w csgel %rrem, %one
+	jnz %rok, @rep_src_ok, @src_err
+
+@rep_src_ok
+	%rp =l add %src, %pos
+	%rb =w loadub %rp
+	%pos =l add %pos, %one
+	%rcount =l sub %one, %h
+	%rroom =l sub %cap, %written
+	%rover =w csltl %rroom, %rcount
+	jnz %rover, @rep_over, @rep_copy_start
+
+@rep_copy_start
+	%ri =l copy 0
+	br @rep_copy
+
+@rep_copy
+	%rdone =w ceql %ri, %rcount
+	jnz %rdone, @rep_finish, @rep_body
+
+@rep_body
+	%rd =l add %out, %written
+	%rdi =l add %rd, %ri
+	storeb %rb, %rdi
+	%ri =l add %ri, %one
+	br @rep_copy
+
+@rep_finish
+	%written =l add %written, %rcount
+	br @packet
+
+@rep_over
+	%rroom2 =l sub %cap, %written
+	%ri2 =l copy 0
+	br @rep_over_copy
+
+@rep_over_copy
+	%rol =w ceql %ri2, %rroom2
+	jnz %rol, @rep_over_done, @rep_over_body
+
+@rep_over_body
+	%rd2 =l add %out, %written
+	%rdi2 =l add %rd2, %ri2
+	storeb %rb, %rdi2
+	%ri2 =l add %ri2, %one
+	br @rep_over_copy
+
+@rep_over_done
+	ret %neg1
+
+@done
+	ret %written
+}
+</previous>
+It failed:
+<failure>
+Compilation failed at stage qbe:
+qbe:-:12: unknown keyword br
+</failure>
+Write a corrected, complete version. Same output format; output only the code.

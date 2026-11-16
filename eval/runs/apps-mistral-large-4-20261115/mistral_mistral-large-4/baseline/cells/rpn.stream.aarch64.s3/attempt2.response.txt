@@ -1,0 +1,330 @@
+.equ INPUT_BUF_SIZE, 65536
+.equ OUT_SIZE, 400000
+.equ VALSTACK_BYTES, 524288
+.equ NUM_SIZE, 32
+.equ ERR_LEN, 6
+
+.section .rodata
+err_str:
+    .ascii "error\n"
+
+.section .bss
+.balign 8
+input_buf:
+    .zero INPUT_BUF_SIZE
+.balign 8
+out_buf:
+    .zero OUT_SIZE
+.balign 8
+val_stack:
+    .zero VALSTACK_BYTES
+.balign 8
+num_buf:
+    .zero NUM_SIZE
+
+.text
+.globl _start
+_start:
+    adrp x1, input_buf
+    add x1, x1, :lo12:input_buf
+    mov x19, x1
+    mov x20, #0
+read_loop:
+    movz x2, #1, lsl #16
+    sub x2, x2, x20
+    cbz x2, read_done
+    mov x0, #0
+    add x1, x19, x20
+    mov x8, #63
+    svc #0
+    cbz x0, read_done
+    add x20, x20, x0
+    b read_loop
+read_done:
+    adrp x23, out_buf
+    add x23, x23, :lo12:out_buf
+    mov x24, x23
+    mov x21, #0
+line_loop:
+    cmp x21, x20
+    b.eq all_done
+    mov x22, x21
+scan_nl:
+    cmp x22, x20
+    b.eq final_line
+    ldrb w6, [x19, x22]
+    cmp w6, #0x0A
+    b.eq found_nl
+    add x22, x22, #1
+    b scan_nl
+found_nl:
+    add x0, x19, x21
+    add x1, x19, x22
+    bl process_line
+    add x21, x22, #1
+    b line_loop
+final_line:
+    add x0, x19, x21
+    add x1, x19, x20
+    bl process_line
+all_done:
+    cmp x24, x23
+    b.eq write_done
+write_loop:
+    mov x0, #1
+    mov x1, x23
+    sub x2, x24, x23
+    mov x8, #64
+    svc #0
+    add x23, x23, x0
+    cmp x23, x24
+    b.ne write_loop
+write_done:
+    mov x0, #0
+    mov x8, #93
+    svc #0
+
+process_line:
+    stp x29, x30, [sp, #-16]!
+    mov x29, sp
+    mov x25, x0
+    mov x26, x1
+    mov x27, #0
+token_loop:
+    cmp x25, x26
+    b.hs line_finish
+skip_sep:
+    cmp x25, x26
+    b.hs line_finish
+    ldrb w8, [x25]
+    cmp w8, #0x20
+    b.eq skip_next
+    cmp w8, #0x09
+    b.eq skip_next
+    b token_found
+skip_next:
+    add x25, x25, #1
+    b skip_sep
+token_found:
+    mov x28, x25
+token_scan:
+    cmp x25, x26
+    b.hs token_end
+    ldrb w8, [x25]
+    cmp w8, #0x20
+    b.eq token_end
+    cmp w8, #0x09
+    b.eq token_end
+    add x25, x25, #1
+    b token_scan
+token_end:
+    mov x0, x28
+    mov x1, x25
+    bl process_token
+    cmp x0, #0
+    b.ne line_error
+    b token_loop
+line_finish:
+    cmp x27, #1
+    b.ne line_error
+    adrp x0, val_stack
+    add x0, x0, :lo12:val_stack
+    ldr x0, [x0]
+    bl output_value
+    b line_done
+line_error:
+    bl output_error
+line_done:
+    ldp x29, x30, [sp], #16
+    ret
+
+process_token:
+    sub x2, x1, x0
+    cmp x2, #1
+    b.eq pt_len1
+    ldrb w3, [x0]
+    cmp w3, #0x2D
+    b.eq pt_maybe_neg
+    cmp w3, #0x30
+    b.lo pt_invalid
+    cmp w3, #0x39
+    b.hi pt_invalid
+    mov x4, x0
+    mov x5, x1
+    mov x6, #0
+    b pt_parse
+pt_maybe_neg:
+    add x4, x0, #1
+    mov x5, x1
+    mov x6, #1
+    b pt_parse
+pt_len1:
+    ldrb w3, [x0]
+    cmp w3, #0x2B
+    b.eq pt_operator
+    cmp w3, #0x2D
+    b.eq pt_operator
+    cmp w3, #0x2A
+    b.eq pt_operator
+    cmp w3, #0x2F
+    b.eq pt_operator
+    cmp w3, #0x25
+    b.eq pt_operator
+    cmp w3, #0x30
+    b.lo pt_invalid
+    cmp w3, #0x39
+    b.hi pt_invalid
+    sub x3, x3, #0x30
+    b pt_push_lit
+pt_parse:
+    sub x7, x5, x4
+    cmp x7, #0
+    b.eq pt_invalid
+    cmp x7, #18
+    b.hi pt_invalid
+    mov x8, #0
+pt_digit_loop:
+    cmp x4, x5
+    b.hs pt_digits_done
+    ldrb w9, [x4]
+    cmp w9, #0x30
+    b.lo pt_invalid
+    cmp w9, #0x39
+    b.hi pt_invalid
+    sub x9, x9, #0x30
+    mov x10, #10
+    madd x8, x8, x10, x9
+    add x4, x4, #1
+    b pt_digit_loop
+pt_digits_done:
+    cbz x6, pt_pos
+    neg x8, x8
+pt_pos:
+    mov x3, x8
+    b pt_push_lit
+pt_push_lit:
+    movz x9, #1, lsl #16
+    cmp x27, x9
+    b.hs pt_invalid
+    adrp x9, val_stack
+    add x9, x9, :lo12:val_stack
+    str x3, [x9, x27, lsl #3]
+    add x27, x27, #1
+    mov x0, #0
+    ret
+pt_operator:
+    cmp x27, #2
+    b.lo pt_invalid
+    adrp x9, val_stack
+    add x9, x9, :lo12:val_stack
+    sub x27, x27, #1
+    ldr x10, [x9, x27, lsl #3]
+    sub x27, x27, #1
+    ldr x11, [x9, x27, lsl #3]
+    cmp x3, #0x2B
+    b.eq pt_do_add
+    cmp x3, #0x2D
+    b.eq pt_do_sub
+    cmp x3, #0x2A
+    b.eq pt_do_mul
+    cmp x3, #0x2F
+    b.eq pt_do_div
+    cmp x3, #0x25
+    b.eq pt_do_mod
+    b pt_invalid
+pt_do_add:
+    add x12, x11, x10
+    b pt_push_result
+pt_do_sub:
+    sub x12, x11, x10
+    b pt_push_result
+pt_do_mul:
+    mul x12, x11, x10
+    b pt_push_result
+pt_do_div:
+    cbz x10, pt_invalid
+    movz x12, #0x8000, lsl #48
+    cmp x11, x12
+    b.ne pt_div_safe
+    cmn x10, #1
+    b.eq pt_invalid
+pt_div_safe:
+    sdiv x12, x11, x10
+    b pt_push_result
+pt_do_mod:
+    cbz x10, pt_invalid
+    movz x12, #0x8000, lsl #48
+    cmp x11, x12
+    b.ne pt_mod_safe
+    cmn x10, #1
+    b.eq pt_invalid
+pt_mod_safe:
+    sdiv x13, x11, x10
+    msub x12, x13, x10, x11
+    b pt_push_result
+pt_push_result:
+    movz x9, #1, lsl #16
+    cmp x27, x9
+    b.hs pt_invalid
+    adrp x9, val_stack
+    add x9, x9, :lo12:val_stack
+    str x12, [x9, x27, lsl #3]
+    add x27, x27, #1
+    mov x0, #0
+    ret
+pt_invalid:
+    mov x0, #1
+    ret
+
+output_value:
+    tbz x0, #63, ov_pos
+    mov w1, #0x2D
+    strb w1, [x24], #1
+    neg x1, x0
+    b ov_convert
+ov_pos:
+    mov x1, x0
+ov_convert:
+    adrp x2, num_buf
+    add x2, x2, :lo12:num_buf
+    add x2, x2, #NUM_SIZE
+    mov x3, #10
+ov_digit:
+    udiv x4, x1, x3
+    msub x5, x4, x3, x1
+    add x5, x5, #0x30
+    sub x2, x2, #1
+    strb w5, [x2]
+    mov x1, x4
+    cmp x1, #0
+    b.ne ov_digit
+    adrp x6, num_buf
+    add x6, x6, :lo12:num_buf
+    add x6, x6, #NUM_SIZE
+    sub x7, x6, x2
+    mov x8, #0
+ov_copy:
+    cmp x8, x7
+    b.hs ov_nl
+    ldrb w9, [x2, x8]
+    strb w9, [x24], #1
+    add x8, x8, #1
+    b ov_copy
+ov_nl:
+    mov w9, #0x0A
+    strb w9, [x24], #1
+    ret
+
+output_error:
+    adrp x0, err_str
+    add x0, x0, :lo12:err_str
+    mov x1, #0
+oe_loop:
+    cmp x1, #ERR_LEN
+    b.hs oe_done
+    ldrb w2, [x0, x1]
+    strb w2, [x24], #1
+    add x1, x1, #1
+    b oe_loop
+oe_done:
+    ret

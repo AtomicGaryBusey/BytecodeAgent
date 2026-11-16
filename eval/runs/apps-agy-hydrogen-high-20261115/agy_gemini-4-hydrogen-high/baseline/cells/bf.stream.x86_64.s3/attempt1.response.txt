@@ -1,0 +1,243 @@
+.globl _start
+
+.text
+_start:
+    # Read all of stdin into inbuf (up to 65538 bytes; spec limit is 65536)
+    xor r12d, r12d
+1:
+    xor eax, eax                    # SYS_read = 0
+    xor edi, edi                    # fd = 0 (stdin)
+    lea rsi, [rip + inbuf]
+    add rsi, r12
+    mov edx, 65538
+    sub rdx, r12
+    jbe 2f
+    syscall
+    test rax, rax
+    jle 2f
+    add r12, rax
+    jmp 1b
+2:
+
+    # Find the first '!' (0x21) in inbuf[0 .. r12 - 1]
+    lea rdi, [rip + inbuf]
+    mov rcx, r12
+    test rcx, rcx
+    jz no_bang
+    mov al, 0x21
+    repne scasb
+    jne no_bang
+
+    # Found '!': program is [inbuf, rdi - 1), input is [rdi, inbuf + r12)
+    lea r8, [rdi - 1]
+    mov r14, rdi
+    lea r15, [rip + inbuf]
+    add r15, r12
+    jmp parse_prog
+
+no_bang:
+    # No '!': program is [inbuf, inbuf + r12), input is empty
+    lea r8, [rip + inbuf]
+    add r8, r12
+    mov r14, r8
+    mov r15, r8
+
+parse_prog:
+    # Strip comments in-place into opcodes 1..8 and verify/match brackets
+    lea rsi, [rip + inbuf]          # read pointer
+    xor r9d, r9d                    # compacted opcode index k
+    xor r10d, r10d                  # bracket stack depth
+
+parse_loop:
+    cmp rsi, r8
+    jae parse_done
+    movzx eax, byte ptr [rsi]
+    inc rsi
+    movzx eax, byte ptr [op_table + rax]
+    test eax, eax
+    jz parse_loop
+
+    mov byte ptr [inbuf + r9], al
+    cmp al, 7                       # '['
+    je parse_open
+    cmp al, 8                       # ']'
+    je parse_close
+    inc r9d
+    jmp parse_loop
+
+parse_open:
+    mov dword ptr [bstack + r10*4], r9d
+    inc r10d
+    inc r9d
+    jmp parse_loop
+
+parse_close:
+    test r10d, r10d
+    jz unbalanced
+    dec r10d
+    mov edx, dword ptr [bstack + r10*4]
+    lea ecx, [r9d + 1]
+    mov dword ptr [jumps + rdx*4], ecx
+    inc edx
+    mov dword ptr [jumps + r9*4], edx
+    inc r9d
+    jmp parse_loop
+
+parse_done:
+    test r10d, r10d
+    jnz unbalanced
+    mov byte ptr [inbuf + r9], 0    # sentinel END opcode
+
+    # Run interpreter
+    xor ebx, ebx                    # pc = 0
+    lea r13, [rip + tape]           # data pointer = &tape[0]
+    xor ebp, ebp                    # out_pos = 0
+
+dispatch:
+    movzx eax, byte ptr [inbuf + rbx]
+    inc rbx
+    jmp qword ptr [dispatch_table + rax*8]
+
+op_right:
+    inc r13
+    jmp dispatch
+
+op_left:
+    dec r13
+    jmp dispatch
+
+op_inc:
+    inc byte ptr [r13]
+    jmp dispatch
+
+op_dec:
+    dec byte ptr [r13]
+    jmp dispatch
+
+op_out:
+    mov al, byte ptr [r13]
+    mov byte ptr [outbuf + rbp], al
+    inc ebp
+    cmp ebp, 65536
+    je op_out_flush
+    jmp dispatch
+
+op_out_flush:
+    call flush_output
+    jmp dispatch
+
+op_in:
+    cmp r14, r15
+    jae op_in_eof
+    mov al, byte ptr [r14]
+    inc r14
+    mov byte ptr [r13], al
+    jmp dispatch
+
+op_in_eof:
+    mov byte ptr [r13], 0
+    jmp dispatch
+
+op_jz:
+    cmp byte ptr [r13], 0
+    jnz dispatch
+    dec ebx
+    mov ebx, dword ptr [jumps + rbx*4]
+    jmp dispatch
+
+op_jnz:
+    cmp byte ptr [r13], 0
+    jz dispatch
+    dec ebx
+    mov ebx, dword ptr [jumps + rbx*4]
+    jmp dispatch
+
+op_end:
+    call flush_output
+    mov eax, 60                     # SYS_exit = 60
+    xor edi, edi                    # status = 0
+    syscall
+
+unbalanced:
+    mov eax, 60                     # SYS_exit = 60
+    mov edi, 1                      # status = 1
+    syscall
+
+flush_output:
+    test ebp, ebp
+    jz 2f
+    xor r12d, r12d                  # written = 0
+1:
+    mov eax, 1                      # SYS_write = 1
+    mov edi, 1                      # fd = 1 (stdout)
+    lea rsi, [rip + outbuf]
+    add rsi, r12
+    mov edx, ebp
+    sub edx, r12d
+    jbe 2f
+    syscall
+    test rax, rax
+    jle 2f
+    add r12, rax
+    cmp r12d, ebp
+    jb 1b
+2:
+    xor ebp, ebp
+    ret
+
+.section .rodata
+.align 8
+dispatch_table:
+    .quad op_end                    # 0: sentinel END
+    .quad op_right                  # 1: >
+    .quad op_left                   # 2: <
+    .quad op_inc                    # 3: +
+    .quad op_dec                    # 4: -
+    .quad op_out                    # 5: .
+    .quad op_in                     # 6: ,
+    .quad op_jz                     # 7: [
+    .quad op_jnz                    # 8: ]
+
+op_table:
+    # 0x00 .. 0x0f
+    .byte 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0
+    # 0x10 .. 0x1f
+    .byte 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0
+    # 0x20 .. 0x2f ('+'=0x2b->3, ','=0x2c->6, '-'=0x2d->4, '.'=0x2e->5)
+    .byte 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 3, 6, 4, 5, 0
+    # 0x30 .. 0x3f ('<'=0x3c->2, '>'=0x3e->1)
+    .byte 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 2, 0, 1, 0
+    # 0x40 .. 0x4f
+    .byte 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0
+    # 0x50 .. 0x5f ('['=0x5b->7, ']'=0x5d->8)
+    .byte 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 7, 0, 8, 0, 0
+    # 0x60 .. 0x6f
+    .byte 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0
+    # 0x70 .. 0x7f
+    .byte 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0
+    # 0x80 .. 0xff
+    .byte 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0
+    .byte 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0
+    .byte 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0
+    .byte 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0
+    .byte 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0
+    .byte 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0
+    .byte 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0
+    .byte 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0
+
+.bss
+.align 16
+inbuf:
+    .zero 65544
+.align 16
+tape:
+    .zero 30000
+.align 16
+outbuf:
+    .zero 65536
+.align 16
+jumps:
+    .zero 262144
+.align 16
+bstack:
+    .zero 262144

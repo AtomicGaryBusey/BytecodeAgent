@@ -23,7 +23,7 @@ prompt = open(arg("--prompt-file")).read()
 def emit(pt, payload): print(json.dumps({"schema_version": 1, "payload_type": pt, "payload": payload}), flush=True)
 emit("run.model.configured", {"model_id": arg("--model") if mode != "reroute" else "muse-spark-1.2"})
 emit("turn.input.user", {"prompt": prompt if mode != "badprompt" else "x"})
-emit("task.lifecycle.proposed", {"event": {"task_kind": "model.meta.response" if mode != "tool" else "tool.shell"}})
+emit("task.lifecycle.proposed", {"event": {"task_kind": {"tool": "tool.shell", "search_first": "tool.muse.search"}.get(mode, "model.meta.response")}})
 if mode in ("resample", "otherfail"):
     emit("run.output.delta", {"text": "mov rax, 1\n.Ldone:"})
     emit("task.lifecycle.failed", {"event": {"reason": "stream guard resample (foreign-script) [foreign-script-guard]"
@@ -31,9 +31,12 @@ if mode in ("resample", "otherfail"):
     if mode == "otherfail":
         emit("run.terminal.completed", {"terminal": "completed", "text": ""}); sys.exit(0)
     emit("task.lifecycle.proposed", {"event": {"task_kind": "model.meta.response"}})
-for t in ("mov rax, 1\n", "ret"):
+for t in (("mov rax, 1\n", "ret") if mode != "search_empty" else ()):
     emit("run.output.delta", {"text": t})
 emit("task.lifecycle.completed", {"event": {"kind": "completed"}})
+if mode in ("search", "search_empty"):  # Muse proposes its built-in search after the step (seen 11-13, 11-15)
+    emit("task.lifecycle.proposed", {"event": {"task_kind": "tool.muse.search"}})
+    import time; time.sleep(20); sys.exit(0)
 emit("run.usage", {"calls": 1, "models": [{"input_tokens": 18000, "output_tokens": 40, "cached_tokens": 0}]})
 emit("run.terminal.completed", {"terminal": "completed", "text": "mov rax, 1\nret"})
 if mode == "fail":
@@ -94,3 +97,15 @@ def test_a_guard_resample_drops_the_discarded_sample(fake):
 def test_any_other_failed_model_task_is_an_error(fake):
     r = fake("otherfail").complete("p")
     assert not r.ok and "provider error" in r.error
+
+
+@pytest.mark.parametrize("mode,text", [("search", "mov rax, 1\nret"), ("search_empty", "")])
+def test_a_search_proposal_stops_the_call_and_scores_the_text_before_it(fake, mode, text):
+    r = fake(mode).complete("p")
+    assert r.ok and r.text == text and r.usage["tool_stops"] == 1
+    assert any("tool.muse.search" in n for n in r.notes)
+
+
+def test_a_search_proposal_before_any_model_step_is_still_an_isolation_failure(fake):
+    r = fake("search_first").complete("p")
+    assert not r.ok and r.error.startswith("isolation:") and "tool.muse.search" in r.error

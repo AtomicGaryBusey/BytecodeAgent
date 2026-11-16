@@ -26,6 +26,7 @@ the Azure AI Foundry API directly, the `fireworks:` rows through Fireworks.ai's 
 
 | Model | Round 1 (48) | Round 2 (62) | Long (54) | Adversarial (60) | Pass@1 | Within 4 | Mean attempts |
 |---|---|---|---|---|---|---|---|
+| Gemini 4 Hydrogen High (Antigravity) | 48 | 62 | 54 | 60 | **224/224 (100%)** | 224/224 (100%) | 1.00 |
 | Codex GPT-6 Astra | 46 | 61 | 54 | 60 | **221/224 (99%)** | 224/224 (100%) | 1.01 |
 | Claude Mythos 5.2 | 47 | 61 | 53 | 59 | **220/224 (98%)** | 224/224 (100%) | 1.02 |
 | Claude Fable 5.2 | 47 | 62 | 50 | 60 | **219/224 (98%)** | 224/224 (100%) | 1.02 |
@@ -38,6 +39,7 @@ the Azure AI Foundry API directly, the `fireworks:` rows through Fireworks.ai's 
 | Claude Fable 5.1 | 44 | 62 | 52 | 54 | **212/224 (95%)** | 223/224 (100%) | 1.08 |
 | Grok 4.7 | 48 | 59 | 48 | 56 | **211/224 (94%)** | 220/224 (98%) | 1.10 |
 | Grok 4.6 | 45 | 59 | 50 | 57 | **211/224 (94%)** | 223/224 (100%) | 1.07 |
+| Gemini 3.8 Flash High (Antigravity) | 46 | 60 | 47 | 57 | **210/224 (94%)** | 224/224 (100%) | 1.07 |
 | Claude Opus 4.7 | 42 | 58 | 51 | 58 | **209/224 (93%)** | 223/224 (100%) | 1.08 |
 | Codex GPT-5.5 | 47 | 57 | 45 | 58 | **207/224 (92%)** | 224/224 (100%) | 1.08 |
 | Kimi K3.1 Pro | 45 | 61 | 45 | 56 | **207/224 (92%)** | 224/224 (100%) | 1.08 |
@@ -51,6 +53,7 @@ the Azure AI Foundry API directly, the `fireworks:` rows through Fireworks.ai's 
 | Claude Fable 5 | 45 | 58 | 45 | 51 | **199/224 (89%)** | 203/224 (91%) | 1.30 |
 | Claude Opus 5 | 40 | 57 | 50 | 51 | **198/224 (88%)** | 224/224 (100%) | 1.12 |
 | Grok 4.5 | 47 | 55 | 41 | 54 | **197/224 (88%)** | 222/224 (99%) | 1.16 |
+| Gemini 4 Argon High (Antigravity) | 47 | 60 | 26 | 58 | **191/224 (85%)** | 205/224 (92%) | 1.35 |
 | DeepSeek V4.1 Flash (Fireworks) | 41 | 53 | 46 | 50 | **190/224 (85%)** | 224/224 (100%) | 1.19 |
 | Codex GPT-5.6 Terra | 41 | 55 | 38 | 55 | **189/224 (84%)** | 223/224 (100%) | 1.19 |
 | Qwen 3.8 Max (Fireworks) | 40 | 50 | 42 | 50 | **182/224 (81%)** | 222/224 (99%) | 1.28 |
@@ -71,7 +74,6 @@ the Azure AI Foundry API directly, the `fireworks:` rows through Fireworks.ai's 
 | Microsoft MAI-Thinking-1 (Azure Foundry) | 22 | 22 | 2 | 26 | **72/224 (32%)** | 144/224 (64%) | 2.58 |
 | OpenAI gpt-oss-120b (Cerebras) | 26 | 21 | 3 | 21 | **71/224 (32%)** | 117/224 (52%) | 2.78 |
 | OpenAI gpt-oss-120b (Fireworks) | 24 | 22 | 4 | 21 | **71/224 (32%)** | 120/224 (54%) | 2.71 |
-| Gemini 3.8 Flash High (Antigravity) † | 46 | 60 | 48 | 57/59 | **211/223 (95%)** | 223/223 (100%) | 1.06 |
 | Apple Private Cloud Compute † | 2 | — | — | — | **2/48 (4%)** | 5/48 (10%) | 3.77 |
 
 Codex Daybreak Blue includes one reviewed harness false reject counted as a pass, Grok 4.7 build-fast
@@ -100,15 +102,14 @@ prints the answer only when the call ends, so a timeout carries no text; these a
 every CLI vendor, not stalls. Failures reviewed by hand: no harness false rejects (QBE compares without a
 result class, `xor eax, 0` used to zero a register, malformed JSON, unencodable AArch64 immediates).
 
-† Partial, quota-paced (Google AI Plus): rounds 1 + 2 and long complete, adversarial 59/60 (one cell, `stats_f.ir.aarch64`, left; its resume loop was stopped on 2026-10-24 and the cell is run by hand). Like for like on the complete batteries, rounds 1 + 2 + long: **154/164 (94%)**, level with Grok 4.6 (154), just behind Grok 4.7 (155), Grok 4.7 build-fast (156), Claude Opus 5.5 and Fable 5.1 (158 each), Kimi K3.1 Pro (159) and Codex GPT-6 Astra (161), and ahead of Codex GPT-6 Sol (153). Its first-attempt failures were reviewed by hand: no harness false rejects (hex literals in QBE, `%x =l %y` without `copy`, malformed JSON, an invented `subl` opcode, a 400 s timeout spent thinking: 62,910 of 65,532 output tokens, and two 180 s timeouts on adversarial `stats_f`).
+† Gemini 3.8 Flash High's function batteries were quota-paced on Google AI Plus from 2026-09-28; its last cell (`stats_f.ir.aarch64`) ran on 2026-11-15 (Google AI Pro, Antigravity 1.5.7), so the row is now complete: 210/224 first attempt, 224 within four (211 before one output-limit attempt was scored under the 2026-11-15 rule; see the methodology notes).
 
 † Apple Private Cloud Compute covers round 1 only: all 48 cells (completed 2026-11-09 after the daily PCC quota paused it at 37), at the model's default setting (no `reasoning_effort`). Apple's on-device model runs on the user's Mac, not on Apple's servers, so it is listed with the [local models](#local-models-dgx-spark-and-apples-on-device-model-on-a-mac).
 
 **In progress on 2026-11-12, and left out of every table until complete** (`eval/model_names.py`): Claude Sonnet
 4.6, Opus 4.6 and Opus 4.5 (the rest of the older-Claude set); Kimi K2.7 Code Highspeed (running; Kimi K3.1 Pro Highspeed's app and hex-program batteries
-finished on 2026-11-14 and are in the tables); Gemini 4 Argon High (122 of 224
-function cells, paused on the Google AI Pro quota; its remaining cells run on Antigravity 1.5.7, re-audited
-2026-11-12, the first 122 on 1.5.3).
+finished on 2026-11-14 and are in the tables). Gemini 4 Argon High finished on 2026-11-14 and is in the tables (all 224
+cells on Antigravity 1.5.7; see the finding below).
 
 Versions behind the 2026-11-11 and 11-12 rows: Codex CLI 0.167.0; Kimi Code 2.5.3 (K3.1 Pro's app and hex batteries
 of 2026-11-10: 2.3.1); Claude Code 2.1.322 (2.1.323, after the CLI updated itself, for Opus 4.7's last three
@@ -121,6 +122,7 @@ left no attempt record and ran again, and every chain resumed with the same comm
 
 | Model | Stream | Structured | IR (QBE) |
 |---|---|---|---|
+| Gemini 4 Hydrogen High (Antigravity) | 76/76 (100%) | 74/74 (100%) | 74/74 (100%) |
 | Codex GPT-6 Astra | 76/76 (100%) | 74/74 (100%) | 71/74 (96%) |
 | Claude Mythos 5.2 | 75/76 (99%) | 72/74 (97%) | 73/74 (99%) |
 | Claude Fable 5.2 | 75/76 (99%) | 71/74 (96%) | 73/74 (99%) |
@@ -133,6 +135,7 @@ left no attempt record and ran again, and every chain resumed with the same comm
 | Claude Fable 5.1 | 72/76 (95%) | 69/74 (93%) | 71/74 (96%) |
 | Grok 4.7 | 76/76 (100%) | 71/74 (96%) | 64/74 (86%) |
 | Grok 4.6 | 73/76 (96%) | 73/74 (99%) | 65/74 (88%) |
+| Gemini 3.8 Flash High (Antigravity) | 75/76 (99%) | 69/74 (93%) | 66/74 (89%) |
 | Claude Opus 4.7 | 70/76 (92%) | 71/74 (96%) | 68/74 (92%) |
 | Codex GPT-5.5 | 72/76 (95%) | 71/74 (96%) | 64/74 (86%) |
 | Kimi K3.1 Pro | 73/76 (96%) | 70/74 (95%) | 64/74 (86%) |
@@ -146,6 +149,7 @@ left no attempt record and ran again, and every chain resumed with the same comm
 | Claude Fable 5 | 69/76 (91%) | 67/74 (91%) | 63/74 (85%) |
 | Claude Opus 5 | 72/76 (95%) | 67/74 (91%) | 59/74 (80%) |
 | Grok 4.5 | 73/76 (96%) | 71/74 (96%) | 53/74 (72%) |
+| Gemini 4 Argon High (Antigravity) | 59/76 (78%) | 62/74 (84%) | 70/74 (95%) |
 | DeepSeek V4.1 Flash (Fireworks) | 73/76 (96%) | 55/74 (74%) | 62/74 (84%) |
 | Codex GPT-5.6 Terra | 68/76 (89%) | 69/74 (93%) | 52/74 (70%) |
 | Qwen 3.8 Max (Fireworks) | 73/76 (96%) | 72/74 (97%) | 37/74 (50%) |
@@ -221,6 +225,25 @@ left no attempt record and ran again, and every chain resumed with the same comm
   `packbits_decode` 3, seven other tasks 1-2 each). They are scored as refusals, like every safety block here, which is why only
   203 cells pass within four. On the 203 cells it was allowed to answer, Fable 5 passed 199 on the first attempt
   (98%) and all 203 within four. Its hex and app batteries drew no blocks. Opus 5 and Opus 4.7 were never blocked.
+- **Gemini 4 Hydrogen High (Antigravity, Google AI Pro; 2026-11-15) is the first model to pass every function cell
+  on the first attempt: 224/224**, one call per cell (224 attempts, no infrastructure retries), a median 18 s and
+  about 2,800 thinking tokens a call, and no safety-filter block on any function cell (Argon drew 29 on the same
+  prompts the day before). It also leads the app battery, 93/96 first attempt and 96 within four, and wrote 15/16
+  hex functions first time (16 within four). Whole programs in hex are where it gives ground: 10/16 first attempt,
+  15 within four, with Gemini's filter blocking 5 of the 16 cells on the first attempt and `bf` (x86-64) on all
+  four; on the 11 it could answer first time it passed 10. Hydrogen draws on Antigravity's general Gemini quota,
+  not Argon's separate weekly meter.
+- **Gemini 4 Argon High (Antigravity, Google AI Pro; 2026-11-14): 191/224 first attempt (85%), 205 within four,
+  and held down by Gemini's safety filter, not by the model.** 29 cells were blocked on the first attempt ("This
+  request was blocked by Gemini's filters"), 28 of them in the long battery, and 19 on all four attempts (`xxh64`
+  and `vm_run` 3 cells each; `base64_encode`, `packbits_encode`, `packbits_decode`, `mat_pow`, `mp_mul` 2 each).
+  They are scored as refusals, like every safety block here. On the 195 cells it was allowed to answer first time
+  it passed 191 (98%), and it recovered every cell that was not blocked throughout. Without the long battery it is
+  165/170 (97%). **The row measures Argon High as Google served it from 2026-11-13**: a week earlier the same
+  setting thought four to five times longer (a median 29,800 thinking tokens on the long battery against 6,650,
+  121 s a passing call against 24 s) and 62 of 180 attempts ran out the 180 s limit, with no filter blocks. Those
+  122 earlier cells were superseded and re-run so the row is one configuration
+  ([methodology](cross-vendor-methodology.md), operations notes).
 - **Serving speed did not cost Kimi K3.1 Pro accuracy.** K3.1 Pro Highspeed (twice the price and plan quota) scored
   215/224 against K3.1 Pro's 207 at the same `high` effort (6 cells only the standard tier passed, 14 only
   Highspeed; p = 0.12, not significant), at 19 s a call against 37 s; both recover all 224 within four.

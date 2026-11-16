@@ -1,0 +1,275 @@
+.globl _start
+
+.text
+_start:
+    lea r12, [rip + in_buf]
+    xor r13d, r13d
+read_loop:
+    mov edx, 131072
+    sub rdx, r13
+    jz read_done
+    xor eax, eax
+    xor edi, edi
+    lea rsi, [r12 + r13]
+    syscall
+    test rax, rax
+    jle read_done
+    add r13, rax
+    jmp read_loop
+
+read_done:
+    add r13, r12
+    lea r14, [rip + out_buf]
+    lea r15, [r14 + 65536 - 32]
+    lea rbp, [rip + rpn_stack]
+
+line_loop:
+    cmp r12, r13
+    jae done_all
+    xor ebx, ebx
+
+skip_ws:
+    cmp r12, r13
+    jae eol_reached
+    movzx eax, byte ptr [r12]
+    cmp al, 0x0A
+    je eol_newline
+    cmp al, 0x20
+    je 1f
+    cmp al, 0x09
+    jne token_start
+1:
+    inc r12
+    jmp skip_ws
+
+eol_newline:
+    inc r12
+eol_reached:
+    cmp rbx, 1
+    jne emit_error_no_skip
+    mov rax, qword ptr [rbp]
+    call print_int64
+    jmp line_loop
+
+token_start:
+    mov rsi, r12
+    inc r12
+1:
+    cmp r12, r13
+    jae 2f
+    movzx eax, byte ptr [r12]
+    cmp al, 0x0A
+    je 2f
+    cmp al, 0x20
+    je 2f
+    cmp al, 0x09
+    je 2f
+    inc r12
+    jmp 1b
+2:
+    mov rcx, r12
+    sub rcx, rsi
+    cmp rcx, 1
+    jne not_len_1
+
+    movzx eax, byte ptr [rsi]
+    cmp al, '+'
+    je op_add
+    cmp al, '-'
+    je op_sub
+    cmp al, '*'
+    je op_mul
+    cmp al, '/'
+    je op_div
+    cmp al, '%'
+    je op_mod
+    sub eax, '0'
+    cmp eax, 9
+    ja line_error
+    mov qword ptr [rbp + rbx*8], rax
+    inc rbx
+    jmp skip_ws
+
+not_len_1:
+    xor edx, edx
+    cmp byte ptr [rsi], '-'
+    jne 1f
+    mov edx, 1
+    inc rsi
+    dec rcx
+1:
+    cmp rcx, 18
+    ja line_error
+    xor eax, eax
+2:
+    movzx edi, byte ptr [rsi]
+    sub edi, '0'
+    cmp edi, 9
+    ja line_error
+    imul rax, rax, 10
+    add rax, rdi
+    inc rsi
+    dec rcx
+    jnz 2b
+
+    test edx, edx
+    jz 3f
+    neg rax
+3:
+    mov qword ptr [rbp + rbx*8], rax
+    inc rbx
+    jmp skip_ws
+
+op_add:
+    cmp rbx, 2
+    jb line_error
+    mov rax, qword ptr [rbp + rbx*8 - 8]
+    add qword ptr [rbp + rbx*8 - 16], rax
+    dec rbx
+    jmp skip_ws
+
+op_sub:
+    cmp rbx, 2
+    jb line_error
+    mov rax, qword ptr [rbp + rbx*8 - 8]
+    sub qword ptr [rbp + rbx*8 - 16], rax
+    dec rbx
+    jmp skip_ws
+
+op_mul:
+    cmp rbx, 2
+    jb line_error
+    mov rax, qword ptr [rbp + rbx*8 - 16]
+    imul rax, qword ptr [rbp + rbx*8 - 8]
+    mov qword ptr [rbp + rbx*8 - 16], rax
+    dec rbx
+    jmp skip_ws
+
+op_div:
+    cmp rbx, 2
+    jb line_error
+    mov rcx, qword ptr [rbp + rbx*8 - 8]
+    test rcx, rcx
+    jz line_error
+    mov rax, qword ptr [rbp + rbx*8 - 16]
+    cmp rcx, -1
+    jne 1f
+    mov edx, 1
+    shl rdx, 63
+    cmp rax, rdx
+    je line_error
+1:
+    cqo
+    idiv rcx
+    mov qword ptr [rbp + rbx*8 - 16], rax
+    dec rbx
+    jmp skip_ws
+
+op_mod:
+    cmp rbx, 2
+    jb line_error
+    mov rcx, qword ptr [rbp + rbx*8 - 8]
+    test rcx, rcx
+    jz line_error
+    mov rax, qword ptr [rbp + rbx*8 - 16]
+    cmp rcx, -1
+    jne 1f
+    mov edx, 1
+    shl rdx, 63
+    cmp rax, rdx
+    je line_error
+1:
+    cqo
+    idiv rcx
+    mov qword ptr [rbp + rbx*8 - 16], rdx
+    dec rbx
+    jmp skip_ws
+
+line_error:
+1:
+    cmp r12, r13
+    jae emit_error_no_skip
+    mov al, byte ptr [r12]
+    inc r12
+    cmp al, 0x0A
+    jne 1b
+
+emit_error_no_skip:
+    cmp r14, r15
+    jb 1f
+    call flush_out
+1:
+    mov dword ptr [r14], 0x6F727265
+    mov word ptr [r14 + 4], 0x0A72
+    add r14, 6
+    jmp line_loop
+
+print_int64:
+    sub rsp, 32
+    cmp r14, r15
+    jb 1f
+    push rax
+    call flush_out
+    pop rax
+1:
+    test rax, rax
+    jns 2f
+    mov byte ptr [r14], '-'
+    inc r14
+    neg rax
+2:
+    lea rsi, [rsp + 31]
+    mov rdi, rsi
+    mov ecx, 10
+3:
+    xor edx, edx
+    div rcx
+    add dl, '0'
+    mov byte ptr [rsi], dl
+    dec rsi
+    test rax, rax
+    jnz 3b
+4:
+    inc rsi
+    mov al, byte ptr [rsi]
+    mov byte ptr [r14], al
+    inc r14
+    cmp rsi, rdi
+    jb 4b
+    mov byte ptr [r14], 0x0A
+    inc r14
+    add rsp, 32
+    ret
+
+flush_out:
+    lea rsi, [rip + out_buf]
+    mov rdx, r14
+    sub rdx, rsi
+    jz 2f
+1:
+    mov eax, 1
+    mov edi, 1
+    syscall
+    add rsi, rax
+    sub rdx, rax
+    ja 1b
+    lea r14, [rip + out_buf]
+2:
+    ret
+
+done_all:
+    call flush_out
+    mov eax, 60
+    xor edi, edi
+    syscall
+
+.bss
+.balign 16
+in_buf:
+    .zero 131072
+.balign 16
+out_buf:
+    .zero 65536
+.balign 16
+rpn_stack:
+    .zero 8192

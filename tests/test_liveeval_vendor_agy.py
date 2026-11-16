@@ -347,6 +347,24 @@ def test_the_answer_text_never_makes_a_refusal(tmp_path, real_home):
     assert r.ok and r.refusal == ""
 
 
+NOTICE = ("This request was blocked by Gemini's filters. They can occasionally trigger by mistake on safe coding, "
+          "security, or biology-related queries. Please try rephrasing your prompt. You can [send feedback]"
+          "(https://aistudio.google.com/docs/troubleshooting#file-bug) or read more about [our policies here]"
+          "(https://policies.google.com/terms/generative-ai/use-policy).\n")
+
+
+def test_geminis_filter_notice_as_the_whole_response_is_a_refusal(tmp_path, real_home):
+    """agy 1.5.7 returns a filter block as a SUCCESS result whose response is Google's fixed notice."""
+    r = subject(tmp_path, real_home, binary=fake_agy(tmp_path, [init(), step("agent_response", NOTICE), result(NOTICE)])).complete("p")
+    assert r.refusal.startswith("safety: Gemini filter notice")
+
+
+def test_an_answer_that_quotes_the_notice_is_still_an_answer(tmp_path, real_home):
+    text = "; This request was blocked by Gemini's filters. (a comment)\nret\n"
+    r = subject(tmp_path, real_home, binary=fake_agy(tmp_path, [init(), step("agent_response", text), result(text)])).complete("p")
+    assert r.ok and r.refusal == ""
+
+
 def test_timeout(tmp_path, real_home):
     r = subject(tmp_path, real_home, binary=fake_agy(tmp_path, sleep=5)).complete("p", timeout=0.5)
     assert r.timed_out and not r.ok and r.error == "timeout"
@@ -409,3 +427,44 @@ def test_a_token_file_is_copied_in_when_the_keyring_is_not_used(tmp_path, real_h
     hf = seen(tmp_path)["home_files"]
     assert json.loads(hf[AGY_TOKEN_FILE])["token"]["refresh_token"] == "r"
     assert json.loads(hf[".gemini/antigravity-cli/settings.json"]) == {"useG1Credits": False, "agentMode": ""}  # still ours
+
+
+def _tool(name, state="ACTIVE"):
+    return {"event": "step_update", "step_update": {"conversation_id": "c1", "step_index": 2, "state": state,
+                                                    "step_type": "tool", "tool_name": name,
+                                                    "tool_info": {"name": name, "parameters": {"Action": "list"}}}}
+
+
+def test_a_manage_task_call_stops_the_call_and_scores_what_was_written(tmp_path, real_home):
+    """The model called agy's one unremovable tool after its answer (Flash High, 2026-11-15): one attempt is one
+    model call, so the call stops there and the text before it is scored; whatever came after never counts."""
+    events = [init(), step("user_input"), step("agent_response", "mov x0, #1\nret\n"), _tool("manage_task"),
+              step("agent_response", "SECOND CALL TEXT"), result("mov x0, #1\nret\nSECOND CALL TEXT")]
+    r = subject(tmp_path, real_home, binary=fake_agy(tmp_path, events)).complete("p")
+    assert r.ok and r.text == "mov x0, #1\nret\n" and r.usage["tool_stops"] == 1
+    assert any("manage_task" in n and "scored as it stands" in n for n in r.notes)
+
+
+def test_any_other_tool_step_is_still_an_isolation_failure(tmp_path, real_home):
+    events = [init(), step("user_input"), step("agent_response", "ret\n"), _tool("run_command"), result("ret\n")]
+    r = subject(tmp_path, real_home, binary=fake_agy(tmp_path, events)).complete("p")
+    assert not r.ok and r.error.startswith("isolation:") and "step 'tool'" in r.error
+
+
+CUT = "Your previous response was cut off because it exceeded the output token limit\nPlease continue from where you left off, keeping your response shorter\nRetries remaining: 3"
+
+
+def test_an_output_limit_cut_scores_the_first_call_and_drops_the_continuation(tmp_path, real_home):
+    events = [init(), step("user_input"), step("agent_response", "mov x0, #1\n", usage={"output_tokens": 65532}),
+              step("error_message"), step("agent_response", "CONTINUED", usage={"output_tokens": 9}),
+              result("mov x0, #1\nCONTINUED", status="ERROR", error=CUT)]
+    r = subject(tmp_path, real_home, binary=fake_agy(tmp_path, events, exit_code=1)).complete("p")
+    assert r.ok and r.text == "mov x0, #1\n" and r.usage["output_cut"] == 1 and r.usage["output_tokens"] == 65532
+    assert any("output token limit" in n for n in r.notes)
+
+
+def test_any_other_failed_request_is_still_a_transient_error(tmp_path, real_home):
+    events = [init(), step("user_input"), step("agent_response", "mov"), step("error_message"),
+              result("mov", status="ERROR", error="backend unavailable")]
+    r = subject(tmp_path, real_home, binary=fake_agy(tmp_path, events, exit_code=1)).complete("p")
+    assert not r.ok and "backend unavailable" in r.error and not r.error.startswith("isolation:")

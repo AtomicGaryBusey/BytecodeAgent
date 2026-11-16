@@ -1,0 +1,244 @@
+.equ SYS_READ, 0
+.equ SYS_WRITE, 1
+.equ SYS_EXIT, 60
+.equ IN_BUF_SIZE, 49152
+.equ OUT_BUF_SIZE, 65536
+.equ MAX_LINES, 32768
+
+.text
+.globl _start
+_start:
+    xor r12d, r12d
+    lea rbx, [rip + in_buf]
+
+L_read_loop:
+    mov rdx, IN_BUF_SIZE
+    sub rdx, r12
+    jz L_read_done
+    xor eax, eax
+    xor edi, edi
+    lea rsi, [rbx + r12]
+    syscall
+    test rax, rax
+    jle L_read_done
+    add r12, rax
+    jmp L_read_loop
+
+L_read_done:
+    xor r13d, r13d
+    xor r14d, r14d
+    xor ecx, ecx
+    lea r15, [rip + lines]
+
+L_parse_loop:
+    cmp rcx, r12
+    jae L_parse_tail
+    cmp byte ptr [rbx + rcx], 10
+    jne L_parse_next
+    cmp r13, MAX_LINES
+    jae L_parse_done
+    mov rax, rcx
+    sub rax, r14
+    shl rax, 32
+    or rax, r14
+    mov qword ptr [r15 + r13 * 8], rax
+    inc r13
+    lea r14, [rcx + 1]
+
+L_parse_next:
+    inc rcx
+    jmp L_parse_loop
+
+L_parse_tail:
+    cmp r14, r12
+    jae L_parse_done
+    cmp r13, MAX_LINES
+    jae L_parse_done
+    mov rax, r12
+    sub rax, r14
+    shl rax, 32
+    or rax, r14
+    mov qword ptr [r15 + r13 * 8], rax
+    inc r13
+
+L_parse_done:
+    mov r12, r13
+    cmp r12, 1
+    jbe L_sort_done_init
+
+    lea r13, [rip + lines]
+    lea r14, [rip + tmp_lines]
+    mov r15d, 1
+
+L_sort_pass:
+    xor ebp, ebp
+
+L_merge_runs:
+    mov r8, rbp
+    lea r10, [rbp + r15]
+    cmp r10, r12
+    cmova r10, r12
+    mov r9, r10
+    lea r11, [r10 + r15]
+    cmp r11, r12
+    cmova r11, r12
+
+L_merge_both:
+    cmp r8, r10
+    jae L_rem_q
+    cmp r9, r11
+    jae L_rem_p
+
+    mov rax, qword ptr [r13 + r8 * 8]
+    mov rdx, qword ptr [r13 + r9 * 8]
+    mov esi, eax
+    mov edi, edx
+    add rsi, rbx
+    add rdi, rbx
+    shr rax, 32
+    shr rdx, 32
+    mov rcx, rax
+    cmp rax, rdx
+    cmova rcx, rdx
+    test rcx, rcx
+    jz L_cmp_len_loaded
+
+L_cmp_bytes:
+    movzx eax, byte ptr [rsi]
+    movzx edx, byte ptr [rdi]
+    cmp eax, edx
+    jb L_take_p
+    ja L_take_q
+    inc rsi
+    inc rdi
+    dec rcx
+    jnz L_cmp_bytes
+
+    mov rax, qword ptr [r13 + r8 * 8]
+    mov rdx, qword ptr [r13 + r9 * 8]
+    shr rax, 32
+    shr rdx, 32
+
+L_cmp_len_loaded:
+    cmp rax, rdx
+    ja L_take_q
+
+L_take_p:
+    mov rax, qword ptr [r13 + r8 * 8]
+    mov qword ptr [r14 + rbp * 8], rax
+    inc r8
+    inc rbp
+    jmp L_merge_both
+
+L_take_q:
+    mov rax, qword ptr [r13 + r9 * 8]
+    mov qword ptr [r14 + rbp * 8], rax
+    inc r9
+    inc rbp
+    jmp L_merge_both
+
+L_rem_p:
+    cmp r8, r10
+    jae L_merge_run_done
+    mov rax, qword ptr [r13 + r8 * 8]
+    mov qword ptr [r14 + rbp * 8], rax
+    inc r8
+    inc rbp
+    jmp L_rem_p
+
+L_rem_q:
+    cmp r9, r11
+    jae L_merge_run_done
+    mov rax, qword ptr [r13 + r9 * 8]
+    mov qword ptr [r14 + rbp * 8], rax
+    inc r9
+    inc rbp
+    jmp L_rem_q
+
+L_merge_run_done:
+    cmp rbp, r12
+    jb L_merge_runs
+
+    xchg r13, r14
+    shl r15, 1
+    cmp r15, r12
+    jb L_sort_pass
+    jmp L_sort_done
+
+L_sort_done_init:
+    lea r13, [rip + lines]
+
+L_sort_done:
+    lea r14, [rip + out_buf]
+    xor r15d, r15d
+    xor ebp, ebp
+
+L_out_loop:
+    cmp rbp, r12
+    jae L_out_flush_final
+
+    mov rax, qword ptr [r13 + rbp * 8]
+    mov esi, eax
+    add rsi, rbx
+    shr rax, 32
+
+    lea rcx, [r15 + rax + 1]
+    cmp rcx, OUT_BUF_SIZE
+    jbe L_out_copy
+
+    push rax
+    push rsi
+    mov rsi, r14
+    mov rdx, r15
+    call write_all
+    xor r15d, r15d
+    pop rsi
+    pop rax
+
+L_out_copy:
+    lea rdi, [r14 + r15]
+    mov rcx, rax
+    add r15, rax
+    rep movsb
+    mov byte ptr [r14 + r15], 10
+    inc r15
+    inc rbp
+    jmp L_out_loop
+
+L_out_flush_final:
+    mov rsi, r14
+    mov rdx, r15
+    call write_all
+
+    mov eax, SYS_EXIT
+    xor edi, edi
+    syscall
+
+write_all:
+    test rdx, rdx
+    jz L_write_done
+L_write_loop:
+    mov eax, SYS_WRITE
+    mov edi, 1
+    syscall
+    test rax, rax
+    jle L_write_done
+    add rsi, rax
+    sub rdx, rax
+    jnz L_write_loop
+L_write_done:
+    ret
+
+.bss
+.align 16
+in_buf:
+    .zero IN_BUF_SIZE
+.align 16
+out_buf:
+    .zero OUT_BUF_SIZE
+.align 8
+lines:
+    .zero MAX_LINES * 8
+.align 8
+tmp_lines:
+    .zero MAX_LINES * 8
