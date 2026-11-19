@@ -75,6 +75,7 @@ samples passed on its first attempt.
 | Claude Sonnet 5 | **76/96 (79%)** | 95/96 (99%) | 1.27 | 23/32 | 27/32 | 26/32 | 31/32 |
 | Grok 4.5 | **76/96 (79%)** | 96/96 (100%) | 1.25 | 27/32 | 24/32 | 25/32 | 32/32 |
 | Codex GPT-5.6 Terra | **68/96 (71%)** | 96/96 (100%) | 1.33 | 25/32 | 21/32 | 22/32 | 29/32 |
+| Mistral Large 4 | **67/96 (70%)** | 91/96 (95%) | 1.55 | 20/32 | 26/32 | 21/32 | 30/32 |
 | DeepSeek V4.1 Flash (Fireworks) | **65/96 (68%)** | 93/96 (97%) | 1.44 | 23/32 | 24/32 | 18/32 | 30/32 |
 | Claude Sonnet 4.5 | **54/96 (56%)** | 93/96 (97%) | 1.64 | 18/32 | 16/32 | 20/32 | 28/32 |
 | Codex GPT-5.6 Luna | **31/96 (32%)** | 80/96 (83%) | 2.31 | 11/32 | 12/32 | 8/32 | 20/32 |
@@ -123,6 +124,7 @@ change the picture; see the local section of the cross-vendor report).
 | Claude Sonnet 5 | 11/12 | 8/12 | 9/12 | 8/12 | 8/12 | 11/12 | 10/12 | 11/12 |
 | Grok 4.5 | 12/12 | 11/12 | 9/12 | 10/12 | 7/12 | 9/12 | 10/12 | 8/12 |
 | Codex GPT-5.6 Terra | 10/12 | 10/12 | 8/12 | 8/12 | 4/12 | 10/12 | 11/12 | 7/12 |
+| Mistral Large 4 | 10/12 | 11/12 | 10/12 | 7/12 | 3/12 | 11/12 | 8/12 | 7/12 |
 | DeepSeek V4.1 Flash (Fireworks) | 10/12 | 11/12 | 9/12 | 8/12 | 8/12 | 9/12 | 7/12 | 3/12 |
 | Claude Sonnet 4.5 | 11/12 | 3/12 | 5/12 | 5/12 | 4/12 | 11/12 | 11/12 | 4/12 |
 | Codex GPT-5.6 Luna | 4/12 | 7/12 | 4/12 | 6/12 | 0/12 | 5/12 | 5/12 | 0/12 |
@@ -165,6 +167,7 @@ change the picture; see the local section of the cross-vendor report).
 | Claude Sonnet 5 | 15/24 | 22/24 | 18/24 | 21/24 |
 | Grok 4.5 | 20/24 | 21/24 | 14/24 | 21/24 |
 | Codex GPT-5.6 Terra | 15/24 | 20/24 | 15/24 | 18/24 |
+| Mistral Large 4 | 16/24 | 15/24 | 18/24 | 18/24 |
 | DeepSeek V4.1 Flash (Fireworks) | 15/24 | 18/24 | 17/24 | 15/24 |
 | Claude Sonnet 4.5 | 9/24 | 16/24 | 14/24 | 15/24 |
 | Codex GPT-5.6 Luna | 8/24 | 8/24 | 7/24 | 8/24 |
@@ -207,6 +210,7 @@ change the picture; see the local section of the cross-vendor report).
 | Claude Sonnet 5 | · | · | · | · | · | · | 5 | 1 | · | 9 | · | 4 | 1 |
 | Grok 4.5 | · | · | · | · | · | · | 3 | · | · | 14 | · | 3 | · |
 | Codex GPT-5.6 Terra | · | · | · | · | · | · | 3 | 2 | · | 11 | · | 12 | · |
+| Mistral Large 4 | · | 1 | · | · | · | · | 2 | · | 13 | 6 | · | 7 | · |
 | DeepSeek V4.1 Flash (Fireworks) | · | · | · | · | · | 1 | 1 | · | 10 | 9 | · | 10 | · |
 | Claude Sonnet 4.5 | · | · | · | · | · | · | 10 | · | · | 17 | · | 15 | · |
 | Codex GPT-5.6 Luna | 2 | · | · | · | 1 | 4 | 12 | · | · | 17 | · | 29 | · |

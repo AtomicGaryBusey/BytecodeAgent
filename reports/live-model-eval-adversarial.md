@@ -40,6 +40,30 @@ the next day (claude CLI 2.1.284; same model id, prompts and harness). 832 calls
 - **Haiku's QBE weakness dominates its IR column again** (1/20 pass@1); on stream and structured it
   scores 80-90% pass@1 at baseline, close to sonnet.
 
+## Grok 4.7 (2026-11-16): the first non-Claude model on the variants
+
+Run: `eval/runs/grok-4.7-adv-variants-20261116` (SuperGrok; grok 1.0.41, CLI-default effort, the same 180 s limit as
+every model). The baseline row is Grok 4.7's adversarial battery from its main run
+(`eval/runs/grok-4.7-20260928-231546`, same CLI version). 194 calls, no infrastructure errors.
+
+| model | variant | pass@1 | pass within 4 | mean attempts | first attempts that timed out |
+|---|---|---|---|---|---|
+| Grok 4.7 | baseline | 56/60 (93%) | 60/60 | — | 3 of all its adversarial attempts |
+| Grok 4.7 | misleading_hint | 58/60 (97%) | 60/60 | 1.03 | 1 |
+| Grok 4.7 | terse | 24/60 (40%) | 46/60 | 2.20 | 36 |
+
+- **Grok 4.7 ignores the misleading hints**, as Opus does: 58 against 56 at baseline (2 cells lost, 4 gained;
+  p = 0.69).
+- **Terse prompts break Grok 4.7, and the cause is time, not wrong code.** First-attempt passes fall from 56 to 24
+  (33 cells lost, 1 gained; p < 0.001), and 14 cells never pass. 84 of its 132 terse attempts ran into the 180 s
+  limit. The calls that finished took a median 115 s and 7,800 output tokens, against 50 s and 3,800 under
+  `misleading_hint` and 46 s and 3,200 at baseline. Asked for "the fewest instructions you can manage", the model
+  spends its time searching for the shortest program and runs out of time. Twice the tokens is the model's doing, not
+  throttling. The limit is the same for every model and is not tuned per model (as for every row), so this is
+  scored as it stands. It is the opposite of the Claude result above, where terse prompts changed little.
+- With one non-Claude model, "misleading hints: the strong models ignore them" now holds across two vendors.
+  "Terse prompts matter little" does not: it held for three Claude models and fails for Grok 4.7.
+
 ## Checked for harness false rejects
 
 All first-attempt failures of opus and sonnet, and every cell the hint flipped from pass to fail,

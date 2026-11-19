@@ -25,7 +25,11 @@ construction and is checked per call:
   instead of the battery's wall-clock limit (a generous wall-clock ceiling remains). Reaching it is a
   timeout, recorded and scored as one, with the same error text; the budget goes into the notes. A
   separate subject (its own directory and table row).
-- Server: BCA_VLLM_URL (default http://127.0.0.1:8000). Calls are serialised per server through a
+- Server: BCA_VLLM_URL (default http://127.0.0.1:8000; https is supported). BCA_VLLM_KEY_FILE names a file holding a
+  bearer key for a gateway in front of the server (e.g. a LiteLLM route): it must exist, be non-empty and be readable
+  by its owner only (mode 0600), or every call fails closed; the key goes in the Authorization header and is never
+  logged or recorded. A gateway hides vLLM's /version and /v1/models' max_model_len: BCA_VLLM_DECLARED_VERSION and
+  BCA_VLLM_DECLARED_MAX_MODEL_LEN then carry the operator's stated values (recorded as declared, not observed). Calls are serialised per server through a
   cross-process file lock (concurrent requests would slow each other down), and the per-call clock
   starts once the lock is held. BCA_VLLM_SLOTS=N allows N calls at once (N locks): on a memory-bandwidth-bound
   server batch decoding costs each call almost nothing (Apriel on the GB10, 2026-11-14: 7.9 tok/s alone, 7.8 each
@@ -50,7 +54,7 @@ from bca.liveeval.token_budget import CURRENT_BATTERY, token_budget, wall_ceilin
 from bca.liveeval.vendor_local import _ThinkFilter
 
 VLLM_URL = os.environ.get("BCA_VLLM_URL", "http://127.0.0.1:8000")
-AUDITED_VERSIONS = ("0.29.0",)
+AUDITED_VERSIONS = ("0.29.0", "0.31.0+88641915.nv26.10")  # 0.31.0: NVIDIA 26.10 build behind the Aurora LiteLLM gateway, audited 2026-11-16
 MODEL_DEFAULT = "model-default"
 EFFORTS = ("none", "low", "medium", "high")
 
@@ -121,7 +125,10 @@ class VllmSubject(Subject):
         self.effort = effort
         self.budget = budget
         u = urlparse(url or VLLM_URL)
-        self.host, self.port = u.hostname or "127.0.0.1", u.port or 8000
+        self.https = u.scheme == "https"
+        self.host, self.port = u.hostname or "127.0.0.1", u.port or (443 if self.https else 8000)
+        self.base = (u.path or "").rstrip("/").removesuffix("/v1")  # a gateway may serve under a path prefix
+        self.key_file = os.environ.get("BCA_VLLM_KEY_FILE", "")
         self.slots = max(1, int(os.environ.get("BCA_VLLM_SLOTS", "1")))
         self._lock = threading.BoundedSemaphore(self.slots)
         self._lockfile = f"/tmp/bca-vllm-{self.host}-{self.port}.lock"  # slot k > 0: <lockfile>.<k>
@@ -129,10 +136,31 @@ class VllmSubject(Subject):
 
     # -- server metadata (no model call) -----------------------------------------------------------
 
-    def _http(self, method: str, path: str, timeout: float = 60.0):
-        conn = http.client.HTTPConnection(self.host, self.port, timeout=timeout)
+    def _conn(self, timeout: float):
+        cls = http.client.HTTPSConnection if self.https else http.client.HTTPConnection
+        return cls(self.host, self.port, timeout=timeout)
+
+    def _headers(self) -> dict[str, str]:
+        """Authorization for a gateway (BCA_VLLM_KEY_FILE); fails closed on a missing, empty or exposed key file."""
+        if not self.key_file:
+            return {}
+        path = os.path.expanduser(self.key_file)
         try:
-            conn.request(method, path)
+            st = os.stat(path)
+            key = open(path).read().strip()
+        except OSError as e:
+            raise VllmError(f"vllm key file {self.key_file} unreadable: {type(e).__name__}") from None
+        if st.st_mode & 0o077:
+            raise VllmError(f"vllm key file {self.key_file} is readable by others (mode {st.st_mode & 0o777:o}); chmod 600")
+        if not key:
+            raise VllmError(f"vllm key file {self.key_file} is empty")
+        return {"Authorization": f"Bearer {key}"}
+
+    def _http(self, method: str, path: str, timeout: float = 60.0):
+        headers = self._headers()
+        conn = self._conn(timeout)
+        try:
+            conn.request(method, self.base + path, headers=headers)
             r = conn.getresponse()
             data = r.read()
         except OSError as e:
@@ -150,7 +178,11 @@ class VllmSubject(Subject):
     def setup(self) -> dict:
         """Server version, the served model's entry and context window; cached."""
         if self._setup is None:
-            version = self._http("GET", "/version").get("version", "")
+            declared = os.environ.get("BCA_VLLM_DECLARED_VERSION", "")
+            if declared:  # behind a gateway (LiteLLM) that hides vLLM's /version: the operator's stated version
+                version = declared
+            else:
+                version = self._http("GET", "/version").get("version", "")
             if version not in AUDITED_VERSIONS:
                 raise VllmError(f"isolation: vLLM {version!r} is not an audited version "
                                 f"({', '.join(AUDITED_VERSIONS)}); re-audit before running")
@@ -159,9 +191,12 @@ class VllmSubject(Subject):
                 raise VllmError(f"vllm model {self.model!r} not served (have {', '.join(sorted(map(str, models)))})")
             m = models[self.model]
             ctx = m.get("max_model_len")
+            if ctx is None and os.environ.get("BCA_VLLM_DECLARED_MAX_MODEL_LEN"):  # a gateway's /v1/models omits it
+                ctx = int(os.environ["BCA_VLLM_DECLARED_MAX_MODEL_LEN"])
             if not isinstance(ctx, int):
                 raise VllmError(f"isolation: cannot read max_model_len of {self.model}")
-            self._setup = {"version": version, "max_model_len": ctx, "root": m.get("root")}
+            self._setup = {"version": version, "max_model_len": ctx, "root": m.get("root"),
+                           **({"declared_by_operator": True} if declared else {})}
         return self._setup
 
     @property
@@ -175,7 +210,7 @@ class VllmSubject(Subject):
         s = self.setup()
         return {"effort": self.effort or MODEL_DEFAULT, "cli_version": f"vllm {s['version']}", "vendor": "vllm",
                 "vllm": {"max_model_len": s["max_model_len"], "root": s["root"],
-                         "sampling": "generation_config.json defaults", "server": f"{self.host}:{self.port}",
+                         "sampling": "generation_config.json defaults", "server": "private gateway (BCA_VLLM_URL, not recorded)" if self.key_file else f"{self.host}:{self.port}",
                          "limit": "token budget per battery (bca.liveeval.token_budget)" if self.budget_mode
                          else "wall clock per battery",
                          "concurrent_calls": self.slots}}
@@ -233,7 +268,11 @@ class VllmSubject(Subject):
             return Response("", ok=False, error=str(e), model=self.model, model_source="requested")
         self.calls += 1
         body = json.dumps(self.request_body(prompt, budget)).encode()
-        conn = http.client.HTTPConnection(self.host, self.port, timeout=limit + 30)
+        try:
+            headers = {"Content-Type": "application/json", **self._headers()}
+        except VllmError as e:
+            return Response("", ok=False, error=str(e), model=self.model, model_source="requested")
+        conn = self._conn(limit + 30)
         fired = threading.Event()
 
         def on_timeout() -> None:
@@ -262,8 +301,9 @@ class VllmSubject(Subject):
             text.append(chunk)
             return not (on_text is not None and on_text(chunk) is False)
 
+        cut = None  # an unparseable chunk: a cut-off stream if nothing follows it, else a protocol break
         try:
-            conn.request("POST", "/v1/chat/completions", body=body, headers={"Content-Type": "application/json"})
+            conn.request("POST", self.base + "/v1/chat/completions", body=body, headers=headers)
             r = conn.getresponse()
             if r.status != 200:
                 error = f"vllm server /v1/chat/completions HTTP {r.status}: {r.read()[:500].decode(errors='replace')}"
@@ -274,6 +314,9 @@ class VllmSubject(Subject):
                     line = line.strip()
                     if not line or line.startswith(b":"):
                         continue
+                    if cut is not None:
+                        error = f"isolation: unparseable stream chunk {cut[:120]!r}"
+                        break
                     if not line.startswith(b"data:"):
                         error = f"isolation: unexpected stream line {line[:120]!r}"
                         break
@@ -284,8 +327,8 @@ class VllmSubject(Subject):
                     try:
                         ev = json.loads(data)
                     except ValueError:
-                        error = f"isolation: unparseable stream chunk {data[:120]!r}"
-                        break
+                        cut = data  # judged by what follows (above) or by the stream ending (below)
+                        continue
                     if ev.get("error"):
                         error = f"vllm server error: {ev['error']}"
                         break
@@ -326,7 +369,7 @@ class VllmSubject(Subject):
         if timed_out:
             error = "timeout"
         elif not error and not killed and not done:
-            error = "vllm server closed the stream before [DONE]"
+            error = "vllm server closed the stream before [DONE]" + (" (cut off mid-chunk)" if cut is not None else "")
         out_tokens = (usage or {}).get("completion_tokens")
         if not error and not killed and finish == "length" and budget and isinstance(out_tokens, int) \
                 and out_tokens >= budget:

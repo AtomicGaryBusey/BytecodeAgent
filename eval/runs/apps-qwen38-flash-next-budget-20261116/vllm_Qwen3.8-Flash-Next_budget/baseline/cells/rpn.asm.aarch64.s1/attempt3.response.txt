@@ -1,0 +1,485 @@
+
+
+.equ SYS_READ, 63
+.equ SYS_WRITE, 64
+.equ SYS_EXIT, 93
+.equ SYS_EXIT_GROUP, 94
+
+.equ FD_IN, 0
+.equ FD_OUT, 1
+
+.equ IN_LIMIT, 65536
+.equ TEMP_LIMIT, 65536
+.equ OUT_SIZE, 65536
+.equ VAL_STACK_BYTES, 16384
+.equ DIGITS_BYTES, 32
+
+.equ CHAR_TAB, 9
+.equ CHAR_NEWLINE, 10
+.equ CHAR_SPACE, 32
+.equ CHAR_PERCENT, 37
+.equ CHAR_STAR, 42
+.equ CHAR_PLUS, 43
+.equ CHAR_MINUS, 45
+.equ CHAR_SLASH, 47
+.equ CHAR_ZERO, 48
+.equ CHAR_NINE, 57
+.equ CHAR_E, 101
+.equ CHAR_O, 111
+.equ CHAR_R, 114
+
+.text
+.globl _start
+_start:
+    adrp x19, in_buf
+    add x19, x19, :lo12:in_buf
+    adrp x20, out_buf
+    add x20, x20, :lo12:out_buf
+    adrp x23, val_stack
+    add x23, x23, :lo12:val_stack
+
+    mov x21, #0
+    mov x22, #0
+
+read_loop:
+    cmp x22, #IN_LIMIT
+    bge read_drain
+    mov x0, #FD_IN
+    add x1, x19, x22
+    mov x2, #IN_LIMIT
+    sub x2, x2, x22
+    mov x8, #SYS_READ
+    svc #0
+    cmp x0, #0
+    ble read_done
+    add x22, x22, x0
+    b read_loop
+
+read_drain:
+    adrp x1, discard_buf
+    add x1, x1, :lo12:discard_buf
+read_drain_loop:
+    mov x0, #FD_IN
+    mov x2, #TEMP_LIMIT
+    mov x8, #SYS_READ
+    svc #0
+    cmp x0, #0
+    ble read_done
+    b read_drain_loop
+
+read_done:
+    mov x4, #0
+
+line_loop:
+    cmp x4, x22
+    bge program_exit
+    mov x5, x4
+    mov x6, x4
+
+find_line:
+    cmp x6, x22
+    bge eval_start
+    ldrb w7, [x19, x6]
+    cmp w7, #CHAR_NEWLINE
+    beq eval_start
+    add x6, x6, #1
+    b find_line
+
+eval_start:
+    mov x24, x5
+    mov x27, #0
+    mov x14, #0
+
+skip_tokens:
+    cmp x24, x6
+    bge eval_finish
+    ldrb w7, [x19, x24]
+    cmp w7, #CHAR_SPACE
+    beq skip_one
+    cmp w7, #CHAR_TAB
+    beq skip_one
+
+    mov x25, x24
+find_token_end:
+    cmp x24, x6
+    bge parse_token
+    ldrb w7, [x19, x24]
+    cmp w7, #CHAR_SPACE
+    beq parse_token
+    cmp w7, #CHAR_TAB
+    beq parse_token
+    add x24, x24, #1
+    b find_token_end
+
+skip_one:
+    add x24, x24, #1
+    b skip_tokens
+
+parse_token:
+    ldrb w7, [x19, x25]
+    cmp w7, #CHAR_PLUS
+    beq op_add
+    cmp w7, #CHAR_MINUS
+    beq tok_minus
+    cmp w7, #CHAR_STAR
+    beq op_mul
+    cmp w7, #CHAR_SLASH
+    beq op_div
+    cmp w7, #CHAR_PERCENT
+    beq op_mod
+
+    cmp w7, #CHAR_ZERO
+    blt invalid_token
+    cmp w7, #CHAR_NINE
+    bgt invalid_token
+
+    mov x15, #0
+    mov x16, #0
+    mov x17, x25
+
+lit_pos_loop:
+    cmp x17, x24
+    beq push_value
+    ldrb w7, [x19, x17]
+    cmp w7, #CHAR_ZERO
+    blt invalid_token
+    cmp w7, #CHAR_NINE
+    bgt invalid_token
+
+    add x16, x16, #1
+    cmp x16, #19
+    bge invalid_token
+
+    mov x9, #10
+    mul x15, x15, x9
+    mov w10, w7
+    sub w10, w10, #CHAR_ZERO
+    add x15, x15, x10
+
+    add x17, x17, #1
+    b lit_pos_loop
+
+push_value:
+    cmp x27, #VAL_STACK_BYTES
+    bge invalid_token
+    str x15, [x23, x27]
+    add x27, x27, #8
+    b skip_tokens
+
+tok_minus:
+    add x10, x25, #1
+    cmp x10, x24
+    bne minus_not_op
+    b op_sub
+
+minus_not_op:
+    ldrb w7, [x19, x10]
+    cmp w7, #CHAR_ZERO
+    blt invalid_token
+    cmp w7, #CHAR_NINE
+    bgt invalid_token
+
+    mov x15, #0
+    mov x16, #0
+    mov x17, x10
+
+lit_neg_loop:
+    cmp x17, x24
+    beq lit_neg_finish
+    ldrb w7, [x19, x17]
+    cmp w7, #CHAR_ZERO
+    blt invalid_token
+    cmp w7, #CHAR_NINE
+    bgt invalid_token
+
+    add x16, x16, #1
+    cmp x16, #19
+    bge invalid_token
+
+    mov x9, #10
+    mul x15, x15, x9
+    mov w10, w7
+    sub w10, w10, #CHAR_ZERO
+    add x15, x15, x10
+
+    add x17, x17, #1
+    b lit_neg_loop
+
+lit_neg_finish:
+    sub x15, xzr, x15
+    b push_value
+
+invalid_token:
+    mov x14, #1
+    b eval_finish
+
+op_add:
+    sub x9, x24, x25
+    cmp x9, #1
+    bne invalid_token
+    cmp x27, #16
+    blt invalid_token
+
+    sub x10, x27, #16
+    ldr x16, [x23, x10]
+    add x9, x10, #8
+    ldr x15, [x23, x9]
+
+    add x17, x16, x15
+    str x17, [x23, x10]
+    sub x27, x27, #8
+    b skip_tokens
+
+op_sub:
+    sub x9, x24, x25
+    cmp x9, #1
+    bne invalid_token
+    cmp x27, #16
+    blt invalid_token
+
+    sub x10, x27, #16
+    ldr x16, [x23, x10]
+    add x9, x10, #8
+    ldr x15, [x23, x9]
+
+    sub x17, x16, x15
+    str x17, [x23, x10]
+    sub x27, x27, #8
+    b skip_tokens
+
+op_mul:
+    sub x9, x24, x25
+    cmp x9, #1
+    bne invalid_token
+    cmp x27, #16
+    blt invalid_token
+
+    sub x10, x27, #16
+    ldr x16, [x23, x10]
+    add x9, x10, #8
+    ldr x15, [x23, x9]
+
+    mul x17, x16, x15
+    str x17, [x23, x10]
+    sub x27, x27, #8
+    b skip_tokens
+
+op_div:
+    sub x9, x24, x25
+    cmp x9, #1
+    bne invalid_token
+    cmp x27, #16
+    blt invalid_token
+
+    sub x10, x27, #16
+    ldr x16, [x23, x10]
+    add x9, x10, #8
+    ldr x15, [x23, x9]
+
+    cbz x15, invalid_token
+
+    movz x11, #0xffff
+    movk x11, #0xffff, lsl #16
+    movk x11, #0xffff, lsl #32
+    movk x11, #0xffff, lsl #48
+
+    cmp x15, x11
+    bne div_ok
+
+    movz x12, #0x8000, lsl #48
+    cmp x16, x12
+    beq invalid_token
+
+div_ok:
+    sdiv x17, x16, x15
+    str x17, [x23, x10]
+    sub x27, x27, #8
+    b skip_tokens
+
+op_mod:
+    sub x9, x24, x25
+    cmp x9, #1
+    bne invalid_token
+    cmp x27, #16
+    blt invalid_token
+
+    sub x10, x27, #16
+    ldr x16, [x23, x10]
+    add x9, x10, #8
+    ldr x15, [x23, x9]
+
+    cbz x15, invalid_token
+
+    movz x11, #0xffff
+    movk x11, #0xffff, lsl #16
+    movk x11, #0xffff, lsl #32
+    movk x11, #0xffff, lsl #48
+
+    cmp x15, x11
+    bne mod_ok
+
+    movz x12, #0x8000, lsl #48
+    cmp x16, x12
+    beq invalid_token
+
+mod_ok:
+    sdiv x9, x16, x15
+    mul x9, x9, x15
+    sub x17, x16, x9
+    str x17, [x23, x10]
+    sub x27, x27, #8
+    b skip_tokens
+
+eval_finish:
+    cmp x6, x22
+    bge eval_no_nl
+    add x4, x6, #1
+    b eval_output
+
+eval_no_nl:
+    mov x4, x22
+
+eval_output:
+    cmp x14, #0
+    bne do_error
+    cmp x27, #8
+    bne do_error
+
+    ldr x15, [x23]
+    bl print_value
+    b line_loop
+
+do_error:
+    bl print_error
+    b line_loop
+
+program_exit:
+    bl flush_all
+    mov x0, #0
+    mov x8, #SYS_EXIT_GROUP
+    svc #0
+    mov x8, #SYS_EXIT
+    svc #0
+exit_halt:
+    b exit_halt
+
+print_error:
+    stp x29, x30, [sp, #-16]!
+    mov x16, #CHAR_E
+    bl out_char
+    mov x16, #CHAR_R
+    bl out_char
+    mov x16, #CHAR_R
+    bl out_char
+    mov x16, #CHAR_O
+    bl out_char
+    mov x16, #CHAR_R
+    bl out_char
+    mov x16, #CHAR_NEWLINE
+    bl out_char
+    ldp x29, x30, [sp], #16
+    ret
+
+print_value:
+    stp x29, x30, [sp, #-16]!
+    adrp x10, digits_buf
+    add x10, x10, :lo12:digits_buf
+
+    cmp x15, #0
+    bge pv_positive
+    mov x16, #CHAR_MINUS
+    bl out_char
+    sub x15, xzr, x15
+
+pv_positive:
+    mov x18, #DIGITS_BYTES
+    add x18, x18, x10
+    mov x17, x18
+    mov x12, #10
+
+pv_digit_loop:
+    udiv x13, x15, x12
+    msub x14, x13, x12, x15
+    add x16, x14, #CHAR_ZERO
+    sub x17, x17, #1
+    strb w16, [x17]
+    mov x15, x13
+    cmp x15, #0
+    bne pv_digit_loop
+
+pv_out_loop:
+    cmp x17, x18
+    bge pv_newline
+    ldrb w16, [x17]
+    add x17, x17, #1
+    bl out_char
+    b pv_out_loop
+
+pv_newline:
+    mov x16, #CHAR_NEWLINE
+    bl out_char
+    ldp x29, x30, [sp], #16
+    ret
+
+out_char:
+    mov x5, #OUT_SIZE
+    cmp x21, x5
+    bne out_char_store
+
+    mov x5, x21
+    mov x6, x20
+out_char_flush:
+    mov x0, #FD_OUT
+    mov x1, x6
+    mov x2, x5
+    mov x8, #SYS_WRITE
+    svc #0
+    cmp x0, #0
+    ble out_char_done
+    add x6, x6, x0
+    sub x5, x5, x0
+    cmp x5, #0
+    bne out_char_flush
+
+out_char_done:
+    mov x21, #0
+
+out_char_store:
+    strb w16, [x20, x21]
+    add x21, x21, #1
+    ret
+
+flush_all:
+    cbz x21, flush_done
+    mov x5, x21
+    mov x6, x20
+flush_loop:
+    mov x0, #FD_OUT
+    mov x1, x6
+    mov x2, x5
+    mov x8, #SYS_WRITE
+    svc #0
+    cmp x0, #0
+    ble flush_done
+    add x6, x6, x0
+    sub x5, x5, x0
+    cmp x5, #0
+    bne flush_loop
+
+flush_done:
+    mov x21, #0
+    ret
+
+.bss
+.p2align 4
+in_buf:
+    .zero 65536
+discard_buf:
+    .zero 65536
+out_buf:
+    .zero 65536
+.p2align 4
+val_stack:
+    .zero 16384
+digits_buf:
+    .zero 32

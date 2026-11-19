@@ -34,8 +34,8 @@ if mode in ("resample", "otherfail"):
 for t in (("mov rax, 1\n", "ret") if mode != "search_empty" else ()):
     emit("run.output.delta", {"text": t})
 emit("task.lifecycle.completed", {"event": {"kind": "completed"}})
-if mode in ("search", "search_empty"):  # Muse proposes its built-in search after the step (seen 11-13, 11-15)
-    emit("task.lifecycle.proposed", {"event": {"task_kind": "tool.muse.search"}})
+if mode in ("search", "search_empty", "read_file"):  # Muse proposes a built-in tool after the step (11-13..11-16)
+    emit("task.lifecycle.proposed", {"event": {"task_kind": "tool.muse.read_file" if mode == "read_file" else "tool.muse.search"}})
     import time; time.sleep(20); sys.exit(0)
 emit("run.usage", {"calls": 1, "models": [{"input_tokens": 18000, "output_tokens": 40, "cached_tokens": 0}]})
 emit("run.terminal.completed", {"terminal": "completed", "text": "mov rax, 1\nret"})
@@ -99,11 +99,11 @@ def test_any_other_failed_model_task_is_an_error(fake):
     assert not r.ok and "provider error" in r.error
 
 
-@pytest.mark.parametrize("mode,text", [("search", "mov rax, 1\nret"), ("search_empty", "")])
+@pytest.mark.parametrize("mode,text", [("search", "mov rax, 1\nret"), ("search_empty", ""), ("read_file", "mov rax, 1\nret")])
 def test_a_search_proposal_stops_the_call_and_scores_the_text_before_it(fake, mode, text):
     r = fake(mode).complete("p")
     assert r.ok and r.text == text and r.usage["tool_stops"] == 1
-    assert any("tool.muse.search" in n for n in r.notes)
+    assert any("tool.muse." in n for n in r.notes)
 
 
 def test_a_search_proposal_before_any_model_step_is_still_an_isolation_failure(fake):

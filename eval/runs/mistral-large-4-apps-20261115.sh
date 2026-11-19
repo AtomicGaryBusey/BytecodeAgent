@@ -9,10 +9,12 @@
 # 17:43: held at 85/96 ($31.29 booked). User's portal 2026-11-16 08:24: $20.54, so the eval's real rate is
 # (20.54 - 3.02) / 31.29 = 0.56. Caps 37 / 40.5 booked (user go-ahead 11-16): real worst case
 # 20.54 + 0.56 x (40.5 - 31.29) = ~$25.7 of $30.
+# 11-16 10:3x: hex programs hit 40.5 at 10/16 (~$0.47 booked per cell). Portal 12:07: $25.16 (rate 0.561). Cap 44
+# booked: real worst case 25.16 + 0.561 x (44 - 39.46) = ~$27.7 of $30.
 cd /home/aharmon/BytecodeAgent; . eval/runs/chain-lib.sh; T=20261115
 M="--model mistral:mistral-large-4 --jobs 4"
 export BCA_MISTRAL_CAP_USD=37
 step eval/runs/apps-mistral-large-4-$T 96 --tasks apps $M --max-calls 400 || exit 3
-export BCA_MISTRAL_CAP_USD=40.5
+export BCA_MISTRAL_CAP_USD=44
 step eval/runs/apps-hex-mistral-large-4-$T 16 --tasks apps --paths hex --samples 1 $M --max-calls 70
 echo ALLDONE

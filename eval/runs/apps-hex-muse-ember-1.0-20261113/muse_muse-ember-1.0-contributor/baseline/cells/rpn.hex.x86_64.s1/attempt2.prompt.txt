@@ -1,0 +1,634 @@
+Write the complete program `rpn`: a static Linux executable for x86-64 (AMD64), written directly as machine code. There is no assembler, no linker, no C library, no C runtime and no helper code: you write every instruction, every table and string, and make the system calls yourself.
+
+Entry state (as the Linux kernel sets it up): execution starts at the first byte of your code, address 0x400000. rsp is 16-byte aligned and points at argc = 0, followed by the NULL terminators of an empty argv, an empty envp and an empty auxiliary vector: the program gets no arguments. Every other general-purpose register is zero, and the direction flag is clear. There is no return address: the program ends only through the exit system call.
+
+System calls: the `syscall` instruction, with the system call number in rax and the arguments in rdi, rsi, rdx; the result comes back in rax. The kernel overwrites rcx and r11; every other register is preserved. Exactly these four are available:
+- read = 0: read(fd = 0, buf, count) reads up to count bytes of standard input into buf; returns the number of bytes read, 0 at end of input.
+- write = 1: write(fd, buf, count) with fd 1 (standard output) or 2 (standard error); returns count.
+- exit = 60: exit(status) ends the program; the exit status is the low 8 bits of status.
+- exit_group = 231: the same as exit.
+Any other system call number, another file descriptor, `int 0x80` or `sysenter` stops the program with an error, and so does a buffer that is not entirely inside the program's memory.
+
+Memory: the code, data and zero-initialised areas below, plus a stack of 1 MiB below the entry sp. There is no heap (no brk, no mmap, no malloc). Code is not writable. Any access outside these areas stops the program. Each test run may execute at most 50,000,000 instructions.
+
+Output format: the whole program as raw machine code and data bytes, which you encode yourself: there is no assembler, no linker and no encoder, and your bytes are loaded exactly as you write them. The memory layout is fixed:
+- code (read and execute): your instruction lines, from address 0x400000; the entry point is the first instruction; at most 1 MiB.
+- data (read and write): the data bytes you give, from address 0x500000, at most 1 MiB; your strings and tables go here, at offsets you choose and keep track of (the byte you write at position k of the data section is at address 0x500000 + k).
+- a zero-initialised work area (read and write) of 1 MiB from address 0x600000.
+- the stack (above).
+Write a line `.text` followed by the instruction lines, then optionally a line `.data` followed by the data lines. These two markers are the only directives: no labels, no symbols, no other directive, so every address and offset is a number you compute.
+Instructions: one per line as its bytes in memory order, each byte as two hex digits separated by spaces, e.g. `48 01 f0` is `add rax, rsi` and `0f 05` is `syscall`. The lines are placed one after another starting at 0x400000. Every relative branch or call displacement (jmp, jcc, call rel8/rel32) and every rip-relative disp32 is the signed distance from the end of that instruction (the address of the next one) to the target, little-endian, which you compute. Because the addresses below are fixed and below 2^31, absolute forms also work (e.g. `be 00 00 50 00` is `mov esi, 0x500000`, and a `[disp32 + reg]` memory operand with no base register addresses a table directly).
+Data: bytes in memory order as pairs of hex digits, separated by spaces or not, any number per line (e.g. `68 65 6c 6c 6f 0a` or `68656c6c6f0a` is "hello\n").
+You may end any line with a comment starting with `//` or `;` (e.g. `d4000001 // svc #0`); comments and blank lines are ignored.
+Instruction set: x86-64 with SSE up to SSE4.2 (including SSSE3, SSE4.1 and crc32), POPCNT, LZCNT, BMI1/BMI2 (andn, bextr, blsi, blsr, tzcnt, bzhi, mulx, pdep, pext, rorx, sarx, shlx, shrx), MOVBE, AES-NI and PCLMULQDQ. Not supported (rejected): AVX, AVX2, AVX-512, FMA, F16C and every other VEX/EVEX vector instruction, ADX (adcx/adox; use adc) and SHA.
+Output ONLY the program text: no Markdown fences, no prose before or after it.
+
+Specification: Task `rpn`: evaluate one Reverse Polish Notation expression per input line and print one result line per input
+line.
+
+Lines: a line is a (possibly empty) sequence of bytes terminated by a newline 0x0A; if the input does not end
+with a newline, the bytes after the last newline form one more, final line. Empty input has no lines (prints
+nothing), and the empty remainder after a final newline is not a line.
+
+Tokens: the separators are space 0x20 and tab 0x09 only; a token is a maximal run of other bytes. Any number of
+separators may appear before, between and after tokens. A token is exactly one of:
+- an integer literal: an optional `-` followed by 1 to 18 decimal digits `0`-`9` (leading zeros allowed, `-0`
+  is 0). A literal with 19 or more digits is invalid;
+- an operator: exactly one of `+` `-` `*` `/` `%` (a lone `-` is the subtraction operator);
+- anything else (for example `1a`, `+5`, `--3`, `1.5`, `x`, or a token containing 0x0D or any other byte) is
+  invalid.
+
+Evaluation uses a stack of signed 64-bit integers, empty at the start of each line. Process tokens left to right:
+a literal is pushed; an operator pops b (top) then a, and pushes `a op b`. `+`, `-`, `*` wrap modulo 2^64 (two's
+complement). `/` is division truncated toward zero; `%` is the remainder with the sign of a (a == (a/b)*b +
+a%b), as in C. A line is an ERROR if: it contains an invalid token; an operator finds fewer than two values on
+the stack; `/` or `%` has b == 0; `/` or `%` has a == -9223372036854775808 and b == -1; or, after the last token,
+the stack does not hold exactly one value (this includes a line with no tokens, e.g. an empty line).
+
+Output per line: if it is not an error, the single remaining value in decimal (a `-` sign if negative, no `+`,
+no leading zeros; -9223372036854775808 must print correctly) followed by a newline; if it is an error, exactly
+`error\n`. After an error the rest of that line is ignored and evaluation continues with the next line.
+
+Example: input `3 4 +\n-7 2 /\n1 +\n\n5 1 2 + 4 * + 3 -` prints `7\n-3\nerror\nerror\n14\n`.
+
+Limits: the input is at most 65536 bytes; a line is at most 1000 bytes. Exit status 0.
+
+Input and output (applies to this whole task):
+- The input is the complete contents of standard input (file descriptor 0). Read it with `read` until `read`
+  returns 0 (end of input). A `read` may return FEWER bytes than requested, at any position (in the middle of a
+  line, a token or a group of bytes), so keep calling it; only a return value of 0 means end of input.
+- Write the output to standard output (file descriptor 1). Only the bytes this task describes may appear on
+  standard output (standard error is ignored). Every output byte must be written before the program exits.
+- Finish with `exit` (or `exit_group`) and the exit status this task gives. The program must not run off the end
+  of its code or crash.
+
+Your previous attempt was:
+<previous>
+.text
+48 89 24 25 50 00 67 00
+48 c7 c0 00 00 60 00
+48 89 04 25 00 00 67 00
+48 8b 34 25 00 00 67 00
+48 c7 c2 00 00 61 00
+48 29 f2
+48 85 d2
+0f 84 23 00 00 00
+31 ff
+b8 00 00 00 00
+0f 05
+48 83 f8 00
+0f 8e 10 00 00 00
+48 01 c6
+48 89 34 25 00 00 67 00
+e9 c2 ff ff ff
+48 8b 04 25 00 00 67 00
+48 89 04 25 08 00 67 00
+48 c7 c0 00 00 60 00
+48 89 04 25 10 00 67 00
+48 c7 c0 00 00 61 00
+48 89 04 25 48 00 67 00
+48 8b 04 25 10 00 67 00
+48 8b 0c 25 08 00 67 00
+48 39 c8
+0f 83 2b 04 00 00
+48 89 04 25 18 00 67 00
+48 89 c1
+48 8b 14 25 08 00 67 00
+48 39 d1
+0f 83 15 00 00 00
+0f b6 01
+48 83 f8 0a
+0f 84 08 00 00 00
+48 ff c1
+e9 da ff ff ff
+48 89 cd
+48 8b 04 25 08 00 67 00
+48 39 c1
+0f 83 13 00 00 00
+48 89 c8
+48 ff c0
+48 89 04 25 10 00 67 00
+e9 08 00 00 00
+48 89 0c 25 10 00 67 00
+48 8b 24 25 50 00 67 00
+48 8b 34 25 48 00 67 00
+48 8b 0c 25 18 00 67 00
+31 db
+31 c0
+48 89 04 25 30 00 67 00
+48 39 e9
+0f 83 9d 02 00 00
+0f b6 01
+48 83 f8 20
+0f 84 0f 00 00 00
+48 83 f8 09
+0f 84 05 00 00 00
+e9 08 00 00 00
+48 ff c1
+e9 d3 ff ff ff
+48 89 0c 25 20 00 67 00
+48 39 e9
+0f 83 1f 00 00 00
+0f b6 01
+48 83 f8 20
+0f 84 12 00 00 00
+48 83 f8 09
+0f 84 08 00 00 00
+48 ff c1
+e9 d8 ff ff ff
+48 89 c8
+48 2b 04 25 20 00 67 00
+48 89 04 25 28 00 67 00
+48 83 f8 01
+0f 85 6b 01 00 00
+48 8b 3c 25 20 00 67 00
+0f b6 17
+48 83 fa 2b
+0f 84 2d 00 00 00
+48 83 fa 2d
+0f 84 32 00 00 00
+48 83 fa 2a
+0f 84 3a 00 00 00
+48 83 fa 2f
+0f 84 42 00 00 00
+48 83 fa 25
+0f 84 4a 00 00 00
+e9 29 01 00 00
+31 c0
+48 89 04 25 38 00 67 00
+e9 48 00 00 00
+b8 01 00 00 00
+48 89 04 25 38 00 67 00
+e9 36 00 00 00
+b8 02 00 00 00
+48 89 04 25 38 00 67 00
+e9 24 00 00 00
+b8 03 00 00 00
+48 89 04 25 38 00 67 00
+e9 12 00 00 00
+b8 04 00 00 00
+48 89 04 25 38 00 67 00
+e9 00 00 00 00
+48 83 fb 02
+0f 8c 77 01 00 00
+5f
+58
+48 83 eb 02
+48 8b 14 25 38 00 67 00
+48 83 fa 00
+0f 84 23 00 00 00
+48 83 fa 01
+0f 84 25 00 00 00
+48 83 fa 02
+0f 84 27 00 00 00
+48 83 fa 03
+0f 84 2a 00 00 00
+e9 59 00 00 00
+48 01 f8
+50
+48 ff c3
+e9 9c fe ff ff
+48 29 f8
+50
+48 ff c3
+e9 90 fe ff ff
+48 0f af c7
+50
+48 ff c3
+e9 83 fe ff ff
+48 83 ff 00
+0f 84 0d 01 00 00
+48 83 ff ff
+0f 85 20 00 00 00
+48 ba 00 00 00 00 00 00 00 80
+48 39 d0
+0f 84 f0 00 00 00
+48 99
+f7 ff
+50
+48 ff c3
+e9 4f fe ff ff
+48 83 ff 00
+0f 84 d9 00 00 00
+48 83 ff ff
+0f 85 20 00 00 00
+48 ba 00 00 00 00 00 00 00 80
+48 39 d0
+0f 84 bc 00 00 00
+48 99
+f7 ff
+52
+48 ff c3
+e9 1b fe ff ff
+48 8b 3c 25 20 00 67 00
+0f b6 17
+48 83 fa 2d
+0f 85 21 00 00 00
+b8 01 00 00 00
+48 89 04 25 40 00 67 00
+48 ff c7
+48 8b 04 25 28 00 67 00
+48 83 e8 01
+e9 12 00 00 00
+31 c0
+48 89 04 25 40 00 67 00
+48 8b 04 25 28 00 67 00
+48 83 f8 00
+0f 84 5d 00 00 00
+48 83 f8 12
+0f 8f 53 00 00 00
+31 c0
+48 39 cf
+0f 83 2a 00 00 00
+0f b6 17
+48 83 fa 30
+0f 82 3b 00 00 00
+48 83 fa 39
+0f 87 31 00 00 00
+48 83 ea 30
+48 ff c7
+48 6b c0 0a
+48 01 d0
+e9 cd ff ff ff
+48 8b 14 25 40 00 67 00
+48 83 fa 00
+0f 84 03 00 00 00
+48 f7 d8
+50
+48 ff c3
+e9 6c fd ff ff
+b8 01 00 00 00
+48 89 04 25 30 00 67 00
+e9 00 00 00 00
+48 8b 04 25 30 00 67 00
+48 83 f8 00
+0f 85 be 00 00 00
+48 83 fb 01
+0f 85 b4 00 00 00
+58
+48 c7 c7 00 01 67 00
+48 83 f8 00
+0f 84 29 00 00 00
+48 c7 04 25 40 00 67 00 00 00 00 00
+0f 88 05 00 00 00
+e9 29 00 00 00
+48 c7 04 25 40 00 67 00 01 00 00 00
+48 f7 d8
+e9 16 00 00 00
+48 c7 04 25 40 00 67 00 00 00 00 00
+c6 07 30
+48 ff c7
+e9 20 00 00 00
+48 85 c0
+0f 84 17 00 00 00
+b9 0a 00 00 00
+31 d2
+f7 f1
+48 83 c2 30
+88 17
+48 ff c7
+e9 e0 ff ff ff
+48 8b 04 25 40 00 67 00
+48 83 f8 00
+0f 84 06 00 00 00
+c6 06 2d
+48 ff c6
+48 c7 c3 00 01 67 00
+48 39 df
+0f 86 10 00 00 00
+48 ff cf
+0f b6 07
+88 06
+48 ff c6
+e9 e7 ff ff ff
+c6 06 0a
+48 ff c6
+e9 24 00 00 00
+c6 06 65
+48 ff c6
+c6 06 72
+48 ff c6
+c6 06 72
+48 ff c6
+c6 06 6f
+48 ff c6
+c6 06 72
+48 ff c6
+c6 06 0a
+48 ff c6
+48 89 34 25 48 00 67 00
+e9 bc fb ff ff
+48 8b 04 25 48 00 67 00
+48 89 04 25 58 00 67 00
+48 81 e8 00 00 61 00
+48 89 04 25 60 00 67 00
+48 8b 04 25 60 00 67 00
+48 83 f8 00
+0f 8e 51 00 00 00
+48 8b 34 25 58 00 67 00
+48 8b 14 25 60 00 67 00
+bf 01 00 00 00
+b8 01 00 00 00
+0f 05
+48 83 f8 00
+0f 8e 2b 00 00 00
+48 8b 0c 25 58 00 67 00
+48 01 c1
+48 89 0c 25 58 00 67 00
+48 8b 0c 25 60 00 67 00
+48 29 c1
+48 89 0c 25 60 00 67 00
+e9 9d ff ff ff
+b8 3c 00 00 00
+31 ff
+0f 05
+e9 f2 ff ff ff
+</previous>
+It failed:
+<failure>
+Test `empty` failed (stdin delivered whole; test run 1 of 46; the runs before it passed).
+stdin (0 bytes): ""
+The program stopped with a fault (crash): invalid instruction at 0x4004c8 at pc 0x4004c8 [the faulting instruction is line 254: `e9 bc fb ff ff`]
+exit status: expected 0, got none (the program did not exit)
+
+Your machine code, as written, decodes as (address, your line, the hex, the disassembly; the entry point is the first line):
+  0x400000 line    2: 48 89 24 25 50 00 67 00  mov qword ptr [0x670050], rsp
+  0x400008 line    3: 48 c7 c0 00 00 60 00     mov rax, 0x600000
+  0x40000f line    4: 48 89 04 25 00 00 67 00  mov qword ptr [0x670000], rax
+  0x400017 line    5: 48 8b 34 25 00 00 67 00  mov rsi, qword ptr [0x670000]
+  0x40001f line    6: 48 c7 c2 00 00 61 00     mov rdx, 0x610000
+  0x400026 line    7: 48 29 f2                 sub rdx, rsi
+  0x400029 line    8: 48 85 d2                 test rdx, rdx
+  0x40002c line    9: 0f 84 23 00 00 00        je 0x400055
+  0x400032 line   10: 31 ff                    xor edi, edi
+  0x400034 line   11: b8 00 00 00 00           mov eax, 0
+  0x400039 line   12: 0f 05                    syscall
+  0x40003b line   13: 48 83 f8 00              cmp rax, 0
+  0x40003f line   14: 0f 8e 10 00 00 00        jle 0x400055
+  0x400045 line   15: 48 01 c6                 add rsi, rax
+  0x400048 line   16: 48 89 34 25 00 00 67 00  mov qword ptr [0x670000], rsi
+  0x400050 line   17: e9 c2 ff ff ff           jmp 0x400017
+  0x400055 line   18: 48 8b 04 25 00 00 67 00  mov rax, qword ptr [0x670000]
+  0x40005d line   19: 48 89 04 25 08 00 67 00  mov qword ptr [0x670008], rax
+  0x400065 line   20: 48 c7 c0 00 00 60 00     mov rax, 0x600000
+  0x40006c line   21: 48 89 04 25 10 00 67 00  mov qword ptr [0x670010], rax
+  0x400074 line   22: 48 c7 c0 00 00 61 00     mov rax, 0x610000
+  0x40007b line   23: 48 89 04 25 48 00 67 00  mov qword ptr [0x670048], rax
+  0x400083 line   24: 48 8b 04 25 10 00 67 00  mov rax, qword ptr [0x670010]
+  0x40008b line   25: 48 8b 0c 25 08 00 67 00  mov rcx, qword ptr [0x670008]
+  0x400093 line   26: 48 39 c8                 cmp rax, rcx
+  0x400096 line   27: 0f 83 2b 04 00 00        jae 0x4004c7
+  0x40009c line   28: 48 89 04 25 18 00 67 00  mov qword ptr [0x670018], rax
+  0x4000a4 line   29: 48 89 c1                 mov rcx, rax
+  0x4000a7 line   30: 48 8b 14 25 08 00 67 00  mov rdx, qword ptr [0x670008]
+  0x4000af line   31: 48 39 d1                 cmp rcx, rdx
+  0x4000b2 line   32: 0f 83 15 00 00 00        jae 0x4000cd
+  0x4000b8 line   33: 0f b6 01                 movzx eax, byte ptr [rcx]
+  0x4000bb line   34: 48 83 f8 0a              cmp rax, 0xa
+  0x4000bf line   35: 0f 84 08 00 00 00        je 0x4000cd
+  0x4000c5 line   36: 48 ff c1                 inc rcx
+  0x4000c8 line   37: e9 da ff ff ff           jmp 0x4000a7
+  0x4000cd line   38: 48 89 cd                 mov rbp, rcx
+  0x4000d0 line   39: 48 8b 04 25 08 00 67 00  mov rax, qword ptr [0x670008]
+  0x4000d8 line   40: 48 39 c1                 cmp rcx, rax
+  0x4000db line   41: 0f 83 13 00 00 00        jae 0x4000f4
+  0x4000e1 line   42: 48 89 c8                 mov rax, rcx
+  0x4000e4 line   43: 48 ff c0                 inc rax
+  0x4000e7 line   44: 48 89 04 25 10 00 67 00  mov qword ptr [0x670010], rax
+  0x4000ef line   45: e9 08 00 00 00           jmp 0x4000fc
+  0x4000f4 line   46: 48 89 0c 25 10 00 67 00  mov qword ptr [0x670010], rcx
+  0x4000fc line   47: 48 8b 24 25 50 00 67 00  mov rsp, qword ptr [0x670050]
+  0x400104 line   48: 48 8b 34 25 48 00 67 00  mov rsi, qword ptr [0x670048]
+  0x40010c line   49: 48 8b 0c 25 18 00 67 00  mov rcx, qword ptr [0x670018]
+  0x400114 line   50: 31 db                    xor ebx, ebx
+  0x400116 line   51: 31 c0                    xor eax, eax
+  0x400118 line   52: 48 89 04 25 30 00 67 00  mov qword ptr [0x670030], rax
+  0x400120 line   53: 48 39 e9                 cmp rcx, rbp
+  0x400123 line   54: 0f 83 9d 02 00 00        jae 0x4003c6
+  0x400129 line   55: 0f b6 01                 movzx eax, byte ptr [rcx]
+  0x40012c line   56: 48 83 f8 20              cmp rax, 0x20
+  0x400130 line   57: 0f 84 0f 00 00 00        je 0x400145
+  0x400136 line   58: 48 83 f8 09              cmp rax, 9
+  0x40013a line   59: 0f 84 05 00 00 00        je 0x400145
+  0x400140 line   60: e9 08 00 00 00           jmp 0x40014d
+  0x400145 line   61: 48 ff c1                 inc rcx
+  0x400148 line   62: e9 d3 ff ff ff           jmp 0x400120
+  0x40014d line   63: 48 89 0c 25 20 00 67 00  mov qword ptr [0x670020], rcx
+  0x400155 line   64: 48 39 e9                 cmp rcx, rbp
+  0x400158 line   65: 0f 83 1f 00 00 00        jae 0x40017d
+  0x40015e line   66: 0f b6 01                 movzx eax, byte ptr [rcx]
+  0x400161 line   67: 48 83 f8 20              cmp rax, 0x20
+  0x400165 line   68: 0f 84 12 00 00 00        je 0x40017d
+  0x40016b line   69: 48 83 f8 09              cmp rax, 9
+  0x40016f line   70: 0f 84 08 00 00 00        je 0x40017d
+  0x400175 line   71: 48 ff c1                 inc rcx
+  0x400178 line   72: e9 d8 ff ff ff           jmp 0x400155
+  0x40017d line   73: 48 89 c8                 mov rax, rcx
+  0x400180 line   74: 48 2b 04 25 20 00 67 00  sub rax, qword ptr [0x670020]
+  0x400188 line   75: 48 89 04 25 28 00 67 00  mov qword ptr [0x670028], rax
+  0x400190 line   76: 48 83 f8 01              cmp rax, 1
+  0x400194 line   77: 0f 85 6b 01 00 00        jne 0x400305
+  0x40019a line   78: 48 8b 3c 25 20 00 67 00  mov rdi, qword ptr [0x670020]
+  0x4001a2 line   79: 0f b6 17                 movzx edx, byte ptr [rdi]
+  0x4001a5 line   80: 48 83 fa 2b              cmp rdx, 0x2b
+  0x4001a9 line   81: 0f 84 2d 00 00 00        je 0x4001dc
+  0x4001af line   82: 48 83 fa 2d              cmp rdx, 0x2d
+  0x4001b3 line   83: 0f 84 32 00 00 00        je 0x4001eb
+  0x4001b9 line   84: 48 83 fa 2a              cmp rdx, 0x2a
+  0x4001bd line   85: 0f 84 3a 00 00 00        je 0x4001fd
+  0x4001c3 line   86: 48 83 fa 2f              cmp rdx, 0x2f
+  0x4001c7 line   87: 0f 84 42 00 00 00        je 0x40020f
+  0x4001cd line   88: 48 83 fa 25              cmp rdx, 0x25
+  0x4001d1 line   89: 0f 84 4a 00 00 00        je 0x400221
+  0x4001d7 line   90: e9 29 01 00 00           jmp 0x400305
+  0x4001dc line   91: 31 c0                    xor eax, eax
+  0x4001de line   92: 48 89 04 25 38 00 67 00  mov qword ptr [0x670038], rax
+  0x4001e6 line   93: e9 48 00 00 00           jmp 0x400233
+  0x4001eb line   94: b8 01 00 00 00           mov eax, 1
+  0x4001f0 line   95: 48 89 04 25 38 00 67 00  mov qword ptr [0x670038], rax
+  0x4001f8 line   96: e9 36 00 00 00           jmp 0x400233
+  0x4001fd line   97: b8 02 00 00 00           mov eax, 2
+  0x400202 line   98: 48 89 04 25 38 00 67 00  mov qword ptr [0x670038], rax
+  0x40020a line   99: e9 24 00 00 00           jmp 0x400233
+  0x40020f line  100: b8 03 00 00 00           mov eax, 3
+  0x400214 line  101: 48 89 04 25 38 00 67 00  mov qword ptr [0x670038], rax
+  0x40021c line  102: e9 12 00 00 00           jmp 0x400233
+  0x400221 line  103: b8 04 00 00 00           mov eax, 4
+  0x400226 line  104: 48 89 04 25 38 00 67 00  mov qword ptr [0x670038], rax
+  0x40022e line  105: e9 00 00 00 00           jmp 0x400233
+  0x400233 line  106: 48 83 fb 02              cmp rbx, 2
+  0x400237 line  107: 0f 8c 77 01 00 00        jl 0x4003b4
+  0x40023d line  108: 5f                       pop rdi
+  0x40023e line  109: 58                       pop rax
+  0x40023f line  110: 48 83 eb 02              sub rbx, 2
+  0x400243 line  111: 48 8b 14 25 38 00 67 00  mov rdx, qword ptr [0x670038]
+  0x40024b line  112: 48 83 fa 00              cmp rdx, 0
+  0x40024f line  113: 0f 84 23 00 00 00        je 0x400278
+  0x400255 line  114: 48 83 fa 01              cmp rdx, 1
+  0x400259 line  115: 0f 84 25 00 00 00        je 0x400284
+  0x40025f line  116: 48 83 fa 02              cmp rdx, 2
+  0x400263 line  117: 0f 84 27 00 00 00        je 0x400290
+  0x400269 line  118: 48 83 fa 03              cmp rdx, 3
+  0x40026d line  119: 0f 84 2a 00 00 00        je 0x40029d
+  0x400273 line  120: e9 59 00 00 00           jmp 0x4002d1
+  0x400278 line  121: 48 01 f8                 add rax, rdi
+  0x40027b line  122: 50                       push rax
+  0x40027c line  123: 48 ff c3                 inc rbx
+  0x40027f line  124: e9 9c fe ff ff           jmp 0x400120
+  0x400284 line  125: 48 29 f8                 sub rax, rdi
+  0x400287 line  126: 50                       push rax
+  0x400288 line  127: 48 ff c3                 inc rbx
+  0x40028b line  128: e9 90 fe ff ff           jmp 0x400120
+  0x400290 line  129: 48 0f af c7              imul rax, rdi
+  0x400294 line  130: 50                       push rax
+  0x400295 line  131: 48 ff c3                 inc rbx
+  0x400298 line  132: e9 83 fe ff ff           jmp 0x400120
+  0x40029d line  133: 48 83 ff 00              cmp rdi, 0
+  0x4002a1 line  134: 0f 84 0d 01 00 00        je 0x4003b4
+  0x4002a7 line  135: 48 83 ff ff              cmp rdi, -1
+  0x4002ab line  136: 0f 85 20 00 00 00        jne 0x4002d1
+  0x4002b1 line  137: 48 ba 00 00 00 00 00 00 00 80 movabs rdx, 0x8000000000000000
+  0x4002bb line  138: 48 39 d0                 cmp rax, rdx
+  0x4002be line  139: 0f 84 f0 00 00 00        je 0x4003b4
+  0x4002c4 line  140: 48 99                    cqo
+  0x4002c6 line  141: f7 ff                    idiv edi
+  0x4002c8 line  142: 50                       push rax
+  0x4002c9 line  143: 48 ff c3                 inc rbx
+  0x4002cc line  144: e9 4f fe ff ff           jmp 0x400120
+  0x4002d1 line  145: 48 83 ff 00              cmp rdi, 0
+  0x4002d5 line  146: 0f 84 d9 00 00 00        je 0x4003b4
+  0x4002db line  147: 48 83 ff ff              cmp rdi, -1
+  0x4002df line  148: 0f 85 20 00 00 00        jne 0x400305
+  0x4002e5 line  149: 48 ba 00 00 00 00 00 00 00 80 movabs rdx, 0x8000000000000000
+  0x4002ef line  150: 48 39 d0                 cmp rax, rdx
+  0x4002f2 line  151: 0f 84 bc 00 00 00        je 0x4003b4
+  0x4002f8 line  152: 48 99                    cqo
+  0x4002fa line  153: f7 ff                    idiv edi
+  0x4002fc line  154: 52                       push rdx
+  0x4002fd line  155: 48 ff c3                 inc rbx
+  0x400300 line  156: e9 1b fe ff ff           jmp 0x400120
+  0x400305 line  157: 48 8b 3c 25 20 00 67 00  mov rdi, qword ptr [0x670020]
+  0x40030d line  158: 0f b6 17                 movzx edx, byte ptr [rdi]
+  0x400310 line  159: 48 83 fa 2d              cmp rdx, 0x2d
+  0x400314 line  160: 0f 85 21 00 00 00        jne 0x40033b
+  0x40031a line  161: b8 01 00 00 00           mov eax, 1
+  0x40031f line  162: 48 89 04 25 40 00 67 00  mov qword ptr [0x670040], rax
+  0x400327 line  163: 48 ff c7                 inc rdi
+  0x40032a line  164: 48 8b 04 25 28 00 67 00  mov rax, qword ptr [0x670028]
+  0x400332 line  165: 48 83 e8 01              sub rax, 1
+  0x400336 line  166: e9 12 00 00 00           jmp 0x40034d
+  0x40033b line  167: 31 c0                    xor eax, eax
+  0x40033d line  168: 48 89 04 25 40 00 67 00  mov qword ptr [0x670040], rax
+  0x400345 line  169: 48 8b 04 25 28 00 67 00  mov rax, qword ptr [0x670028]
+  0x40034d line  170: 48 83 f8 00              cmp rax, 0
+  0x400351 line  171: 0f 84 5d 00 00 00        je 0x4003b4
+  0x400357 line  172: 48 83 f8 12              cmp rax, 0x12
+  0x40035b line  173: 0f 8f 53 00 00 00        jg 0x4003b4
+  0x400361 line  174: 31 c0                    xor eax, eax
+  0x400363 line  175: 48 39 cf                 cmp rdi, rcx
+  0x400366 line  176: 0f 83 2a 00 00 00        jae 0x400396
+  0x40036c line  177: 0f b6 17                 movzx edx, byte ptr [rdi]
+  0x40036f line  178: 48 83 fa 30              cmp rdx, 0x30
+  0x400373 line  179: 0f 82 3b 00 00 00        jb 0x4003b4
+  0x400379 line  180: 48 83 fa 39              cmp rdx, 0x39
+  0x40037d line  181: 0f 87 31 00 00 00        ja 0x4003b4
+  0x400383 line  182: 48 83 ea 30              sub rdx, 0x30
+  0x400387 line  183: 48 ff c7                 inc rdi
+  0x40038a line  184: 48 6b c0 0a              imul rax, rax, 0xa
+  0x40038e line  185: 48 01 d0                 add rax, rdx
+  0x400391 line  186: e9 cd ff ff ff           jmp 0x400363
+  0x400396 line  187: 48 8b 14 25 40 00 67 00  mov rdx, qword ptr [0x670040]
+  0x40039e line  188: 48 83 fa 00              cmp rdx, 0
+  0x4003a2 line  189: 0f 84 03 00 00 00        je 0x4003ab
+  0x4003a8 line  190: 48 f7 d8                 neg rax
+  0x4003ab line  191: 50                       push rax
+  0x4003ac line  192: 48 ff c3                 inc rbx
+  0x4003af line  193: e9 6c fd ff ff           jmp 0x400120
+  0x4003b4 line  194: b8 01 00 00 00           mov eax, 1
+  0x4003b9 line  195: 48 89 04 25 30 00 67 00  mov qword ptr [0x670030], rax
+  0x4003c1 line  196: e9 00 00 00 00           jmp 0x4003c6
+  0x4003c6 line  197: 48 8b 04 25 30 00 67 00  mov rax, qword ptr [0x670030]
+  0x4003ce line  198: 48 83 f8 00              cmp rax, 0
+  0x4003d2 line  199: 0f 85 be 00 00 00        jne 0x400496
+  0x4003d8 line  200: 48 83 fb 01              cmp rbx, 1
+  0x4003dc line  201: 0f 85 b4 00 00 00        jne 0x400496
+  0x4003e2 line  202: 58                       pop rax
+  0x4003e3 line  203: 48 c7 c7 00 01 67 00     mov rdi, 0x670100
+  0x4003ea line  204: 48 83 f8 00              cmp rax, 0
+  0x4003ee line  205: 0f 84 29 00 00 00        je 0x40041d
+  0x4003f4 line  206: 48 c7 04 25 40 00 67 00 00 00 00 00 mov qword ptr [0x670040], 0
+  0x400400 line  207: 0f 88 05 00 00 00        js 0x40040b
+  0x400406 line  208: e9 29 00 00 00           jmp 0x400434
+  0x40040b line  209: 48 c7 04 25 40 00 67 00 01 00 00 00 mov qword ptr [0x670040], 1
+  0x400417 line  210: 48 f7 d8                 neg rax
+  0x40041a line  211: e9 16 00 00 00           jmp 0x400435
+  0x40041f line  212: 48 c7 04 25 40 00 67 00 00 00 00 00 mov qword ptr [0x670040], 0
+  0x40042b line  213: c6 07 30                 mov byte ptr [rdi], 0x30
+  0x40042e line  214: 48 ff c7                 inc rdi
+  0x400431 line  215: e9 20 00 00 00           jmp 0x400456
+  0x400436 line  216: 48 85 c0                 test rax, rax
+  0x400439 line  217: 0f 84 17 00 00 00        je 0x400456
+  0x40043f line  218: b9 0a 00 00 00           mov ecx, 0xa
+  0x400444 line  219: 31 d2                    xor edx, edx
+  0x400446 line  220: f7 f1                    div ecx
+  0x400448 line  221: 48 83 c2 30              add rdx, 0x30
+  0x40044c line  222: 88 17                    mov byte ptr [rdi], dl
+  0x40044e line  223: 48 ff c7                 inc rdi
+  0x400451 line  224: e9 e0 ff ff ff           jmp 0x400436
+  0x400456 line  225: 48 8b 04 25 40 00 67 00  mov rax, qword ptr [0x670040]
+  0x40045e line  226: 48 83 f8 00              cmp rax, 0
+  0x400462 line  227: 0f 84 06 00 00 00        je 0x40046e
+  0x400468 line  228: c6 06 2d                 mov byte ptr [rsi], 0x2d
+  0x40046b line  229: 48 ff c6                 inc rsi
+  0x40046e line  230: 48 c7 c3 00 01 67 00     mov rbx, 0x670100
+  0x400475 line  231: 48 39 df                 cmp rdi, rbx
+  0x400478 line  232: 0f 86 10 00 00 00        jbe 0x40048e
+  0x40047e line  233: 48 ff cf                 dec rdi
+  0x400481 line  234: 0f b6 07                 movzx eax, byte ptr [rdi]
+  0x400484 line  235: 88 06                    mov byte ptr [rsi], al
+  0x400486 line  236: 48 ff c6                 inc rsi
+  0x400489 line  237: e9 e7 ff ff ff           jmp 0x400475
+  0x40048e line  238: c6 06 0a                 mov byte ptr [rsi], 0xa
+  0x400491 line  239: 48 ff c6                 inc rsi
+  0x400494 line  240: e9 24 00 00 00           jmp 0x4004bd
+  0x400499 line  241: c6 06 65                 mov byte ptr [rsi], 0x65
+  0x40049c line  242: 48 ff c6                 inc rsi
+  0x40049f line  243: c6 06 72                 mov byte ptr [rsi], 0x72
+  0x4004a2 line  244: 48 ff c6                 inc rsi
+  0x4004a5 line  245: c6 06 72                 mov byte ptr [rsi], 0x72
+  0x4004a8 line  246: 48 ff c6                 inc rsi
+  0x4004ab line  247: c6 06 6f                 mov byte ptr [rsi], 0x6f
+  0x4004ae line  248: 48 ff c6                 inc rsi
+  0x4004b1 line  249: c6 06 72                 mov byte ptr [rsi], 0x72
+  0x4004b4 line  250: 48 ff c6                 inc rsi
+  0x4004b7 line  251: c6 06 0a                 mov byte ptr [rsi], 0xa
+  0x4004ba line  252: 48 ff c6                 inc rsi
+  0x4004bd line  253: 48 89 34 25 48 00 67 00  mov qword ptr [0x670048], rsi
+  0x4004c5 line  254: e9 bc fb ff ff           jmp 0x400086
+  0x4004ca line  255: 48 8b 04 25 48 00 67 00  mov rax, qword ptr [0x670048]
+  0x4004d2 line  256: 48 89 04 25 58 00 67 00  mov qword ptr [0x670058], rax
+  0x4004da line  257: 48 81 e8 00 00 61 00     sub rax, 0x610000
+  0x4004e1 line  258: 48 89 04 25 60 00 67 00  mov qword ptr [0x670060], rax
+  0x4004e9 line  259: 48 8b 04 25 60 00 67 00  mov rax, qword ptr [0x670060]
+  0x4004f1 line  260: 48 83 f8 00              cmp rax, 0
+  0x4004f5 line  261: 0f 8e 51 00 00 00        jle 0x40054c
+  0x4004fb line  262: 48 8b 34 25 58 00 67 00  mov rsi, qword ptr [0x670058]
+  0x400503 line  263: 48 8b 14 25 60 00 67 00  mov rdx, qword ptr [0x670060]
+  0x40050b line  264: bf 01 00 00 00           mov edi, 1
+  0x400510 line  265: b8 01 00 00 00           mov eax, 1
+  0x400515 line  266: 0f 05                    syscall
+  0x400517 line  267: 48 83 f8 00              cmp rax, 0
+  0x40051b line  268: 0f 8e 2b 00 00 00        jle 0x40054c
+  0x400521 line  269: 48 8b 0c 25 58 00 67 00  mov rcx, qword ptr [0x670058]
+  0x400529 line  270: 48 01 c1                 add rcx, rax
+  0x40052c line  271: 48 89 0c 25 58 00 67 00  mov qword ptr [0x670058], rcx
+  0x400534 line  272: 48 8b 0c 25 60 00 67 00  mov rcx, qword ptr [0x670060]
+  0x40053c line  273: 48 29 c1                 sub rcx, rax
+  0x40053f line  274: 48 89 0c 25 60 00 67 00  mov qword ptr [0x670060], rcx
+  0x400547 line  275: e9 9d ff ff ff           jmp 0x4004e9
+  0x40054c line  276: b8 3c 00 00 00           mov eax, 0x3c
+  0x400551 line  277: 31 ff                    xor edi, edi
+  0x400553 line  278: 0f 05                    syscall
+  0x400555 line  279: e9 f2 ff ff ff           jmp 0x40054c
+</failure>
+Write a corrected, complete version. Same output format; output only the program text.

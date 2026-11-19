@@ -1,0 +1,327 @@
+global _start
+.intel_syntax noprefix
+.text
+_start:
+    xor r8, r8                 ; offset for .input buffer
+read_loop:
+    mov rax, 0                 ; sys_read
+    mov rdi, 0
+    lea rsi, [rel .input + r8*8]
+    mov rdx, 65536
+    sub rdx, r8
+    syscall
+    test rax, rax
+    jnz read_loop
+    mov r9, r8                 ; r9 = pointer to end of input (input_end)
+    lea rsi, [rel .input]      ; rsi = start of input
+    jmp process_lines
+
+process_lines:
+    cmp rsi, r9
+    je exit_program
+    mov r10, rsi               ; r10 = scan pointer
+find_newline:
+    cmp r10, r9
+    je line_end_no_newline
+    mov al, BYTE PTR [r10]
+    cmp al, 0x0A
+    jne next_char
+    ; newline found
+    jmp parse_line
+next_char:
+    inc r10
+    jmp find_newline
+
+line_end_no_newline:
+    ; line runs to end of input
+    mov r12, r9                ; r12 = line end (input_end)
+    jmp parse_line
+
+parse_line:
+    ; rsi = line start, r12 = line end (excludes newline)
+    mov r8, rsi                ; token pointer
+    xor r13, r13               ; stack top index = 0
+    lea r14, [rel .stack]      ; stack base
+    xor r15, r15               ; error flag = 0
+
+parse_loop:
+    ; skip spaces/tabs
+skip_sep:
+    cmp r8, r12
+    je token_done
+    mov al, BYTE PTR [r8]
+    cmp al, 0x09
+    je inc_tok
+    cmp al, 0x20
+    je inc_tok
+    jmp process_token
+inc_tok:
+    inc r8
+    jmp skip_sep
+
+token_done:
+    cmp r8, r12
+    je tokens_finished
+    ; token starts at r8
+    mov bl, BYTE PTR [r8]
+
+    cmp bl, '-'
+    je handle_minus
+    ; digit?
+    cmp bl, '0'
+    jge check_digit_range
+    cmp bl, '9'
+    jle check_digit_range
+    ; operators
+    cmp bl, '+'
+    je operator
+    cmp bl, '*'
+    je operator
+    cmp bl, '/'
+    je operator
+    cmp bl, '%'
+    je operator
+    ; invalid token
+    mov r15, 1
+    jmp tokens_finished
+
+check_digit_range:
+    ; it's a digit (0-9)
+    jmp number
+
+handle_minus:
+    ; look ahead: if next char is digit, it's a number, else operator
+    cmp r8, r12
+    je operator
+    mov al, BYTE PTR [r8+1]
+    cmp al, '0'
+    jge number
+    cmp al, '9'
+    jle number
+    jmp operator
+
+number:
+    xor r9, r9                ; sign = 1
+    cmp bl, '-'
+    jne number_no_sign
+    mov r9, -1
+    inc r8
+number_no_sign:
+    xor rdx, rdx              ; value = 0
+    xor r11, r11              ; digit count = 0
+digit_loop:
+    cmp r8, r12
+    jge number_error
+    mov cl, BYTE PTR [r8]
+    cmp cl, '0'
+    jge digit_ok
+    cmp cl, '9'
+    jle digit_ok
+    jmp number_error
+digit_ok:
+    sub cl, '0'
+    imul rdx, 10
+    add rdx, cx
+    inc r11
+    inc r8
+    jmp digit_loop
+number_error:
+    cmp r11, 0
+    jne number_invalid
+    ; no digits after sign
+    mov r15, 1
+    jmp tokens_finished
+number_invalid:
+    cmp r11, 19
+    jle number_accept
+    ; 19 digits -> too many
+    mov r15, 1
+    jmp tokens_finished
+number_accept:
+    test r9, r9
+    jns number_push
+    neg rdx
+number_push:
+    mov [r14 + r13*8], rdx
+    inc r13
+    jmp parse_loop
+
+operator:
+    inc r8
+    cmp r13, 2
+    jl operator_error
+    dec r13
+    mov rbx, [r14 + r13*8]
+    dec r13
+    mov rax, [r14 + r13*8]
+    cmp bl, '+'
+    je op_add
+    cmp bl, '-'
+    je op_sub
+    cmp bl, '*'
+    je op_mul
+    cmp bl, '/'
+    je op_div
+    cmp bl, '%'
+    je op_mod
+    mov r15, 1
+    jmp tokens_finished
+
+op_add:
+    add rax, rbx
+    jmp op_push
+op_sub:
+    sub rax, rbx
+    jmp op_push
+op_mul:
+    imul rax, rbx
+    jmp op_push
+op_div:
+    cmp rbx, 0
+    jne op_push
+    cmp rax, 0x8000000000000000
+    je op_div_ovf
+    xor rdx, rdx
+    idiv rbx
+    jmp op_push
+op_mod:
+    cmp rbx, 0
+    jne op_push
+    cmp rax, 0x8000000000000000
+    je op_mod_ovf
+    xor rdx, rdx
+    idiv rbx
+    mov rax, rdx
+    jmp op_push
+op_div_ovf:
+    mov r15, 1
+    jmp tokens_finished
+op_mod_ovf:
+    mov r15, 1
+    jmp tokens_finished
+op_push:
+    mov [r14 + r13*8], rax
+    inc r13
+    jmp parse_loop
+
+operator_error:
+    mov r15, 1
+    jmp tokens_finished
+
+tokens_finished:
+    test r15, r15
+    jnz output_error
+    cmp r13, 1
+    jne error_stack
+    mov rax, [r14]
+    jmp output_value
+
+error_stack:
+    mov r15, 1
+    jmp output_error
+
+output_error:
+    mov rax, 1
+    mov rdi, 1
+    lea rsi, [rel .err_str]
+    mov rdx, 6
+    syscall
+    jmp after_output
+
+output_value:
+    cmp rax, 0x8000000000000000
+    je output_min_int
+    test rax, rax
+    jge output_non_negative
+    mov r15, 1
+    neg rax
+    jmp output_non_negative
+
+output_non_negative:
+    xor rcx, rcx
+conv_loop:
+    test rax, rax
+    jz conv_done
+    mov rbx, 10
+    xor rdx, rdx
+    idiv rbx
+    add rdx, '0'
+    mov [rel .tmpbuf + rcx], dl
+    inc rcx
+    jmp conv_loop
+conv_done:
+    lea rdi, [rel .outbuf]
+    test r15, r15
+    jnz copy_sign
+    jmp copy_digits
+copy_sign:
+    mov byte [rdi], '-'
+    inc rdi
+copy_digits:
+    mov r8, rcx
+    dec r8
+copy_digits_rev:
+    test r8, r8
+    jge copy_digit_rev
+    jmp write_newline
+copy_digit_rev:
+    mov al, BYTE PTR [rel .tmpbuf + r8]
+    mov [rdi], al
+    inc rdi
+    dec r8
+    jmp copy_digits_rev
+write_newline:
+    mov al, BYTE PTR [rel .newline]
+    mov [rdi], al
+    inc rdi
+    lea rbx, [rel .outbuf]
+    mov rsi, rbx
+    mov rdx, rdi
+    sub rdx, rbx
+    mov rax, 1
+    syscall
+    jmp after_output
+
+output_min_int:
+    mov rax, 1
+    mov rdi, 1
+    lea rsi, [rel .min_str]
+    mov rdx, 21
+    syscall
+    jmp after_output
+
+after_output:
+    cmp r12, r9
+    jne newline_present
+    jmp exit_program
+newline_present:
+    lea rsi, [r12+1]
+    jmp process_lines
+
+exit_program:
+    mov rax, 60
+    xor rdi, rdi
+    syscall
+
+.section .rodata
+.align 8
+.err_str:
+    .asciz "error\n"
+.min_str:
+    .asciz "-9223372036854775808\n"
+.newline:
+    .byte 0x0A
+
+.section .data
+.align 8
+.input:
+    .space 65536
+.tmpbuf:
+    .space 32
+.outbuf:
+    .space 32
+
+.section .bss
+.align 8
+.stack:
+    .space 4096

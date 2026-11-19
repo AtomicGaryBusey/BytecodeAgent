@@ -66,6 +66,7 @@ results on the other paths (16 cells each):
 | Claude Sonnet 4.5 | **10/16** | 16/16 | 16/16 | 16/16 | 16/16 |
 | Codex GPT-6 Luna | **10/16** | 15/16 | 15/16 | 12/16 | 6/16 |
 | Gemini 3.8 Flash High (Antigravity) | **9/16** | 13/16 | 16/16 | 16/16 | 14/16 |
+| Mistral Large 4 | **8/16** | 16/16 | 16/16 | 16/16 | 10/16 |
 | MiniMax M3 (Fireworks) | **8/16** | 10/16 | 15/16 | 12/16 | 4/16 |
 | Codex GPT-5.6 Luna | **7/16** | 16/16 | 16/16 | 12/16 | 12/16 |
 | Microsoft MAI-Code 1.1 Flash (Copilot) | **6/16** | 11/16 | 16/16 | 10/16 | 0/16 |
@@ -115,6 +116,7 @@ Per ISA, hex first attempt:
 | Claude Sonnet 4.5 | 2/8 | 8/8 |
 | Codex GPT-6 Luna | 5/8 | 5/8 |
 | Gemini 3.8 Flash High (Antigravity) | 1/8 | 8/8 |
+| Mistral Large 4 | 2/8 | 6/8 |
 | MiniMax M3 (Fireworks) | 2/8 | 6/8 |
 | Codex GPT-5.6 Luna | 3/8 | 4/8 |
 | Microsoft MAI-Code 1.1 Flash (Copilot) | 2/8 | 4/8 |
@@ -160,6 +162,7 @@ results (— where that model did not run the app battery):
 | Kimi K3.1 Pro Highspeed | **4/16** | 16/16 | 13/16 | 15/16 |
 | Kimi K3.1 Pro | **4/16** | 15/16 | 15/16 | 14/16 |
 | Codex GPT-5.5 | **3/16** | 12/16 | — | — |
+| Mistral Large 4 | **3/16** | 11/16 | 10/16 | 10/16 |
 | Codex Daybreak Blue | **2/16** | 11/16 | — | — |
 | GPT-6 Luna via Copilot | **2/16** | 5/16 | — | — |
 | Kimi K3 | **2/16** | 15/16 | 15/16 | 14/16 |
@@ -202,6 +205,7 @@ apart (first attempts only, except the last column):
 | Kimi K3.1 Pro Highspeed | 16 | 4 | 0 | 12 | 4/16 (25%) | 0 of 32 |
 | Kimi K3.1 Pro | 16 | 4 | 0 | 12 | 4/16 (25%) | 0 of 34 |
 | Codex GPT-5.5 | 16 | 3 | 0 | 13 | 3/16 (19%) | 0 of 37 |
+| Mistral Large 4 | 16 | 3 | 0 | 13 | 3/16 (19%) | 0 of 46 |
 | Codex Daybreak Blue | 16 | 2 | 0 | 14 | 2/16 (12%) | 0 of 42 |
 | GPT-6 Luna via Copilot | 16 | 2 | 0 | 14 | 2/16 (12%) | 0 of 52 |
 | Kimi K3 | 16 | 2 | 0 | 14 | 2/16 (12%) | 0 of 41 |

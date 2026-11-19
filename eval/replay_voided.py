@@ -44,17 +44,18 @@ if muse:  # Muse Code's event log: the model step's deltas, up to Muse proposing
             t, pl = ev.get("payload_type"), ev.get("payload") or {}
             if stop:
                 continue
-            if t == "task.lifecycle.proposed" and (pl.get("event") or {}).get("task_kind") == "tool.muse.search":
-                stop = {"step_type": "muse_search"}
+            kind = str((pl.get("event") or {}).get("task_kind") or "")
+            if t == "task.lifecycle.proposed" and kind.startswith("tool.muse."):
+                stop = {"step_type": "muse_tool", "kind": kind}
             elif t == "run.output.delta":
                 text += pl.get("text") or ""
             elif t == "task.lifecycle.failed" and str((pl.get("event") or {}).get("reason", "")).startswith("stream guard"):
                 text = ""
             elif t == "task.lifecycle.failed":
                 raise SystemExit("a failed model task: not a search stop")
-    assert stop, "no tool.muse.search proposal in the kept stream"
-    assert "non-model task was proposed: 'tool.muse.search'" in rec["error"], rec["error"][:120]
-    why = ("muse proposed its built-in tool.muse.search task after the model step: the call was stopped there and the "
+    assert stop, "no tool.muse.* proposal in the kept stream"
+    assert f"non-model task was proposed: '{stop['kind']}'" in rec["error"], rec["error"][:120]
+    why = (f"muse proposed its built-in {stop['kind']} task after the model step: the call was stopped there and the "
            "answer written before it is scored as it stands")
     mark = {"tool_stops": 1}
 with (gzip.open(raw, "rt") if not muse else open("/dev/null")) as fh:

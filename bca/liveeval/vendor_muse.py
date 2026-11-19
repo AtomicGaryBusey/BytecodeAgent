@@ -46,7 +46,7 @@ from bca.liveeval.vendor_base import CliSubject, IsolationError, Parsed
 MUSE_FLAGS = ("--preset", "empty", "--max-model-steps", "1", "--disable-shell", "--disable-write", "--disable-web-tools",
               "--disable-reminders", "--disable-request-user-input", "--no-foreign-personal-context", "--no-session-log")
 MODEL_TASK = "model.meta.response"
-MUSE_SEARCH_TASK = "tool.muse.search"  # proposed by Muse itself after a model step (see on_event)
+MUSE_TOOL_PREFIX = "tool.muse."  # Muse's built-in tools, proposed by Muse itself after a model step (see on_event)
 _SUSPECT = re.compile(r"tool|mcp|skill|subagent|plugin|approval|shell|workspace\.write", re.I)
 _KNOWN = frozenset({"runtime.command.accepted", "session.run.linked", "run.model.configured", "turn.input.user",
                     "run.lifecycle.started", "task.stream.linked", "task.lifecycle.proposed", "task.lifecycle.accepted",
@@ -119,10 +119,11 @@ class MuseSubject(CliSubject):
                 p.violations.append("the user turn is not the task prompt as sent")
         elif t == "task.lifecycle.proposed":
             kind = (pl.get("event") or {}).get("task_kind")
-            if kind == MUSE_SEARCH_TASK and st["completed"] >= 1:
-                # the model asked for Muse's built-in search after its one step (no tools are sent; seen 11-13 and
-                # 11-15): stop the call there and score what the model wrote before it (user decision 2026-11-16,
-                # the rule agy's manage_task follows; one attempt is one model call)
+            if str(kind).startswith(MUSE_TOOL_PREFIX) and st["completed"] >= 1:
+                # the model asked for one of Muse's built-in tools after its one step (no tools are sent; search seen
+                # 11-13 and 11-15, read_file 11-16): stop the call there, before the tool runs, and score what the
+                # model wrote before it (user decisions 2026-11-16, the rule agy's manage_task follows; one attempt is
+                # one model call). A tool proposed before any completed model step is still an isolation failure.
                 p.notes.append(f"muse proposed its built-in {kind} task after the model step: the call was stopped "
                                "there and the answer written before it is scored as it stands")
                 p.usage["tool_stops"] = p.usage.get("tool_stops", 0) + 1

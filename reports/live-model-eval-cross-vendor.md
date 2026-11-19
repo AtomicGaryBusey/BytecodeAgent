@@ -57,6 +57,7 @@ the Azure AI Foundry API directly, the `fireworks:` rows through Fireworks.ai's 
 | DeepSeek V4.1 Flash (Fireworks) | 41 | 53 | 46 | 50 | **190/224 (85%)** | 224/224 (100%) | 1.19 |
 | Codex GPT-5.6 Terra | 41 | 55 | 38 | 55 | **189/224 (84%)** | 223/224 (100%) | 1.19 |
 | Qwen 3.8 Max (Fireworks) | 40 | 50 | 42 | 50 | **182/224 (81%)** | 222/224 (99%) | 1.28 |
+| Mistral Large 4 | 42 | 54 | 35 | 46 | **177/224 (79%)** | 223/224 (100%) | 1.29 |
 | GPT-6 Luna via Copilot | 42 | 53 | 31 | 50 | **176/224 (79%)** | 224/224 (100%) | 1.29 |
 | Claude Sonnet 5 | 40 | 49 | 41 | 45 | **175/224 (78%)** | 222/224 (99%) | 1.30 |
 | Claude Opus 4.8 | 35 | 48 | 49 | 43 | **175/224 (78%)** | 222/224 (99%) | 1.27 |
@@ -153,6 +154,7 @@ left no attempt record and ran again, and every chain resumed with the same comm
 | DeepSeek V4.1 Flash (Fireworks) | 73/76 (96%) | 55/74 (74%) | 62/74 (84%) |
 | Codex GPT-5.6 Terra | 68/76 (89%) | 69/74 (93%) | 52/74 (70%) |
 | Qwen 3.8 Max (Fireworks) | 73/76 (96%) | 72/74 (97%) | 37/74 (50%) |
+| Mistral Large 4 | 67/76 (88%) | 66/74 (89%) | 44/74 (59%) |
 | GPT-6 Luna via Copilot | 67/76 (88%) | 61/74 (82%) | 48/74 (65%) |
 | Claude Sonnet 5 | 63/76 (83%) | 53/74 (72%) | 59/74 (80%) |
 | Claude Opus 4.8 | 63/76 (83%) | 66/74 (89%) | 46/74 (62%) |

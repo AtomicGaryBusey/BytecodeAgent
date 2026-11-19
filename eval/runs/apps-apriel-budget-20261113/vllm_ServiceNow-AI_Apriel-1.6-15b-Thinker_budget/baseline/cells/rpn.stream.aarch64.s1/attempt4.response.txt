@@ -1,0 +1,370 @@
+.global _start
+    .section .rodata
+error_msg:
+    .asciz "error\n"
+    .equ error_msg_len, . - error_msg
+
+    .section .bss
+    .align 8
+input_buf: .space 65536
+input_len: .zero 4
+
+    .align 8
+stack_buf: .space 4096*8
+stack_sp: .zero 4
+
+    .align 8
+out_buf: .space 32
+out_len: .zero 4
+
+    .align 8
+digits_buf: .space 20
+
+    .align 8
+token_buf: .space 20
+
+    .align 8
+error_flag: .zero 1
+
+    .section .text
+_start:
+    // read entire stdin
+    adrp x29, input_len
+    add x29, x29, :lo12:input_len
+    ldr x28, [x29]          // total length
+read_again:
+    mov x0, #0              // fd 0
+    mov x8, #63
+    adrp x1, input_buf
+    add x1, x1, :lo12:input_buf
+    add x1, x1, x28
+    mov x2, #65536
+    svc
+    cmp x0, #0
+    beq read_done
+    add x28, x28, x0
+    str x28, [x29]
+    b read_again
+read_done:
+    mov x27, #0              // p = start of input
+line_start:
+    cmp x27, x28
+    beq program_end
+    // find newline
+    mov x26, x27
+find_newline:
+    cmp x26, x28
+    bge newline_end
+    ldrb w5, [x26]
+    cmp w5, #0x0A
+    beq newline_found
+    add x26, x26, #1
+    b find_newline
+newline_found:
+    mov x31, x26             // save newline position
+    mov x30, x26             // line_end = newline (exclusive)
+    // init stack for this line
+    mov x18, #0              // sp_local = 0
+    mov x24, #0
+    strb w24, [rel error_flag]
+    // skip leading separators
+skip_leading_sep:
+    cmp x27, x30
+    bge token_loop
+    ldrb w5, [x27]
+    cmp w5, #0x20, #0x09
+    beq skip_leading_sep
+    b token_loop
+token_loop:
+    cmp x27, x30
+    bge token_done
+    // parse token
+    mov x20, #0
+read_token_body:
+    cmp x27, x30
+    bge token_body_done
+    ldrb w5, [x27]
+    cmp w5, #0x20, #0x09
+    bne read_token_body_cont
+    b token_body_done
+read_token_body_cont:
+    strb w5, [token_buf, x20]
+    add x20, x20, #1
+    add x27, x27, #1
+    b read_token_body
+token_body_done:
+    // token_len = x20, token at token_buf
+    ldrb w5, [token_buf]
+    cmp x20, #1
+    beq token_one_char
+    // token length >1
+    cmp w5, #'-'
+    beq token_minus_literal
+    b token_invalid
+token_one_char:
+    cmp w5, #'+'
+    beq token_operator
+    cmp w5, #'-'
+    beq token_operator
+    cmp w5, #'*'
+    beq token_operator
+    cmp w5, #'/'
+    beq token_operator
+    cmp w5, #'%'
+    beq token_operator
+    // must be digit
+    cmp w5, #'0'
+    b.lt token_invalid
+    cmp w5, #'9'
+    b.gt token_invalid
+    sub w5, w5, #'0'
+    mov x22, w5
+    mov x23, #0
+    b token_literal_done
+token_operator:
+    mov x23, w5
+    b token_operator_done
+token_minus_literal:
+    sub x20, x20, #1
+    cmp x20, #18
+    beq token_minus_check_digits
+    cmp x20, #18
+    blt token_minus_check_digits
+    b token_invalid
+token_minus_check_digits:
+    mov x21, #1
+    mov x6, #0
+check_minus_digits:
+    cmp x21, x20
+    beq minus_digits_ok
+    ldrb w7, [token_buf, x21]
+    cmp w7, #'0'
+    b.lt token_invalid
+    cmp w7, #'9'
+    b.gt token_invalid
+    add x21, x21, #1
+    b check_minus_digits
+minus_digits_ok:
+    mov x23, #1
+    mov x22, #0
+    mov x21, #1
+    mov x4, x20
+parse_minus_digits:
+    cmp x21, x4
+    beq minus_parse_done
+    ldrb w7, [token_buf, x21]
+    sub w7, w7, #'0'
+    mov x5, #10
+    mul x22, x22, x5
+    add x22, x22, w7
+    add x21, x21, #1
+    b parse_minus_digits
+minus_parse_done:
+    b token_literal_done
+token_literal_done:
+    // push literal onto stack
+    adrp x25, stack_buf
+    add x25, x25, :lo12:stack_buf
+    add x25, x25, x18, LSL #3
+    cmp x23, #0
+    beq literal_no_sign
+    neg x22, x22
+    b literal_push
+literal_no_sign:
+    // x22 already signed
+literal_push:
+    str x22, [x25]
+    add x18, x18, #1
+    b token_loop
+token_operator_done:
+    // need at least two values
+    cmp x18, #2
+    blt operator_error
+    sub x18, x18, #2
+    adrp x25, stack_buf
+    add x25, x25, :lo12:stack_buf
+    add x25, x25, x18, LSL #3
+    ldr x31, [x25]         // a
+    add x25, x25, #8
+    ldr x30, [x25]         // b
+    mov w5, w23
+    cmp w5, #'+'
+    b.ne operator_not_plus
+    add x31, x31, x30
+    b operator_push
+operator_not_plus:
+    cmp w5, #'-'
+    b.ne operator_not_minus
+    sub x31, x31, x30
+    b operator_push
+operator_not_minus:
+    cmp w5, #'*'
+    b.ne operator_not_mul
+    mul x31, x31, x30
+    b operator_push
+operator_not_mul:
+    cmp w5, #'/'
+    b.ne operator_not_div
+    cmp x30, #0
+    beq divide_by_zero
+    cmp x31, #-9223372036854775808
+    beq div_min_check
+    sdiv x31, x31, x30
+    b operator_push
+div_min_check:
+    cmp x30, #-1
+    beq divide_by_zero
+    sdiv x31, x31, x30
+    b operator_push
+operator_not_div:
+    cmp w5, #'%'
+    b.ne operator_not_mod
+    cmp x30, #0
+    beq modulo_by_zero
+    cmp x31, #-9223372036854775808
+    cmp x30, #-1
+    beq modulo_by_zero
+    sdiv x4, x31, x30
+    mul x5, x4, x30
+    sub x31, x31, x5
+    b operator_push
+operator_not_mod:
+    b token_invalid
+operator_push:
+    adrp x25, stack_buf
+    add x25, x25, :lo12:stack_buf
+    add x25, x25, x18, LSL #3
+    str x31, [x25]
+    add x18, x18, #1
+    b token_loop
+operator_error:
+    mov x24, #1
+    strb w24, [rel error_flag]
+    b token_done
+token_invalid:
+    mov x24, #1
+    strb w24, [rel error_flag]
+    b token_done
+divide_by_zero:
+    mov x24, #1
+    strb w24, [rel error_flag]
+    b token_done
+modulo_by_zero:
+    mov x24, #1
+    strb w24, [rel error_flag]
+    b token_done
+token_done:
+    ldrb w5, [rel error_flag]
+    cmp w5, #0
+    beq no_error
+    // error: write error_msg
+    mov x0, #1
+    mov x8, #64
+    adrp x1, error_msg
+    add x1, x1, :lo12:error_msg
+    mov x2, error_msg_len
+    svc
+    b line_skip
+no_error:
+    cmp x18, #1
+    bne error_case
+    // get result
+    adrp x25, stack_buf
+    add x25, x25, :lo12:stack_buf
+    ldr x31, [x25]
+    // convert to string
+    mov x20, #0
+    mov x0, x31
+    bl int_to_string
+    // write output
+    mov x0, #1
+    mov x8, #64
+    mov x2, x20
+    adrp x1, out_buf
+    add x1, x1, :lo12:out_buf
+    svc
+    b line_skip
+error_case:
+    mov x0, #1
+    mov x8, #64
+    adrp x1, error_msg
+    add x1, x1, :lo12:error_msg
+    mov x2, error_msg_len
+    svc
+line_skip:
+    // advance p to after newline
+    add x27, x31, #1
+    b line_start
+program_end:
+    mov x0, #0
+    mov x8, #93
+    svc
+
+//---------------- int to string subroutines ----------------//
+int_to_string:
+    // x0 = value, x20 = output length
+    // zero out output length
+    mov x20, #0
+    cmp x0, #0
+    beq int_to_string_zero
+    cmp x0, #0
+    blt int_to_string_negative
+    // positive
+    mov x2, x0
+    b int_to_string_abs_done
+int_to_string_negative:
+    neg x0, x0
+    mov x2, x0
+    mov x1, #1          // sign flag
+    b int_to_string_abs_done
+int_to_string_abs_done:
+    // x2 = absolute value (>0)
+    mov x3, #0          // digit buffer position
+    mov x4, #10
+dig_loop:
+    cmp x2, #0
+    beq dig_loop_done
+    sdiv x5, x2, x4     // quotient in x5
+    mul x6, x5, x4
+    sub x2, x2, x6      // remainder digit
+    add w7, w2, #'0'
+    strb w7, [digits_buf, x3]
+    add x3, x3, #1
+    mov x2, x5
+    b dig_loop
+dig_loop_done:
+    // write sign if needed
+    cmp x1, #0
+    beq no_sign
+    // '-'
+    mov x20, #0
+    mov w8, #'-'
+    strb w8, [out_buf, x20]
+    add x20, x20, #1
+no_sign:
+    // output digits in reverse order
+    sub x4, x3, #1
+digit_out_loop:
+    cmp x4, #0
+    blt digit_out_done
+    ldrb w8, [digits_buf, x4]
+    strb w8, [out_buf, x20]
+    add x20, x20, #1
+    add x4, x4, #-1
+    b digit_out_loop
+digit_out_done:
+    // newline
+    mov w8, #'\n'
+    strb w8, [out_buf, x20]
+    add x20, x20, #1
+    ret
+int_to_string_zero:
+    // "0\n"
+    mov x20, #0
+    mov w8, #'0'
+    strb w8, [out_buf, x20]
+    add x20, x20, #1
+    mov w8, #'\n'
+    strb w8, [out_buf, x20]
+    add x20, x20, #1
+    ret

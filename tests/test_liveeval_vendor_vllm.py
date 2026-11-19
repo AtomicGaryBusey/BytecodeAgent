@@ -29,6 +29,7 @@ class Fake:
         self.requests = []
         self.delay = 0.0
         self.fill_budget = False  # with finish "length": report completion_tokens == the request's max_tokens
+        self.cut = None  # "end": the stream stops mid-chunk; "mid": a broken chunk followed by more data
 
 
 def serve(fake: Fake):
@@ -75,6 +76,11 @@ def serve(fake: Fake):
                 for c in fake.chunks:
                     time.sleep(fake.delay)
                     send({"content": c})
+                if fake.cut:
+                    self.wfile.write(b'data: {"id":"x","model":"' + fake.served.encode() + b'","\n\n')
+                    self.wfile.flush()
+                    if fake.cut == "end":
+                        return
                 send({}, finish=fake.finish)
                 out = body.get("max_tokens", 10) if fake.fill_budget else 10
                 send({}, usage={"prompt_tokens": 300, "completion_tokens": out})
@@ -315,3 +321,35 @@ def test_calls_are_serialised_by_default(env, monkeypatch, tmp_path):
 
 def test_slots_let_calls_run_at_once(env, monkeypatch, tmp_path):
     assert _overlap(env, monkeypatch, tmp_path, 2)
+
+
+def test_gateway_key_file_fails_closed_unless_private_and_non_empty(tmp_path, monkeypatch):
+    from bca.liveeval.vendor_vllm import VllmError, VllmSubject
+    key = tmp_path / "gw.key"
+    monkeypatch.setenv("BCA_VLLM_KEY_FILE", str(key))
+    s = VllmSubject("m", url="https://gw.example:8443/v1")
+    assert s.https and s.port == 8443 and s.base == ""
+    with pytest.raises(VllmError, match="unreadable"):
+        s._headers()
+    key.write_text("secret-value\n")
+    key.chmod(0o644)
+    with pytest.raises(VllmError, match="readable by others"):
+        s._headers()
+    key.chmod(0o600)
+    assert s._headers() == {"Authorization": "Bearer secret-value"}
+    key.write_text("")
+    with pytest.raises(VllmError, match="empty"):
+        s._headers()
+    monkeypatch.delenv("BCA_VLLM_KEY_FILE")
+    assert VllmSubject("m")._headers() == {}
+
+
+def test_a_stream_cut_off_mid_chunk_is_a_dropped_connection_not_isolation(env):
+    from bca.liveeval import runner
+    fake, url = env
+    fake.cut = "end"
+    r = subj(url).complete("p")
+    assert not r.ok and "cut off mid-chunk" in r.error and runner.infra_kind(r.error) == "transient"
+    fake.cut = "mid"
+    r = subj(url).complete("p")
+    assert not r.ok and r.error.startswith("isolation: unparseable stream chunk")

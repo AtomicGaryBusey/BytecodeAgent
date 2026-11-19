@@ -37,9 +37,10 @@ From `eval/harness_tables.py`. Function batteries (224 cells):
 
 | Model (harness) | Round 1 (48) | Round 2 (62) | Long (54) | Adversarial (60) | Pass@1 | Within 4 | Mean attempts |
 |---|---|---|---|---|---|---|---|
-| Meta Muse Wonder 1.0 (Muse Code harness) | 48 | 62 | 52 | 60 | **222/224 (99%)** | 224/224 (100%) | 1.01 |
 | Meta Muse Spark 1.3 (Muse Code harness) | 48 | 62 | 52 | 60 | **222/224 (99%)** | 224/224 (100%) | 1.01 |
+| Meta Muse Wonder 1.0 (Muse Code harness) | 48 | 62 | 52 | 60 | **222/224 (99%)** | 224/224 (100%) | 1.01 |
 | Meta Muse Wonder Full 1.0 (Muse Code harness) | 48 | 61 | 54 | 58 | **221/224 (99%)** | 224/224 (100%) | 1.01 |
+| Meta Muse Ember 1.0 (Muse Code harness) | 37 | 46 | 39 | 47 | **169/224 (75%)** | 223/224 (100%) | 1.34 |
 | Mistral Large 4 (Vibe harness) | 40 | 52 | 22 | 42 | **156/224 (70%)** | 219/224 (98%) | 1.44 |
 | Mistral Medium 3.5 (Vibe harness) | 28 | 27 | 11 | 25 | **91/224 (41%)** | 154/224 (69%) | 2.38 |
 
@@ -47,9 +48,10 @@ By path, and the app and hex batteries:
 
 | Model (harness) | Stream | Structured | IR (QBE) | Apps, first attempt (96) | Apps within 4 | Hex functions, first / within 4 (16) | Hex programs, first / within 4 (16) |
 |---|---|---|---|---|---|---|---|
-| Meta Muse Wonder 1.0 (Muse Code harness) | 76/76 | 74/74 | 72/74 | 95/96 | 96/96 | 15/16 / 16/16 | 10/16 / 16/16 |
 | Meta Muse Spark 1.3 (Muse Code harness) | 76/76 | 73/74 | 73/74 | 90/96 | 96/96 | 15/16 / 16/16 | 14/16 / 16/16 |
+| Meta Muse Wonder 1.0 (Muse Code harness) | 76/76 | 74/74 | 72/74 | 95/96 | 96/96 | 15/16 / 16/16 | 10/16 / 16/16 |
 | Meta Muse Wonder Full 1.0 (Muse Code harness) | 75/76 | 73/74 | 73/74 | 95/96 | 96/96 | 14/16 / 16/16 | 15/16 / 16/16 |
+| Meta Muse Ember 1.0 (Muse Code harness) | 70/76 | 68/74 | 31/74 | 78/96 | 96/96 | 9/16 / 16/16 | 4/16 / 13/16 |
 | Mistral Large 4 (Vibe harness) | 67/76 | 48/74 | 41/74 | 65/96 | 96/96 | 9/16 / 14/16 | 3/16 / 8/16 |
 | Mistral Medium 3.5 (Vibe harness) | 48/76 | 38/74 | 5/74 | 19/96 | 52/96 | 2/16 / 6/16 | not run (gate: 12/16 hex functions within 4) |
 
@@ -57,9 +59,10 @@ What the harness added, from each CLI's own record of every scored attempt (all 
 
 | Model (harness) | Scored attempts | CLI versions | Timeouts | Median call | Median input / output tokens | Denied tool attempts | Harness lookups | Guard resamples | Infra retries (not scored) |
 |---|---|---|---|---|---|---|---|---|---|
-| Meta Muse Wonder 1.0 (Muse Code harness) | 363 | muse 1.4.20 ×361, muse 1.4.18 ×2 | 0 | 21 s | 20,668 / 3,329 | none possible (no tools sent) | — | 59 in 59 attempts (16%) | 10 |
 | Meta Muse Spark 1.3 (Muse Code harness) | 366 | muse 1.4.15 ×341, muse 1.4.18 ×25 | 9 | 85 s | 19,691 / 9,971 | none possible (no tools sent) | — | 66 in 66 attempts (18%) | 7 |
+| Meta Muse Wonder 1.0 (Muse Code harness) | 363 | muse 1.4.20 ×361, muse 1.4.18 ×2 | 0 | 21 s | 20,668 / 3,329 | none possible (no tools sent) | — | 59 in 59 attempts (16%) | 10 |
 | Meta Muse Wonder Full 1.0 (Muse Code harness) | 360 | muse 1.4.18 ×344, muse 1.4.20 ×16 | 1 | 39 s | 20,670 / 2,776 | none possible (no tools sent) | — | 66 in 66 attempts (18%) | 13 |
+| Meta Muse Ember 1.0 (Muse Code harness) | 479 | muse 1.4.20 ×474, muse 1.4.18 ×5 | 0 | 16 s | 20,670 / 7,149 | none possible (no tools sent) | — | 96 in 96 attempts (20%) | 6 |
 | Mistral Large 4 (Vibe harness) | 539 | vibe 3.1.2 ×539 | 92 | 77 s | 6,029 / 7,433 | 154 in 120 attempts | 307 | — | 0 |
 | Mistral Medium 3.5 (Vibe harness) | 877 | vibe 3.1.2 ×877 | 34 | 78 s | 6,107 / 13,850 | 1 in 1 attempts | 0 | — | 0 |
 
@@ -95,6 +98,12 @@ Tools the Vibe models reached for (every attempt was denied; none ran):
   attempts, and **54 of 103 app attempts (52%)**. The model's answer here is always the sample Muse kept. 58 of
   the 66 resampled attempts passed, against 294 of the 300 that were not resampled, so the guard is not rescuing
   failures; but each resample is a draw no tool-free row gets, which is one more reason these rows stand apart.
+- **The same model without the harness does better.** Mistral Large 4 measured tool-free through Mistral's API
+  (2026-11-15/16, in the main tables): 177/224 functions first attempt (79%, 223 within four) against 156 inside
+  Vibe; apps 67/96 (91 within four) against 65 (96); hex functions 8/16 (16) against 9/16 (14); hex programs 3/16
+  (11) against 3/16 (8). The 21-cell gap on functions is about the size of Vibe's harness losses described below
+  (82 turn-limit stops), so most of the difference is the harness, not the model. Apps are the exception: Vibe's
+  extra turns recover every app cell within four, the API row 91.
 - **Mistral Large 4 inside Vibe: 156/224 (70%), 219 within four**, and 65/96 on apps with every cell recovered.
   **Its largest single loss is the harness, not the task**: 92 of its failed attempts are timeouts, and 82 of
   those are Vibe stopping the turn at the 4-turn limit without a final answer, the turns having gone on tools it
@@ -143,12 +152,13 @@ request differs.
 
 ## What was not done
 
-- **Muse Ember 1.0** is running and is left out of the tables until complete. It stopped on 2026-11-15 when Muse
-  proposed a `tool.muse.search` task with no tools sent, after the model step and with no answer text before it
-  (the second such attempt; see below). From 2026-11-16 (user decision) such a proposal is handled as agy's
-  `manage_task` call is: the call is stopped there and the text written before it is scored, with no second try.
-  The 11-15 attempt was recorded that way from its kept stream (`eval/replay_voided.py`): an empty answer, a
-  failure. Muse Wonder 1.0 completed on 2026-11-15 and is in the tables above.
+- **Muse Ember 1.0** completed on 2026-11-16 and is in the tables above. Three of its attempts ended with Muse
+  proposing one of its own built-in tools after the model step, each with no answer text and all on the IR path
+  (`tool.muse.search` twice, `tool.muse.read_file` once). From 2026-11-16 (user decisions) any such proposal
+  (`tool.muse.*`) is handled as agy's `manage_task` call is: the call is stopped there, before the tool runs, and the
+  text written before it is scored, with no second try. Two were first logged as infrastructure errors and recorded
+  that way from their kept streams (`eval/replay_voided.py`; the run's ADJUSTMENTS.md); the third was stopped by the
+  adapter itself. Muse Wonder 1.0 completed on 2026-11-15.
 - **The tier comparison** (paid `muse-spark-1.3` against the contributor run, same cells; functions and apps,
   complete 2026-11-16) is reported in [live-model-eval-effort.md](live-model-eval-effort.md), not as a row here:
   215 against 222 of 224 functions and 85 against 90 of 96 apps first attempt, neither significant, on different
@@ -158,8 +168,7 @@ request differs.
   (`eval/audits/muse-1.4.18-search-20261113`).
 
 - GLM-5.3 and GLM-5.3 Flash, also served through Vibe, were not run (GLM-5.3 is measured tool-free on Fireworks).
-- A tool-free Mistral Large 4 row is being run through Mistral's API (from 2026-11-15, on the user's API allowance)
-  and will appear in the main tables; none is planned for Medium 3.5 (deprecated). No tool-free Meta rows exist; Meta's API route
+- No tool-free row is planned for Medium 3.5 (deprecated). No tool-free Meta rows exist; Meta's API route
   was not investigated beyond noting that the Muse binary accepts an API key.
 - The raw 1.4.15 Muse and 3.1.2 Vibe audit captures were lost with `/tmp` in the power loss of 2026-11-12; their
   findings are recorded in the adapters' docstrings (`bca/liveeval/vendor_muse.py`, `vendor_vibe.py`). Audits from

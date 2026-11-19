@@ -22,6 +22,7 @@ NEW_NAMES = {
     "muse:muse-wonder-full-1.0-contributor": "Meta Muse Wonder Full 1.0 (Muse Code harness)",
     "muse:muse-wonder-1.0-contributor": "Meta Muse Wonder 1.0 (Muse Code harness)",
     "muse:muse-ember-1.0-contributor": "Meta Muse Ember 1.0 (Muse Code harness)",
+    "local:vllm:Qwen3.8-Flash-Next": "Qwen3.8-Flash-Next NVFP4, MTP x2, token budget (DGX Spark cluster)",
 }
 
 # Models that run on the user's own hardware through a vendor's route: local models in every table and in the
@@ -36,9 +37,9 @@ def is_local(label: str) -> bool:
 
 # Run directories (prefixes under eval/runs/) whose battery is not complete yet: unreported until it is.
 IN_PROGRESS = (
-    # Mistral Large 4 through Mistral's API (tool-free), started 2026-11-15
-    "mistral-large-4-20261115", "hex-mistral-large-4-20261115", "apps-mistral-large-4-20261115",
-    "apps-hex-mistral-large-4-20261115",
+    # Qwen3.8-Flash-Next on the user's DGX Spark cluster (jumps the queue, user 11-16), started 2026-11-16
+    "qwen38-flash-next-budget-20261116", "hex-qwen38-flash-next-budget-20261116",
+    "apps-qwen38-flash-next-budget-20261116", "apps-hex-qwen38-flash-next-budget-20261116",
     "claude-sonnet-4-6-20261111", "hex-claude-sonnet-4-6-20261111", "apps-claude-sonnet-4-6-20261111",
     "apps-hex-claude-sonnet-4-6-20261111",
     "claude-opus-4-6-20261111", "hex-claude-opus-4-6-20261111", "apps-claude-opus-4-6-20261111",
@@ -52,13 +53,11 @@ IN_PROGRESS = (
     # Apriel-1.6-15B-Thinker local baseline, started 11-13
     "apriel-budget-20261113", "hex-apriel-budget-20261113", "apps-apriel-budget-20261113",
     "apps-hex-apriel-budget-20261113",
-    # Muse round 2: Ember waits for the weekly quota (Wonder and Wonder Full are complete and reported)
-    "muse-ember-1.0-20261113", "hex-muse-ember-1.0-20261113", "apps-muse-ember-1.0-20261113",
-    "apps-hex-muse-ember-1.0-20261113",
     # the paid-tier half of the Muse tier comparison (complete 11-16): a study pair in effort_tables.py, never a row
     "muse-tier-paid-spark-1.3-20261113", "apps-muse-tier-paid-spark-1.3-20261113",
     # Grok 4.7 misleading_hint / terse on the adversarial battery (user 11-16): a variant study, never a row
     "grok-4.7-adv-variants-20261116",
+    "mai-code-foundry-adv-variants-20261116",  # MAI-Code via Foundry, baseline + both variants: a study, not a row
     # second long-battery samples (run-to-run variation; reported apart once written up, never a model's row)
     "long-s2-grok-4.7-build-fast-20261113", "long-s2-grok-4.7-20261113", "long-s2-grok-4.6-20261113",
 )

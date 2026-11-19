@@ -36,24 +36,10 @@ cli_version; attempts from 15:34 on are 2.1.323 (Opus 4.7's last 2 hex-program c
 
 ## In progress
 
-- **Grok 4.7 `misleading_hint` + `terse`, adversarial battery** (user 2026-11-16: run now on SuperGrok; started 08:4x, `eval/runs/grok-4.7-adv-variants-20261116.sh`, grok 1.0.41, 120 cells, max 320 calls). Baseline to pair: grok-4.7-20260928-231546 adversarial 56/60. When done: paired deltas and refusals beside the Claude rows in live-model-eval-adversarial.md. MAI-Code via Foundry: cost estimate given, awaiting the user.
+- **Apriel apps battery: let it run the full week (user, 2026-11-18 18:5x)**, ETA ~162 h (~7 days) at 7.8 tok/s with the 81,920-token app budget; 0/16 hex functions so its hex programs are skipped by the gate. Do not stop it for time.
 
-- **Muse Ember 1.0** resumed 2026-11-16 08:3x (`eval/runs/muse-resume-20261113.sh`) under the user's rule of 11-16: a `tool.muse.search` proposal after the model step stops the call and the text before it is scored (adapter + tests; the 11-15 attempt recorded by eval/replay_voided.py as a failure). When done: hex, apps, hex programs follow in the chain; then remove from IN_PROGRESS, regenerate, report in the agent-harness report.
-- **Mistral Large 4 apps + hex programs** resumed 2026-11-16 08:3x on the user's portal figure ($20.54; real rate 0.56) and go-ahead; caps 37 / 40.5 booked (real worst case ~$25.7 of $30).
+- **Qwen3.8-Flash-Next (user's DGX Spark cluster; jumped the queue, user 11-16)**, started 2026-11-16 ~14:4x (`eval/runs/qwen38-flash-next-20261116.sh`; endpoint + key in ~/.config/bca/qwen-flash-next.{env,key}, never in the repo; the adapter records the server as a private gateway). Fixed config (Aurora SRE, 22:15 UTC): vLLM 0.31.0+88641915.nv26.10, TP=2 + EP, MTP x2, max-model-len 131072, NVFP4 @ fc694b54, thinking xhigh (template default), checkpoint sampling; called as `Qwen3.8-Flash-Next`. Audit OK (no tools, reasoning separate, every chunk names the model); smoke 5/5 first. Token budget, 2 at once. Functions -> hex functions -> apps -> hex programs (gate 12/16). Ask Aurora SRE before any config change mid-run. Aurora SRE pushed fe67557d8 (eval/qwen3.8-flash-next/: serving config, scripts, units, bench, PROVENANCE, SANITIZE; checked 11-16 17:50: only that path, no endpoint/key/Tailscale names). Pull --rebase before the next push; cite it in the write-up. 11-16 14:35: stopped at 4/224 when a stream was cut off mid-chunk (the server's move to systemd); the adapter treated that as isolation. Fixed: a stream that ends mid-chunk is a transient 'closed before [DONE] (cut off mid-chunk)'; a broken chunk followed by more data stays fatal (tests). Restart the chain when Aurora SRE says the server is back (the voided attempt is retried, not scored). 23:2x UTC: more mid-stream cuts traced by Aurora SRE to LiteLLM's uvicorn health check killing workers busy finishing 2+ MB streams; fixed with --timeout_worker_healthcheck 120. LiteLLM request_timeout raised 1200 -> 3600 s (user, 11-16; global, not per-route): covers the apps budget (81,920 tokens) only above ~22 tok/s; answers slower than that near full budget are still cut (retried, not scored). Send Aurora SRE timestamps of any cut under the timeout. When done: remove from IN_PROGRESS, regenerate, report.
 
-- **Mistral Large 4, tool-free, via Mistral's API** (user, 2026-11-15: the $30 monthly API allowance, ~$27 left;
-  Ring-0-Judge no longer uses it). `eval/runs/mistral-large-4-20261115.sh`: functions (cap $12), then hex functions
-  (cap $13.50 cumulative). Adapter `mistral:` (thinking chunks separated from the answer; default cap $0). Medium 3.5
-  is NOT run (deprecated 2026-10-31 per its model card, and ~$45-55). Functions 177/224 and hex functions 8/16 (16) done.
-  Portal 11-15 13:08: $10.48 of $30 used, so real cost = 0.54 x booked. **Apps and hex programs started 13:3x**
-  (`eval/runs/mistral-large-4-apps-20261115.sh`, booked caps 28 / 31). When done: take out of IN_PROGRESS, add
-  `mistral_` to the generators' subject prefixes, regenerate, report beside its Vibe row.
-- **Muse round 2** (user, 2026-11-13, after subscribing to Muse Code Power Usage; contributor mode is fine for
-  benchmarks): `eval/runs/muse-models-20261113.sh` runs muse-wonder-full-1.0, muse-wonder-1.0 and muse-ember-1.0 in the
-  contributor tier, full set each (smokes 5/5). In parallel `eval/runs/muse-tier-20261113.sh` runs paid muse-spark-1.3
-  on functions and apps, to compare with the contributor run of 11-11/12 (requests byte-identical apart from the model
-  id: eval/audits/muse-1.4.18-tiers-20261113). When done: harness tables, a tier pair in eval/effort_tables.py, and the
-  agent-harness report.
 - **Claude output-cap re-run** (2026-11-12, approved by the user): Claude Code continued calls past `max_tokens`
   with an injected user turn; the Claude adapter now stops at the cap (scored as written) and fails closed on any
   other user turn. 46 cells with a continued attempt were superseded (`eval/supersede.py`; list in
@@ -96,7 +82,9 @@ cli_version; attempts from 15:34 on are 2.1.323 (Opus 4.7's last 2 hex-program c
 
 ## Needs the user (the loop does not start these)
 
-- **Muse Ember stopped again at 176/224 (2026-11-16 08:53): Muse proposed `tool.muse.read_file`** (`max_byte.ir.aarch64` attempt 1; same shape as the search cases: the model step completed with no text, then Muse proposed a built-in tool; stopped at the proposal, nothing executed). The 11-16 rule names only `tool.muse.search`. Ask: extend it to any `tool.muse.*` proposal after the model step (recommended), or keep other kinds fatal.
+- **Next local models for the Aurora DGX Spark cluster (user, 2026-11-16), AFTER Qwen3.8-Flash-Next finishes:** Xiaomi MiMo V2.6 Flash, Meta Muse Glimmer 30B (an open-weight Meta model served locally; tool-free, unlike the Muse Code harness rows). Same route as Flash-Next: ask Aurora SRE for serving details (endpoint route, model id, stack, quant, thinking/sampling, concurrency, key scope), audit one request, smoke 5, full set. Do not start before Flash-Next is complete. Note for Flash-Next: the server runs under nohup (not systemd); connection errors (not HTTP errors) mean it is down: tell the user.
+
+- **MAI-Code `misleading_hint` + `terse` via Foundry** (with a Foundry baseline): MAI-Code via Foundry: approved by the user 11-16 (~$3-5 incl. a Foundry baseline, cap $8), but the deployment was refused: the subscription lacks the feature MAI-Code-1.1-Flash GlobalStandard requires (SpecialFeatureOrQuotaIdRequired). The user applied for access 11-16 09:1x. Checked 11-17 09:01: still no access. Next check: once a day (daytime heartbeat), not every heartbeat (user: Microsoft needs time), by running `eval/runs/mai-code-foundry-adv-variants-20261116.sh` (exit 4 = no access yet; a refused create costs nothing); when it creates the deployment it runs baseline + both variants, cap $8 booked; the other listed SKU (DeveloperTier) is priced for fine-tuned models only and the adapter accepts GlobalStandard only.
 
 - **HOLD until Thursday evening 2026-11-19 (user, 11-16), with Opus 4.6/4.5 below. Sonnet 4.6 remainder, STOPPED by the user 2026-11-13 03:5x** ("It's using too much usage. I'm about to run out"):
   apps 80/96 (16 cells left; in-flight attempts were killed unrecorded, so they re-run from their last recorded
@@ -107,7 +95,7 @@ cli_version; attempts from 15:34 on are 2.1.323 (Opus 4.7's last 2 hex-program c
   calls per model, about 12-15 h each): paused by the user on 2026-11-13, after Sonnet 4.6. Do not start until the
   user asks. When approved, run them with a Sonnet-style finisher (one model, 403-aware), not the old six-model chain.
 
-- **Copilot, December**: `gpt-5.3-codex` (no policy step: individual plans have no per-model switch since 2026-02; the SDK still says "policy not set"; one test call confirms it) and the
+- **Copilot, December**: `gpt-5.3-codex` (test call 2026-11-16, user-approved: the request reached the model, so no policy step is needed; it was refused 402 "You have exceeded your monthly quota", November's premium credits being spent, so nothing was charged. Before running on 12-01: its /responses request carries a `text` key the adapter has not audited (it failed closed: `unexpected request keys ['text']`); capture one request, check `text` is only output formatting/verbosity at Copilot's default, then allow it; eval/runs/smoke-copilot-gpt-5.3-codex-20261116) and the
   rest of `kimi-k3`'s app battery need the credits that reset on 2026-12-01; November's are being spent on kimi-k3.
 - **Qwen3.8-27B on the user's DGX cluster** (HOLD: ask again Saturday 2026-11-21, user 11-16): needs the endpoint, serving stack, model id, quantisation, sampling.
 - **Pay-per-token** (backlogged by the user 2026-11-16; do not raise unless asked): MAI-Thinking-1 + DeepSeek-V4-Pro apps/hex (Foundry, ~$40-65); GLM-5.3 + Qwen 3.8 Max
@@ -116,6 +104,12 @@ cli_version; attempts from 15:34 on are 2.1.323 (Opus 4.7's last 2 hex-program c
 - **Housekeeping**: Docker images (Forgejo GC dropped by the user 11-16: a private backup repo).
 
 ## Done (this loop)
+
+- Mistral Large 4 tool-free (Mistral API) full set, 2026-11-16 13:15: functions 177/224 first (223), hex functions 8/16 (16), apps 67/96 (91), hex programs 3/16 (11). Spend $42.70 booked = ~$27.0 real of the $30 November allowance (portal 12:07 $25.16; rate 0.561). In the main tables; compared with its Vibe row in the agent-harness report. No further Mistral API spend this month.
+
+- Grok 4.7 `misleading_hint` + `terse`, 2026-11-16 ~10:50: misleading_hint 58/60 first (baseline 56; -2/+4, p 0.69), terse 24/60 (-33/+1, p < 0.001; 46 within four): 84 of 132 terse attempts hit the 180 s limit, the model spending ~2x the tokens hunting for the shortest code. Written up in live-model-eval-adversarial.md.
+
+- Muse Ember 1.0 full set, 2026-11-16 10:08: functions 169/224 first (223 within four), hex functions 9/16 (16), apps 78/96 (96), hex programs 4/16 (13). Three tool-proposal attempts scored under the `tool.muse.*` rule (all IR, no text). Muse round 2 complete (Wonder Full, Wonder, Ember); agent-harness report.
 
 - Muse tier comparison, 2026-11-16 02:49: paid Spark 1.3 functions 215/224 first (224) vs contributor 222 (9/2, p 0.065; isqrt.ir.aarch64's 11-13 search proposal scored under the 11-16 rule); apps 85/96 (94) vs 90 (96) (7/2, p 0.18). Not significant; confounded with Muse Code 1.4.15 vs 1.4.18/1.4.20. Pair in eval/effort_tables.py; prose in the effort and agent-harness reports.
 

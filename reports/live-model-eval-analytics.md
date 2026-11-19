@@ -343,6 +343,7 @@ read the widths as a floor on the uncertainty.
 | DeepSeek V4.1 Flash (Fireworks) | 190/224 (85%) | 80-89% | 224/224 (100%) | 98-100% |
 | Codex GPT-5.6 Terra | 189/224 (84%) | 79-89% | 223/224 (100%) | 98-100% |
 | Qwen 3.8 Max (Fireworks) | 182/224 (81%) | 76-86% | 222/224 (99%) | 97-100% |
+| Mistral Large 4 | 177/224 (79%) | 73-84% | 223/224 (100%) | 98-100% |
 | GPT-6 Luna via Copilot | 176/224 (79%) | 73-83% | 224/224 (100%) | 98-100% |
 | Claude Sonnet 5 | 175/224 (78%) | 72-83% | 222/224 (99%) | 97-100% |
 | Claude Opus 4.8 | 175/224 (78%) | 72-83% | 222/224 (99%) | 97-100% |
@@ -410,7 +411,8 @@ over the whole table.
 | Gemini 4 Argon High (Antigravity) | DeepSeek V4.1 Flash (Fireworks) | 29 | 28 | 1.000 | 1.000 |
 | DeepSeek V4.1 Flash (Fireworks) | Codex GPT-5.6 Terra | 27 | 26 | 1.000 | 1.000 |
 | Codex GPT-5.6 Terra | Qwen 3.8 Max (Fireworks) | 28 | 21 | 0.392 | 1.000 |
-| Qwen 3.8 Max (Fireworks) | GPT-6 Luna via Copilot | 32 | 26 | 0.512 | 1.000 |
+| Qwen 3.8 Max (Fireworks) | Mistral Large 4 | 30 | 25 | 0.590 | 1.000 |
+| Mistral Large 4 | GPT-6 Luna via Copilot | 27 | 26 | 1.000 | 1.000 |
 | GPT-6 Luna via Copilot | Claude Sonnet 5 | 39 | 38 | 1.000 | 1.000 |
 | Claude Sonnet 5 | Claude Opus 4.8 | 38 | 38 | 1.000 | 1.000 |
 | Claude Opus 4.8 | Z.ai GLM-5.3 (Fireworks) | 36 | 33 | 0.810 | 1.000 |
@@ -465,6 +467,7 @@ Holm-adjusted over this list:
 | DeepSeek V4.1 Flash (Fireworks) | 34 | 0 | <0.001 |
 | Codex GPT-5.6 Terra | 35 | 0 | <0.001 |
 | Qwen 3.8 Max (Fireworks) | 42 | 0 | <0.001 |
+| Mistral Large 4 | 47 | 0 | <0.001 |
 | GPT-6 Luna via Copilot | 48 | 0 | <0.001 |
 | Claude Sonnet 5 | 49 | 0 | <0.001 |
 | Claude Opus 4.8 | 49 | 0 | <0.001 |
@@ -520,6 +523,7 @@ spread* is the range of the three 32-cell first-attempt scores; *groups agreeing
 | Claude Sonnet 5 | 76/96 (79%) | 70-86% | 23 / 27 / 26 | 4 | 17/32 |
 | Grok 4.5 | 76/96 (79%) | 70-86% | 27 / 24 / 25 | 3 | 16/32 |
 | Codex GPT-5.6 Terra | 68/96 (71%) | 61-79% | 25 / 21 / 22 | 4 | 17/32 |
+| Mistral Large 4 | 67/96 (70%) | 60-78% | 20 / 26 / 21 | 6 | 15/32 |
 | DeepSeek V4.1 Flash (Fireworks) | 65/96 (68%) | 58-76% | 23 / 24 / 18 | 6 | 14/32 |
 | Claude Sonnet 4.5 | 54/96 (56%) | 46-66% | 18 / 16 / 20 | 4 | 14/32 |
 | Codex GPT-5.6 Luna | 31/96 (32%) | 24-42% | 11 / 12 / 8 | 4 | 13/32 |
@@ -557,6 +561,7 @@ passes on attempts 2-4 divided by attempts 2-4 made: the chance that one repair 
 | Kimi K3.1 Pro Highspeed | 215/224 (96%) | 9 | 9/9 (100%) | 9 / 0 / 0 | 100% |
 | Gemini 3.8 Flash High (Antigravity) | 210/224 (94%) | 14 | 14/14 (100%) | 12 / 2 / 0 | 88% |
 | Kimi K3 | 204/224 (91%) | 20 | 20/20 (100%) | 16 / 4 / 0 | 83% |
+| Mistral Large 4 | 177/224 (79%) | 47 | 46/47 (98%) | 34 / 9 / 3 | 72% |
 | Codex GPT-5.6 Terra | 189/224 (84%) | 35 | 34/35 (97%) | 29 / 5 / 0 | 81% |
 | Claude Sonnet 5 | 175/224 (78%) | 49 | 47/49 (96%) | 37 / 6 / 4 | 70% |
 | Claude Opus 4.8 | 175/224 (78%) | 49 | 47/49 (96%) | 40 / 6 / 1 | 77% |
@@ -626,6 +631,7 @@ Models with fewer than 5 first-attempt failures are left out (nothing to measure
 | Codex GPT-6 Sol | 78/96 (81%) | 18 | 17/18 (94%) | 17 / 0 / 0 | 85% |
 | Claude Sonnet 4.5 | 54/96 (56%) | 42 | 39/42 (93%) | 28 / 9 / 2 | 64% |
 | DeepSeek V4.1 Flash (Fireworks) | 65/96 (68%) | 31 | 28/31 (90%) | 23 / 5 / 0 | 67% |
+| Mistral Large 4 | 67/96 (70%) | 29 | 24/29 (83%) | 13 / 8 / 3 | 45% |
 | Codex GPT-5.6 Luna | 31/96 (32%) | 65 | 49/65 (75%) | 28 / 13 / 8 | 39% |
 | Microsoft MAI-Code 1.1 Flash (Copilot) | 23/96 (24%) | 73 | 41/73 (56%) | 26 / 12 / 3 | 26% |
 | NVIDIA Nemotron 3 Ultra NVFP4 (Fireworks) | 14/96 (15%) | 82 | 45/82 (55%) | 20 / 10 / 15 | 23% |
@@ -644,14 +650,14 @@ Vendor and local models are counted separately; categories with fewer than 10 ce
 
 | First failure | Vendor cells | Vendor recovered | Local cells | Local recovered |
 |---|---|---|---|---|
-| `compile` | 971 | 482/971 (50%) | 263 | 0/263 (0%) |
-| `syntax` | 913 | 666/913 (73%) | 257 | 30/257 (12%) |
-| `subject_timeout` | 295 | 127/295 (43%) | 146 | 8/146 (5%) |
-| `wrong_result` | 253 | 216/253 (85%) | 68 | 28/68 (41%) |
-| `wrong_output` | 191 | 164/191 (86%) | 29 | 3/29 (10%) |
+| `compile` | 994 | 505/994 (51%) | 263 | 0/263 (0%) |
+| `syntax` | 926 | 679/926 (73%) | 257 | 30/257 (12%) |
+| `subject_timeout` | 322 | 150/322 (47%) | 146 | 8/146 (5%) |
+| `wrong_result` | 255 | 218/255 (85%) | 68 | 28/68 (41%) |
+| `wrong_output` | 198 | 170/198 (86%) | 29 | 3/29 (10%) |
 | `format` | 84 | 62/84 (74%) | 47 | 4/47 (9%) |
-| `crash` | 93 | 78/93 (84%) | 35 | 5/35 (14%) |
-| `oob` | 96 | 76/96 (79%) | 15 | 4/15 (27%) |
+| `crash` | 95 | 79/95 (83%) | 35 | 5/35 (14%) |
+| `oob` | 98 | 78/98 (80%) | 15 | 4/15 (27%) |
 | `abi` | 62 | 50/62 (81%) | 27 | 8/27 (30%) |
 | `oob_read` | 46 | 44/46 (96%) | 13 | 0/13 (0%) |
 | `refusal` | 52 | 10/52 (19%) | 0 | — |
@@ -661,7 +667,7 @@ Vendor and local models are counted separately; categories with fewer than 10 ce
 
 ## 3. Task difficulty and discrimination
 
-Function batteries, the 48 vendor models with all 224 cells. A cell's *pass rate* is the share
+Function batteries, the 49 vendor models with all 224 cells. A cell's *pass rate* is the share
 of those models that passed it on the first attempt. *Discrimination* is the item-rest correlation:
 the correlation, across models, between passing this cell and the model's score on the other 223.
 High = the cell separates strong models from weaker ones; near zero or negative = it does not.
@@ -669,9 +675,9 @@ High = the cell separates strong models from weaker ones; near zero or negative 
 | First-attempt pass rate | Cells |
 |---|---|
 | all models | 10 |
-| 75-99% | 136 |
-| 50-74% | 76 |
-| 25-49% | 2 |
+| 75-99% | 133 |
+| 50-74% | 78 |
+| 25-49% | 3 |
 | 1-24% | 0 |
 | no model | 0 |
 
@@ -681,7 +687,7 @@ High = the cell separates strong models from weaker ones; near zero or negative 
 |---|---|---|---|---|
 | round1 | 97% | 88% | 68% | 84% |
 | round2 | 93% | 86% | 70% | 83% |
-| long | 75% | 70% | 61% | 68% |
+| long | 75% | 70% | 60% | 68% |
 | adversarial | 93% | 85% | 71% | 83% |
 
 ### Cells no vendor model passes on the first attempt (0)
@@ -693,21 +699,21 @@ by every model or by none carry no ranking information and are excluded.
 
 | Battery | Cell | Pass rate | Discrimination |
 |---|---|---|---|
-| long | `mat_pow.stream.x86_64` | 79% | 0.89 |
-| long | `qsort_pairs.structured.x86_64` | 69% | 0.84 |
+| long | `mat_pow.stream.x86_64` | 80% | 0.89 |
+| long | `qsort_pairs.structured.x86_64` | 69% | 0.83 |
 | round1 | `count_nonzero_prefix.ir.aarch64` | 73% | 0.83 |
-| long | `mat_pow.ir.x86_64` | 73% | 0.83 |
-| round2 | `map_sum.ir.x86_64` | 79% | 0.82 |
-| round2 | `add_overflow.ir.x86_64` | 75% | 0.82 |
-| long | `mat_pow.structured.aarch64` | 79% | 0.81 |
-| round2 | `dot_i32_simd.stream.x86_64` | 83% | 0.81 |
-| round2 | `crc32.structured.x86_64` | 85% | 0.80 |
-| adversarial | `count_ugt.ir.x86_64` | 75% | 0.79 |
-| adversarial | `madd32.ir.aarch64` | 77% | 0.79 |
-| long | `lcs_len.ir.aarch64` | 69% | 0.77 |
-| round2 | `sum8.ir.aarch64` | 75% | 0.77 |
-| round1 | `popcount.structured.x86_64` | 79% | 0.77 |
+| round2 | `map_sum.ir.x86_64` | 80% | 0.82 |
+| round2 | `add_overflow.ir.x86_64` | 76% | 0.82 |
+| long | `mat_pow.structured.aarch64` | 80% | 0.81 |
+| long | `mat_pow.ir.x86_64` | 71% | 0.81 |
+| round2 | `crc32.structured.x86_64` | 86% | 0.80 |
+| adversarial | `madd32.ir.aarch64` | 78% | 0.79 |
+| adversarial | `count_ugt.ir.x86_64` | 76% | 0.79 |
+| round2 | `dot_i32_simd.stream.x86_64` | 82% | 0.77 |
+| round2 | `sum8.ir.aarch64` | 76% | 0.76 |
+| round1 | `popcount.structured.x86_64` | 80% | 0.76 |
 | round1 | `reverse.ir.x86_64` | 69% | 0.76 |
+| adversarial | `shift_sat.ir.aarch64` | 73% | 0.76 |
 
 7 cells correlate negatively with overall strength (weaker models pass them more often than
 stronger ones); the 10 most negative:
@@ -738,18 +744,18 @@ failed) by all ten, so the top of the ranking rests on those cells:
 | long | 6 | 9 | 5 |
 | adversarial | 4 | 5 | 2 |
 
-### App battery tasks (the 36 complete vendor models, 12 cells each)
+### App battery tasks (the 37 complete vendor models, 12 cells each)
 
 | Task | First attempt | Within 4 |
 |---|---|---|
-| `wc` | 351/432 (81%) | 415/432 (96%) |
-| `rev_lines` | 355/432 (82%) | 422/432 (98%) |
-| `hexdump` | 293/432 (68%) | 394/432 (91%) |
-| `sort_lines` | 310/432 (72%) | 379/432 (88%) |
-| `rpn` | 284/432 (66%) | 364/432 (84%) |
-| `base64` | 339/432 (78%) | 407/432 (94%) |
-| `bf` | 340/432 (79%) | 402/432 (93%) |
-| `json_lint` | 270/432 (62%) | 353/432 (82%) |
+| `wc` | 361/444 (81%) | 427/444 (96%) |
+| `rev_lines` | 366/444 (82%) | 434/444 (98%) |
+| `hexdump` | 303/444 (68%) | 406/444 (91%) |
+| `sort_lines` | 317/444 (71%) | 389/444 (88%) |
+| `rpn` | 287/444 (65%) | 373/444 (84%) |
+| `base64` | 350/444 (79%) | 419/444 (94%) |
+| `bf` | 348/444 (78%) | 414/444 (93%) |
+| `json_lint` | 277/444 (62%) | 365/444 (82%) |
 
 ## 4. ISA and path gap
 
@@ -779,17 +785,18 @@ and failed on AArch64, *A64 only* the reverse. Exact McNemar, Holm-adjusted over
 | Codex GPT-6.1 Terra | 99% | 97% | 80% | 91% | 93% | 5 / 7 | 0.774 | 1.000 |
 | Codex GPT-5.6 Sol | 99% | 92% | 82% | 90% | 92% | 6 / 8 | 0.791 | 1.000 |
 | Kimi K3 | 99% | 89% | 85% | 90% | 92% | 7 / 9 | 0.804 | 1.000 |
-| Claude Haiku 5.5 | 99% | 80% | 93% | 96% | 86% | 14 / 3 | 0.013 | 0.665 |
+| Claude Haiku 5.5 | 99% | 80% | 93% | 96% | 86% | 14 / 3 | 0.013 | 0.677 |
 | Claude Sonnet 4.5 | 97% | 91% | 84% | 91% | 90% | 8 / 7 | 1.000 | 1.000 |
 | Codex Daybreak Blue | 93% | 93% | 82% | 88% | 92% | 5 / 10 | 0.302 | 1.000 |
 | Claude Sonnet 5.5 | 96% | 92% | 81% | 92% | 88% | 12 / 7 | 0.359 | 1.000 |
-| Claude Fable 5 | 91% | 91% | 85% | 82% | 96% | 2 / 17 | <0.001 | 0.041 |
+| Claude Fable 5 | 91% | 91% | 85% | 82% | 96% | 2 / 17 | <0.001 | 0.042 |
 | Claude Opus 5 | 95% | 91% | 80% | 86% | 91% | 6 / 12 | 0.238 | 1.000 |
 | Grok 4.5 | 96% | 96% | 72% | 87% | 89% | 10 / 13 | 0.678 | 1.000 |
 | Gemini 4 Argon High (Antigravity) | 78% | 84% | 95% | 84% | 87% | 7 / 10 | 0.629 | 1.000 |
 | DeepSeek V4.1 Flash (Fireworks) | 96% | 74% | 84% | 79% | 90% | 7 / 19 | 0.029 | 1.000 |
 | Codex GPT-5.6 Terra | 89% | 93% | 70% | 85% | 84% | 10 / 9 | 1.000 | 1.000 |
 | Qwen 3.8 Max (Fireworks) | 96% | 97% | 50% | 80% | 82% | 11 / 13 | 0.839 | 1.000 |
+| Mistral Large 4 | 88% | 89% | 59% | 80% | 78% | 16 / 13 | 0.711 | 1.000 |
 | GPT-6 Luna via Copilot | 88% | 82% | 65% | 81% | 76% | 17 / 11 | 0.345 | 1.000 |
 | Claude Sonnet 5 | 83% | 72% | 80% | 71% | 85% | 15 / 30 | 0.036 | 1.000 |
 | Claude Opus 4.8 | 83% | 89% | 62% | 78% | 79% | 12 / 13 | 1.000 | 1.000 |
@@ -804,9 +811,9 @@ and failed on AArch64, *A64 only* the reverse. Exact McNemar, Holm-adjusted over
 | Microsoft MAI-Code 1.1 Flash (Copilot) | 78% | 59% | 5% | 45% | 51% | 9 / 16 | 0.230 | 1.000 |
 | Qwen 3.8 27B (Cerebras) | 68% | 68% | 0% | 43% | 48% | 8 / 14 | 0.286 | 1.000 |
 | NVIDIA Nemotron 3 Ultra NVFP4 (Fireworks) | 75% | 36% | 3% | 35% | 42% | 13 / 21 | 0.229 | 1.000 |
-| Microsoft MAI-Thinking-1 (Azure Foundry) | 53% | 32% | 11% | 26% | 38% | 7 / 21 | 0.013 | 0.665 |
-| OpenAI gpt-oss-120b (Cerebras) | 66% | 28% | 0% | 26% | 38% | 4 / 17 | 0.007 | 0.396 |
-| OpenAI gpt-oss-120b (Fireworks) | 63% | 31% | 0% | 25% | 38% | 8 / 23 | 0.011 | 0.576 |
+| Microsoft MAI-Thinking-1 (Azure Foundry) | 53% | 32% | 11% | 26% | 38% | 7 / 21 | 0.013 | 0.677 |
+| OpenAI gpt-oss-120b (Cerebras) | 66% | 28% | 0% | 26% | 38% | 4 / 17 | 0.007 | 0.403 |
+| OpenAI gpt-oss-120b (Fireworks) | 63% | 31% | 0% | 25% | 38% | 8 / 23 | 0.011 | 0.587 |
 | Apple Private Cloud Compute † | 12% | 0% | 0% | 4% | 4% | 1 / 1 | 1.000 | 1.000 |
 | Aleph Alpha Kolibri-1 FP8, token budget (local) | 47% | 30% | 0% | 24% | 28% | 14 / 18 | 0.597 | 1.000 |
 | Qwen3-Coder-Next Q4 (local) | 16% | 0% | 0% | 4% | 6% | 3 / 5 | 0.727 | 1.000 |
@@ -818,7 +825,7 @@ and failed on AArch64, *A64 only* the reverse. Exact McNemar, Holm-adjusted over
 
 Models with a significant ISA gap: Claude Fable 5 (AArch64 better, 17 vs 2).
 
-**Path × ISA, mean over the 48 complete vendor models** (first attempt):
+**Path × ISA, mean over the 49 complete vendor models** (first attempt):
 
 | Path | x86-64 | AArch64 |
 |---|---|---|
@@ -826,12 +833,12 @@ Models with a significant ISA gap: Claude Fable 5 (AArch64 better, 17 vs 2).
 | structured | 79% | 86% |
 | IR (QBE) | 67% | 68% |
 
-**App battery, the 36 complete vendor models** (first attempt, 864 cells each):
+**App battery, the 37 complete vendor models** (first attempt, 888 cells each):
 
 | Path | x86-64 | AArch64 |
 |---|---|---|
-| asm | 605/864 (70%) | 656/864 (76%) |
-| stream | 631/864 (73%) | 650/864 (75%) |
+| asm | 621/888 (70%) | 671/888 (76%) |
+| stream | 649/888 (73%) | 668/888 (75%) |
 
 ## 5. One error classification across models
 
@@ -843,30 +850,30 @@ failures by kind. Counts are cells.
 
 | Class | Vendor models | Local models | All |
 |---|---|---|---|
-| QBE: missing or wrong type class | 274 | 17 | 291 |
+| QBE: missing or wrong type class | 275 | 17 | 292 |
 | QBE: malformed function signature | 104 | 131 | 235 |
-| QBE: invented opcode | 196 | 12 | 208 |
-| QBE: hex literal (decimal only) | 69 | 15 | 84 |
-| QBE: type or SSA error | 79 | 0 | 79 |
-| QBE: other syntax | 246 | 88 | 334 |
-| operand not encodable (immediate / addressing) | 209 | 17 | 226 |
-| invalid operand combination | 158 | 47 | 205 |
-| invented / malformed instruction | 15 | 19 | 34 |
+| QBE: invented opcode | 201 | 12 | 213 |
+| QBE: hex literal (decimal only) | 73 | 15 | 88 |
+| QBE: type or SSA error | 80 | 0 | 80 |
+| QBE: other syntax | 258 | 88 | 346 |
+| operand not encodable (immediate / addressing) | 210 | 17 | 227 |
+| invalid operand combination | 163 | 47 | 210 |
+| invented / malformed instruction | 16 | 19 | 35 |
 | wrong assembler dialect (NASM) | 0 | 7 | 7 |
 | program-format rule broken | 118 | 21 | 139 |
 | label / symbol error | 40 | 16 | 56 |
-| structured: schema violation | 315 | 119 | 434 |
+| structured: schema violation | 321 | 119 | 440 |
 | malformed JSON | 59 | 46 | 105 |
 | prose / markup instead of code | 45 | 2 | 47 |
 | other assembler / encoder reject | 56 | 13 | 69 |
 | calling-convention violation | 71 | 29 | 100 |
-| memory fault / crash | 237 | 63 | 300 |
+| memory fault / crash | 241 | 63 | 304 |
 | syscall / exit misuse | 19 | 16 | 35 |
-| wrong result / runs forever | 467 | 106 | 573 |
-| timeout (no complete answer) | 295 | 146 | 441 |
+| wrong result / runs forever | 476 | 106 | 582 |
+| timeout (no complete answer) | 322 | 146 | 468 |
 | refusal | 52 | 0 | 52 |
 | other | 2 | 0 | 2 |
-| **total** | 3126 | 930 | 4056 |
+| **total** | 3202 | 930 | 4132 |
 
 ### Per model
 
@@ -916,6 +923,7 @@ syscall misuse. The largest group per model is in bold.
 | DeepSeek V4.1 Flash (Fireworks) | 65 | 12 | 8 | 4 | **13** | 5 | **13** | 10 | · | · |
 | Kimi K2.8 (for-coding) | 67 | **23** | 1 | · | 8 | 5 | 14 | 16 | · | · |
 | Claude Sonnet 5 | 69 | 14 | 9 | 4 | 13 | **19** | 10 | · | · | · |
+| Mistral Large 4 | 76 | 23 | 7 | · | 6 | 4 | 9 | **27** | · | · |
 | DeepSeek-V4-Pro high (Azure Foundry) | 85 | **42** | 4 | 1 | 23 | 8 | 7 | · | · | · |
 | Codex GPT-6 Luna | 94 | **46** | 2 | · | 7 | 12 | 27 | · | · | · |
 | Claude Haiku 4.5 | 108 | **70** | 6 | 4 | 10 | 8 | 5 | 5 | · | · |
@@ -974,6 +982,7 @@ The QBE classes in detail, vendor models only (where QBE failures cluster):
 | DeepSeek V4.1 Flash (Fireworks) | 0 | 0 | 3 | 2 | 1 | 6 |
 | Kimi K2.8 (for-coding) | 9 | 0 | 2 | 3 | 1 | 8 |
 | Claude Sonnet 5 | 4 | 0 | 2 | 0 | 5 | 3 |
+| Mistral Large 4 | 1 | 0 | 5 | 4 | 1 | 12 |
 | DeepSeek-V4-Pro high (Azure Foundry) | 6 | 0 | 11 | 9 | 2 | 14 |
 | Codex GPT-6 Luna | 16 | 0 | 16 | 2 | 4 | 8 |
 | Claude Haiku 4.5 | 34 | 0 | 15 | 2 | 0 | 19 |
@@ -1032,7 +1041,7 @@ refusals that remain with relaxed cyber safeguards.
 | Claude Sonnet 5.5 | 352 | 3 of 400 | 1 | 1 | 0 |
 | Apple Private Cloud Compute | 48 | 2 of 181 | 1 | 1 | 0 |
 
-No other model refused anything (48 models, every recorded attempt).
+No other model refused anything (49 models, every recorded attempt).
 
 **Where they happen** (refused attempts by variant, battery and path):
 
@@ -1153,6 +1162,7 @@ queue waits and are not comparable with the vendors'. Effort is each CLI's defau
 | DeepSeek V4.1 Flash (Fireworks) | default | 190/224 (85%) | 267 | 3,959 | 9,399 | 99% | 17 |
 | Codex GPT-5.6 Terra | medium | 189/224 (84%) | 266 | 599 | 1,224 | 100% | 17 |
 | Qwen 3.8 Max (Fireworks) | default | 182/224 (81%) | 287 | 11,131 | 20,427 | 94% | 74 |
+| Mistral Large 4 | default | 177/224 (79%) | 288 | 6,107 | 12,556 | 93% | 75 |
 | GPT-6 Luna via Copilot | default | 176/224 (79%) | 289 | 901 | 1,739 | 100% | 32 |
 | Claude Sonnet 5 | default | 175/224 (78%) | 291 | 798 | 4,236 | 99% | 9 |
 | Claude Opus 4.8 | default | 175/224 (78%) | 285 | 433 | 2,173 | 99% | 8 |
@@ -1179,7 +1189,7 @@ queue waits and are not comparable with the vendors'. Effort is each CLI's defau
 | Qwen2.5-14B Q4 (local) † | default | 3/114 (3%) | 444 | 298 | 35,384 | 86% | 22 |
 | Apple AFM 3 Core Advanced, on-device † | default | 0/32 (0%) | 128 | 158 | — | 80% | 4 |
 
-Across the 48 complete vendor models, the rank correlation between median output tokens per attempt and first-attempt pass rate is -0.47.
+Across the 49 complete vendor models, the rank correlation between median output tokens per attempt and first-attempt pass rate is -0.47.
 
 ### App battery
 
@@ -1212,6 +1222,7 @@ Across the 48 complete vendor models, the rank correlation between median output
 | Claude Sonnet 5 | default | 76/96 (79%) | 122 | 10,210 | 19,476 | 98% | 96 |
 | Grok 4.5 | default | 76/96 (79%) | 120 | 7,938 | 11,314 | 100% | 108 |
 | Codex GPT-5.6 Terra | medium | 68/96 (71%) | 128 | 2,887 | 3,775 | 100% | 75 |
+| Mistral Large 4 | default | 67/96 (70%) | 149 | 32,028 | 56,019 | 82% | 463 |
 | DeepSeek V4.1 Flash (Fireworks) | default | 65/96 (68%) | 138 | 20,446 | 37,261 | 95% | 92 |
 | Claude Sonnet 4.5 | default | 54/96 (56%) | 157 | 14,428 | 23,805 | 95% | 181 |
 | Codex GPT-5.6 Luna | medium | 31/96 (32%) | 222 | 2,937 | 8,170 | 100% | 56 |
@@ -1223,7 +1234,7 @@ Across the 48 complete vendor models, the rank correlation between median output
 | OpenAI gpt-oss-120b (Cerebras) | default | 8/96 (8%) | 331 | 4,564 | — | 72% | 3 |
 | Aleph Alpha Kolibri-1 FP8, token budget (local) | default | 3/96 (3%) | 363 | 30,854 | 683,107 | 79% | 1143 |
 
-Across the 36 complete vendor models, the rank correlation between median output tokens per attempt and first-attempt pass rate is -0.23.
+Across the 37 complete vendor models, the rank correlation between median output tokens per attempt and first-attempt pass rate is -0.27.
 
 Token counts come from each vendor's CLI and are not audited across vendors; tokenisers differ, so a
 token is not the same unit for every model. Compare within a vendor with more confidence than across.
@@ -1289,6 +1300,7 @@ Tokenisers and price lists differ, so compare across vendors loosely.
 | Gemini 4 Argon High (Antigravity) | 191/224 (85%) | — | — | — | 0% |
 | Gemini 4 Hydrogen High (Antigravity) | 224/224 (100%) | — | — | — | 0% |
 | Codex Daybreak Blue | 201/224 (90%) | — | — | — | 0% |
+| Mistral Large 4 | 177/224 (79%) | — | — | — | 0% |
 | Kimi K2.8 (for-coding) | 157/224 (70%) | — | — | — | 0% |
 | Apple Private Cloud Compute † | 2/48 (4%) | free | $0.00 | $0.000 | 100% |
 
@@ -1332,6 +1344,7 @@ Tokenisers and price lists differ, so compare across vendors loosely.
 | Claude Opus 4.7 | 81/96 (84%) | CLI's API-equivalent | $46.34 | $0.483 | 94% |
 | Qwen 3.8 27B (Cerebras) | 9/96 (9%) | charged | $19.71 | $0.680 | 100% |
 | Gemini 4 Hydrogen High (Antigravity) | 93/96 (97%) | — | — | — | 0% |
+| Mistral Large 4 | 67/96 (70%) | — | — | — | 0% |
 
 No price: Kolibri-1 and the Ollama models (local GPU), and Codex Daybreak Blue (Daybreak Blue is a ChatGPT-plan model with no API listing); Kimi K2.8 (for-coding) (K2.8 Preview has no API listing (the K2 series closed to new users 2026-10-31)).
 List prices used (USD per 1M tokens: input / cached input / output):
@@ -1361,7 +1374,7 @@ those ratios over its passing cells (1.00 = the median solution; below 1 = fewer
 bytes). On the QBE path the instructions come from the `qbe` compiler, so differences there reflect
 the model's IR, not its instruction selection.
 
-13342 passing cells re-run; 13342 passed again, all of them.
+13656 passing cells re-run; 13656 passed again, all of them.
 
 ### Function batteries
 
@@ -1371,55 +1384,56 @@ the model's solution executed the fewest instructions of all passing solutions (
 | Model | Cells | Executed instructions | Stream | Structured | IR (QBE) | Code size | Fewest |
 |---|---|---|---|---|---|---|---|
 | Gemini 4 Hydrogen High (Antigravity) | 224 | 0.82 | 0.70 | 0.87 | 0.91 | 1.05 | 74 |
-| Gemini 4 Argon High (Antigravity) | 205 | 0.88 | 0.78 | 0.92 | 0.95 | 0.98 | 65 |
-| Gemini 3.8 Flash High (Antigravity) | 224 | 0.90 | 0.83 | 0.97 | 0.92 | 0.99 | 48 |
-| Grok 4.6 | 223 | 0.94 | 0.85 | 0.93 | 1.06 | 0.99 | 51 |
-| Claude Mythos 5.1 | 224 | 0.95 | 0.90 | 0.98 | 0.96 | 0.96 | 39 |
+| Gemini 4 Argon High (Antigravity) | 205 | 0.88 | 0.78 | 0.91 | 0.96 | 0.98 | 64 |
+| Gemini 3.8 Flash High (Antigravity) | 224 | 0.90 | 0.83 | 0.97 | 0.92 | 0.99 | 47 |
+| Grok 4.6 | 223 | 0.94 | 0.85 | 0.92 | 1.06 | 0.99 | 51 |
+| Claude Mythos 5.1 | 224 | 0.94 | 0.89 | 0.98 | 0.96 | 0.96 | 39 |
 | Claude Opus 5.5 | 224 | 0.95 | 0.93 | 0.97 | 0.96 | 0.94 | 38 |
 | Codex GPT-6.1 Sol | 224 | 0.95 | 0.93 | 0.95 | 0.99 | 0.93 | 49 |
-| Codex GPT-5.5 | 224 | 0.96 | 0.93 | 0.95 | 0.99 | 1.07 | 30 |
-| Claude Fable 5.1 | 223 | 0.96 | 0.95 | 0.98 | 0.96 | 0.95 | 38 |
+| Codex GPT-5.5 | 224 | 0.96 | 0.92 | 0.95 | 0.99 | 1.06 | 30 |
+| Claude Fable 5.1 | 223 | 0.96 | 0.94 | 0.98 | 0.96 | 0.95 | 38 |
 | Codex GPT-6 Astra | 224 | 0.96 | 0.92 | 0.97 | 1.00 | 0.92 | 45 |
 | DeepSeek-V4-Pro high (Azure Foundry) | 217 | 0.97 | 0.91 | 0.99 | 1.01 | 1.16 | 28 |
 | Codex GPT-6 Sol | 224 | 0.97 | 0.92 | 0.98 | 1.02 | 0.96 | 33 |
-| Claude Mythos 5.2 | 224 | 0.98 | 0.96 | 0.97 | 0.99 | 0.91 | 40 |
+| Claude Mythos 5.2 | 224 | 0.98 | 0.96 | 0.97 | 1.00 | 0.90 | 40 |
 | Claude Fable 5.2 | 224 | 0.98 | 0.97 | 0.97 | 0.99 | 0.90 | 36 |
-| Codex GPT-6.1 Terra | 224 | 0.98 | 1.00 | 0.92 | 1.02 | 0.93 | 35 |
-| Kimi K2.8 (for-coding) | 213 | 0.99 | 0.95 | 0.99 | 1.02 | 1.06 | 30 |
+| Codex GPT-6.1 Terra | 224 | 0.98 | 1.00 | 0.92 | 1.03 | 0.93 | 35 |
+| Kimi K2.8 (for-coding) | 213 | 0.99 | 0.94 | 0.99 | 1.03 | 1.06 | 30 |
 | Claude Fable 5 | 203 | 0.99 | 0.98 | 0.99 | 0.99 | 0.96 | 33 |
-| Claude Opus 4.7 | 223 | 0.99 | 1.02 | 0.98 | 0.97 | 1.01 | 31 |
-| Z.ai GLM-5.3 (Fireworks) | 217 | 0.99 | 1.01 | 0.94 | 1.03 | 1.02 | 29 |
+| Z.ai GLM-5.3 (Fireworks) | 217 | 0.99 | 1.00 | 0.94 | 1.03 | 1.02 | 29 |
+| Claude Opus 4.7 | 223 | 0.99 | 1.01 | 0.98 | 0.97 | 1.01 | 31 |
 | Grok 4.7 | 220 | 0.99 | 0.99 | 0.97 | 1.02 | 1.01 | 37 |
-| Grok 4.5 | 222 | 0.99 | 0.99 | 0.99 | 1.01 | 1.05 | 27 |
-| Claude Opus 5 | 224 | 1.00 | 0.99 | 1.01 | 1.00 | 1.00 | 30 |
-| Kimi K3.1 Pro | 224 | 1.00 | 1.00 | 0.99 | 1.01 | 0.98 | 37 |
-| Grok 4.7 build-fast | 223 | 1.00 | 0.97 | 0.98 | 1.07 | 1.02 | 40 |
-| Kimi K3.1 Pro Highspeed | 224 | 1.00 | 1.02 | 0.99 | 1.00 | 1.00 | 30 |
-| Claude Sonnet 5.5 via Copilot | 219 | 1.01 | 1.00 | 1.03 | 0.99 | 0.97 | 32 |
-| Codex Daybreak Blue | 224 | 1.01 | 1.00 | 0.97 | 1.05 | 1.00 | 35 |
-| NVIDIA Nemotron 3 Ultra NVFP4 (Fireworks) | 151 | 1.01 | 0.99 | 1.02 | 1.07 | 1.19 | 14 |
+| Grok 4.5 | 222 | 0.99 | 0.98 | 0.99 | 1.01 | 1.05 | 27 |
+| Claude Opus 5 | 224 | 1.00 | 0.99 | 1.01 | 1.01 | 1.00 | 30 |
+| Kimi K3.1 Pro | 224 | 1.00 | 0.99 | 0.99 | 1.01 | 0.98 | 36 |
+| Grok 4.7 build-fast | 223 | 1.00 | 0.96 | 0.98 | 1.07 | 1.02 | 40 |
+| Kimi K3.1 Pro Highspeed | 224 | 1.00 | 1.02 | 0.98 | 1.01 | 1.00 | 30 |
+| Claude Sonnet 5.5 via Copilot | 219 | 1.01 | 0.99 | 1.03 | 1.00 | 0.97 | 32 |
+| Codex Daybreak Blue | 224 | 1.01 | 1.00 | 0.97 | 1.05 | 0.99 | 35 |
+| NVIDIA Nemotron 3 Ultra NVFP4 (Fireworks) | 151 | 1.01 | 0.99 | 1.01 | 1.07 | 1.19 | 14 |
 | Codex GPT-5.6 Sol | 224 | 1.01 | 1.00 | 1.00 | 1.03 | 1.01 | 35 |
-| Claude Sonnet 4.5 | 221 | 1.01 | 0.92 | 1.06 | 1.06 | 1.09 | 25 |
+| Claude Sonnet 4.5 | 221 | 1.01 | 0.92 | 1.06 | 1.07 | 1.09 | 25 |
 | Claude Sonnet 5.5 | 223 | 1.02 | 1.00 | 1.03 | 1.02 | 0.97 | 30 |
 | Qwen 3.8 Max (Fireworks) | 222 | 1.03 | 1.01 | 1.04 | 1.04 | 1.07 | 30 |
 | MiniMax M3 (Fireworks) | 184 | 1.03 | 1.03 | 1.03 | 1.04 | 1.15 | 27 |
 | Kimi K3 | 224 | 1.04 | 1.00 | 1.02 | 1.10 | 1.02 | 27 |
 | Claude Haiku 5.5 | 222 | 1.04 | 1.02 | 1.04 | 1.06 | 1.02 | 33 |
-| Claude Sonnet 5 | 222 | 1.04 | 1.08 | 1.02 | 1.01 | 1.09 | 23 |
-| DeepSeek V4.1 Flash (Fireworks) | 224 | 1.07 | 1.11 | 1.11 | 0.99 | 1.09 | 26 |
+| Claude Sonnet 5 | 222 | 1.04 | 1.08 | 1.02 | 1.02 | 1.09 | 23 |
+| Mistral Large 4 | 223 | 1.05 | 1.01 | 1.05 | 1.08 | 1.08 | 26 |
+| DeepSeek V4.1 Flash (Fireworks) | 224 | 1.07 | 1.10 | 1.11 | 1.00 | 1.09 | 26 |
 | Qwen 3.8 27B (Cerebras) | 142 | 1.08 | 1.09 | 1.07 | — | 1.18 | 10 |
-| GPT-6 Luna via Copilot | 224 | 1.09 | 1.10 | 1.08 | 1.10 | 1.05 | 22 |
-| Claude Haiku 4.5 | 158 | 1.11 | 1.15 | 1.10 | 1.01 | 1.16 | 14 |
+| GPT-6 Luna via Copilot | 224 | 1.09 | 1.09 | 1.07 | 1.11 | 1.05 | 22 |
+| Claude Haiku 4.5 | 158 | 1.11 | 1.14 | 1.10 | 1.01 | 1.16 | 14 |
 | Microsoft MAI-Thinking-1 (Azure Foundry) | 144 | 1.12 | 1.19 | 1.09 | 0.99 | 1.28 | 13 |
-| OpenAI gpt-oss-120b (Fireworks) | 120 | 1.13 | 1.08 | 1.18 | — | 1.21 | 10 |
+| OpenAI gpt-oss-120b (Fireworks) | 120 | 1.12 | 1.08 | 1.18 | — | 1.21 | 10 |
 | OpenAI gpt-oss-120b (Cerebras) | 117 | 1.13 | 1.13 | 1.12 | — | 1.21 | 6 |
-| Claude Opus 4.8 | 222 | 1.15 | 1.10 | 1.11 | 1.25 | 1.02 | 21 |
-| Codex GPT-6 Luna | 209 | 1.17 | 1.28 | 1.19 | 1.03 | 1.05 | 23 |
+| Claude Opus 4.8 | 222 | 1.15 | 1.09 | 1.10 | 1.25 | 1.02 | 21 |
+| Codex GPT-6 Luna | 209 | 1.17 | 1.28 | 1.19 | 1.04 | 1.05 | 23 |
 | Codex GPT-5.6 Terra | 223 | 1.18 | 1.25 | 1.17 | 1.11 | 1.05 | 21 |
 | Codex GPT-5.6 Luna | 214 | 1.18 | 1.18 | 1.24 | 1.12 | 1.12 | 18 |
 | Microsoft MAI-Code 1.1 Flash (Copilot) | 151 | 1.26 | 1.23 | 1.34 | 1.01 | 1.29 | 11 |
 | Aleph Alpha Kolibri-1 FP8, token budget (local) | 97 | 1.33 | 1.43 | 1.21 | — | 1.20 | 5 |
-| Qwen3-Coder-Next Q4 (local) | 31 | 1.52 | 1.56 | 1.02 | — | 1.43 | 4 |
+| Qwen3-Coder-Next Q4 (local) | 31 | 1.51 | 1.56 | 1.02 | — | 1.43 | 4 |
 
 ### App battery
 
@@ -1428,42 +1442,43 @@ the model's solution executed the fewest instructions of all passing solutions (
 
 | Model | Cells | Executed instructions | asm | stream | Code size | Fewest |
 |---|---|---|---|---|---|---|
-| Gemini 4 Hydrogen High (Antigravity) | 96 | 0.67 | 0.72 | 0.63 | 1.06 | 24 |
-| Claude Mythos 5.1 | 96 | 0.74 | 0.76 | 0.73 | 0.94 | 12 |
-| Claude Fable 5.1 | 96 | 0.80 | 0.82 | 0.77 | 0.96 | 7 |
-| Gemini 3.8 Flash High (Antigravity) | 96 | 0.80 | 0.84 | 0.76 | 1.20 | 4 |
-| Claude Opus 5 | 96 | 0.82 | 0.86 | 0.78 | 1.01 | 2 |
-| Codex GPT-6.1 Sol | 96 | 0.84 | 0.87 | 0.80 | 0.85 | 3 |
-| Claude Opus 5.5 | 96 | 0.84 | 0.85 | 0.84 | 0.94 | 1 |
-| Codex GPT-6 Astra | 96 | 0.86 | 0.86 | 0.87 | 0.83 | 2 |
-| Claude Fable 5.2 | 96 | 0.87 | 0.89 | 0.85 | 0.84 | 8 |
-| Claude Mythos 5.2 | 96 | 0.87 | 0.92 | 0.83 | 0.85 | 9 |
-| Kimi K3.1 Pro | 96 | 0.89 | 0.87 | 0.92 | 1.00 | 3 |
-| Codex GPT-6.1 Terra | 96 | 0.90 | 0.91 | 0.89 | 0.90 | 0 |
-| Claude Opus 4.7 | 96 | 0.90 | 0.89 | 0.91 | 1.08 | 2 |
-| Kimi K3.1 Pro Highspeed | 96 | 0.92 | 0.96 | 0.88 | 0.98 | 3 |
-| Codex GPT-6 Sol | 95 | 0.95 | 1.03 | 0.88 | 0.88 | 5 |
-| Grok 4.7 | 96 | 0.97 | 0.97 | 0.97 | 1.05 | 1 |
-| Grok 4.7 build-fast | 96 | 0.98 | 0.96 | 1.00 | 1.09 | 0 |
-| Codex GPT-5.6 Sol | 96 | 1.00 | 1.06 | 0.94 | 1.00 | 0 |
-| Codex GPT-5.6 Terra | 96 | 1.02 | 1.05 | 0.99 | 1.01 | 0 |
-| Grok 4.6 | 96 | 1.04 | 1.09 | 1.00 | 0.95 | 1 |
-| Kimi K3 | 96 | 1.04 | 1.03 | 1.06 | 1.02 | 0 |
-| Claude Fable 5 | 96 | 1.07 | 1.13 | 1.01 | 0.92 | 0 |
-| Claude Sonnet 5.5 | 96 | 1.07 | 1.10 | 1.04 | 0.86 | 5 |
-| Claude Haiku 5.5 | 96 | 1.09 | 1.18 | 1.00 | 1.05 | 0 |
-| DeepSeek V4.1 Flash (Fireworks) | 93 | 1.16 | 1.23 | 1.09 | 1.11 | 1 |
-| Qwen 3.8 27B (Cerebras) | 29 | 1.16 | 1.15 | 1.17 | 1.18 | 1 |
-| Claude Opus 4.8 | 96 | 1.17 | 1.20 | 1.14 | 1.01 | 0 |
-| NVIDIA Nemotron 3 Ultra NVFP4 (Fireworks) | 59 | 1.21 | 1.22 | 1.20 | 1.24 | 1 |
-| Claude Sonnet 5 | 95 | 1.22 | 1.30 | 1.15 | 1.20 | 0 |
-| Codex GPT-5.6 Luna | 80 | 1.24 | 1.30 | 1.18 | 1.09 | 1 |
-| Grok 4.5 | 96 | 1.28 | 1.32 | 1.24 | 1.04 | 0 |
-| MiniMax M3 (Fireworks) | 62 | 1.31 | 1.37 | 1.25 | 1.21 | 0 |
-| OpenAI gpt-oss-120b (Fireworks) | 32 | 1.33 | 1.31 | 1.35 | 1.28 | 0 |
-| Microsoft MAI-Code 1.1 Flash (Copilot) | 64 | 1.42 | 1.42 | 1.41 | 1.45 | 0 |
-| OpenAI gpt-oss-120b (Cerebras) | 34 | 1.42 | 1.44 | 1.41 | 1.22 | 0 |
-| Claude Sonnet 4.5 | 93 | 1.52 | 1.60 | 1.45 | 1.30 | 0 |
+| Gemini 4 Hydrogen High (Antigravity) | 96 | 0.66 | 0.70 | 0.62 | 1.06 | 24 |
+| Claude Mythos 5.1 | 96 | 0.73 | 0.74 | 0.72 | 0.94 | 12 |
+| Claude Fable 5.1 | 96 | 0.79 | 0.81 | 0.76 | 0.96 | 7 |
+| Gemini 3.8 Flash High (Antigravity) | 96 | 0.79 | 0.82 | 0.76 | 1.20 | 4 |
+| Claude Opus 5 | 96 | 0.81 | 0.84 | 0.77 | 1.01 | 2 |
+| Codex GPT-6.1 Sol | 96 | 0.82 | 0.86 | 0.79 | 0.84 | 3 |
+| Claude Opus 5.5 | 96 | 0.83 | 0.83 | 0.83 | 0.94 | 1 |
+| Codex GPT-6 Astra | 96 | 0.85 | 0.84 | 0.86 | 0.82 | 2 |
+| Claude Fable 5.2 | 96 | 0.86 | 0.88 | 0.84 | 0.84 | 8 |
+| Claude Mythos 5.2 | 96 | 0.86 | 0.90 | 0.82 | 0.85 | 9 |
+| Kimi K3.1 Pro | 96 | 0.88 | 0.86 | 0.91 | 0.99 | 3 |
+| Codex GPT-6.1 Terra | 96 | 0.89 | 0.89 | 0.88 | 0.90 | 0 |
+| Claude Opus 4.7 | 96 | 0.89 | 0.88 | 0.90 | 1.07 | 2 |
+| Kimi K3.1 Pro Highspeed | 96 | 0.91 | 0.95 | 0.87 | 0.98 | 3 |
+| Codex GPT-6 Sol | 95 | 0.94 | 1.02 | 0.87 | 0.88 | 5 |
+| Grok 4.7 | 96 | 0.95 | 0.95 | 0.96 | 1.05 | 1 |
+| Grok 4.7 build-fast | 96 | 0.97 | 0.94 | 0.99 | 1.09 | 0 |
+| Codex GPT-5.6 Sol | 96 | 0.99 | 1.04 | 0.93 | 1.00 | 0 |
+| Codex GPT-5.6 Terra | 96 | 1.01 | 1.03 | 0.98 | 1.01 | 0 |
+| Grok 4.6 | 96 | 1.03 | 1.07 | 0.99 | 0.95 | 1 |
+| Kimi K3 | 96 | 1.03 | 1.02 | 1.05 | 1.02 | 0 |
+| Claude Fable 5 | 96 | 1.05 | 1.11 | 1.00 | 0.92 | 0 |
+| Claude Sonnet 5.5 | 96 | 1.06 | 1.08 | 1.03 | 0.86 | 5 |
+| Claude Haiku 5.5 | 96 | 1.07 | 1.16 | 0.99 | 1.05 | 0 |
+| DeepSeek V4.1 Flash (Fireworks) | 93 | 1.14 | 1.21 | 1.08 | 1.11 | 1 |
+| Mistral Large 4 | 91 | 1.14 | 1.16 | 1.13 | 1.14 | 0 |
+| Qwen 3.8 27B (Cerebras) | 29 | 1.15 | 1.15 | 1.15 | 1.18 | 1 |
+| Claude Opus 4.8 | 96 | 1.15 | 1.18 | 1.13 | 1.01 | 0 |
+| NVIDIA Nemotron 3 Ultra NVFP4 (Fireworks) | 59 | 1.19 | 1.19 | 1.19 | 1.24 | 1 |
+| Claude Sonnet 5 | 95 | 1.21 | 1.28 | 1.14 | 1.19 | 0 |
+| Codex GPT-5.6 Luna | 80 | 1.22 | 1.27 | 1.17 | 1.09 | 1 |
+| Grok 4.5 | 96 | 1.26 | 1.30 | 1.23 | 1.04 | 0 |
+| MiniMax M3 (Fireworks) | 62 | 1.29 | 1.35 | 1.24 | 1.21 | 0 |
+| OpenAI gpt-oss-120b (Fireworks) | 32 | 1.33 | 1.31 | 1.36 | 1.28 | 0 |
+| Microsoft MAI-Code 1.1 Flash (Copilot) | 64 | 1.39 | 1.39 | 1.40 | 1.44 | 0 |
+| OpenAI gpt-oss-120b (Cerebras) | 34 | 1.40 | 1.41 | 1.39 | 1.21 | 0 |
+| Claude Sonnet 4.5 | 93 | 1.50 | 1.57 | 1.43 | 1.30 | 0 |
 
 ## 11. Harness and infrastructure audit
 
@@ -1523,6 +1538,7 @@ is resumed. A run directory without `infra.jsonl` had none, except the two earli
 | Kimi K3.1 Pro Highspeed | 389 | 10 | · | · | 2026-11-12 → 2026-11-14 |
 | Grok 4.7 | 391 | · | 9 | 1 | — |
 | Microsoft MAI-Code 1.1 Flash (Copilot) | 930 | · | 3 | 5 | — |
+| Mistral Large 4 | 512 | · | 7 | · | — |
 | Apple AFM 3 Core Advanced, on-device | 128 | · | 7 | · | — |
 | Grok 4.5 | 443 | · | 4 | · | — |
 | Grok 4.6 | 380 | · | 4 | · | — |

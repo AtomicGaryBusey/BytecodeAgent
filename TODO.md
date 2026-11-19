@@ -275,7 +275,7 @@ then regenerate the tables and `eval/analytics.py`.
 
 **Prompt variants on non-Claude models (backlogged 2026-10-22, not approved; recommendation below)**
 
-- [ ] **`misleading_hint` and `terse`, adversarial battery, on four non-Claude models** that mirror the spread of
+- [ ] (Grok 4.7 DONE 2026-11-16: hints ignored 58/60; terse 24/60, timeouts; MAI-Code via Foundry waits on access; the Kimis not chosen) **`misleading_hint` and `terse`, adversarial battery, on four non-Claude models** that mirror the spread of
   the four Claude models already run (adversarial first-try passes out of 60: Opus 5.5 57, Fable 5.1 54, Sonnet 5
   45, Haiku 4.5 35). Today both variant findings are Claude-only: "misleading hints change no model
   significantly" (they leaned on Haiku, −11 / +3, and Sonnet 5, −12 / +5) and the variant's refusals.
